@@ -731,6 +731,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       // value to one key type, so 1 and "1" would be one key. The documents already stored get their keys first, under the
       // collection's exclusive lock so no write of the plugin goes in between
       final String property = MongoKeys.propertyOf(propertyNames);
+      // before the exclusive lock is asked for: building an index is a schema change, as it is for the other indexes
+      ((DatabaseInternal) database).checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
       final Lock lock = MongoDBCollectionWrapper.idIndexLock(database, collectionName).writeLock();
       lock.lock();
       try {
@@ -1208,6 +1210,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
     int n = 0;
     if (database.getSchema().existsType(collectionName) && deletes != null) {
+      // before the lock of the unique indexes is taken and before any record is read
+      MongoDBCollectionWrapper.checkAccess(database, collectionName, SecurityDatabaseUser.ACCESS.DELETE_RECORD);
       final Lock indexLock = MongoDBCollectionWrapper.idIndexLock(database, collectionName).readLock();
       indexLock.lock();
       // the command's OWN transaction: a failure rolls back this one, never one the caller holds (issue #9977)
@@ -1349,6 +1353,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
           new MongoFilter(database, (Document) upd.get("q"), budget);
         throw MongoTimeSeriesWrites.updateRefusal(timeSeries);
       }
+      // before the lock of the unique indexes is taken and before any record is read
+      MongoDBCollectionWrapper.checkAccess(database, collectionName, SecurityDatabaseUser.ACCESS.UPDATE_RECORD);
       // a schema change cannot happen inside the transaction: an upsert creates the collection with its _id index up front
       prepareUpsertIdIndex(collectionName, updates);
 
@@ -1526,6 +1532,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     for (final Document upd : updates)
       if (Utils.isTrue(upd.get("upsert"))) {
         database.getSchema().getOrCreateDocumentType(collectionName);
+        // an upsert inserts: asked before the _id index is built under the exclusive lock
+        MongoDBCollectionWrapper.checkAccess(database, collectionName, SecurityDatabaseUser.ACCESS.CREATE_RECORD);
         if (!MongoDBCollectionWrapper.idIndexReady(database, collectionName))
           MongoDBCollectionWrapper.ensureIdIndexLocked(database, collectionName);
         return;
@@ -1562,14 +1570,14 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * Refuses an operator update {@code mongod} refuses when it parses it, before any document is touched (issue #12070): an operand
    * that is not a document, an {@code $inc} by an amount that is not a number, and two paths of which one is the other or lies below
    * it ({@code {$set: {a: 1}, $unset: {a: ''}}}, {@code {$set: {a: 1}, $inc: {'a.b': 1}}}), which would otherwise be applied one after
-   * the other, the last one winning.
+   * the other, the last one winning. A path names at most {@link MongoUpdatePaths#MAX_DEPTH} fields.
    */
   private static void checkUpdate(final Document u) {
     if (isReplacement(u))
       return;
-    // every path named so far, and every proper prefix of them: a conflict is a path met in either set
-    final Set<String> paths = new HashSet<>();
-    final Set<String> prefixes = new HashSet<>();
+    // every path named: the conflicts are looked for once all are known, by comparing neighbours in order, so that no prefix of a path
+    // is copied
+    final List<String> paths = new ArrayList<>();
     for (final Map.Entry<String, Object> entry : u.entrySet()) {
       final String op = entry.getKey();
       if (!(entry.getValue() instanceof Document operand))
@@ -1578,22 +1586,19 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
                 + op + ": " + entry.getValue() + "}");
       for (final Map.Entry<String, Object> field : operand.entrySet()) {
         final String path = field.getKey();
+        // first: nothing else reads a path that is deeper than the limit
+        MongoUpdatePaths.checkDepth(path);
         // a key property is the plugin's, not the client's (issue #12073)
         MongoKeys.checkNotKey(path);
         if ("$inc".equals(op) && !(field.getValue() instanceof Number))
           throw new MongoServerError(TYPE_MISMATCH, "TypeMismatch", "Cannot increment with non-numeric argument: {" + path + ": " + field.getValue() + "}");
-
-        if (paths.contains(path) || prefixes.contains(path))
-          throw conflict(path, path);
-        for (int dot = path.indexOf('.'); dot > 0; dot = path.indexOf('.', dot + 1)) {
-          final String prefix = path.substring(0, dot);
-          if (paths.contains(prefix))
-            throw conflict(path, prefix);
-          prefixes.add(prefix);
-        }
         paths.add(path);
       }
     }
+
+    final String[] conflict = MongoUpdatePaths.findConflict(paths);
+    if (conflict != null)
+      throw conflict(conflict[0], conflict[1]);
   }
 
   private static MongoServerError conflict(final String path, final String at) {
@@ -1919,6 +1924,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   }
 
   private static void addSeed(final Document seed, final String path, final Object value) {
+    // the path becomes embedded documents of the inserted one, like the path of a $set
+    MongoUpdatePaths.checkDepth(path);
     for (final String other : seed.keySet()) {
       if (other.equals(path))
         throw notSingleValue("path '" + path + "' is matched twice");
@@ -1975,14 +1982,18 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       record.set(path, value);
     else {
       final String head = path.substring(0, dot);
-      record.set(head, setNested(record.get(head), path.substring(dot + 1), value));
+      record.set(head, setNested(record.get(head), path, dot + 1, value));
     }
   }
 
+  /**
+   * Sets {@code value} at the fields of {@code path} from offset {@code from}: the path is read in place, never copied from field to
+   * field.
+   */
   @SuppressWarnings("unchecked")
-  private static Object setNested(final Object container, final String path, final Object value) {
-    final int dot = path.indexOf('.');
-    final String head = dot < 0 ? path : path.substring(0, dot);
+  private static Object setNested(final Object container, final String path, final int from, final Object value) {
+    final int dot = path.indexOf('.', from);
+    final String head = dot < 0 ? path.substring(from) : path.substring(from, dot);
 
     if (container instanceof List<?> list && isArrayIndex(head)) {
       final int index = Integer.parseInt(head);
@@ -1992,14 +2003,14 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       final List<Object> copy = new ArrayList<>(list);
       while (copy.size() <= index)
         copy.add(null);
-      copy.set(index, dot < 0 ? value : setNested(copy.get(index), path.substring(dot + 1), value));
+      copy.set(index, dot < 0 ? value : setNested(copy.get(index), path, dot + 1, value));
       return copy;
     }
 
     requireEmbedded(container, head);
     final Map<Object, Object> copy = copyOfEmbedded(container);
     final Object key = keyNamed(copy, head);
-    copy.put(key, dot < 0 ? value : setNested(copy.get(key), path.substring(dot + 1), value));
+    copy.put(key, dot < 0 ? value : setNested(copy.get(key), path, dot + 1, value));
     return copy;
   }
 
@@ -2011,14 +2022,15 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       final String head = path.substring(0, dot);
       final Object container = record.get(head);
       if (container != null)
-        record.set(head, unsetNested(container, path.substring(dot + 1)));
+        record.set(head, unsetNested(container, path, dot + 1));
     }
   }
 
+  /** Removes what is at the fields of {@code path} from offset {@code from}, read in place like {@link #setNested}. */
   @SuppressWarnings("unchecked")
-  private static Object unsetNested(final Object container, final String path) {
-    final int dot = path.indexOf('.');
-    final String head = dot < 0 ? path : path.substring(0, dot);
+  private static Object unsetNested(final Object container, final String path, final int from) {
+    final int dot = path.indexOf('.', from);
+    final String head = dot < 0 ? path.substring(from) : path.substring(from, dot);
 
     if (container instanceof List<?> list) {
       if (!isArrayIndex(head) || Integer.parseInt(head) >= list.size())
@@ -2026,7 +2038,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       // MongoDB sets an unset array element to null instead of shifting the others
       final List<Object> copy = new ArrayList<>(list);
       final int index = Integer.parseInt(head);
-      copy.set(index, dot < 0 ? null : unsetNested(copy.get(index), path.substring(dot + 1)));
+      copy.set(index, dot < 0 ? null : unsetNested(copy.get(index), path, dot + 1));
       return copy;
     }
 
@@ -2039,7 +2051,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     if (dot < 0)
       copy.remove(key);
     else if (copy.get(key) != null)
-      copy.put(key, unsetNested(copy.get(key), path.substring(dot + 1)));
+      copy.put(key, unsetNested(copy.get(key), path, dot + 1));
     return copy;
   }
 

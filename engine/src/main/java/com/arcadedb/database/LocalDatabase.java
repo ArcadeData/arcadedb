@@ -1052,9 +1052,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       // TimeSeries types store data in their own engine, not in regular buckets
       if (type instanceof LocalTimeSeriesType tsType) {
-        // Counting samples never loads a record through a bucket, so apply the equivalent per-type read check here.
-        checkPermissionsOnType(typeName, SecurityDatabaseUser.ACCESS.READ_RECORD);
-        return tsType.requireEngine();
+        // Counting samples never loads a record through a bucket, so apply the equivalent per-type read check here. It is
+        // made by the type, on the name it is registered under: typeName can be one of its aliases.
+        return tsType.requireEngine(SecurityDatabaseUser.ACCESS.READ_RECORD);
       }
 
       long total = 0;

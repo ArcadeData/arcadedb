@@ -256,7 +256,10 @@ class Issue11984DownsampleClusteredBlockTest extends TestHelper {
     }
   }
 
-  /** Counts the sealed files the engine hands to the replication; the database answers everything else as it did. */
+  /**
+   * Counts the sealed files the engine hands to the replication; the database says it is replicated, since only a replicated one
+   * is handed any, and answers everything else as it did.
+   */
   private static AtomicInteger countShippedSealedFiles(final LocalDatabase local, final DatabaseInternal wrapped) {
     final AtomicInteger shipped = new AtomicInteger();
     local.setWrappedDatabaseInstance((DatabaseInternal) Proxy.newProxyInstance(DatabaseInternal.class.getClassLoader(),
@@ -265,6 +268,8 @@ class Issue11984DownsampleClusteredBlockTest extends TestHelper {
             shipped.incrementAndGet();
             return null;
           }
+          if ("isReplicated".equals(method.getName()))
+            return true;
           try {
             return method.invoke(wrapped, args);
           } catch (final InvocationTargetException e) {

@@ -1563,8 +1563,7 @@ public class TimeSeriesEngine implements AutoCloseable {
             // Only ship when the file actually changed, so a steady-state no-op cycle (nothing old
             // enough to trim) does not re-ship the whole sealed file every maintenance tick.
             if (sealed.getBlockCount() != blocksBefore || sealed.getTotalSampleCount() != samplesBefore)
-              db.recordTimeSeriesSealedChange(typeName, shard.getShardIndex(), sealed.getSealedFileName(),
-                  sealed.readWholeSealedFile());
+              TimeSeriesShard.recordSealedChange(db, typeName, shard.getShardIndex(), sealed);
           });
         }
         return true;

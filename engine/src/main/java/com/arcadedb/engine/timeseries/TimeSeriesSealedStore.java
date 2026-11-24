@@ -4820,9 +4820,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   }
 
   /**
-   * Lock-free phase of compaction: snapshots existing sealed blocks (under a brief read lock),
-   * then writes all of them plus the new compressed blocks to {@code .ts.sealed.tmp} — entirely
-   * without holding any lock.
+   * Lock-free phase of compaction: snapshots the existing sealed block directory (under a brief read lock),
+   * then writes all of its blocks plus the new compressed blocks to {@code .ts.sealed.tmp}. Each retained block
+   * is read under a brief read lock of its own when the copy reaches it, so the copy holds one block in heap
+   * at a time, whatever the size of the store.
    * <p>
    * Call {@link #commitTempCompactionFile(List)} under the caller's write lock to atomically
    * swap the temp file for the live sealed file and install the returned block directory.
@@ -4841,20 +4842,16 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final int colCount = columns.size();
     final String tempPath = basePath + ".ts.sealed.tmp";
 
-    // Snapshot the current block list and pre-read all retained block bytes under the read lock.
-    // This guards against concurrent truncateBefore / downsampleBlocks closing the channel.
+    // Snapshot the current block list under the read lock. The bytes of each retained block are read when the copy reaches
+    // it, one block at a time and each under the read lock (readRetainedBlockColumns), so the heap holds one block of the
+    // store and not all of them. A store that changed meanwhile fails the copy instead of mixing two directories: every
+    // other rewrite of the sealed file is kept off by TimeSeriesShard.compactionMutex, so that only happens on a close.
     final List<BlockEntry> retained;
-    final List<byte[][]> retainedBytes;
+    final int version;
     directoryLock.readLock().lock();
     try {
       retained = new ArrayList<>(blockDirectory);
-      retainedBytes = new ArrayList<>(retained.size());
-      for (final BlockEntry e : retained) {
-        final byte[][] cols = new byte[colCount][];
-        for (int c = 0; c < colCount; c++)
-          cols[c] = readBytes(e.columnOffsets[c], e.columnSizes[c]);
-        retainedBytes.add(cols);
-      }
+      version = directoryVersion;
     } finally {
       directoryLock.readLock().unlock();
     }
@@ -4878,7 +4875,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         if (spec.isRetained()) {
           final int i = spec.idx();
           final BlockEntry old = retained.get(i);
-          entry = writeRetainedBlock(tempFile, old, retainedBytes.get(i), colCount);
+          entry = writeRetainedBlock(tempFile, old, readRetainedBlockColumns(old, version), colCount);
         } else {
           final int b = spec.idx();
           final long[] meta = newMeta.get(b);
@@ -4891,6 +4888,25 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     }
 
     return newDirectory;
+  }
+
+  /**
+   * The compressed columns of one block {@link #writeTempCompactionFile} keeps, read under the directory read lock, and only while
+   * the directory is still the one it snapshotted at {@code version}.
+   */
+  private byte[][] readRetainedBlockColumns(final BlockEntry entry, final int version) throws IOException {
+    directoryLock.readLock().lock();
+    try {
+      if (directoryVersion != version)
+        throw new IOException("The sealed store '" + basePath + "' changed while its blocks were copied for a compaction");
+      final int colCount = columns.size();
+      final byte[][] cols = new byte[colCount][];
+      for (int c = 0; c < colCount; c++)
+        cols[c] = readBytes(entry.columnOffsets[c], entry.columnSizes[c]);
+      return cols;
+    } finally {
+      directoryLock.readLock().unlock();
+    }
   }
 
   /**

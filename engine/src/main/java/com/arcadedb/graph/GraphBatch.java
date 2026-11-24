@@ -896,12 +896,12 @@ public class GraphBatch implements AutoCloseable {
     // edge without properties too (issue #9019). Types with only optional properties keep their compact property-less edges.
     final boolean isLightweight = typeIsLightweight || (lightEdges && !hasProps && !typeAppliesSchemaToEmptyEdge(edgeTypeName));
 
-    // A light edge allocates no record, so the bulk record writer never checks CREATE_RECORD for it (issue #9619): refused
-    // here, BEFORE it is buffered, so nothing is left for a later flush to write. Checked per edge, not cached per batch: the
-    // user bound to the thread can change between two calls, and the check (a no-op without security, a context lookup
-    // and an array read with it) costs about what the type-cache lookups above already do.
-    if (isLightweight)
-      database.checkPermissionsOnFile(typeBucketId, SecurityDatabaseUser.ACCESS.CREATE_RECORD);
+    // A light edge allocates no record, so the bulk record writer never checks CREATE_RECORD for it (issue #9619), and that
+    // writer asks for a record-backed edge only when the flush reaches it: refused here, BEFORE the edge is buffered, so
+    // nothing is left for a later flush to write. Checked per edge, not cached per batch: the user bound to the thread can
+    // change between two calls, and the check (a no-op without security, a context lookup and an array read with it) costs
+    // about what the type-cache lookups above already do.
+    database.checkPermissionsOnFile(typeBucketId, SecurityDatabaseUser.ACCESS.CREATE_RECORD);
 
     edgeHasProperties[idx] = hasProps;
     this.edgeProperties[idx] = hasProps ? propertyPairs(edgeProperties) : null;
@@ -1555,6 +1555,10 @@ public class GraphBatch implements AutoCloseable {
     // empty, silently breaking the contract of small primary records (issue #9814). Such a type takes the ordinary save() path,
     // the one a multi-type flush already takes.
     if (singleBucket && (bucketTypeFlags.get(firstBucket) & TYPE_DECLARES_EXTERNAL) == 0) {
+      // Asked again before the buffer is serialized: the user bound to the thread when the edges were buffered is not
+      // necessarily the one flushing them
+      database.checkPermissionsOnFile(firstBucket, SecurityDatabaseUser.ACCESS.CREATE_RECORD);
+
       // Serialize all edge records using templates
       final Binary[] serializedBuffers = new Binary[nonLightCount];
 
@@ -1745,6 +1749,12 @@ public class GraphBatch implements AutoCloseable {
         // Batch-update all vertex head chunk pointers in one pass
         if (!deferredHeads.isEmpty())
           batchUpdateVertexHeadChunks();
+      } catch (final RuntimeException | Error e) {
+        // Whatever transaction a failed step above left open is the batch's own: close() refuses a caller's transaction
+        // while anything is pending, and with nothing pending none of the steps above runs. Each step rolls back what
+        // it opened itself, this covers what they did not catch (an Error)
+        rollbackOpenTransaction(e);
+        throw e;
       } finally {
         // Restore database settings, even on an exceptional exit (issue #5378)
         restoreDatabaseSettings();
@@ -1986,30 +1996,37 @@ public class GraphBatch implements AutoCloseable {
     beginTx();
     int updated = 0;
 
-    for (final long vertexKey : sortedKeys) {
-      final int bucketId = (int) (vertexKey >>> 40);
-      final long position = vertexKey & 0xFFFFFFFFFFL;
+    try {
+      for (final long vertexKey : sortedKeys) {
+        final int bucketId = (int) (vertexKey >>> 40);
+        final long position = vertexKey & 0xFFFFFFFFFFL;
 
-      MutableVertex vertex = ((Vertex) database.lookupByRID(new RID(bucketId, position), true)).modify();
+        MutableVertex vertex = ((Vertex) database.lookupByRID(new RID(bucketId, position), true)).modify();
 
-      final RID outHead = deferredHeads.getOut(vertexKey);
-      if (outHead != null)
-        vertex.setOutEdgesHeadChunk(outHead);
+        final RID outHead = deferredHeads.getOut(vertexKey);
+        if (outHead != null)
+          vertex.setOutEdgesHeadChunk(outHead);
 
-      final RID inHead = deferredHeads.getIn(vertexKey);
-      if (inHead != null)
-        vertex.setInEdgesHeadChunk(inHead);
+        final RID inHead = deferredHeads.getIn(vertexKey);
+        if (inHead != null)
+          vertex.setInEdgesHeadChunk(inHead);
 
-      database.updateRecord(vertex);
-      updated++;
+        database.updateRecord(vertex);
+        updated++;
 
-      if (commitEvery > 0 && updated % commitEvery == 0) {
-        database.commit();
-        beginTx();
+        if (commitEvery > 0 && updated % commitEvery == 0) {
+          database.commit();
+          beginTx();
+        }
       }
-    }
 
-    database.commit();
+      database.commit();
+    } catch (final RuntimeException | Error e) {
+      // The transaction is the batch's own (see close()): it must not outlive the failure on the caller's thread. The deferred
+      // heads are kept, and writing all of them again is idempotent
+      rollbackOpenTransaction(e);
+      throw e;
+    }
     deferredHeads.clear();
     knownNewVertexKeys.clear();
 
@@ -2030,6 +2047,21 @@ public class GraphBatch implements AutoCloseable {
     final TransactionContext tx = database.getTransaction();
     tx.setUseWALForThisTransaction(useWAL);
     tx.setWALFlush(walFlush);
+  }
+
+  /**
+   * Rolls back the transaction a failed step of the batch left open on this thread, so the failure does not leave it behind for
+   * the next caller of the thread. Only for a step that ran in a transaction the batch began itself. A failure of the rollback
+   * itself is attached to {@code failure}, which is the one the caller has to see.
+   */
+  private void rollbackOpenTransaction(final Throwable failure) {
+    if (!database.isTransactionActive())
+      return;
+    try {
+      database.rollback();
+    } catch (final RuntimeException rollbackError) {
+      failure.addSuppressed(rollbackError);
+    }
   }
 
   /**
@@ -2480,6 +2512,9 @@ public class GraphBatch implements AutoCloseable {
         // Just an accelerator cache - evicting is always safe, forces a fallback to the IN side of deferredHeads or the disk.
         inChunkRIDCache.remove(key);
       });
+      // The transaction is the batch's own (flush() and close() refuse a caller's): it must not outlive the failure on the
+      // caller's thread
+      rollbackOpenTransaction(e);
       throw e;
     }
   }
