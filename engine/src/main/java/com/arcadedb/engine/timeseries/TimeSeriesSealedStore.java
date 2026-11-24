@@ -63,6 +63,7 @@ import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.UnaryOperator;
 import java.util.logging.Level;
@@ -271,6 +272,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   // In-memory block directory (loaded at open) — protected by directoryLock
   private final List<BlockEntry>       blockDirectory = new ArrayList<>();
   private final ReentrantReadWriteLock directoryLock  = new ReentrantReadWriteLock();
+  // Held from the prepare to the commit of a downsampling pass (issue #12610): two passes prepared against one directory version
+  // would write the same temp file, and the first commit would install the bytes of the other with its own directory. Taken
+  // before the shard's compaction lock and before directoryLock, never while holding either
+  private final ReentrantLock          downsampleLock = new ReentrantLock();
   // Bumped, under the directory write lock, by every change to blockDirectory: what tells a cached view derived from it
   // (see maxTimestampPrefix) that it is stale
   private          int              directoryVersion;
@@ -3140,18 +3145,34 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * the writing of the temp file run against a snapshot of the directory and hold its read lock one block at a time, so the readers of
    * the store go on meanwhile, and only the swap takes the write lock. A pass whose directory changed before it was installed is
    * dropped and run again on the directory as it now is, so what this method leaves behind is always the downsample of the live
-   * store. The shard does not loop: it holds the mutex every other rewrite of the sealed file takes, and a pass it has to drop is
-   * picked up by the next maintenance tick ({@code TimeSeriesShard.downsample}).
+   * store. A store closed meanwhile is refused, as a rewrite of a closed store always was. The shard does not loop: it holds the
+   * mutex every other rewrite of the sealed file takes, and a pass it has to drop is picked up by the next maintenance tick
+   * ({@code TimeSeriesShard.downsample}).
    */
   public void downsampleBlocks(final long cutoffTs, final long granularityMs, final long gridOffsetMs,
       final int tsColIdx, final List<Integer> tagColIndices, final List<Integer> numericColIndices) throws IOException {
-    while (true) {
-      final DownsamplePlan plan = prepareDownsample(cutoffTs, granularityMs, gridOffsetMs, tsColIdx, tagColIndices, numericColIndices);
-      if (plan == null)
-        return;
-      if (!plan.directoryMoved() && commitDownsample(plan))
-        return;
+    downsampleLock.lock();
+    try {
+      while (true) {
+        final DownsamplePlan plan = prepareDownsample(cutoffTs, granularityMs, gridOffsetMs, tsColIdx, tagColIndices,
+            numericColIndices);
+        if (plan == null)
+          return;
+        if (!plan.directoryMoved() && commitDownsample(plan))
+          return;
+        refuseSwapOfClosedStore();
+      }
+    } finally {
+      downsampleLock.unlock();
     }
+  }
+
+  /**
+   * The lock a caller of {@link #prepareDownsample} holds until it has committed or dropped the plan ({@code TimeSeriesShard}
+   * takes it after its compaction mutex): two plans prepared against one directory version would share the temp file.
+   */
+  ReentrantLock getDownsampleLock() {
+    return downsampleLock;
   }
 
   /**
@@ -3187,7 +3208,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * a property of the samples, which a rewrite copies along with the verdict ({@link #writeRetainedBlock}).
    * <p>
    * The temp file is the one retention and compaction write as well, so the caller serialises a pass with every other rewrite of the
-   * sealed file ({@code TimeSeriesShard.compactionMutex}), as it does a merge.
+   * sealed file ({@code TimeSeriesShard.compactionMutex}), as it does a merge, and with every other downsampling pass of this store
+   * ({@link #getDownsampleLock}), which it holds until the plan is committed or dropped.
    */
   DownsamplePlan prepareDownsample(final long cutoffTs, final long granularityMs, final long gridOffsetMs, final int tsColIdx,
       final List<Integer> tagColIndices, final List<Integer> numericColIndices) throws IOException {
@@ -3236,7 +3258,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       // damage look like data from then on. The pass fails before anything is written, and says which block.
       directoryLock.readLock().lock();
       try {
-        if (directoryVersion != version)
+        if (closed || directoryVersion != version)
           return DownsamplePlan.DIRECTORY_MOVED;
         if (!hasSamplesSharingAGroup(entry, grid, tsColIdx, tagCols)) {
           entry.markIrreducibleOn(grid);
@@ -3305,14 +3327,15 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         return false;
       }
       try {
-        commitTempFile(plan.newDirectory(), basePath + ".ts.sealed.tmp");
+        commitTempFile(plan.newDirectory(), basePath + ".ts.sealed.tmp", () -> {
+          downsampleEpoch++;
+          downsamplePeakAccumulators = plan.peakAccumulators();
+        });
       } catch (final IOException | RuntimeException e) {
         // a failed swap leaves no half-installed file for whoever rewrites next to find (issue #9770)
         deleteTempFileIfExists();
         throw e;
       }
-      downsampleEpoch++;
-      downsamplePeakAccumulators = plan.peakAccumulators();
       return true;
     } finally {
       directoryLock.writeLock().unlock();
@@ -3941,7 +3964,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       throws IOException {
     directoryLock.readLock().lock();
     try {
-      if (directoryVersion != version)
+      // a store closed since the plan was made is dropped like one that moved, rather than read through its closed channel
+      if (closed || directoryVersion != version)
         return null;
       if (validateCRC)
         validateBlockCRC(entry);
@@ -4089,13 +4113,15 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         deleteMergeTempFileIfExists();
         return false;
       }
-      commitTempFile(plan.newDirectory(), basePath + MERGE_TEMP_SUFFIX);
-      ++mergeEpoch;
-      // links before next: a walk that sees the new node must find the links of the merge that created it
-      final MergeLedger appended = new MergeLedger();
-      mergeLedger.links = plan.links();
-      mergeLedger.next = appended;
-      mergeLedger = appended;
+      // the epoch and the ledger move with the directory, even when the header write that follows the install fails
+      commitTempFile(plan.newDirectory(), basePath + MERGE_TEMP_SUFFIX, () -> {
+        ++mergeEpoch;
+        // links before next: a walk that sees the new node must find the links of the merge that created it
+        final MergeLedger appended = new MergeLedger();
+        mergeLedger.links = plan.links();
+        mergeLedger.next = appended;
+        mergeLedger = appended;
+      });
       return true;
     } finally {
       directoryLock.writeLock().unlock();
@@ -4652,6 +4678,17 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
   /** {@link #commitTempCompactionFile} for the temp file at {@code tempPath}. */
   private void commitTempFile(final List<BlockEntry> newBlockDirectory, final String tempPath) throws IOException {
+    commitTempFile(newBlockDirectory, tempPath, null);
+  }
+
+  /**
+   * @param onInstalled run under the directory write lock as soon as {@code newBlockDirectory} is the live directory, before the
+   *                    header is rewritten: what a walk in flight reads to tell a replaced block from a retired one (the epochs
+   *                    of a downsample and of a merge) must move with the directory, even when the header write that follows
+   *                    fails (issue #12610). {@code null} for nothing
+   */
+  private void commitTempFile(final List<BlockEntry> newBlockDirectory, final String tempPath, final Runnable onInstalled)
+      throws IOException {
     directoryLock.writeLock().lock();
     try {
       refuseSwapOfClosedStore();
@@ -4697,6 +4734,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         if (e.maxTimestamp > globalMaxTs)
           globalMaxTs = e.maxTimestamp;
       }
+
+      if (onInstalled != null)
+        onInstalled.run();
 
       rewriteHeader();
     } finally {

@@ -45,6 +45,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for issue #12610: a downsampling pass held the compaction WRITE lock of the shard, and the directory write lock of
@@ -65,7 +66,8 @@ class Issue12610DownsampleShortLockTest extends TestHelper {
   private static final int  BLOCKS    = 4;
   private static final int  PER_BLOCK = 120;
 
-  private static final String STORE_DIR  = "target/databases/Issue12610DownsampleShortLockTest";
+  // not the directory of the database TestHelper opens for this class, which is named after the class alone
+  private static final String STORE_DIR  = "target/databases/Issue12610DownsampleShortLockTest-store";
   private static final String STORE_PATH = STORE_DIR + "/store";
 
   /** A store of its own for the tests that drive the two halves of a pass directly: a timestamp and one GORILLA_XOR field. */
@@ -245,6 +247,117 @@ class Issue12610DownsampleShortLockTest extends TestHelper {
       assertThat(store.getDownsampleRewriteCount()).isEqualTo(1);
       assertThat(store.getTotalSampleCount()).as("every block, the one that landed during the first pass included, folded")
           .isEqualTo(4L * 6);
+    }
+  }
+
+  /** The same retry, inside one call: the first attempt is dropped, the second folds the block that landed during the first. */
+  @Test
+  void aSingleCallRetriesAPassWhoseDirectoryMovedAndFoldsWhatLanded() throws Exception {
+    new File(STORE_DIR).mkdirs();
+    try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(STORE_PATH, STORE_COLUMNS)) {
+      for (int b = 0; b < 3; b++)
+        appendBlock(store, b * MINUTE);
+
+      final AtomicInteger hookRuns = new AtomicInteger();
+      TimeSeriesSealedStore.TEST_DOWNSAMPLE_SWEEP_HOOK = () -> {
+        if (hookRuns.getAndIncrement() == 0)
+          try {
+            appendBlock(store, 3 * MINUTE);
+          } catch (final IOException e) {
+            throw new UncheckedIOException(e);
+          }
+      };
+
+      store.downsampleBlocks(Long.MAX_VALUE, 10_000L, 0L, 0, List.of(), List.of(1));
+
+      assertThat(hookRuns.get()).as("one block of the dropped attempt, then the four blocks of the live directory").isEqualTo(1 + 4);
+      assertThat(store.getDownsampleRewriteCount()).isEqualTo(1);
+      assertThat(store.getTotalSampleCount()).isEqualTo(4L * 6);
+      assertThat(new File(STORE_PATH + ".ts.sealed.tmp")).doesNotExist();
+    }
+  }
+
+  /** A store closed while a pass reads it is not read through its closed channel: the pass is dropped, and the retry refused. */
+  @Test
+  void aStoreClosedWhileThePassFoldsDropsThePassAndRefusesTheRetry() throws Exception {
+    new File(STORE_DIR).mkdirs();
+    final TimeSeriesSealedStore store = new TimeSeriesSealedStore(STORE_PATH, STORE_COLUMNS);
+    for (int b = 0; b < 3; b++)
+      appendBlock(store, b * MINUTE);
+
+    TimeSeriesSealedStore.TEST_DOWNSAMPLE_SWEEP_HOOK = () -> {
+      TimeSeriesSealedStore.TEST_DOWNSAMPLE_SWEEP_HOOK = null;
+      try {
+        store.close();
+      } catch (final IOException e) {
+        throw new UncheckedIOException(e);
+      }
+    };
+
+    assertThat(store.prepareDownsample(Long.MAX_VALUE, 10_000L, 0L, 0, List.of(), List.of(1)))
+        .isSameAs(TimeSeriesSealedStore.DownsamplePlan.DIRECTORY_MOVED);
+    assertThatThrownBy(() -> store.downsampleBlocks(Long.MAX_VALUE, 10_000L, 0L, 0, List.of(), List.of(1)))
+        .isInstanceOf(IOException.class).hasMessageContaining("closed on purpose");
+    assertThat(store.getDownsampleRewriteCount()).isZero();
+  }
+
+  /**
+   * On an HA leader every commit of the database waits for a replication session in progress, so the fold must not run inside one
+   * either: the shard opens its session only to install the file and ship it.
+   */
+  @Test
+  @Timeout(180)
+  void theFoldRunsOutsideTheReplicationSessionThatShipsTheFile() throws Exception {
+    final TimeSeriesEngine engine = engineWithSealedBlocks("ds_12610_session");
+    final LocalDatabase local = (LocalDatabase) ((DatabaseInternal) database).getEmbedded();
+    final DatabaseInternal wrapped = local.getWrappedDatabaseInstance();
+    try {
+      final AtomicInteger sessions = new AtomicInteger();
+      final AtomicInteger openSessions = new AtomicInteger();
+      final AtomicInteger shipped = new AtomicInteger();
+      local.setWrappedDatabaseInstance((DatabaseInternal) Proxy.newProxyInstance(DatabaseInternal.class.getClassLoader(),
+          new Class<?>[] { DatabaseInternal.class }, (proxy, method, args) -> {
+            if ("recordTimeSeriesSealedChange".equals(method.getName())) {
+              assertThat(openSessions.get()).as("the file is shipped inside the session").isEqualTo(1);
+              shipped.incrementAndGet();
+              return null;
+            }
+            final boolean session = "runWithCompactionReplication".equals(method.getName());
+            if (session) {
+              sessions.incrementAndGet();
+              openSessions.incrementAndGet();
+            }
+            try {
+              return method.invoke(wrapped, args);
+            } catch (final InvocationTargetException e) {
+              throw e.getCause();
+            } finally {
+              if (session)
+                openSessions.decrementAndGet();
+            }
+          }));
+
+      final AtomicInteger foldedInsideASession = new AtomicInteger();
+      final AtomicInteger folded = new AtomicInteger();
+      TimeSeriesSealedStore.TEST_DOWNSAMPLE_SWEEP_HOOK = () -> {
+        folded.incrementAndGet();
+        if (openSessions.get() > 0)
+          foldedInsideASession.incrementAndGet();
+      };
+
+      engine.applyDownsampling(List.of(new DownsamplingTier(1L, MINUTE)), Long.MAX_VALUE / 2);
+
+      assertThat(folded.get()).isEqualTo(BLOCKS);
+      assertThat(foldedInsideASession.get()).as("blocks folded while a replication session was open").isZero();
+      assertThat(sessions.get()).isEqualTo(1);
+      assertThat(shipped.get()).isEqualTo(1);
+
+      // a pass with nothing to fold opens no session at all
+      engine.applyDownsampling(List.of(new DownsamplingTier(1L, MINUTE)), Long.MAX_VALUE / 2);
+      assertThat(sessions.get()).isEqualTo(1);
+    } finally {
+      local.setWrappedDatabaseInstance(wrapped);
+      engine.close();
     }
   }
 

@@ -114,9 +114,9 @@ public class TimeSeriesShard implements AutoCloseable {
   // two of them overlapping corrupt each other's temp file or silently undo each other's result (a retention pass inside a
   // compaction's window put the retired blocks back). compactionLock is NOT this lock: compaction deliberately does not hold
   // it for the long part of its work. Lock order: compactionMutex first, then compactionLock.
-  // The HA replication session (runWithCompactionReplication) is not a lock in this order: compact() and mergeSmallBlocks() take
-  // the mutex and then open the session, retention, delete and downsampling open one session for all shards and take each shard's
-  // mutex inside it. That cannot invert into a deadlock because opening a session never waits: FileManager.startRecordingChanges()
+  // The HA replication session (runWithCompactionReplication) is not a lock in this order: compact(), mergeSmallBlocks() and
+  // downsample() take the mutex and then open the session, retention and delete open one session for all shards and take each
+  // shard's mutex inside it. That cannot invert into a deadlock because opening a session never waits: FileManager.startRecordingChanges()
   // answers false when one is already active and the wrapper then returns false without running the work (a deferred pass). A
   // thread holding a session and waiting for the mutex is waited for by nobody who holds the mutex and wants a session.
   // runSealedRewrite() and downsample() must not be called while holding compactionLock (a read lock cannot be upgraded); their
@@ -1284,44 +1284,72 @@ public class TimeSeriesShard implements AutoCloseable {
 
   /**
    * Downsamples the sealed blocks of this shard older than {@code cutoffTs} to {@code granularityMs} on the grid shifted by
-   * {@code gridOffsetMs} ({@link TimeSeriesSealedStore#downsampleBlocks}), and records the rewritten file for the replication
-   * session the caller opened. Answers whether the sealed file was rewritten.
+   * {@code gridOffsetMs} ({@link TimeSeriesSealedStore#downsampleBlocks}), and ships the rewritten file in a replication session of
+   * its own. Answers whether the sealed file was rewritten. Does nothing on a follower, which receives the leader's file.
    * <p>
    * Shaped like the merge of small blocks, not like {@link #runSealedRewrite} (issue #12610): the selection, the decoding and
    * folding of the history and the writing of the temp file ({@link TimeSeriesSealedStore#prepareDownsample}) hold no lock a query
-   * or an append waits for, and the compaction write lock is held only to install the file and to capture it for the replication,
-   * as long as a compaction's swap. Before, the whole pass ran under that lock, so on a type with a long history the first pass
-   * after a tier was added kept every query and every append of the shard waiting for as long as it took to decode and re-encode
-   * that history.
+   * or an append of the shard waits for, and run before the replication session is opened, which on a leader every commit of the
+   * database waits for. The session and the compaction write lock are held only to install the file and to capture it for the
+   * replication, as long as a compaction's swap. Before, the whole pass ran under both, so on a type with a long history the first
+   * pass after a tier was added kept every query and every append of the shard waiting for as long as it took to decode and
+   * re-encode that history.
    * <p>
    * The {@link #compactionMutex} is held for the whole pass, which keeps it apart from a compaction, a merge, a retention pass, a
    * delete and a rename (issue #9771), as before: they write the same temp file or install a directory planned against a snapshot.
-   * What can still move the directory between the prepare and the commit is an install of a file shipped by another node, which
-   * takes only the directory lock of the store (a node that was the leader when the pass started); the commit then finds the
-   * directory changed and drops the pass, and the next maintenance tick downsamples the store as it is.
+   * The lock order is the one a compaction and a merge follow: the mutex, then the session. What can still move the directory between
+   * the prepare and the commit is an install of a file shipped by another node, which takes only the directory lock of the store (a
+   * node that was the leader when the pass started); the commit then finds the directory changed and drops the pass. A pass that is
+   * dropped, or whose session is deferred (another one is in progress, or this node is no longer the leader), deletes its temp file,
+   * and the next maintenance tick downsamples the store as it is.
    */
   boolean downsample(final long cutoffTs, final long granularityMs, final long gridOffsetMs, final int tsColIdx,
       final List<Integer> tagColIndices, final List<Integer> numericColIndices) throws IOException {
     refuseRewriteUnderCompactionReadLock();
+    // the session below would skip the commit on a follower anyway: this spares it the fold of the history
+    if (database.isFollower())
+      return false;
+
+    final DatabaseInternal db = database.getWrappedDatabaseInstance();
     compactionMutex.lock();
     try {
-      final TimeSeriesSealedStore.DownsamplePlan plan = sealedStore.prepareDownsample(cutoffTs, granularityMs, gridOffsetMs, tsColIdx,
-          tagColIndices, numericColIndices);
-      if (plan == null || plan.directoryMoved())
-        return false;
-
-      final DatabaseInternal db = database.getWrappedDatabaseInstance();
-      // As retention and the merge do: the local swap lands first and the replication record follows it, so a failure between the
-      // two is repaired by the next sealed change shipped for this shard. Only a pass that rewrote the file ships it: a downsample
-      // only rewrites blocks that hold two samples of one (tag values, bucket), so a steady-state pass ships nothing (issue #11984)
-      compactionLock.writeLock().lock();
+      final ReentrantLock downsampleLock = sealedStore.getDownsampleLock();
+      downsampleLock.lock();
       try {
-        if (!sealedStore.commitDownsample(plan))
+        final TimeSeriesSealedStore.DownsamplePlan plan = sealedStore.prepareDownsample(cutoffTs, granularityMs, gridOffsetMs,
+            tsColIdx, tagColIndices, numericColIndices);
+        if (plan == null || plan.directoryMoved())
           return false;
-        db.recordTimeSeriesSealedChange(typeName, shardIndex, sealedStore.getSealedFileName(), sealedStore.readWholeSealedFile());
-        return true;
+
+        final boolean[] installed = new boolean[1];
+        try {
+          db.runWithCompactionReplication(() -> {
+            // As retention and the merge do: the local swap lands first and the replication record follows it, so a failure between
+            // the two is repaired by the next sealed change shipped for this shard. Only a pass that rewrote the file ships it: a
+            // downsample only rewrites blocks that hold two samples of one (tag values, bucket), so a steady-state pass, which finds
+            // nothing to fold, never opens a session at all (issue #11984)
+            compactionLock.writeLock().lock();
+            try {
+              if (!sealedStore.commitDownsample(plan))
+                return false;
+              installed[0] = true;
+              db.recordTimeSeriesSealedChange(typeName, shardIndex, sealedStore.getSealedFileName(), sealedStore.readWholeSealedFile());
+              return true;
+            } finally {
+              compactionLock.writeLock().unlock();
+            }
+          });
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+          throw new IOException("Downsampling interrupted for shard " + shardIndex, e);
+        } finally {
+          // a session that never ran the commit, or a commit that failed before the swap, leaves no temp file behind (issue #9770)
+          if (!installed[0])
+            sealedStore.deleteTempFileIfExists();
+        }
+        return installed[0];
       } finally {
-        compactionLock.writeLock().unlock();
+        downsampleLock.unlock();
       }
     } finally {
       compactionMutex.unlock();
