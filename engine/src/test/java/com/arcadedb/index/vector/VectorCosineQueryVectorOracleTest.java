@@ -57,8 +57,13 @@ class VectorCosineQueryVectorOracleTest extends TestHelper {
     Arrays.fill(tiny, 1e-30f);
     final float[] huge = new float[DIMENSIONS];
     Arrays.fill(huge, 1e30f);
+    // finite and nonzero squared norms (8 * 2^-68 and 8 * 2^62) just outside the range 2^-63 .. 2^63
+    final float[] justBelow = new float[DIMENSIONS];
+    Arrays.fill(justBelow, 0x1p-34f);
+    final float[] justAbove = new float[DIMENSIONS];
+    Arrays.fill(justAbove, 0x1p31f);
 
-    for (final float[] query : List.of(tiny, huge))
+    for (final float[] query : List.of(tiny, huge, justBelow, justAbove))
       assertThatThrownBy(() -> index.findNeighborsFromVector(query, 5)).isInstanceOf(IllegalArgumentException.class)
           .hasMessageContaining("outside the range COSINE similarity can score").hasMessageNotContaining("zero vector");
   }
@@ -70,9 +75,13 @@ class VectorCosineQueryVectorOracleTest extends TestHelper {
     Arrays.fill(small, 1e-9f);
     final float[] large = new float[DIMENSIONS];
     Arrays.fill(large, 1e9f);
+    // the bounds themselves are inside: 8 * 2^-66 = 2^-63 and 8 * 2^60 = 2^63
+    final float[] lowerBound = new float[DIMENSIONS];
+    Arrays.fill(lowerBound, 0x1p-33f);
+    final float[] upperBound = new float[DIMENSIONS];
+    Arrays.fill(upperBound, 0x1p30f);
 
-    // the bounds are 2^-63 and 2^63 of the squared norm: 8e-18 and 8e18 are inside them
-    for (final float[] query : List.of(small, large))
+    for (final float[] query : List.of(small, large, lowerBound, upperBound))
       assertThat(index.findNeighborsFromVector(query, 5)).hasSize(5);
   }
 

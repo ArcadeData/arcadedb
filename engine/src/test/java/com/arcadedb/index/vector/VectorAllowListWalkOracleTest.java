@@ -66,6 +66,8 @@ class VectorAllowListWalkOracleTest extends TestHelper {
     final float share = database.getConfiguration().getValueAsFloat(GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY);
 
     final Random random = new Random(77);
+    final long scansBefore = index.getStats().get("bruteForceScans");
+    final long plansBefore = index.getStats().get("preFilterSearches");
     int walked = 0;
     for (int round = 0; round < 200; round++) {
       final int size = (int) (ROWS * Math.min(0.95f, share + 0.05f + random.nextFloat() * 0.5f));
@@ -85,6 +87,9 @@ class VectorAllowListWalkOracleTest extends TestHelper {
         walked++;
     }
     assertThat(walked).as("rounds whose list is wider than the pre-filter share").isEqualTo(200);
+    // the answers came from the walk itself: neither the pre-filter plan nor the completion scan of a short walk ran
+    assertThat(index.getStats().get("preFilterSearches")).as("pre-filter plans").isEqualTo(plansBefore);
+    assertThat(index.getStats().get("bruteForceScans")).as("completion scans").isEqualTo(scansBefore);
   }
 
   private LSMVectorIndex fill() {
