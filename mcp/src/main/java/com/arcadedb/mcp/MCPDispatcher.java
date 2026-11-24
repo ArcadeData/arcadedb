@@ -63,6 +63,8 @@ public class MCPDispatcher {
   public static final  String    MCP_PROTOCOL_VERSION = "2025-03-26";
   /** The wire this surface is in {@link ProtocolContext}, in {@code list queries} and in the per-protocol metrics. */
   static final         String    MCP_PROTOCOL         = "mcp";
+  /** What a reply says about a value nested too deeply to be written out: the call fails, the transport goes on serving. */
+  static final         String    NESTING_TOO_DEEP_MESSAGE = "the value is nested too deeply to be processed";
   private static final JSONArray TOOLS_LIST;
   // Package-private, not private: MCPPromptsTest asserts that every tool a prompt's text names is a tool
   // this server actually registers, which is what makes a rename or a removal fail a test instead of
@@ -273,6 +275,10 @@ public class MCPDispatcher {
         case "ping" -> result(id, new JSONObject());
         default -> error(id, -32601, "Method not found: " + method, 200);
       };
+    } catch (final StackOverflowError e) {
+      // The last guard of every method: a message that cannot be processed is answered, and the transport goes on serving
+      LogManager.instance().log(this, Level.WARNING, "MCP[%s] %s -> error: %s", transport, method, NESTING_TOO_DEEP_MESSAGE);
+      return error(id, -32603, "Internal error: " + NESTING_TOO_DEEP_MESSAGE, 200);
     } finally {
       // A tool or resource read binds the authenticated principal onto this thread's DatabaseContext (so the engine
       // permission gates enforce, see MCPToolUtils.bindCurrentUser / GHSA-6x73-v3rc-f57c). This transport runs on a
@@ -506,6 +512,10 @@ public class MCPDispatcher {
       return toolError(id, ErrorConcealment.describe(e));
     } catch (final Exception e) {
       return toolError(id, failureMessage("tools/call '" + toolName + "'", e));
+    } catch (final StackOverflowError e) {
+      // A reply that cannot be written out: the call fails like any other, and the transport goes on serving
+      LogManager.instance().log(this, Level.WARNING, "MCP[%s] tools/call '%s' -> error: %s", transport, toolName, NESTING_TOO_DEEP_MESSAGE);
+      return toolError(id, NESTING_TOO_DEEP_MESSAGE);
     }
   }
 
