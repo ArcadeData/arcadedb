@@ -819,6 +819,9 @@ public enum Type {
 
     try {
       if (targetClass.equals(String.class)) {
+        // A value read from text whose type the client left unspecified is that text as a STRING (issue #12711)
+        if (value instanceof SourceText source)
+          return source.sourceText();
         // An array's toString() is its class code and identity hash ("[B@72e34f77"): not the content, not stable, and not
         // reversible. Refuse it rather than store that (issue #9041), except the two arrays an HTTP request leaves in a value
         // (see unwrapNestedPrimitiveArrays): a list nested in a map parameter arrives as a long[] / double[] and is stored as
