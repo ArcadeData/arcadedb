@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -80,7 +81,7 @@ class Issue12794RemoveListFromItselfTest extends TestHelper {
   }
 
   private List<Object> removeAndRead(final String tags, final String right) {
-    final List<Object>[] result = new List[1];
+    final AtomicReference<List<Object>> result = new AtomicReference<>();
     database.transaction(() -> {
       database.command("sql", "DELETE FROM D");
       database.command("sql", "INSERT INTO D SET id = 0, tags = " + tags);
@@ -88,9 +89,9 @@ class Issue12794RemoveListFromItselfTest extends TestHelper {
         assertThat(rs.next().<Long>getProperty("count")).isEqualTo(1L);
       }
       try (final ResultSet rs = database.query("sql", "SELECT tags FROM D WHERE id = 0")) {
-        result[0] = rs.next().getProperty("tags");
+        result.set(rs.next().getProperty("tags"));
       }
     });
-    return result[0];
+    return result.get();
   }
 }
