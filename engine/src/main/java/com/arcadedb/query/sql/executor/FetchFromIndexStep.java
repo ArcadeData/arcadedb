@@ -981,7 +981,8 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     if (keyTypes == null)
       return true;
     final int rangeSlot = isRangeCondition() ? rangeKeySize - 1 : -1;
-    boolean noLowerBound = false, noUpperBound = false;
+    boolean noLowerBound = false;
+    boolean noUpperBound = false;
     for (int side = 0; side < 2; side++) {
       final Object[] key = seek[side];
       if (key == null)
@@ -1004,7 +1005,8 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     if (!noLowerBound && !noUpperBound)
       return true;
 
-    final Object[] from = seek[0], to = seek[1];
+    final Object[] from = seek[0];
+    final Object[] to = seek[1];
     // The keys before the range slot, which both sides share
     final Object[] prefix = Arrays.copyOf(from != null && from.length >= rangeSlot ? from : to, rangeSlot);
     final boolean fromHasRangeSlot = !noLowerBound && from != null && from.length > rangeSlot;
