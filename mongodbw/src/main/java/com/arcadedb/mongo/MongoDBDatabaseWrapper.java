@@ -731,6 +731,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       // value to one key type, so 1 and "1" would be one key. The documents already stored get their keys first, under the
       // collection's exclusive lock so no write of the plugin goes in between
       final String property = MongoKeys.propertyOf(propertyNames);
+      // before the exclusive lock is asked for: building an index is a schema change, as it is for the other indexes
+      ((DatabaseInternal) database).checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
       final Lock lock = MongoDBCollectionWrapper.idIndexLock(database, collectionName).writeLock();
       lock.lock();
       try {
@@ -1208,6 +1210,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
     int n = 0;
     if (database.getSchema().existsType(collectionName) && deletes != null) {
+      // before the lock of the unique indexes is taken and before any record is read
+      MongoDBCollectionWrapper.checkAccess(database, collectionName, SecurityDatabaseUser.ACCESS.DELETE_RECORD);
       final Lock indexLock = MongoDBCollectionWrapper.idIndexLock(database, collectionName).readLock();
       indexLock.lock();
       // the command's OWN transaction: a failure rolls back this one, never one the caller holds (issue #9977)
@@ -1349,6 +1353,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
           new MongoFilter(database, (Document) upd.get("q"), budget);
         throw MongoTimeSeriesWrites.updateRefusal(timeSeries);
       }
+      // before the lock of the unique indexes is taken and before any record is read
+      MongoDBCollectionWrapper.checkAccess(database, collectionName, SecurityDatabaseUser.ACCESS.UPDATE_RECORD);
       // a schema change cannot happen inside the transaction: an upsert creates the collection with its _id index up front
       prepareUpsertIdIndex(collectionName, updates);
 
@@ -1526,6 +1532,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     for (final Document upd : updates)
       if (Utils.isTrue(upd.get("upsert"))) {
         database.getSchema().getOrCreateDocumentType(collectionName);
+        // an upsert inserts: asked before the _id index is built under the exclusive lock
+        MongoDBCollectionWrapper.checkAccess(database, collectionName, SecurityDatabaseUser.ACCESS.CREATE_RECORD);
         if (!MongoDBCollectionWrapper.idIndexReady(database, collectionName))
           MongoDBCollectionWrapper.ensureIdIndexLocked(database, collectionName);
         return;
