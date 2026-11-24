@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.DeferredExistenceChecks;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
@@ -466,20 +467,28 @@ public class SubqueryStep extends AbstractExecutionStep {
               tx.collectWrittenRecordIds(committedWrites);
             }
           }
+          // A record the batch left without a MANDATORY property must not be committed with it: checked here, where a violation is a
+          // failure of this batch that ON ERROR governs, and not only at the end of the statement, when the batch has long committed
+          // and the record can no longer be taken back (issue #13221)
+          DeferredExistenceChecks.checkBeforeCommit(database);
           commitBatch();
         } catch (final TimeoutException e) {
           // The statement's deadline ends it whatever ON ERROR says
           database.rollbackAllNested();
+          DeferredExistenceChecks.rolledBack(database);
           throw e;
         } catch (final Exception e) {
           if (onError == SubqueryClause.OnError.FAIL) {
             database.rollbackAllNested();
+            DeferredExistenceChecks.rolledBack(database);
             throw e;
           }
           // ON ERROR CONTINUE or BREAK (issue #11595): only the batch's own transaction is undone, never the caller's. A failed
           // commit has already ended it
           if (database.getNestedTransactions() > nesting || !callerTransaction && database.isTransactionActive())
             database.rollback();
+          // What the batch left provisional went with it
+          DeferredExistenceChecks.rolledBack(database);
           if (labelReplacements != null)
             LabelReplacements.of(context).restore(labelReplacements);
           if (onError == SubqueryClause.OnError.BREAK)
@@ -552,8 +561,8 @@ public class SubqueryStep extends AbstractExecutionStep {
    * the HTTP, gRPC and MCP auto-commit wrappers, {@code Database.transaction()} and the asynchronous executor do not replay a request
    * whose writes before the CALL are durable, the conflict reaches the caller instead (issue #13223).
    * <p>
-   * Known gap, tracked on its own: a record the prefix left provisional under a deferred existence check is committed here, so
-   * the check at the end of the statement cannot remove it although its message says so (#13221).
+   * The existence constraints deferred for the records written before the CALL are enforced before this commit, as at any commit
+   * point of the statement (issue #13221): an incomplete record fails the statement and is not committed.
    *
    * @return the set of the records the outer rows produced before must re-read, with what this commit wrote added to it
    */
@@ -567,6 +576,10 @@ public class SubqueryStep extends AbstractExecutionStep {
     // The copies the outer rows produced so far hold are a version behind once this commits
     final RidHashSet written = committedWrites != null ? committedWrites : new RidHashSet();
     tx.collectWrittenRecordIds(written);
+
+    // A record written before the CALL and still incomplete fails the statement here, before it is committed: the check at the
+    // end of the statement could not take it back any more (issue #13221)
+    DeferredExistenceChecks.checkBeforeCommit(database);
 
     final Database.TRANSACTION_ISOLATION_LEVEL isolationLevel = tx.getIsolationLevel();
     database.commit();

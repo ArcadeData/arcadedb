@@ -896,10 +896,6 @@ public class BoltNetworkExecutor extends Thread {
     resolveRequestDatabase(db);
 
     final String query = message.getQuery();
-    final Map<String, Object> params = message.getParameters();
-
-    if (debug)
-      LogManager.instance().log(this, Level.FINE, "BOLT executing: %s with params %s (db=%s)", query, params, databaseName);
 
     final BoltQueryStream stream = new BoltQueryStream(nextQid);
 
@@ -910,6 +906,13 @@ public class BoltNetworkExecutor extends Thread {
     // connection's GQL session to the thread context, which the engine reads for SESSION statements.
     if (!ensureDatabase())
       return;
+
+    // The first read of the parameters turns them into the values the engine binds: only a RUN that every check above let
+    // through pays for it. It comes before the time budget below is taken, so the conversion is part of what the budget spent
+    final Map<String, Object> params = message.getParameters();
+
+    if (debug)
+      LogManager.instance().log(this, Level.FINE, "BOLT executing: %s with params %s (db=%s)", query, params, databaseName);
 
     // The time this statement may run (issue #11392): what is left of the explicit transaction's timeout, or the auto-commit
     // query's own tx_timeout. A transaction already past its timeout runs nothing more
