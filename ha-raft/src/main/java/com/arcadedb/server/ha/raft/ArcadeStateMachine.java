@@ -4127,7 +4127,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
   // DropDatabaseApplier holds the implementation of these; they stay here for the callers outside this class.
 
-  /** For the tests that drive the drop outside the log: with no index of its own, a failed drop has no entry to hold. */
+  /**
+   * For the tests that drive the drop outside the log: with no index of its own, a failed drop has no entry to hold. The
+   * hold it registers at {@link RaftLog#INVALID_LOG_INDEX} is below every install boundary, so {@link #lowestHeldEntry()}
+   * drops it and no checkpoint is lowered by it.
+   */
   // @VisibleForTesting
   void applyDropDatabaseEntry(final RaftLogEntryCodec.DecodedEntry decoded) {
     dropEntries.applyDropDatabaseEntry(decoded, RaftLog.INVALID_LOG_INDEX);

@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.MaintenanceCoordinator.Operation;
+import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.CallLog;
@@ -514,7 +515,8 @@ class DropDatabaseApplyTest {
       assertThat(sm.isDatabaseDiverged(DB_NAME)).as("not quarantined: the leader has no copy to resync it from").isFalse();
       assertThat(server.existsDatabase(DB_NAME)).isFalse();
       assertThat(server.isDatabaseHeld(DB_NAME)).as("closed, so no request reopens the copy the cluster dropped").isTrue();
-      assertThatThrownBy(() -> server.getDatabaseForRequest(DB_NAME)).as("a request does not reopen it").isNotNull();
+      assertThatThrownBy(() -> server.getDatabaseForRequest(DB_NAME)).as("a request does not reopen it")
+          .isInstanceOf(DatabaseNotAvailableException.class).hasMessageContaining(DB_NAME);
       assertThat(server.existsDatabase(DB_NAME)).isFalse();
       assertThat(coordinator().isInProgress(DB_NAME)).as("the apply must release the slot it took").isFalse();
 
