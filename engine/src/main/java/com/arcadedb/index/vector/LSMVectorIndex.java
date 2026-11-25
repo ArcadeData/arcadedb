@@ -135,6 +135,7 @@ import java.util.TimerTask;
 import java.util.WeakHashMap;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.ForkJoinTask;
@@ -577,6 +578,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private volatile Runnable afterPagesParsedForTest;
   // Run by a storeVectorsInGraph build between publishing the on-heap graph and swapping in the on-disk one (issue #12380)
   private volatile Runnable beforeOnDiskGraphSwapForTest;
+  // Run by the load of a persisted graph between its "nothing was deleted" check and the walk that derives the ordinal map, so a
+  // test can commit a re-embed in between (issue #13343)
+  private volatile Runnable beforeOrdinalWalkForTest;
+  // Run by the same load right after that walk, before the publish, so a test can undo what it did before the walk (issue #13343)
+  private volatile Runnable afterOrdinalWalkForTest;
 
   /**
    * The most records {@link #removedDuringRebuild} holds. A rebuild that outlives more removals than this stops recording them and
@@ -603,6 +609,29 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * heap. Not derivable from the buffer size, which counts entries whose payload was declined too.
    */
   private final AtomicInteger deltaResidentPayloads = new AtomicInteger();
+
+  /**
+   * The replicated entries being applied on this node that carry pages of this index (issue #13369): from before the first page
+   * of the entry is written until the last one is published, see {@link #hasReplicatedApplyInFlight()}.
+   */
+  private final AtomicInteger replicatedAppliesInFlight = new AtomicInteger();
+
+  /**
+   * The records whose vector a commit replay put in this index and whose transaction has not concluded yet (issue #13323), with
+   * how many such replays put one: the vector is in the index, the record pages are published only once the replay concludes. A
+   * RID is added before its vector becomes visible ({@link VectorIndexReplayUndo#recordPut}) and removed after the pages are
+   * published, or after a rollback took the vector back ({@link #putsConcluded}). Per record, not per index: a search hands every
+   * other row on without reading it, however many commits are in flight (issue #10973). Empty whenever no commit is in flight, so
+   * a search asks an empty map. A replay tracks at most {@link VectorIndexReplayUndo#MAX_TRACKED_PUTS} records here, see
+   * {@link #bulkPutsInFlight}.
+   */
+  private final ConcurrentHashMap<RID, Integer> putsInFlight = new ConcurrentHashMap<>();
+
+  /**
+   * The replays in flight that put more records than they track one by one (a bulk load): while one is, every record of the index
+   * counts as put by a commit in flight, so the map above stays bounded whatever the size of a transaction (issue #13323).
+   */
+  private final AtomicInteger bulkPutsInFlight = new AtomicInteger();
 
   /**
    * The ids a replicated page mentions, collected by {@link #applyReplicatedPageUpdate(MutablePage, boolean)} to judge
@@ -2356,7 +2385,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // arity. The recording cannot answer that question, so replacing the walk with it wholesale would trade a
     // check this index has always made for a faster reopen. Deletions are the case where the walk's answer is
     // WRONG rather than merely slower, and that is the case taken here.
-    if (vectorIndex().getDeletedCount() > 0) {
+    //
+    // ISSUE #13343: the generation is read BEFORE the deleted count, and both before the walk below, which runs without the
+    // index lock. Compared again under the publish lock, it is what proves that no id left the live set while the walk
+    // derived the ordinal map - which the deleted count alone cannot, since a replay that tombstones an id and is undone
+    // brings it back to zero.
+    final VectorLocationIndex locationsBeforeWalk = vectorIndex();
+    final long removalGenerationBeforeWalk = locationsBeforeWalk.getRemovalGeneration();
+    if (locationsBeforeWalk.getDeletedCount() > 0) {
       final PersistedGraphCheck viaOrdinalMap = reusePersistedGraphDespiteDeletions(gf, false);
       if (viaOrdinalMap != null)
         return viaOrdinalMap;
@@ -2381,6 +2417,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
     final PersistedGraphCheck viaOrdinalMap = reusePersistedGraphDespiteDeletions(gf, true);
     if (viaOrdinalMap != null)
       return viaOrdinalMap;
+
+    final Runnable beforeOrdinalWalk = beforeOrdinalWalkForTest;
+    if (beforeOrdinalWalk != null)
+      beforeOrdinalWalk.run();
 
     try {
       final var loadedGraph = gf.loadGraph();
@@ -2433,6 +2473,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
           }
         }
       }).sorted().toArray();
+
+      final Runnable afterOrdinalWalk = afterOrdinalWalkForTest;
+      if (afterOrdinalWalk != null)
+        afterOrdinalWalk.run();
 
       final int graphSize = loadedGraph != null ? loadedGraph.size() : 0;
       LogManager.instance().log(this, Level.INFO,
@@ -2566,6 +2610,25 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final int queuedUnreachable;
       lock.writeLock().lock();
       try {
+        // ISSUE #13343: the walk above ran without this lock, and the only guard against a tombstone sliding the ordinals down - the
+        // deleted count read at the top of this method - was read before it. A re-embed (a tombstone for the old id and a new id, so
+        // the count does not move) that landed in between leaves an array that lost that id and gained the new one at its end: the
+        // length of the graph, with every ordinal after the removed id paired with the id of the next record. Asked again here,
+        // where no writer can move it. A location index replaced meanwhile (a compaction, issue #5568) is another generation of ids
+        // altogether. A graph with a manifest is judged by the fingerprint above, which covers the ids of the walked array, so a
+        // shifted array cannot pass it. A graph without one has nothing else to stand on: it is rebuilt when any id left the live
+        // set or came back into it since the deleted count was read. The removal generation, not the deleted count, because a
+        // replicated re-embed whose transaction aborted after the walk is undone by forgetting the new id and lifting the old
+        // tombstone, which brings the count back to zero on the same instance while the walked array still holds the shift.
+        final boolean renumbered = validationLocations != vectorIndex();
+        final boolean removedDuringWalk = !renumbered && persistedManifest == null && (validationLocations != locationsBeforeWalk
+            || validationLocations.getRemovalGeneration() != removalGenerationBeforeWalk);
+        if (renumbered || removedDuringWalk) {
+          LogManager.instance().log(this, Level.INFO,
+              "Persisted graph is not usable for index %s: %s while its ordinal map was being derived - rebuilding from scratch "
+                  + "(issue #13343)", indexName, renumbered ? "the vector ids were renumbered" : "a vector left the live set");
+          return PersistedGraphCheck.UNUSABLE;
+        }
         // In the same lock as the graph, so no search walks the new graph through codes built for another one, and the
         // codes that were built for it are bound to its map in the same step (issue #10786)
         if (pqMismatch != null)
@@ -11919,6 +11982,66 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * Whether a replicated entry that carries pages of this index is being applied on this node (issue #13369): the entry's pages reach
+   * the read cache one by one and the index learns of each vector page as it is applied, so a vector it answers can be of a record
+   * whose page the entry has not written yet (an insert), or already removed (a delete). Only reading the record tells that from a
+   * record that is there, so a caller that hands a search result on without reading its record (issue #10973) reads it while this
+   * holds. An entry that concluded published all its pages first.
+   */
+  public boolean hasReplicatedApplyInFlight() {
+    return replicatedAppliesInFlight.get() > 0;
+  }
+
+  /**
+   * Marks the start of the apply of a replicated entry that carries pages of this index, before its first page is written. Every
+   * call must be paired with one {@link #replicatedApplyConcluded()} in a finally: a mark left open keeps
+   * {@link #hasReplicatedApplyInFlight()} true for the life of the process.
+   */
+  public void replicatedApplyStarted() {
+    replicatedAppliesInFlight.incrementAndGet();
+  }
+
+  /**
+   * Ends the mark of {@link #replicatedApplyStarted()}, once the last page of the entry is published or the apply failed. Called from
+   * the finally that pairs it with the start.
+   */
+  public void replicatedApplyConcluded() {
+    replicatedAppliesInFlight.decrementAndGet();
+  }
+
+  /**
+   * Whether a commit that has not concluded yet put the vector of {@code rid} in this index (issue #13323): the vector is answered
+   * by a search, the record page is published only once that commit concludes, so the record may not be readable yet. A caller
+   * that hands a search result on without reading its record (issue #10973) reads this one now, and drops it when the read finds
+   * nothing. Ask it before {@link #hasLiveVector}: a "no" here means the commit has concluded, with its pages published or its
+   * vector taken back, so a vector that is still live is of a record that can be read.
+   */
+  public boolean isPutByCommitInFlight(final RID rid) {
+    return bulkPutsInFlight.get() > 0 || putsInFlight.containsKey(rid);
+  }
+
+  /** Marks {@code rid} as put by a commit in flight, before its vector becomes visible. See {@link #isPutByCommitInFlight}. */
+  void putInFlight(final RID rid) {
+    putsInFlight.merge(rid, 1, Integer::sum);
+  }
+
+  /** Marks every record as put by a commit in flight, for a replay that puts more records than it tracks. */
+  void bulkPutInFlight() {
+    bulkPutsInFlight.incrementAndGet();
+  }
+
+  /**
+   * Ends the in-flight marks of one journal, once: the first {@code count} RIDs of {@code rids}, and the index-wide mark when
+   * {@code bulk}. After the publication or the rollback.
+   */
+  void putsConcluded(final RID[] rids, final int count, final boolean bulk) {
+    for (int i = 0; i < count; i++)
+      putsInFlight.computeIfPresent(rids[i], (rid, replays) -> replays > 1 ? replays - 1 : null);
+    if (bulk)
+      bulkPutsInFlight.decrementAndGet();
+  }
+
+  /**
    * The delta buffer as the calling transaction sees it: the volatile snapshot when there is no overlay, and the
    * snapshot with this transaction's superseded rows dropped and its pending rows appended when there is one.
    * The result is read-only to the caller - see {@code TransactionVectorOverlay.augment}.
@@ -12150,8 +12273,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
           final int id = allocateVectorId();
           // Recorded as soon as the id is minted, not after the writes below succeed: forgetting an id that never
           // reached the location index is a no-op, while missing one that did is the leak this exists to close.
-          if (undo != null)
+          if (undo != null) {
             undo.recordAllocated(id);
+            // Before the vector is visible: a search that finds it finds it marked (issue #13323)
+            undo.recordPut(rid);
+          }
 
           // Persist vector to page (will be added to vectorIndex inside persistVectorWithLocation)
           persistVectorWithLocation(id, rid, vector);
@@ -12747,8 +12873,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
       }
 
       final int id = allocateVectorId();
-      if (undo != null)
+      if (undo != null) {
         undo.recordAllocated(id);
+        // Before the vector is visible: a search that finds it finds it marked (issue #13323)
+        undo.recordPut(rid);
+      }
 
       persistVectorWithLocation(id, rid, vector);
 
@@ -14800,6 +14929,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   void setAfterLiveSetReadForTest(final Runnable hook) {
     afterLiveSetReadForTest = hook;
+  }
+
+  void setBeforeOrdinalWalkForTest(final Runnable hook) {
+    beforeOrdinalWalkForTest = hook;
+  }
+
+  void setAfterOrdinalWalkForTest(final Runnable hook) {
+    afterOrdinalWalkForTest = hook;
   }
 
   void setAfterPagesParsedForTest(final Runnable hook) {

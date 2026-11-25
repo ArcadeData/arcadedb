@@ -299,7 +299,9 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
               }
 
               lastResult = prevResults.next();
-              final Object sourceObj = lastResult.getProperty(sourceVariable);
+              // A target an earlier OPTIONAL MATCH left null is bound, and a null vertex cannot be reached: the row has no
+              // source for this hop (#12728)
+              final Object sourceObj = isNullBoundTarget(lastResult) ? null : lastResult.getProperty(sourceVariable);
 
               // Resolve source: accept both GAVVertex and Vertex
               int sourceNodeId = -1;
@@ -818,6 +820,15 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
       return null;
     final Object boundValue = lastResult.getProperty(targetVariable);
     return boundValue instanceof Vertex boundVertex ? boundVertex.getIdentity() : null;
+  }
+
+  /**
+   * Whether the target variable is bound by an earlier clause to null, as an OPTIONAL MATCH that found nothing leaves it. The plan-time
+   * name set also holds the names this MATCH is about to bind, so the row must hold the name, with no vertex, for it to count.
+   */
+  private boolean isNullBoundTarget(final Result lastResult) {
+    return boundVariableNames != null && boundVariableNames.contains(targetVariable) && lastResult.getProperty(targetVariable) == null
+        && lastResult.hasProperty(targetVariable);
   }
 
   /**

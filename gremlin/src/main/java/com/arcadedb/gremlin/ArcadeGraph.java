@@ -104,14 +104,15 @@ public class ArcadeGraph implements Graph, Closeable {
   private              ImportGremlinPlugin.Builder importPlugin;
 
   static {
-    // ArcadeTraversalStrategies, NOT A PLAIN CLONE: IT KEEPS THE io() PERMISSION STRATEGY AND THE ROW CAP OF THE USER'S
-    // resultSetLimit OUT OF THE CALLER'S REACH
+    // ArcadeTraversalStrategies, NOT A PLAIN CLONE: IT KEEPS THE io() PERMISSION STRATEGY, THE ROW CAP OF THE USER'S
+    // resultSetLimit AND THE TIME LIMIT OF THE REGULAR EXPRESSIONS OUT OF THE CALLER'S REACH
     // (withoutStrategies() IS A SOURCE INSTRUCTION ANY REQUEST CAN CARRY)
     TraversalStrategies.GlobalCache.registerStrategies(ArcadeGraph.class,
         new ArcadeTraversalStrategies(TraversalStrategies.GlobalCache.getStrategies(Graph.class))//
             .addStrategies(//
                 ArcadeIoRegistrationStrategy.instance(),//
                 ArcadeResultSetLimitStrategy.instance(),//
+                ArcadeRegexStrategy.instance(),//
                 new ArcadeTraversalStrategy())//
     );
   }

@@ -735,6 +735,54 @@ class RecordSerializationTest {
           .containsEntry("map", String.valueOf(Type.MAP.getId())).containsEntry("vertices", String.valueOf(Type.LIST.getId()));
     }
 
+    /**
+     * Regression for #12598: a LIST or MAP the schema declares with no element type says nothing of its items, so its links
+     * need the hint an undeclared property gets. One declared with its element type reads back through the schema.
+     */
+    @Test
+    void aBareDeclaredListOrMapOfLinksGetsTheLinkHint() {
+      final DocumentType rec = database.getSchema().getType("Rec");
+      rec.createProperty("friends", Type.LIST);
+      rec.createProperty("byName", Type.MAP);
+      rec.createProperty("typedFriends", Type.LIST, "LINK");
+      rec.createProperty("typedByName", Type.MAP, "LINK");
+
+      final MutableDocument doc = database.newDocument("Rec");
+      doc.set("friends", new ArrayList<>(List.of(other))).set("byName", new HashMap<>(Map.of("x", other)));
+      doc.set("typedFriends", new ArrayList<>(List.of(other))).set("typedByName", new HashMap<>(Map.of("x", other)));
+
+      assertThat(hintsOf(serialize(doc, true))).containsOnly(Map.entry("friends", LIST_OF_LINKS_HINT),
+          Map.entry("byName", MAP_OF_LINKS_HINT));
+      // the same for the element an openCypher RETURN n projects
+      assertThat(hintsOf(serializeCypherRow(doc))).containsOnly(Map.entry("friends", LIST_OF_LINKS_HINT),
+          Map.entry("byName", MAP_OF_LINKS_HINT));
+    }
+
+    /** Regression for #12598: the #10905 hint of a non-finite number had the same gap in a bare declared collection. */
+    @Test
+    void aBareDeclaredListOfNonFiniteNumbersGetsTheDoubleHint() {
+      final DocumentType rec = database.getSchema().getType("Rec");
+      rec.createProperty("values", Type.LIST);
+      rec.createProperty("typedValues", Type.LIST, "DOUBLE");
+
+      final MutableDocument doc = database.newDocument("Rec");
+      doc.set("values", new ArrayList<>(List.of(Double.NaN, 1.5D))).set("typedValues", new ArrayList<>(List.of(Double.NaN, 1.5D)));
+
+      assertThat(hintsOf(serialize(doc, true))).containsOnly(Map.entry("values", Type.LIST.getId() + "(" + Type.DOUBLE.getId() + ")"));
+    }
+
+    /** A bare declared collection with nothing a client cannot read back keeps its shape. */
+    @Test
+    void aBareDeclaredListOfPlainValuesGetsNoHint() {
+      final DocumentType rec = database.getSchema().getType("Rec");
+      rec.createProperty("names", Type.LIST);
+      rec.createProperty("byName", Type.MAP);
+
+      final MutableDocument doc = database.newDocument("Rec");
+      doc.set("names", new ArrayList<>(List.of("a", "#1:0"))).set("byName", new HashMap<>(Map.of("x", 1)));
+      assertThat(serialize(doc, true).has("@props")).isFalse();
+    }
+
     private static Map<String, String> hintsOf(final JSONObject json) {
       final Map<String, String> hints = new LinkedHashMap<>();
       for (final String entry : json.getString("@props").split(","))
