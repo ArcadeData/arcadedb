@@ -5501,7 +5501,7 @@ public class SelectExecutionPlanner {
         final String varName = item.getVarName().getStringValue();
         // A lifted sub-query's alias (_$$$SUBQUERY$$$_0) carries no leading sigil, so variableNamesIn() never reads it
         // whole: look for it as a word of its own, so that _$$$SUBQUERY$$$_1 is not found in _$$$SUBQUERY$$$_10 (issue #12287)
-        if (SubQueryCollector.isGeneratedAlias(varName) && mentionsWord(rendered, varName))
+        if (SubQueryCollector.isGeneratedAlias(varName) && (mentionsWord(rendered, varName) || rendersLiftedSubquery(rendered, item)))
           return true;
       }
       for (final String name : variableNamesIn(rendered))
@@ -5511,6 +5511,19 @@ public class SelectExecutionPlanner {
     }
 
     return false;
+  }
+
+  /**
+   * Whether {@code rendered} holds the sub-query a generated LET alias was lifted from, written in place. A sub-query read
+   * by {@code =}, {@code <}, a method such as {@code .size()} or a projection stays in the condition as itself and only
+   * reads the alias when it runs (issue #13179), so the alias is never in the rendered text: a filter on
+   * {@code (SELECT ... $parent.$current ...).size() > 0} was planned inside the index fetch, ahead of the LET computing it,
+   * and read no value for every row (issue #12287). The text can only match too generously, which defers a filter behind
+   * the LET: a plan, never a row.
+   */
+  private static boolean rendersLiftedSubquery(final String rendered, final LetItem item) {
+    final Statement query = item.getQuery();
+    return query != null && rendered.contains("(" + query + ")");
   }
 
   /**
