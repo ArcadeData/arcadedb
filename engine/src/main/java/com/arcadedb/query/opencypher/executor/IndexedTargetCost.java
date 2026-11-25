@@ -30,6 +30,8 @@ import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
+import com.arcadedb.query.opencypher.ast.CallClause;
+import com.arcadedb.query.opencypher.ast.ClauseEntry;
 import com.arcadedb.query.opencypher.ast.ComparisonExpression;
 import com.arcadedb.query.opencypher.ast.CypherReferencedVariables;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
@@ -38,10 +40,12 @@ import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.InExpression;
 import com.arcadedb.query.opencypher.ast.ListExpression;
 import com.arcadedb.query.opencypher.ast.LiteralExpression;
+import com.arcadedb.query.opencypher.ast.LoadCSVClause;
 import com.arcadedb.query.opencypher.ast.MapExpression;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
+import com.arcadedb.query.opencypher.ast.SubqueryClause;
 import com.arcadedb.query.opencypher.ast.UnwindClause;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.ast.WithClause;
@@ -71,9 +75,11 @@ import java.util.logging.Level;
  * label their other end has. So the cost of a key is {@code 1 + sum over its vertices of (1 + in-degree)}. Where the keys are known
  * when the statement is planned - a literal, a parameter, an {@code IN}-list, or a variable an {@code UNWIND} of a literal or a
  * parameter binds - the index and the vertices are asked: a few keys are probed, spread over the list, and the rest read as the
- * mean of those (a hub is seen as one, a key with many entries is counted). Where they are not, the cost is estimated from the
- * entries per key of the index, read from both ends of its key order, and the average in-degree of the type; an estimate that
- * cannot be made says {@code -1}, and the written order stays.
+ * mean of those. A key that fills the scan, or has a hub the count stops at, is over the scan by an amount nothing here knows, so it
+ * is no number to average with the cheap keys: the whole pin costs more than the scan, and the written order stays. Keys that hold a
+ * list or a map are not seeked by the node step, which scans the type: no estimate is made of them either. Where the keys are not
+ * known, the cost is estimated from the entries per key of the index, read from both ends of its key order, and the average
+ * in-degree of the type; an estimate that cannot be made says {@code -1}, and the written order stays.
  */
 final class IndexedTargetCost {
   /** The keys probed against the index for one pin, spread over its values. */
@@ -138,6 +144,9 @@ final class IndexedTargetCost {
       double cost = -1D;
       try {
         cost = keys.size() == 1 ? probedCost(index, pinned[0], edgeTypes, limit) : -1D;
+        // keys the node step does not seek are a scan of the type: not a cost to estimate from the entries per key of the index
+        if (cost == UNSEEKABLE)
+          continue;
         if (cost < 0D)
           cost = estimatedCost(index, pinned, edgeTypes, labelCount);
       } catch (final IndexException | RecordNotFoundException e) {
@@ -236,12 +245,12 @@ final class IndexedTargetCost {
         else
           elements.add(value);
       }
-      return isScalars(elements) ? new Keys(distinctKeys(elements), null, true) : null;
+      return isScalars(elements) ? new Keys(distinctKeys(elements), null, true) : NOT_SEEKED;
     }
     final Expression element = pin.elements().getFirst();
     if (RowIndependentValues.isRowIndependent(element)) {
       final Object value = evaluator.evaluate(element, NO_ROW, context);
-      return isScalars(Collections.singletonList(value)) ? new Keys(distinctKeys(Collections.singletonList(value)), null, true) : null;
+      return isScalars(Collections.singletonList(value)) ? new Keys(distinctKeys(Collections.singletonList(value)), null, true) : NOT_SEEKED;
     }
     if (element instanceof VariableExpression variable) {
       final Expression unwound = unwoundList(variable.getVariableName());
@@ -261,20 +270,68 @@ final class IndexedTargetCost {
    * null otherwise, where the name may stand for something else than that list.
    */
   private Expression unwoundList(final String name) {
-    Expression list = null;
-    for (final UnwindClause unwind : statement.getUnwindClauses())
-      if (name.equals(unwind.getVariable())) {
-        if (list != null)
-          return null;
-        list = unwind.getListExpression();
-      }
-    if (list == null || !RowIndependentValues.isRowIndependent(list))
+    final List<ClauseEntry> clauses;
+    try {
+      clauses = statement.getClausesInOrder();
+    } catch (final UnsupportedOperationException e) {
       return null;
-    for (final WithClause with : statement.getWithClauses())
-      for (final ReturnClause.ReturnItem item : with.getItems())
-        if (name.equals(item.getAlias()) && !(item.getExpression() instanceof VariableExpression same && name.equals(same.getVariableName())))
+    }
+    Expression list = null;
+    for (final ClauseEntry entry : clauses)
+      switch (entry.getType()) {
+      case UNWIND -> {
+        final UnwindClause unwind = entry.getTypedClause();
+        if (name.equals(unwind.getVariable())) {
+          if (list != null)
+            return null;
+          list = unwind.getListExpression();
+        }
+      }
+      case WITH -> {
+        final WithClause with = entry.getTypedClause();
+        for (final ReturnClause.ReturnItem item : with.getItems())
+          if (name.equals(item.getAlias()) && !(item.getExpression() instanceof VariableExpression same && name.equals(same.getVariableName())))
+            return null;
+      }
+      case CALL -> {
+        if (yields(entry.getTypedClause(), name))
           return null;
-    return list;
+      }
+      case SUBQUERY -> {
+        if (returns(entry.<SubqueryClause>getTypedClause().getInnerStatement(), name))
+          return null;
+      }
+      case LOAD_CSV -> {
+        if (name.equals(entry.<LoadCSVClause>getTypedClause().getVariable()))
+          return null;
+      }
+      default -> {
+      }
+      }
+    return list != null && RowIndependentValues.isRowIndependent(list) ? list : null;
+  }
+
+  /** Whether a procedure call binds the name: it yields it, or yields everything (a call with no YIELD binds every column). */
+  private static boolean yields(final CallClause call, final String name) {
+    if (!call.hasYield() || call.isYieldAll())
+      return true;
+    for (final CallClause.YieldItem item : call.getYieldItems())
+      if (name.equals(item.getOutputName()))
+        return true;
+    return false;
+  }
+
+  /** Whether the subquery returns the name to the rows around it: it has a column of that name, or a star. A unit subquery has none. */
+  private static boolean returns(final CypherStatement inner, final String name) {
+    final ReturnClause returned = inner != null ? inner.getReturnClause() : null;
+    if (returned == null)
+      return false;
+    if (returned.hasStar())
+      return true;
+    for (final ReturnClause.ReturnItem item : returned.getReturnItems())
+      if (name.equals(item.getOutputName()))
+        return true;
+    return false;
   }
 
   /** Whether no value is a list, a map or an array: none of those is a key the node step seeks. */
@@ -294,13 +351,16 @@ final class IndexedTargetCost {
   }
 
   /**
-   * The cost of the keys a pin names, from the index and the vertices it finds; -1 when the keys are not known. For one key per row
+   * The cost of the keys a pin names, from the index and the vertices it finds; -1 when the keys are not known, {@link #UNSEEKABLE}
+   * when the node step does not seek them, and infinity when a key is over the scan by an unknown amount. For one key per row
    * (an UNWIND) it is the mean over the rows, each key weighted by the rows that hold it; for the keys of one row (an IN-list) the sum.
    */
   private double probedCost(final TypeIndex index, final Pin pin, final List<String> edgeTypes, final long limit) {
     final Keys keys = resolve(pin);
     if (keys == null)
       return -1D;
+    if (keys == NOT_SEEKED)
+      return UNSEEKABLE;
     final List<Object> values = keys.values();
     if (values.isEmpty())
       return 0D;
@@ -312,37 +372,51 @@ final class IndexedTargetCost {
       chosen[i] = (int) ((long) i * values.size() / probed);
       weights += keys.weight(chosen[i]);
     }
+    // the mean of the keys, each weighted by its rows, is multiplied by the keys a row seeks: a key whose cost alone makes that the
+    // cost of the scan is decisive, and is counted no further
+    final double perRow = keys.allOfThemPerRow() ? values.size() : 1D;
+    final double scan = Math.max(limit, 1L);
     double sum = 0D;
     for (int i = 0; i < probed; i++) {
-      sum += keys.weight(chosen[i]) * costOfKey(index, values.get(chosen[i]), edgeTypes, limit);
-      // what the keys read so far is a lower bound of the mean: once it fills the scan the rest cannot bring it under
-      if (sum / weights >= limit)
+      final double weight = keys.weight(chosen[i]);
+      final double cost = costOfKey(index, values.get(chosen[i]), edgeTypes, scan * weights / (perRow * weight));
+      if (cost == OVER_THE_SCAN)
+        return OVER_THE_SCAN;
+      sum += weight * cost;
+      // what the keys read so far is a lower bound of the cost: once it fills the scan the rest cannot bring it under
+      if (sum / weights * perRow >= limit)
         break;
     }
-    final double mean = sum / weights;
-    return keys.allOfThemPerRow() ? mean * values.size() : mean;
+    return sum / weights * perRow;
   }
 
-  /** How many times the cost of the scan a key or a vertex that fills it is counted as. */
-  private static final long OVER_LIMIT = 64L;
+  /** The cost of a key that is over the scan by an unknown amount: it makes the cost of the whole pin the same. */
+  private static final double OVER_THE_SCAN = Double.POSITIVE_INFINITY;
 
-  /** The reads that stand for "far more than the scan": {@value #OVER_LIMIT} times it, at most {@value #MAX_PROBED_ENTRIES}. */
-  private static long overLimit(final long limit) {
-    return Math.min(Math.max(limit, 1L) * OVER_LIMIT, MAX_PROBED_ENTRIES);
-  }
+  /** What {@link #probedCost} answers for keys the node step does not seek: it scans the type, so no estimate is made from them. */
+  private static final double UNSEEKABLE = -2D;
+
+  /** The keys of a pin that hold a list, a map or an array, which the node step does not seek: it scans the type instead. */
+  private static final Keys NOT_SEEKED = new Keys(List.of(), null, true);
 
   /**
-   * One seek and the walk back from the vertices it finds: the entries are counted up to the limit, and the in-degree is read for
-   * a few of the first {@value #KEPT_ENTRIES}, spread over them, so a hub among many entries is seen as a share of them.
+   * One seek and the walk back from the vertices it finds: the entries are counted, and the in-degree is read for a few of the first
+   * {@value #KEPT_ENTRIES}, spread over them, so a hub among many entries is seen as a share of them.
+   *
+   * @param decisive the cost at which this key alone brings its pin to the cost of the scan. Entries and in-degrees are counted up
+   *                 to it, no record read: a key that reaches it, or that a hard cap stopped first, is over the scan by an amount
+   *                 nothing here knows, so it is no number that could be averaged with the cheap keys of a list: it is
+   *                 {@link #OVER_THE_SCAN}, and the whole pin keeps the written order
    */
-  private double costOfKey(final TypeIndex index, final Object key, final List<String> edgeTypes, final long limit) {
+  private double costOfKey(final TypeIndex index, final Object key, final List<String> edgeTypes, final double decisive) {
+    // the lookup is asked for no more entries than decide: a key of 100,000 entries is not collected to find out it is worse than a
+    // scan of 3 vertices
+    final long bound = (long) Math.min(Math.max(Math.ceil(decisive), 1D), MAX_PROBED_ENTRIES);
     long entries = 0L;
     final List<Identifiable> kept = new ArrayList<>();
-    // the lookup is asked for no more entries than the plan it is weighed against reads: a key of 100,000 entries is not collected
-    // to find out it is worse than a scan of 3 vertices
-    final IndexCursor cursor = index.get(new Object[] { key }, (int) Math.min(Math.max(limit, 1L), MAX_PROBED_ENTRIES));
+    final IndexCursor cursor = index.get(new Object[] { key }, (int) bound);
     try {
-      while (cursor.hasNext() && entries < limit) {
+      while (cursor.hasNext() && entries < bound) {
         final Identifiable found = cursor.next();
         ++entries;
         if (kept.size() < KEPT_ENTRIES)
@@ -351,14 +425,8 @@ final class IndexedTargetCost {
     } finally {
       cursor.close();
     }
-    // the walk back from a vertex reads as many entries as it has incoming relationships, which is not bounded for a hub: they are
-    // counted, with no record read, up to OVER_LIMIT times the cost of the scan it is weighed against, and a key that already fills
-    // that cost is not looked into at all. Both stand for "far more than the scan reads" in the mean over the keys of a list.
-    // A probe stopped by the hard cap before it filled the scan says only that the key is large: it is over the scan too
-    final long ceiling = overLimit(limit);
-    final double over = 1D + Math.max(ceiling, limit);
-    if (entries >= limit || entries >= MAX_PROBED_ENTRIES)
-      return over;
+    if (entries >= bound)
+      return OVER_THE_SCAN;
     final String[] types = edgeTypes.toArray(new String[0]);
     final int probed = Math.min(PROBED_VERTICES, kept.size());
     long inEdges = 0L;
@@ -367,11 +435,11 @@ final class IndexedTargetCost {
       if (kept.get((int) ((long) i * kept.size() / probed)).getRecord(false) instanceof Vertex vertex) {
         long degree = 0L;
         for (final RID ignored : vertex.getConnectedVertexRIDs(walk, types))
-          if (++degree >= ceiling)
+          if (++degree >= bound)
             break;
-        // a vertex stopped by the hard cap before it filled the scan is a hub of unknown size: over the scan as well
-        if (degree >= ceiling && ceiling < limit)
-          return over;
+        // a vertex whose count was stopped is a hub of unknown size
+        if (degree >= bound)
+          return OVER_THE_SCAN;
         inEdges += degree;
         ++loaded;
       }

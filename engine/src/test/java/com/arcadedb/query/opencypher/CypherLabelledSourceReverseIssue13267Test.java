@@ -388,6 +388,56 @@ class CypherLabelledSourceReverseIssue13267Test {
   }
 
   @Test
+  void aParameterInsideTheKeyListThatHoldsAListIsNotPricedAsASeek() {
+    // the node step refuses the whole list when one element is a list and scans the type: 2 elements are not 2 seeks
+    final String query = "WITH 1 AS one MATCH (e:Episodic)-[r:MENTIONS]->(n:Entity) WHERE n.uuid IN [$bad, 'ent3'] RETURN n.uuid + '|' + e.uuid AS v";
+    final Map<String, Object> params = Map.of("bad", List.of("x"));
+    assertStartsFrom(query, params, "(e:Episodic");
+    assertThat(values(query, params)).containsExactlyInAnyOrder("ent3|ep1", "ent3|ep1");
+    // the same list with a scalar parameter is two seeks
+    assertStartsFrom(query, Map.of("bad", "x"), "(n:Entity");
+    final String pinned = "UNWIND ['ent3'] AS one MATCH (e:Episodic)-[r:MENTIONS]->(n:Entity {uuid: $bad}) RETURN count(*) AS c";
+    assertStartsFrom(pinned, params, "(e:Episodic");
+    assertStartsFrom(pinned, Map.of("bad", "ent3"), "(n:Entity");
+  }
+
+  @Test
+  void aNameACallBindsIsNotPricedAsTheUnwoundList() {
+    // id is the hub in the UNWIND and ent3 after the subquery, whose output the MATCH reads: the plan weighs ent3, which the 30
+    // Episodic vertices outnumber, not the hub the UNWIND holds
+    final String subquery = "UNWIND ['hub', 'hub'] AS id WITH 1 AS one CALL { RETURN 'ent3' AS id } "
+        + "MATCH (e:Episodic)-[r:MENTIONS]->(n:Entity {uuid: id}) RETURN id + '|' + e.uuid AS v";
+    assertStartsFrom(subquery, Map.of(), "(n:Entity");
+    assertThat(values(subquery, Map.of())).containsExactlyInAnyOrder("ent3|ep1", "ent3|ep1", "ent3|ep1", "ent3|ep1");
+
+    // the same for a column a procedure yields
+    final String procedure = "UNWIND ['hub', 'hub'] AS id WITH 1 AS one CALL db.labels() YIELD label AS id "
+        + "MATCH (e:Episodic)-[r:MENTIONS]->(n:Entity {uuid: id}) RETURN count(*) AS c";
+    assertStartsFrom(procedure, Map.of(), "(n:Entity");
+  }
+
+  @Test
+  void aKeyOverTheScanIsNotAveragedWithTheCheapKeysOfTheList() {
+    // 'popular' has 4,000 entries, far over the 30 Episodic vertices: it alone is over the scan whatever the 100 absent rows cost, and
+    // the mean of 1 popular and 100 absent rows read as (the cost counted for it + 100) / 101, under the scan
+    database.transaction(() -> database.command("opencypher", "UNWIND range(1, 4000) AS i CREATE (:Entity {uuid: 'popular'})"));
+    final List<String> ids = new ArrayList<>();
+    ids.add("popular");
+    for (int i = 0; i < 100; i++)
+      ids.add("absent");
+    final String query = "UNWIND $ids AS id MATCH (e:Episodic)-[r:MENTIONS]->(n:Entity {uuid: id}) RETURN count(*) AS c";
+    assertStartsFrom(query, Map.of("ids", ids), "(e:Episodic");
+    assertThat(longs(query, Map.of("ids", ids))).containsExactly(0L);
+
+    final List<String> list = new ArrayList<>(ids.subList(0, 1));
+    for (int i = 0; i < 40; i++)
+      list.add("absent" + i);
+    final String inList = "WITH 1 AS one MATCH (e:Episodic)-[r:MENTIONS]->(n:Entity) WHERE n.uuid IN $ids RETURN count(*) AS c";
+    assertStartsFrom(inList, Map.of("ids", list), "(e:Episodic");
+    assertThat(longs(inList, Map.of("ids", list))).containsExactly(0L);
+  }
+
+  @Test
   void aNameAWithGivesAnotherValueIsNotPricedAsTheUnwoundList() {
     // id is the hub in the UNWIND and ent3 after the WITH: the plan weighs ent3, which the 30 Episodic vertices outnumber
     final String query = "UNWIND ['hub', 'hub'] AS id WITH 'ent3' AS id MATCH (e:Episodic)-[r:MENTIONS]->(n:Entity {uuid: id}) RETURN id + '|' + e.uuid AS v";
