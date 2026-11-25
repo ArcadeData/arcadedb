@@ -117,7 +117,8 @@ class GraphPathFunctionsOracleTest extends TestHelper {
         else {
           assertThat(hopPath).as("shortestPath %s -> %s %s %s edges %s", source, target, direction, type, edges)
               .hasSize(hops + 1);
-          assertThat(walksEdges(hopPath, indexOf, edges, direction, type)).isTrue();
+          assertConnects("shortestPath", hopPath, rids[source], rids[target]);
+          assertThat(walksEdges(hopPath, indexOf, edges, direction, type)).as("shortestPath %s walks edges that exist", hopPath).isTrue();
         }
         final int bound = random.nextInt(6);
         final List<RID> boundedPath = path("shortestPath(" + rids[source] + ", " + rids[target] + ", '" + direction + "', "
@@ -125,8 +126,12 @@ class GraphPathFunctionsOracleTest extends TestHelper {
         checks++;
         if (hops < 0 || hops > bound)
           assertThat(boundedPath).as("shortestPath maxDepth %s over %s hops", bound, hops).isEmpty();
-        else
+        else {
           assertThat(boundedPath).as("shortestPath maxDepth %s over %s hops", bound, hops).hasSize(hops + 1);
+          assertConnects("bounded shortestPath", boundedPath, rids[source], rids[target]);
+          assertThat(walksEdges(boundedPath, indexOf, edges, direction, type)).as("bounded shortestPath %s walks edges that exist", boundedPath)
+              .isTrue();
+        }
 
         // the weighted functions
         final double[] cheapest = bellmanFordReference(vertexCount, edges, source, direction, Integer.MAX_VALUE);
@@ -135,14 +140,15 @@ class GraphPathFunctionsOracleTest extends TestHelper {
             final List<RID> weighted = path(
                 function + "(" + rids[source] + ", " + rids[target] + ", 'weight', {direction: '" + direction + "'})");
             checks++;
-            assertWeightedPath(function, weighted, indexOf, edges, direction, cheapest[target]);
+            assertWeightedPath(function, weighted, rids[source], rids[target], indexOf, edges, direction, cheapest[target]);
 
             final int depth = random.nextInt(6);
             final double[] bounded = bellmanFordReference(vertexCount, edges, source, direction, depth);
             final List<RID> weightedBounded = path(function + "(" + rids[source] + ", " + rids[target]
                 + ", 'weight', {direction: '" + direction + "', maxDepth: " + depth + "})");
             checks++;
-            assertWeightedPath(function + " maxDepth " + depth, weightedBounded, indexOf, edges, direction, bounded[target]);
+            assertWeightedPath(function + " maxDepth " + depth, weightedBounded, rids[source], rids[target], indexOf, edges, direction,
+                bounded[target]);
             assertThat(weightedBounded.size() - 1).isLessThanOrEqualTo(Math.max(depth, 0));
           }
         }
@@ -151,23 +157,30 @@ class GraphPathFunctionsOracleTest extends TestHelper {
           final List<RID> weighted = path(
               "bellmanFord(" + rids[source] + ", " + rids[target] + ", 'weight', '" + direction + "')");
           checks++;
-          assertWeightedPath("bellmanFord", weighted, indexOf, edges, direction, cheapest[target]);
+          assertWeightedPath("bellmanFord", weighted, rids[source], rids[target], indexOf, edges, direction, cheapest[target]);
         }
       }
     }
     assertThat(checks).as("the oracle ran its checks").isGreaterThan(1_000);
   }
 
-  private void assertWeightedPath(final String what, final List<RID> path, final Map<RID, Integer> indexOf, final List<Edge> edges,
-      final String direction, final double expectedCost) {
+  private void assertWeightedPath(final String what, final List<RID> path, final RID from, final RID to, final Map<RID, Integer> indexOf,
+      final List<Edge> edges, final String direction, final double expectedCost) {
     if (expectedCost == INFINITY) {
       assertThat(path).as("%s: no path expected", what).isEmpty();
       return;
     }
     assertThat(path).as("%s: a path of cost %s expected, edges %s", what, expectedCost, edges).isNotEmpty();
+    assertConnects(what, path, from, to);
     final double cost = cost(path, indexOf, edges, direction);
     assertThat(cost).as("%s walks edges that exist: %s", what, path).isNotNaN();
     assertThat(cost).as("%s cost, path %s edges %s", what, path, edges).isCloseTo(expectedCost, within(1e-9));
+  }
+
+  /** A path runs from the requested source to the requested target: an edge-valid path of the right length can still join other vertices. */
+  private static void assertConnects(final String what, final List<RID> path, final RID from, final RID to) {
+    assertThat(path).as("%s starts at the source", what).first().isEqualTo(from);
+    assertThat(path).as("%s ends at the target", what).last().isEqualTo(to);
   }
 
   private List<RID> path(final String function) {
