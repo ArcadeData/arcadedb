@@ -595,7 +595,7 @@ public final class RecordPredicateRidSet extends AbstractSet<RID> implements Pre
     if (value == null || keyType == null || !Type.isScalarKeyClass(keyType.getDefaultJavaType()))
       return null;
     final Property property = type.getPolymorphicPropertyIfExists(propertyName);
-    if (property == null || property.getType() != keyType)
+    if (property == null || property.getType() != keyType || !oneKeyHoldsEveryMatch(value, keyType))
       return null;
     final Object stored;
     try {
@@ -605,6 +605,22 @@ public final class RecordPredicateRidSet extends AbstractSet<RID> implements Pre
     }
     return stored != null && Type.canBeIndexLookupKey(db, stored, keyType.getDefaultJavaType()) && QueryOperatorEquals.equals(stored,
         value) ? stored : null;
+  }
+
+  /**
+   * Whether the records {@code =} accepts for {@code value} all hold one key of {@code keyType}, the one the value converts to.
+   * {@code =} compares a FLOAT with a DOUBLE or a DECIMAL as the other narrows to it ({@code Type.numbersEqual}), so a FLOAT value
+   * accepts every double and decimal that rounds to it, not only the one it widens to; and a DECIMAL against a DOUBLE reads as the
+   * double, which many decimals share. The index finds one key, so a lookup of it would miss the others and a listing built on it
+   * would hide records the test accepts (issue #12578). A double against a FLOAT key is one key: the float it narrows to. An integer
+   * against any float or double is compared exactly, so it is one key too.
+   */
+  private static boolean oneKeyHoldsEveryMatch(final Object value, final Type keyType) {
+    if (value instanceof Float)
+      return keyType != Type.DOUBLE && keyType != Type.DECIMAL;
+    if (value instanceof Double)
+      return keyType != Type.DECIMAL;
+    return true;
   }
 
   private Lookup lookup() {

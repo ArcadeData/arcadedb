@@ -899,6 +899,42 @@ class VectorNeighborsPrefilterTest {
       }
     }
 
+    /**
+     * {@code =} compares a FLOAT with a DOUBLE as the double narrows to it, so {@code weight IN [3.0f]} accepts 3.00000001 as well as
+     * 3.0. A lookup of the one key the value widens to misses the others, and the listing then hid records the test accepts: it is
+     * left to the test. A list of integers on the same property is still listed.
+     */
+    @Test
+    void aFloatThatAcceptsSeveralDoublesIsNotListedByOneKey() {
+      seed();
+      final Random random = new Random(12578);
+      final RID[] near = new RID[1];
+      database.transaction(() -> near[0] = database.newDocument("Doc").set("tenant", 999).set("color", "red")
+          .set("weight", 3.00000001d).set("serial", 0L).set("day", LocalDate.of(2024, 1, 1))
+          .set("embedding", new float[] { random.nextFloat(), random.nextFloat(), random.nextFloat(), random.nextFloat() }).save()
+          .getIdentity());
+
+      final Map<String, Object> params = Map.of("values", List.of(3.0f));
+      final String options = "{ where: 'weight IN :values' }";
+      final Set<RID> planned = new HashSet<>(rids(neighbors(options, params, 400)));
+
+      database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY, 0f);
+      try {
+        final Set<RID> tested = new HashSet<>(rids(neighbors(options, params, 400)));
+        assertThat(tested).as("the test accepts the record whose weight narrows to 3.0f").contains(near[0]);
+        assertThat(planned).isEqualTo(tested);
+      } finally {
+        database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY,
+            GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY.getDefValue());
+      }
+
+      // integers on the same property are one key each, and the index lists them
+      final long plansBefore = preFilterSearches();
+      assertThat(rids(neighbors("{ where: 'weight IN :values' }", Map.of("values", List.of(3, 7)), 400)))
+          .containsExactlyInAnyOrderElementsOf(reference("weight IN [3, 7]"));
+      assertThat(preFilterSearches() - plansBefore).as("integers still take the listing").isGreaterThanOrEqualTo(1);
+    }
+
     @Test
     void aLiteralListAndARepeatedValueAreAnsweredTheSame() {
       seed();
