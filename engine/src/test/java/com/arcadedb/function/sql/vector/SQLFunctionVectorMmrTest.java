@@ -109,6 +109,33 @@ class SQLFunctionVectorMmrTest extends TestHelper {
   }
 
   /**
+   * A negative {@code k} is refused, as the {@code limit} of {@code vector.fuse} / {@code vector.boost} and the count of
+   * {@code vector.neighbors} are (issue #13131): it used to be read silently as "no row", and was not even checked when the
+   * candidate set was empty.
+   */
+  @Test
+  void rejectsNegativeK() {
+    final List<RID> rids = setupClusterFixture();
+    final List<Map<String, Object>> candidates = candidates(rids, new float[] { 0.9f, 0.85f, 0.7f });
+
+    assertThatThrownBy(() -> runMmr(candidates, "embedding", 0.5f, -1))
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("'k'").hasMessageContaining("negative");
+    assertThatThrownBy(() -> database.query("sql",
+        "SELECT expand(`vector.mmr`([], 'embedding', { lambda: 0.5, k: -2 }))"))
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("'k'").hasMessageContaining("negative");
+  }
+
+  @Test
+  void kZeroReturnsNoRow() {
+    final List<RID> rids = setupClusterFixture();
+    final List<Map<String, Object>> candidates = candidates(rids, new float[] { 0.9f, 0.85f, 0.7f });
+
+    assertThat(runMmr(candidates, "embedding", 0.5f, 0)).isEmpty();
+  }
+
+  /**
    * Composition test: pipe {@code vector.neighbors} (which emits a {@code distance} field, not
    * {@code score}) directly into {@code vector.mmr}. The shared
    * {@code SQLFunctionVectorAbstract.extractScoreFromRow} auto-flips distance to similarity, so

@@ -115,6 +115,7 @@ import com.arcadedb.schema.LocalVertexType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.serializer.json.JSONArray;
@@ -1052,9 +1053,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       // TimeSeries types store data in their own engine, not in regular buckets
       if (type instanceof LocalTimeSeriesType tsType) {
-        // Counting samples never loads a record through a bucket, so apply the equivalent per-type read check here.
-        checkPermissionsOnType(typeName, SecurityDatabaseUser.ACCESS.READ_RECORD);
-        return tsType.requireEngine();
+        // Counting samples never loads a record through a bucket, so apply the equivalent per-type read check here. It is
+        // made by the type, on the name it is registered under: typeName can be one of its aliases.
+        return tsType.requireEngine(SecurityDatabaseUser.ACCESS.READ_RECORD);
       }
 
       long total = 0;
@@ -1111,9 +1112,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
             @Override
             public boolean onRecord(final RID rid, final Binary view, final boolean fromOwnImage) {
+              return onRecord(rid, view, fromOwnImage, -1);
+            }
+
+            @Override
+            public boolean onRecord(final RID rid, final Binary view, final boolean fromOwnImage, final long readInTransaction) {
               final Document record = (Document) recordFactory.newImmutableRecord(wrappedDatabaseInstance, recordType, rid,
                   view, null);
-              markReadFromOwnImage(record, fromOwnImage);
+              markScanned(record, fromOwnImage, readInTransaction);
               continueScan.set(callback.onRecord(record));
               return continueScan.get();
             }
@@ -1161,8 +1167,13 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
         @Override
         public boolean onRecord(final RID rid, final Binary view, final boolean fromOwnImage) {
+          return onRecord(rid, view, fromOwnImage, -1);
+        }
+
+        @Override
+        public boolean onRecord(final RID rid, final Binary view, final boolean fromOwnImage, final long readInTransaction) {
           final Record record = recordFactory.newImmutableRecord(wrappedDatabaseInstance, type, rid, view, null);
-          markReadFromOwnImage(record, fromOwnImage);
+          markScanned(record, fromOwnImage, readInTransaction);
           return callback.onRecord(record);
         }
       }, errorRecordCallback);
@@ -1330,10 +1341,21 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     });
   }
 
-  /** #12320: a vertex built from the transaction's own image of its page carries the heads of that image. */
-  private static void markReadFromOwnImage(final Record record, final boolean fromOwnImage) {
-    if (fromOwnImage && record instanceof ImmutableVertex vertex)
-      vertex.markReadFromOwnImage();
+  /**
+   * Marks a record {@code scanType} or {@code scanBucket} built as {@code BucketIterator} and {@code lookupByRID} mark theirs:
+   * as read in the transaction that read its page (#12575), so a delete or a property write that meets a concurrent commit in
+   * between raises the retryable conflict of #8984 and #8610 and not a {@code RecordNotFoundException} or a lost update; and,
+   * for a vertex built from the transaction's own image of its page, as carrying the heads of that image (#12320).
+   *
+   * @param readInTransaction begin sequence of the transaction that read the page, -1 when unknown (the marker stays unset)
+   */
+  private static void markScanned(final Record record, final boolean fromOwnImage, final long readInTransaction) {
+    if (record instanceof ImmutableDocument document) {
+      if (readInTransaction > -1)
+        document.setReadInTransaction(readInTransaction);
+      if (fromOwnImage && document instanceof ImmutableVertex vertex)
+        vertex.markReadFromOwnImage();
+    }
   }
 
   @Override
@@ -1602,6 +1624,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         if (target instanceof LocalBucket local && local.getPurpose() != LocalBucket.Purpose.PRIMARY)
           throw new IllegalArgumentException(
               "Bucket '" + bucketName + "' is internal (purpose=" + local.getPurpose() + ") and cannot be written to directly");
+        // The grant of the bucket asked for is checked before its owner is looked at (the grant of the type is checked below)
+        if (record instanceof Document)
+          checkPermissionsOnFile(target.getFileId(), SecurityDatabaseUser.ACCESS.CREATE_RECORD);
         // A record written into a bucket another type owns is read back as that type, so its own type's indexes and
         // listeners would answer for a record that is not theirs (issue #11206). INSERT INTO BUCKET:x already types the
         // record by the bucket's owner; this is the same rule for the API. A bucket no type owns is read back as no type at
@@ -1622,6 +1647,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         }
       }
     }
+
+    // THE CREATE GRANT IS CHECKED BEFORE THE RECORD IS EVALUATED, the order a delete follows (issue #9305). LocalBucket.createRecord
+    // checks CREATE_RECORD too, but it is the last step of a create: the defaults, the constraints and the before-create
+    // listeners and triggers run before it. Every bucket of a type carries the same access array, so the first one answers for
+    // the type. A named bucket was checked above. Records that are not typed documents (edge segments and other engine-internal
+    // records) stay checked by their bucket
+    if (bucketName == null && security != null && record instanceof Document doc)
+      SecurityHelper.checkAccessOnType(this, doc.getType(), SecurityDatabaseUser.ACCESS.CREATE_RECORD);
 
     setDefaultValues(record);
 
@@ -1994,6 +2027,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     // only the refresh of a materialized view or a continuous aggregate writes its backing type (issue #11020)
     schema.checkBackingTypeWrite(record.getIdentity().getBucketId(), "update a record of");
 
+    // THE UPDATE GRANT IS CHECKED BEFORE THE RECORD IS EVALUATED, the order a delete follows (issue #9305). LocalBucket.updateRecord
+    // checks UPDATE_RECORD too, but an update queued in a transaction reaches it at the commit, after the constraints and the
+    // before-update listeners and triggers. Every bucket of a type carries the same access array, so the bucket of the record
+    // answers for the type. Records that are not typed documents (edge segments and other engine-internal records) stay checked
+    // by their bucket
+    if (record instanceof Document)
+      checkPermissionsOnFile(record.getIdentity().getBucketId(), SecurityDatabaseUser.ACCESS.UPDATE_RECORD);
+
     try {
       if (record instanceof MutableDocument document) {
         // #10955: NEVER SAVE BACK A RECORD THAT LOST A PROPERTY IT COULD NOT DECODE
@@ -2097,8 +2138,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         }
         // #11751: the indexes now hold what the record holds. The commit writes the record as it is THEN, so an assignment made after
         // this save is the commit's to index, and this is the point it is counted from
-        if (record instanceof MutableDocument mutable)
+        if (record instanceof MutableDocument mutable) {
           mutable.clearAssignedAfterSave();
+          // #12612: a READONLY value this write completed the record with under a deferral stays allowed, the commit validating again
+          DocumentValidator.rememberReadonlyValuesOfDeferredWrite(tx, mutable);
+        }
         countCompletedUpdate(tx, record, structural);
       } catch (final IOException e) {
         throw new DatabaseOperationException("Error on update the record " + record.getIdentity() + " in " +
@@ -2831,6 +2875,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         if (!createdNewTx) {
           // A level the block opened itself and left open is not the caller's: take it back, keep the caller's (#10135)
           rollbackLevelsAbove(callerLevels);
+          // The caller may be no retry loop of ours, but its own code or a client: a block that committed part of its work
+          // does not reach it as a retryable conflict either (#13251)
+          if (TransactionContext.isPartiallyCommitted(txAtStart, commitCountAtStart))
+            throw TransactionContext.notReplayable(e, "Transaction block");
           throw e;
         }
 
@@ -2840,21 +2888,26 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         // from the same state as this one (#10135)
         rollbackLevelsAbove(callerLevels);
 
+        // Decided before the error callback runs, so the callback is told the failure the caller is (#13251)
+        final boolean partiallyCommitted = TransactionContext.isPartiallyCommitted(txAtStart, commitCountAtStart);
+        final ArcadeDBException failure = partiallyCommitted ? TransactionContext.notReplayable(e, "Transaction block") : e;
+
         if (error != null)
-          error.call(e);
+          error.call(failure);
 
         // #7916: a block that already published part of its work cannot be re-run - the rollback above could not
         // take that part back, and a second pass would apply it twice and then report clean success. The commit
         // came from a statement with an explicit batch boundary (UPDATE/DELETE/MOVE VERTEX ... BATCH n), which
         // re-begins straight after, so isTransactionActive() alone cannot see it. The conflict goes to the
-        // caller, who is the only one who knows how to compensate for the half that stands.
-        if (TransactionContext.isPartiallyCommitted(txAtStart, commitCountAtStart)) {
+        // caller, who is the only one who knows how to compensate for the half that stands. Not as the retryable conflict
+        // it is, which every layer above would retry anyway (#13251)
+        if (partiallyCommitted) {
           LogManager.instance().log(this, Level.WARNING,
               "Transaction block on database '%s' committed part of its work before failing (a statement with a BATCH "
                   + "boundary, a Cypher CALL IN TRANSACTIONS, or a write forwarded to the leader): NOT retrying, because replaying it would apply the "
                   + "already durable half a second time. Propagating %s to the caller",
               null, name, e.getClass().getSimpleName());
-          throw e;
+          throw failure;
         }
 
         // #9995: a refusal this node repeats until something outside it changes - a follower refusing leader-only work

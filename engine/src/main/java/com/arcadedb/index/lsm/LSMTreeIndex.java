@@ -136,9 +136,31 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   public static class LSMTreeIndexFactoryHandler implements IndexFactoryHandler {
     @Override
     public IndexInternal create(final IndexBuilder<?> builder) {
+      checkSupportedKeyTypes(builder.getIndexName(), builder.getKeyTypes());
       return new LSMTreeIndex(builder.getDatabase(), builder.getIndexName(), builder.isUnique(), builder.getFilePath(),
           ComponentFile.MODE.READ_WRITE, builder.getKeyTypes(), builder.getLsmTreePageSize(), builder.getNullStrategy());
     }
+  }
+
+  /**
+   * Refuses the key types an LSM_TREE index cannot order (issue #12753). An embedded document has no order, so
+   * {@code BinaryComparator} cannot compare two of them: the index was accepted, the first insert written and the second
+   * one failed with a {@code ClassCastException}. EMBEDDED is the only such type a declared property can hand the builder:
+   * LIST and MAP keys are compared element by element, and a {@code BY ITEM} index over a LIST of embedded documents is
+   * keyed by STRING ({@code TypeIndexBuilder.listItemKeyType}).
+   * <p>
+   * Called by the factory handler, before any file is created, as {@code HashIndexBucket.checkSupportedKeyTypes} is for HASH.
+   * The load path deliberately does not call it: an index already on disk keeps opening, so it can still be dropped. Every
+   * NEW sub-index of such an index (a bucket added to its type, a rebuild) is refused by the same check.
+   */
+  static void checkSupportedKeyTypes(final String indexName, final Type[] keyTypes) {
+    if (keyTypes == null)
+      return;
+    for (final Type keyType : keyTypes)
+      if (keyType == Type.EMBEDDED)
+        throw new IndexException("Cannot create index '" + indexName + "' of type LSM_TREE because the key type " + keyType.name()
+            + " cannot be used as an LSM_TREE index key: an embedded document has no order. Index a field of it (a nested path"
+            + " such as 'p.x') instead");
   }
 
   /**

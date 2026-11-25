@@ -98,19 +98,21 @@ public class ArcadeGraph implements Graph, Closeable {
   private              GremlinGroovyScriptEngine   gremlinGroovyEngine;
   private              ServiceRegistry             serviceRegistry;
   private volatile     GraphTraversalSource        traversal;
+  private volatile     GraphTraversalSource        statementTraversal;
   private volatile     Cluster                     cluster;
   private volatile     boolean                     closed;
   private              ImportGremlinPlugin.Builder importPlugin;
 
   static {
-    // ArcadeTraversalStrategies, NOT A PLAIN CLONE: IT KEEPS THE io() PERMISSION STRATEGY AND THE ROW CAP OF THE USER'S
-    // resultSetLimit OUT OF THE CALLER'S REACH
+    // ArcadeTraversalStrategies, NOT A PLAIN CLONE: IT KEEPS THE io() PERMISSION STRATEGY, THE ROW CAP OF THE USER'S
+    // resultSetLimit AND THE TIME LIMIT OF THE REGULAR EXPRESSIONS OUT OF THE CALLER'S REACH
     // (withoutStrategies() IS A SOURCE INSTRUCTION ANY REQUEST CAN CARRY)
     TraversalStrategies.GlobalCache.registerStrategies(ArcadeGraph.class,
         new ArcadeTraversalStrategies(TraversalStrategies.GlobalCache.getStrategies(Graph.class))//
             .addStrategies(//
                 ArcadeIoRegistrationStrategy.instance(),//
                 ArcadeResultSetLimitStrategy.instance(),//
+                ArcadeRegexStrategy.instance(),//
                 new ArcadeTraversalStrategy())//
     );
   }
@@ -226,6 +228,27 @@ public class ArcadeGraph implements Graph, Closeable {
         result = traversal;
         if (result == null)
           traversal = result = buildTraversal();
+      }
+    }
+    return result;
+  }
+
+  /**
+   * The traversal source a statement of the query engine is evaluated with: {@link #traversal()} of a local database, with the
+   * strategy that keeps an {@code io().read()} from committing the transaction the statement runs in (issue #13162, see
+   * {@link ArcadeIoRegistrationStrategy#forStatement()}). Cached as {@link #traversal()} is: building it sorts the strategies.
+   */
+  GraphTraversalSource statementTraversal() {
+    GraphTraversalSource result = statementTraversal;
+    if (result == null) {
+      synchronized (this) {
+        if (closed)
+          throw new IllegalStateException("Graph is closed");
+
+        result = statementTraversal;
+        if (result == null)
+          statementTraversal = result = new GraphTraversalSource(this,
+              traversal().getStrategies().clone().addStrategies(ArcadeIoRegistrationStrategy.forStatement()));
       }
     }
     return result;
@@ -596,6 +619,8 @@ public class ArcadeGraph implements Graph, Closeable {
       }
       traversal = null;
     }
+    // BOUND TO NO CONNECTION: NOTHING TO CLOSE
+    statementTraversal = null;
 
     closeCluster();
   }

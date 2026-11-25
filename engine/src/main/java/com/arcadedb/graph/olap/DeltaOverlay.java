@@ -1095,6 +1095,21 @@ class DeltaOverlay {
     return buckets.toArray();
   }
 
+  /**
+   * The buckets of the live vertices this overlay holds beyond the base, or null when it holds none (issue #12549). What tells the
+   * vertices of a type created after the base was scanned, which the base's node mapping does not name: a bucket no covered vertex type
+   * owns any more holds vertices that left the view. Walks the overflow vertices, so it is asked once per decision, not per read.
+   */
+  int[] getOverflowVertexBuckets() {
+    if (getOverflowCount() == 0)
+      return null;
+    final IntHashSet buckets = new IntHashSet();
+    for (int i = 0; i < overflowIdToRID.length; i++)
+      if (!deletedOverflowNodes.get(i))
+        buckets.add(overflowIdToRID[i].getBucketId());
+    return buckets.toArray();
+  }
+
   int getDeltaEdgeCount() {
     return deltaEdgeCount;
   }
