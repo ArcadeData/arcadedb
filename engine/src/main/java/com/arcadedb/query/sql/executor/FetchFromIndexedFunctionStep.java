@@ -70,6 +70,8 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep implemen
   private final List<BinaryCondition>         recordConditions;
   /** The order the plan needs the rows in (issue #9909). */
   private final IndexedFunctionPushdown.Order order;
+  /** Whether a filter after the fetch can reject rows the limit counted, so the plan may pull past it (issue #12535). */
+  private final boolean                       filtered;
 
   //runtime0
   Iterator<Record> fullResult = null;
@@ -93,6 +95,16 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep implemen
   public FetchFromIndexedFunctionStep(final BinaryCondition functionCondition, final FromClause queryTarget, final int limit,
       final List<BooleanExpression> ridConditions, final List<BinaryCondition> recordConditions,
       final IndexedFunctionPushdown.Order order, final CommandContext context) {
+    this(functionCondition, queryTarget, limit, ridConditions, recordConditions, order, false, context);
+  }
+
+  /**
+   * @param filtered whether a filter after the fetch can reject rows the limit counted, so that the plan may pull past the limit
+   *                 (issue #12535)
+   */
+  public FetchFromIndexedFunctionStep(final BinaryCondition functionCondition, final FromClause queryTarget, final int limit,
+      final List<BooleanExpression> ridConditions, final List<BinaryCondition> recordConditions,
+      final IndexedFunctionPushdown.Order order, final boolean filtered, final CommandContext context) {
     super(context);
     this.functionCondition = functionCondition;
     this.queryTarget = queryTarget;
@@ -100,6 +112,7 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep implemen
     this.ridConditions = ridConditions == null || ridConditions.isEmpty() ? null : List.copyOf(ridConditions);
     this.recordConditions = recordConditions == null || recordConditions.isEmpty() ? null : List.copyOf(recordConditions);
     this.order = order;
+    this.filtered = filtered;
   }
 
   public int getLimit() {
@@ -218,7 +231,7 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep implemen
           fullResult = Collections.emptyIterator();
         else
           fullResult = functionCondition.executeIndexedFunction(queryTarget, context,
-              new IndexedFunctionPushdown(rowsNeeded(), ridFilter, order)).iterator();
+              new IndexedFunctionPushdown(rowsNeeded(), ridFilter, order, filtered)).iterator();
       } finally {
         if (context.isProfiling()) {
           cost += System.nanoTime() - begin;

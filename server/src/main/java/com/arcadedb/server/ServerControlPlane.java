@@ -30,6 +30,7 @@ import com.arcadedb.engine.MaintenanceCoordinator.Operation;
 import com.arcadedb.engine.OperationProgress;
 import com.arcadedb.engine.OperationProgressRegistry;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.DatabaseOperationInProgressException;
 import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionOutcomeUnknownException;
@@ -41,6 +42,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.backup.AutoBackupConfig;
 import com.arcadedb.server.backup.AutoBackupSchedulerPlugin;
 import com.arcadedb.server.backup.BackupCoordinator;
+import com.arcadedb.server.backup.BackupRetentionManager;
 import com.arcadedb.server.http.HttpAuthSession;
 import com.arcadedb.server.http.HttpAuthSessionManager;
 import com.arcadedb.server.http.HttpServer;
@@ -1135,10 +1137,15 @@ public class ServerControlPlane {
   // ---------------------------------------------------------------------------------------------
 
   /**
-   * Creates {@code databaseName} on the whole cluster: locally first, then - when the resulting
-   * database is replicated - through the Raft install-database entry, so every peer installs it too.
+   * Creates {@code databaseName} on the whole cluster.
    * <p>
-   * Lives here rather than in a transport because a create that skips the second half is a cluster
+   * With high availability active the database is created by the replicated log alone
+   * ({@link HAServerPlugin#createDatabaseInCluster}): the install-database entry first, and the database on every node,
+   * this one included, when the entry is applied. Creating it here first and replicating it second left the database on
+   * this node only whenever the entry never committed (issue #11848): the cluster reported itself converged while this node
+   * served reads of a database the others did not have.
+   * <p>
+   * Lives here rather than in a transport because a create that skips the replication is a cluster
    * that disagrees about which databases exist, with no error reported to the caller. gRPC's
    * {@code CreateDatabase} called {@code server.createDatabase} alone until issue #7389, so the same
    * operation replicated over HTTP and did not over gRPC.
@@ -1150,8 +1157,19 @@ public class ServerControlPlane {
   public ServerDatabase createDatabase(final String databaseName) {
     requireDatabaseName(databaseName);
 
+    final HAServerPlugin ha = server.getHA();
+    if (ha != null && ha.createDatabaseInCluster(databaseName)) {
+      final ServerDatabase created = server.getRegisteredDatabase(databaseName);
+      if (created == null)
+        throw new DatabaseOperationException("Database '" + databaseName + "' was created through the replicated log, "
+            + "but this server has not registered it: its apply failed here or a drop of it followed");
+      return created;
+    }
+
     final ServerDatabase database = server.createDatabase(databaseName, ComponentFile.MODE.READ_WRITE);
 
+    // The window of a starting server whose HA plugin already wraps the databases but is not registered as the server's HA
+    // implementation yet: the database is replicated the way an embedder's registered database is
     if (database.getWrappedDatabaseInstance() instanceof HAReplicatedDatabase haDb)
       haDb.createInReplicas();
 
@@ -2036,10 +2054,23 @@ public class ServerControlPlane {
    * serialised end to end - prune included - rather than overlapping (issue #7472). The SQL {@code BACKUP DATABASE}
    * statement reaches this through {@code BackupDirectoryResolver.applyRetention()} from inside the
    * BACKUP slot it holds, for the same reason (issue #9844).
+   * <p>
+   * The partial archives that a backup killed mid-write left behind are swept here, before the plugin is consulted, so the
+   * sweep runs whatever the auto-backup state is (issue #12530): the plugin's retention does nothing while auto-backup is
+   * disabled, which is the default, yet the on-demand backups write partial archives just the same and no other command can
+   * reach one. That sweep is not a retention: it removes no archive and is not counted in the result.
    *
    * @return the number of archives deleted
    */
   int pruneBackups(final Path backupDirectory, final String databaseName) {
+    try {
+      BackupRetentionManager.deleteStalePartialArchives(backupDirectory.resolve(databaseName).toFile());
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Cannot sweep the partial archives left by a backup that did not complete for database '%s': %s", databaseName,
+          e.getMessage());
+    }
+
     final AutoBackupSchedulerPlugin plugin = getBackupPlugin();
     if (plugin == null)
       return 0;
@@ -2192,10 +2223,11 @@ public class ServerControlPlane {
    * operator can see it without triggering anything.
    * <p>
    * Retention pruning runs only while the auto-backup scheduler is ENABLED: with it off, an on-demand archive stays
-   * until {@code delete backup} removes it, which is now possible. While it is on, an on-demand
-   * {@code trigger backup} prunes too, with that database's effective policy - including for a database absent from
-   * the auto-backup configuration, whose archives the scheduler never touches because it does not know about it
-   * (issue #7472).
+   * until {@code delete backup} removes it, which is now possible. The one exception is the partial archive of a backup
+   * killed mid-write, which no command can address: it is swept after every on-demand backup, enabled or not (issue
+   * #12530). While it is on, an on-demand {@code trigger backup} prunes too, with that database's effective policy -
+   * including for a database absent from the auto-backup configuration, whose archives the scheduler never touches
+   * because it does not know about it (issue #7472).
    */
   public Path resolveBackupDirectory() {
     final Path serverRoot = Paths.get(server.getRootPath()).toAbsolutePath().normalize();

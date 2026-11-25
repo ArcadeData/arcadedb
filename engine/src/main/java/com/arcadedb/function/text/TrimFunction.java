@@ -67,6 +67,9 @@ public class TrimFunction implements StatelessFunction {
 
     if (args.length == 3) {
       // Extended form: trim(mode, trimCharacter, source)
+      // null in, null out: a null mode was a NullPointerException on the switch below (issue #12744)
+      if (args[0] == null)
+        return null;
       final String mode = args[0].toString();
       final String source = args[2] != null ? args[2].toString() : null;
       if (source == null)

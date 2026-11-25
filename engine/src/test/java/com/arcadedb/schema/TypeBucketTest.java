@@ -44,6 +44,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.io.File;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -708,6 +709,47 @@ class TypeBucketTest {
       assertThat(indexNames().stream().filter(n -> n.startsWith(bucketName + "_")).toList()).hasSize(1);
       assertThat(count("SELECT count(*) AS c FROM S WHERE k = 'y'")).isEqualTo(1L);
       assertCheckDatabaseClean();
+    }
+
+    @Test
+    void attachOfAPopulatedBucketOverADuplicateInsideACallerTransactionIsRefusedAndUndone() {
+      // ISSUE #11835: THE SUB-INDEXES OF AN ATTACH ARE CREATED IN A TRANSACTION OF THEIR OWN, NESTED IN THE CALLER'S (AN HTTP
+      // COMMAND ALWAYS RUNS IN ONE). THE REFUSAL TAKES BACK ONLY THAT NESTED LEVEL: THE CALLER'S TRANSACTION STAYS ALIVE WITH ITS
+      // EARLIER WORK, AND THE COMPONENTS THE ATTEMPT CREATED ARE DROPPED, NOT LEFT BEHIND AS FILES NO INDEX OWNS
+      createSuperTypeHolding("x");
+      final DocumentType a = database.getSchema().createDocumentType("A", 1);
+      final String bucketName = a.getBuckets(false).getFirst().getName();
+      database.transaction(() -> database.newDocument("A").set("k", "x").save());
+      a.removeBucket(database.getSchema().getBucketByName(bucketName));
+
+      database.begin();
+      try {
+        database.newDocument("S").set("k", "pending").save();
+
+        assertThatThrownBy(() -> database.command("sql", "ALTER TYPE S BUCKET +" + bucketName))//
+            .isInstanceOf(DuplicatedKeyException.class)//
+            .hasMessageContaining("x");
+
+        assertThat(database.isTransactionActive()).as("the caller's transaction survives the refusal").isTrue();
+        database.commit();
+      } finally {
+        if (database.isTransactionActive())
+          database.rollback();
+      }
+
+      assertThat(database.getSchema().getType("S").getBuckets(false).stream().map(b -> b.getName()).toList()).doesNotContain(bucketName);
+      assertThat(indexNames().stream().filter(n -> n.startsWith(bucketName + "_")).toList()).isEmpty();
+      assertThat(filesOfTheBucketIndexes(bucketName)).as("no component file left behind by the refused attach").isEmpty();
+      assertThat(count("SELECT count() AS c FROM S WHERE k = 'pending'")).as("the caller's earlier work commits").isEqualTo(1L);
+      assertThat(count("SELECT count() AS c FROM S WHERE k = 'x'")).isEqualTo(1L);
+      assertThat(database.getSchema().getType("S").getPolymorphicIndexByProperties("k").countEntries()).isEqualTo(2L);
+      assertThat(database.getSchema().getType("S").isNeedsRepartition()).isFalse();
+      assertCheckDatabaseClean();
+    }
+
+    private List<String> filesOfTheBucketIndexes(final String bucketName) {
+      final String[] names = new File(database.getDatabasePath()).list();
+      return names == null ? List.of() : Arrays.stream(names).filter(n -> n.startsWith(bucketName + "_")).toList();
     }
 
     private void assertBucketNotAttached(final String bucketName) {

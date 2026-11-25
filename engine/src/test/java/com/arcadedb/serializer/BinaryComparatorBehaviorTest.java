@@ -1113,6 +1113,64 @@ class BinaryComparatorBehaviorTest {
   }
 
   /**
+   * Issue #12673: {@code compareNumbers} is the numeric entry point of the openCypher {@code min()} / {@code max()} and
+   * {@code ORDER BY}. It must answer the order {@code compareTo} answers for every pair of numbers, by value and not as
+   * doubles, with negative zero equal to zero whatever the classes of the two operands.
+   */
+  @Nested
+  class NumericEntryPoint {
+
+    @Test
+    void integersPastTheDoublePrecisionStayApart() {
+      assertThat(BinaryComparator.compareNumbers(1500000000000000001L, 1500000000000000003L)).isNegative();
+      assertThat(BinaryComparator.compareNumbers(9007199254740993L, 9007199254740992.0)).isPositive();
+      assertThat(BinaryComparator.compareNumbers(9007199254740992.0, 9007199254740993L)).isNegative();
+      assertThat(BinaryComparator.compareNumbers(BigInteger.valueOf(9007199254740993L), 9007199254740992L)).isPositive();
+    }
+
+    @Test
+    void negativeZeroEqualsZeroAcrossClasses() {
+      final Number[] zeros = { -0.0, 0.0, 0L, 0, -0.0f, 0.0f, BigDecimal.ZERO };
+      for (final Number a : zeros)
+        for (final Number b : zeros)
+          assertThat(BinaryComparator.compareNumbers(a, b)).as("%s vs %s", a, b).isZero();
+    }
+
+    @Test
+    void nanSortsAboveEveryNumber() {
+      assertThat(BinaryComparator.compareNumbers(Double.NaN, Long.MAX_VALUE)).isPositive();
+      assertThat(BinaryComparator.compareNumbers(Long.MAX_VALUE, Double.NaN)).isNegative();
+      assertThat(BinaryComparator.compareNumbers(Double.NaN, Double.POSITIVE_INFINITY)).isPositive();
+      assertThat(BinaryComparator.compareNumbers(Double.NaN, Double.NaN)).isZero();
+    }
+
+    @Test
+    void agreesWithCompareToOnEveryPair() {
+      final List<Number> pool = new ArrayList<>();
+      for (final long v : new long[] { Long.MIN_VALUE, -(1L << 53) - 1, -3, -1, 0, 1, 2, 3, 1L << 24, (1L << 53) + 1, Long.MAX_VALUE }) {
+        pool.add(v);
+        pool.add((int) v);
+        pool.add((double) v);
+        pool.add((float) v);
+        pool.add(BigInteger.valueOf(v));
+        pool.add(BigDecimal.valueOf(v));
+      }
+      for (final double v : new double[] { -0.0, 0.5, -1.5, Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY }) {
+        pool.add(v);
+        pool.add((float) v);
+      }
+      pool.add((short) 7);
+      pool.add((byte) -7);
+
+      for (final Number a : pool)
+        for (final Number b : pool)
+          assertThat(Integer.signum(BinaryComparator.compareNumbers(a, b)))
+              .as("%s (%s) vs %s (%s)", a, a.getClass().getSimpleName(), b, b.getClass().getSimpleName())
+              .isEqualTo(Integer.signum(BinaryComparator.compareTo(a, b)));
+    }
+  }
+
+  /**
    * Regression for #8921: a DATE/DATETIME operand the timestamp conversion has no case for answered null, which
    * the comparator unboxed to a {@code long} and failed with a {@code NullPointerException}. It now refuses the pair.
    */

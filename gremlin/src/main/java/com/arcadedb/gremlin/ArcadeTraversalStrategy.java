@@ -616,7 +616,7 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
 
       // Replace the where/filter step with our O(1) degree check
       final ArcadeEdgeCountFilterStep filterStep = new ArcadeEdgeCountFilterStep(
-          traversal, provider, vertexStep.getDirection(), edgeLabels, predicate::test);
+          traversal, graph, provider, vertexStep.getDirection(), edgeLabels, predicate::test);
       TraversalHelper.copyLabels(step, filterStep, false);
       traversal.removeStep(i);
       traversal.addStep(i, filterStep);
