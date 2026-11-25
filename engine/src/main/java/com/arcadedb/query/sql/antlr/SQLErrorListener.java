@@ -95,13 +95,15 @@ public class SQLErrorListener extends BaseErrorListener {
 
   /**
    * The offending line, quoted whole when it fits {@link #QUOTE_BUDGET}, otherwise cut around the failing character with
-   * the caret placed under the cut quote.
+   * the caret placed under the cut quote. The parser's column counts code points, as does the caret padding.
    */
   private static Snippet snippetOf(final String errorLine, final int charPositionInLine) {
     if (errorLine.length() <= QUOTE_BUDGET)
       return new Snippet(errorLine, charPositionInLine);
 
-    final int position = Math.max(0, Math.min(charPositionInLine, errorLine.length() - 1));
+    // The UTF-16 index of the failing character, or the line's end for an error at the end of the input
+    final int position = errorLine.offsetByCodePoints(0,
+        Math.max(0, Math.min(charPositionInLine, errorLine.codePointCount(0, errorLine.length()))));
     int start = Math.max(0, position - QUOTE_WINDOW);
     // A cut never splits a surrogate pair
     if (start > 0 && Character.isLowSurrogate(errorLine.charAt(start)))
@@ -115,7 +117,7 @@ public class SQLErrorListener extends BaseErrorListener {
     out.append(errorLine, start, end);
     if (end < errorLine.length())
       out.append("...");
-    return new Snippet(out.toString(), position - start + (start > 0 ? 3 : 0));
+    return new Snippet(out.toString(), errorLine.codePointCount(start, position) + (start > 0 ? 3 : 0));
   }
 
   /**

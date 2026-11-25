@@ -113,6 +113,33 @@ class SQLErrorListenerQuoteTest {
     assertThat(lines[2]).isEqualTo(" ".repeat(9) + "^");
   }
 
+  @Test
+  @DisplayName("An error at the end of a long line keeps the caret one past the last quoted character")
+  void anErrorAtTheEndOfALongLineKeepsTheCaretPastIt() {
+    final String statement = "SELECT " + "a".repeat(40_000) + " FROM";
+
+    final String[] lines = messageFor(statement, statement.length()).split("\n");
+
+    assertThat(lines[1]).startsWith("...").endsWith(" FROM");
+    assertThat(lines[2]).isEqualTo(" ".repeat(lines[1].length()) + "^");
+  }
+
+  @Test
+  @DisplayName("The parser's column counts code points, so supplementary characters before the error do not move the quote")
+  void aColumnAfterSupplementaryCharactersIsACodePointColumn() {
+    // 10 000 emoji take 20 000 chars but 10 000 columns: the failing token is at column 10 008
+    final String statement = "SELECT '" + "😀".repeat(10_000) + "' FORM";
+    final int column = 8 + 10_000 + 2;
+
+    final String[] lines = messageFor(statement, column).split("\n");
+
+    assertThat(lines[1]).endsWith("' FORM");
+    // The caret is under FORM, counted in code points as the quote is displayed
+    final String quoted = lines[1];
+    final int formAt = quoted.codePointCount(0, quoted.lastIndexOf("FORM"));
+    assertThat(lines[2]).isEqualTo(" ".repeat(formAt) + "^");
+  }
+
   /**
    * The message the parser raises for this statement.
    */
