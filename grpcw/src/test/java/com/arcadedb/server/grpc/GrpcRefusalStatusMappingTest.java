@@ -22,18 +22,36 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.exception.AlreadyExistsException;
+import com.arcadedb.exception.ArithmeticErrorException;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.exception.DatabaseIsClosedException;
+import com.arcadedb.exception.DatabaseIsReopeningException;
+import com.arcadedb.exception.DatabaseNotAvailableException;
+import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.DatabaseOperationInProgressException;
+import com.arcadedb.exception.DeletedEntityException;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.EquivalentIndexException;
+import com.arcadedb.exception.ErrorCategory;
+import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.ObjectInUseException;
+import com.arcadedb.exception.QueryAdmissionException;
+import com.arcadedb.exception.QueryHeapBudgetExceededException;
 import com.arcadedb.exception.QueryTerminatedException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.exception.TypeMismatchException;
+import com.arcadedb.exception.UnknownFunctionException;
+import com.arcadedb.exception.ValidationException;
+import com.arcadedb.index.fulltext.FullTextQueryParseException;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.sql.parser.AlignDatabaseStatement;
@@ -58,9 +76,13 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.EnumMap;
+import java.util.EnumSet;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.function.Function;
 import java.util.regex.Matcher;
@@ -949,6 +971,188 @@ class GrpcRefusalStatusMappingTest {
       }
       throw new AssertionError("unreachable");
     }
+  }
+
+  /*
+   * Issue #12550: {@code ArcadeDbGrpcAdminService.toStatus} answered from its own table of exception types, and whatever no
+   * arm named fell to the {@code INTERNAL} catch-all, while the data plane answers from {@link ErrorCategory}. A whole category
+   * of refusals the caller can act on (a duplicated key, a missing type, a refused value, raised while an import or a restore
+   * runs on the caller's data) therefore read as a server fault on the admin RPCs, was logged as one, and lost its sentence in
+   * production mode. The table was patched one type at a time (#12464 added one cell), and the test ranged over the cells
+   * somebody remembered.
+   * <p>
+   * The census below ranges over {@link ErrorCategory#values()}, the authority both services answer from: for every category
+   * the admin service and {@link GrpcErrorMapper} agree, bare and wrapped, except for the arms that differ on purpose, which
+   * are declared here and have to keep differing.
+   */
+
+  /**
+   * The failures each category is decided on, at least one per category and one per shape the admin table could get wrong: a
+   * type no arm names, and a type an arm of a JDK supertype names although the engine classifies it elsewhere.
+   */
+  private static Map<ErrorCategory, List<Exception>> failuresByCategory() {
+    final Map<ErrorCategory, List<Exception>> failures = new EnumMap<>(ErrorCategory.class);
+    failures.put(ErrorCategory.RETRY,
+        List.of(new ConcurrentModificationException("Concurrent modification on page 3"), new QuorumNotReachedException("Quorum not reached"),
+            new QueryAdmissionException("The server is busy"), new DatabaseIsReopeningException("Database 'shop' is being reopened"),
+            new QueryHeapBudgetExceededException("The query heap budget is held by other queries")));
+    failures.put(ErrorCategory.ARITHMETIC, List.of(new ArithmeticErrorException("Division by zero")));
+    failures.put(ErrorCategory.DUPLICATED_KEY, List.of(new DuplicatedKeyException("User[email]", "[bob@example.com]", null)));
+    failures.put(ErrorCategory.ALREADY_EXISTS, List.of(new AlreadyExistsException(AlreadyExistsException.Kind.TYPE, "Type 'User' already exists"),
+        new EquivalentIndexException("An equivalent index 'User[email]' already exists")));
+    failures.put(ErrorCategory.NOT_FOUND,
+        List.of(new RecordNotFoundException("Record #12:0 not found", null), new DeletedEntityException("The node was deleted")));
+    failures.put(ErrorCategory.SCHEMA, List.of(new SchemaException("Type 'Missing' was not found")));
+    failures.put(ErrorCategory.SECURITY, List.of(new SecurityException("User 'bob' cannot read type 'Secret'")));
+    failures.put(ErrorCategory.VALIDATION,
+        List.of(new ValidationException("Property 'age' is mandatory"), new ObjectInUseException("Type 'User' holds records"),
+            new TypeMismatchException("Expected a number"), new InvalidArgumentException("Argument 'k' must be positive"),
+            new IllegalArgumentException("Database name is empty")));
+    failures.put(ErrorCategory.PARSING, List.of(new CommandParsingException("Statement is not valid here"),
+        new FullTextQueryParseException("Cannot parse 'a AND'", new IllegalStateException("eof")),
+        new UnknownFunctionException("nope", "Unknown function 'nope'")));
+    failures.put(ErrorCategory.TIMEOUT, List.of(new TimeoutException("Timeout on locking the database")));
+    failures.put(ErrorCategory.TERMINATED, List.of(new QueryTerminatedException("terminated by admin")));
+    failures.put(ErrorCategory.UNAVAILABLE, List.of(new DatabaseNotAvailableException("Database 'shop' is being restored"),
+        new DatabaseIsClosedException("Database 'shop' is closed")));
+    failures.put(ErrorCategory.DATABASE_NOT_FOUND, List.of(new DatabaseNotFoundException("Database 'ghost' does not exist")));
+    failures.put(ErrorCategory.SERVER, List.of(new IllegalStateException("boom"), new CommandExecutionException("The backup archive could not be deleted")));
+    return failures;
+  }
+
+  /**
+   * The arms of the admin table that answer another status than the data plane ON PURPOSE, by the type of the arm, with the
+   * status the admin service answers. The whole list: anything else that differs is the defect of issue #12550.
+   * <ul>
+   * <li>a {@link SecurityException} on an admin RPC is what {@code authenticate()} raises for refused credentials, so it is
+   * {@code UNAUTHENTICATED}; on the data plane it is a query-time permission denial, {@code PERMISSION_DENIED}</li>
+   * <li>a {@link NeedRetryException} out of an admin operation is a Raft entry that could not be committed, HTTP's 503 and
+   * {@code UNAVAILABLE} (issue #7532); on the data plane it is the conflict of a commit, {@code ABORTED}</li>
+   * </ul>
+   */
+  private static final Map<Class<? extends Throwable>, Status.Code> DELIBERATE_DIVERGENCES = Map.of(SecurityException.class,
+      Status.Code.UNAUTHENTICATED, NeedRetryException.class, Status.Code.UNAVAILABLE);
+
+  // Regression: #12550
+  @Test
+  void theAdminServiceAnswersEveryErrorCategoryAsTheDataPlaneDoes() {
+    final ArcadeDbGrpcAdminService service = adminService(false);
+    final Map<ErrorCategory, List<Exception>> failures = failuresByCategory();
+    final Set<Class<? extends Throwable>> diverged = new HashSet<>();
+    final Set<ErrorCategory> reached = EnumSet.noneOf(ErrorCategory.class);
+
+    for (final ErrorCategory category : ErrorCategory.values()) {
+      assertThat(failures.get(category)).as("ErrorCategory.%s has no failure in this census: add one, with the status the admin "
+          + "service is to answer it", category).isNotNull().isNotEmpty();
+
+      for (final Exception failure : failures.get(category)) {
+        final String name = failure.getClass().getSimpleName();
+        assertThat(ErrorCategory.of(failure)).as("%s is the failure of the category it is listed under", name).isEqualTo(category);
+        reached.add(category);
+
+        for (final Exception chain : List.of(failure, new CommandExecutionException("Error importing database 'shop'", failure))) {
+          final String shape = chain == failure ? name : name + " inside a CommandExecutionException";
+          final StatusException admin = service.toStatus("importDatabase", chain);
+          final StatusRuntimeException dataPlane = GrpcErrorMapper.toStatusRuntimeException(chain, "importDatabase", null, false);
+
+          final Class<? extends Throwable> divergence = deliberateDivergenceOf(failure);
+          if (divergence != null) {
+            assertThat(admin.getStatus().getCode()).as("%s is answered by the %s arm", shape, divergence.getSimpleName())
+                .isEqualTo(DELIBERATE_DIVERGENCES.get(divergence)).isNotEqualTo(dataPlane.getStatus().getCode());
+            diverged.add(divergence);
+            continue;
+          }
+
+          assertThat(admin.getStatus().getCode()).as("%s (ErrorCategory.%s) on an admin RPC and on the data plane", shape, category)
+              .isEqualTo(dataPlane.getStatus().getCode());
+          if (category != ErrorCategory.SERVER)
+            assertThat(admin.getStatus().getCode()).as("%s is the caller's to act on, not a server fault", shape)
+                .isNotEqualTo(Status.Code.INTERNAL);
+        }
+      }
+    }
+
+    // The scan still reaches the authority, ErrorCategory: every category, and above all the two the admin table never named
+    assertThat(reached).as("the census ranges over ErrorCategory.values()").containsExactlyInAnyOrder(ErrorCategory.values())
+        .contains(ErrorCategory.SCHEMA, ErrorCategory.VALIDATION);
+    assertThat(diverged).as("every declared divergence still diverges: one that no longer does is removed from the list")
+        .containsExactlyInAnyOrderElementsOf(DELIBERATE_DIVERGENCES.keySet());
+  }
+
+  // Regression: #12550
+  /**
+   * A refusal answered by its category is named in the class-name trailer, as the data plane names it. Without the trailer the
+   * Java client reads {@code ALREADY_EXISTS} from an admin RPC as a taken user, token or database name, and {@code NOT_FOUND}
+   * as a missing record.
+   */
+  @Test
+  void aRefusalAnsweredByItsCategoryIsNamedAsTheDataPlaneNamesIt() {
+    final ArcadeDbGrpcAdminService service = adminService(false);
+
+    for (final Exception failure : List.of(new DuplicatedKeyException("User[email]", "[bob@example.com]", null),
+        new SchemaException("Type 'Missing' was not found"), new ValidationException("Property 'age' is mandatory"),
+        new EquivalentIndexException("An equivalent index 'User[email]' already exists"), new TimeoutException("Timeout on locking"))) {
+      final Exception wrapped = new CommandExecutionException("Error importing database 'shop'", failure);
+      final StatusException admin = service.toStatus("importDatabase", wrapped);
+      final StatusRuntimeException dataPlane = GrpcErrorMapper.toStatusRuntimeException(wrapped, "importDatabase", null, false);
+
+      assertThat(exceptionClassOf(admin.getTrailers())).as(failure.getClass().getSimpleName())
+          .isEqualTo(failure.getClass().getName()).isEqualTo(exceptionClassOf(dataPlane.getTrailers()));
+      assertThat(admin.getTrailers().get(GrpcErrorMapper.NAME_TAKEN_KEY)).as("not a taken user, token or database name").isNull();
+      assertThat(admin.getStatus().getDescription()).as(failure.getClass().getSimpleName()).isEqualTo(dataPlane.getStatus().getDescription());
+    }
+  }
+
+  // Regression: #12550
+  /** The path that reaches it today: {@code ServerControlPlane.runImport} wraps whatever the importer raises on the caller's data. */
+  @Test
+  void aDuplicatedKeyRaisedByAnImportIsAConflictAndNotAServerFault() {
+    final Exception failure = new CommandExecutionException("Error importing database 'shop'",
+        new DuplicatedKeyException("User[email]", "[bob@example.com]", null));
+
+    final StatusException development = adminService(false).toStatus("importDatabase", failure);
+    assertThat(development.getStatus().getCode()).isEqualTo(Status.Code.ALREADY_EXISTS);
+    // The index and the key travel in the trailers the client rebuilds the DuplicatedKeyException from, as on the data plane
+    assertThat(development.getTrailers().get(GrpcErrorMapper.DUP_INDEX_KEY)).isEqualTo(GrpcErrorMapper.encodeTrailer("User[email]"));
+    assertThat(development.getTrailers().get(GrpcErrorMapper.DUP_KEYS_KEY)).isEqualTo(GrpcErrorMapper.encodeTrailer("[bob@example.com]"));
+
+    // Engine text, which carries a stored key value: concealed in production as the data plane conceals it, with the status
+    // and the trailers a driver acts on kept
+    final StatusException production = adminService(true).toStatus("importDatabase", failure);
+    assertThat(production.getStatus().getCode()).isEqualTo(Status.Code.ALREADY_EXISTS);
+    assertThat(production.getStatus().getDescription()).isEqualTo("importDatabase: " + GrpcErrorMapper.CONCEALED_DESCRIPTION)
+        .doesNotContain("bob@example.com");
+    assertThat(exceptionClassOf(production.getTrailers())).isEqualTo(DuplicatedKeyException.class.getName());
+    assertThat(production.getTrailers().get(GrpcErrorMapper.DUP_KEYS_KEY))
+        .isEqualTo(GrpcErrorMapper.encodeTrailer(ArcadeDBServer.CONCEALED_DUPLICATED_KEYS));
+  }
+
+  // Regression: #12550
+  /**
+   * An arm of a JDK type does not take a subtype the engine classifies elsewhere: an {@link EquivalentIndexException} is an
+   * {@link IllegalArgumentException} by inheritance and {@code ALREADY_EXISTS} by {@link ErrorCategory}, which ranks it above
+   * its supertype for that reason. A plain one, and one that only CARRIES another verdict in its cause, keep the arm.
+   */
+  @Test
+  void anArmOfAJdkTypeDoesNotTakeASubtypeTheEngineClassifiesElsewhere() {
+    final ArcadeDbGrpcAdminService service = adminService(false);
+
+    assertThat(service.toStatus("importDatabase", new EquivalentIndexException("An equivalent index already exists")).getStatus().getCode())
+        .isEqualTo(Status.Code.ALREADY_EXISTS);
+    assertThat(service.toStatus("createDatabase", new IllegalArgumentException("Database name is empty")).getStatus().getCode())
+        .isEqualTo(Status.Code.INVALID_ARGUMENT);
+    assertThat(service.toStatus("createDatabase",
+        new IllegalArgumentException("Cannot create database 'x'", new SchemaException("Type 'V' was not found"))).getStatus().getCode())
+        .as("a failure raised as itself keeps its own arm whatever its cause carries (issue #10158)")
+        .isEqualTo(Status.Code.INVALID_ARGUMENT);
+  }
+
+  /** The type of the declared divergence that answers {@code failure}, or {@code null} when the category is to decide. */
+  private static Class<? extends Throwable> deliberateDivergenceOf(final Exception failure) {
+    for (final Class<? extends Throwable> type : DELIBERATE_DIVERGENCES.keySet())
+      if (type.isInstance(failure))
+        return type;
+    return null;
   }
 
   private ArcadeDbGrpcAdminService adminService() {
