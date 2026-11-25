@@ -43,10 +43,12 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * @author lvca (l.garulli@arcadedata.com)
  */
 class MongoWideDecimalReadTest {
-  // a stored value many times wider than any Decimal128: converting its digits one by one takes seconds, deciding from its size does not
-  private static final int  WIDE_DIGITS             = 2_000_000;
-  // a tripwire between a decision taken from the size of the value (microseconds) and a conversion of its digits (seconds)
-  private static final long CONVERSION_BOUND_MILLIS = 250;
+  // a stored value many times wider than any Decimal128, whose double costs nothing to take (it is infinite), so that what is
+  // left to measure is the decision itself: from the size of the value it is microseconds, from a conversion of its digits one by one
+  // it is seconds at this width, growing faster than the number of digits
+  private static final int  WIDE_DIGITS             = 5_000_000;
+  // a tripwire between the two, which a slow runner cannot cross from below: the decision from the size is orders of magnitude under it
+  private static final long CONVERSION_BOUND_MILLIS = 500;
 
   @Test
   void aDecimalNoDecimal128CanHoldIsReadAsTheDoubleOfItsValue() {
@@ -93,11 +95,11 @@ class MongoWideDecimalReadTest {
 
   @Test
   void aDecimalOfMillionsOfDigitsIsReadWithoutConvertingItsDigits() {
-    // 1.000...07
-    final BigDecimal decimal = new BigDecimal(BigInteger.TEN.pow(WIDE_DIGITS).add(BigInteger.valueOf(7)), WIDE_DIGITS);
+    // 10^4999997: millions of digits and an exponent far beyond the largest one of a Decimal128
+    final BigDecimal decimal = new BigDecimal(BigInteger.TEN.pow(WIDE_DIGITS), 3);
 
-    assertThat(cpuMillisOf(() -> assertThat(MongoBsonValues.toBson(decimal)).isEqualTo(1D))).as("conversion of a DECIMAL of %d digits", WIDE_DIGITS)
-        .isLessThan(CONVERSION_BOUND_MILLIS);
+    assertThat(cpuMillisOf(() -> assertThat(MongoBsonValues.toBson(decimal)).isEqualTo(Double.POSITIVE_INFINITY))).as(
+        "conversion of a DECIMAL of %d digits", WIDE_DIGITS).isLessThan(CONVERSION_BOUND_MILLIS);
   }
 
   @Test
