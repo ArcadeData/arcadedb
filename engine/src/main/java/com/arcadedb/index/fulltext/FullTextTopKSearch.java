@@ -72,7 +72,8 @@ final class FullTextTopKSearch {
 
   /**
    * The best {@code limit} matches of the query with their scores, or every match without a limit ({@code limit < 1}); null when
-   * the query is not a disjunction of terms or the filter has a predicate on the records, for the caller to take the general path.
+   * the query is not a disjunction of terms, alone or ANDed with required terms (see {@link FullTextQueryExecutor#termShape}), or
+   * the filter has a predicate on the records, for the caller to take the general path.
    */
   static Map<RID, Float> search(final List<LSMTreeFullTextIndex> bucketIndexes, final String queryText, final int limit,
       final WorkGuard guard, final List<String> restrictedFields, final RIDFilter ridFilter) {
@@ -278,7 +279,8 @@ final class FullTextTopKSearch {
           boundRequired += Math.max(0.0, maxima[l]);
         ++l;
       }
-      final boolean hasRequired = boundRequired > 0.0 || optionalLists < lists;
+      // a required list adds its contribution ahead of the walked ones, out of token order: the score is computed again, in order
+      final boolean hasRequired = optionalLists < lists;
       this.requiredBound = boundRequired;
 
       // Ascending by maximum: the optional lists that cannot reach the threshold together are a prefix of this order. A required

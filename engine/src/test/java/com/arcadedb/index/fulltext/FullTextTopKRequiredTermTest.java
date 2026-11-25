@@ -26,8 +26,8 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashSet;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
@@ -65,7 +65,7 @@ class FullTextTopKRequiredTermTest extends TestHelper {
   void aGroupNoDocumentHoldsAnswersNothing() {
     create("DocNone", 2, 500, 9);
     final TypeIndex index = FullTextSearch.resolveFullTextIndex(database, "DocNone[body,grp]");
-    final Map<RID, Float> top = FullTextSearch.search(index, "(grp:\"nope\") AND (" + WORD(1) + " " + WORD(2) + ")", 10,
+    final Map<RID, Float> top = FullTextSearch.search(index, "(grp:\"nope\") AND (" + word(1) + " " + word(2) + ")", 10,
         WorkGuard.forCommandDeadline(null), null, null);
     assertThat(top).isEmpty();
   }
@@ -76,13 +76,73 @@ class FullTextTopKRequiredTermTest extends TestHelper {
     final TypeIndex index = FullTextSearch.resolveFullTextIndex(database, "DocShape[body,grp]");
     final LSMTreeFullTextIndex bucket = FullTextSearch.getBucketIndexes(index).getFirst();
     final FullTextQueryExecutor.TermShape shape = new FullTextQueryExecutor(bucket, WorkGuard.forCommandDeadline(null), null,
-        null).termShape("(grp:\"g1\") AND (" + WORD(1) + " " + WORD(2) + ")");
+        null).termShape("(grp:\"g1\") AND (" + word(1) + " " + word(2) + ")");
     assertThat(shape).isNotNull();
     assertThat(shape.required()).hasSize(1);
     assertThat(shape.tokens()).hasSize(3);
     // a negation or a phrase in front of the disjunction keeps the general path
     assertThat(new FullTextQueryExecutor(bucket, WorkGuard.forCommandDeadline(null), null, null).termShape(
-        "-grp:g1 AND (" + WORD(1) + " " + WORD(2) + ")")).isNull();
+        "-grp:g1 AND (" + word(1) + " " + word(2) + ")")).isNull();
+    // one distinct keyword is a conjunction of terms, repeated or not: `(x x)` keeps the general path as `(x)` does
+    assertThat(new FullTextQueryExecutor(bucket, WorkGuard.forCommandDeadline(null), null, null).termShape(
+        "(grp:\"g1\") AND (" + word(1) + ")")).isNull();
+    assertThat(new FullTextQueryExecutor(bucket, WorkGuard.forCommandDeadline(null), null, null).termShape(
+        "(grp:\"g1\") AND (" + word(1) + " " + word(1) + ")")).isNull();
+  }
+
+  @Test
+  void aRepeatedKeywordAnswersAsTheGeneralPath() {
+    create("DocRepeat", 4, 1_000, 11);
+    final TypeIndex index = FullTextSearch.resolveFullTextIndex(database, "DocRepeat[body,grp]");
+    for (final int limit : new int[] { 1, 10, 100, -1 }) {
+      assertSame(index, "(grp:\"g1\") AND (" + word(0) + " " + word(0) + ")", limit, false);
+      assertSame(index, "(grp:\"g1\") AND (" + word(0) + " " + word(0) + " " + word(1) + ")", limit, true);
+    }
+  }
+
+  /**
+   * Two distinct required tokens that both match: every one of them is probed and adds its largest contribution to the MaxScore
+   * bound, and a document lacking either is no match.
+   */
+  @Test
+  void twoDistinctRequiredTermsEqualTheGeneralPath() {
+    final String type = "DocTwoRequired";
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE " + type + " BUCKETS 3");
+      database.command("sql", "CREATE PROPERTY " + type + ".body STRING");
+      database.command("sql", "CREATE PROPERTY " + type + ".grp STRING");
+      database.command("sql", "CREATE INDEX ON " + type + " (body, grp) FULL_TEXT");
+    });
+    final Random random = new Random(42);
+    final String[] keywords = { "kwone", "kwtwo", "kwthree" };
+    database.transaction(() -> {
+      for (int i = 0; i < 2_000; i++) {
+        final StringBuilder body = new StringBuilder(words(random, 2 + random.nextInt(20)));
+        // the required tokens with varying frequencies, so their contributions differ from document to document
+        for (int r = i % 2 == 0 ? 1 + random.nextInt(3) : 0; r > 0; --r)
+          body.append(" reqone");
+        for (int r = i % 3 == 0 ? 1 + random.nextInt(3) : 0; r > 0; --r)
+          body.append(" reqtwo");
+        for (int k = random.nextInt(4); k > 0; --k)
+          body.append(' ').append(keywords[random.nextInt(keywords.length)]);
+        database.newDocument(type).set("body", body.toString()).set("grp", "g" + (i % 4)).save();
+      }
+    });
+    final TypeIndex index = FullTextSearch.resolveFullTextIndex(database, type + "[body,grp]");
+
+    final String bothRequired = "reqone AND reqtwo AND (kwone kwtwo kwthree)";
+    final FullTextQueryExecutor.TermShape shape = new FullTextQueryExecutor(FullTextSearch.getBucketIndexes(index).getFirst(),
+        WorkGuard.forCommandDeadline(null), null, null).termShape(bothRequired);
+    assertThat(shape).isNotNull();
+    assertThat(shape.required()).containsExactlyInAnyOrder("reqone", "reqtwo");
+
+    for (final String query : new String[] { bothRequired, "(grp:\"g0\") AND reqone AND (kwone kwtwo)",
+        "reqtwo AND reqone AND (kwthree^2 kwone)" }) {
+      assertThat(FullTextSearch.searchMatchingFirst(FullTextSearch.getBucketIndexes(index), query, -1,
+          WorkGuard.forCommandDeadline(null), null, null)).as("matches of %s", query).isNotEmpty();
+      for (final int limit : new int[] { 1, 5, 50, -1 })
+        assertSame(index, query, limit, true);
+    }
   }
 
   private void assertSame(final TypeIndex index, final String query, final int limit, final boolean expectTopK) {
@@ -131,14 +191,14 @@ class FullTextTopKRequiredTermTest extends TestHelper {
     }
   }
 
-  private static String WORD(final int i) {
+  private static String word(final int i) {
     return "w" + i + "x";
   }
 
   private static String words(final Random random, final int count) {
     final StringBuilder b = new StringBuilder();
     for (int i = 0; i < count; i++)
-      b.append(WORD(Math.min(VOCABULARY - 1, (int) Math.floor(Math.pow(VOCABULARY + 1, random.nextDouble())) - 1))).append(' ');
+      b.append(word(Math.min(VOCABULARY - 1, (int) Math.floor(Math.pow(VOCABULARY + 1, random.nextDouble())) - 1))).append(' ');
     return b.toString().trim();
   }
 }

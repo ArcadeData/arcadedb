@@ -390,29 +390,18 @@ public class FullTextQueryExecutor {
   }
 
   /**
-   * The scoring tokens of a query that is a disjunction of terms, each with its boost, in the order the BM25 pass sums them; or null
-   * for any other query (issue #12458). Such a query - terms, caret boosts and OR groups of them, which is also what a restriction to
-   * some fields turns an unqualified term into - matches exactly the documents holding one of its tokens and scores each with the
-   * tokens it holds, so {@link FullTextTopKSearch} can answer it from the postings alone. A required, prohibited, phrase, prefix,
-   * wildcard, fuzzy or regexp clause, or more tokens than {@link #MAX_EXPANDED_SCORING_TERMS} (beyond which a token matches but does
-   * not score), keep the general path.
-   */
-  LinkedHashMap<String, Float> termDisjunction(final String queryText) {
-    resetState();
-    final Query query = parseQuery(queryText);
-    if (!isTermDisjunction(query))
-      return null;
-    collectTokensOnly(query);
-    if (scoringTokens.isEmpty() || scoringTokens.size() >= MAX_EXPANDED_SCORING_TERMS)
-      return null;
-    return new LinkedHashMap<>(scoringTokens);
-  }
-
-  /**
-   * The tokens a query that {@link FullTextTopKSearch} can answer scores, with the ones every match must hold: the query is a
-   * disjunction of terms (see {@link #termDisjunction}), or terms ANDed with one such disjunction, as {@code (group_id:"a") AND
-   * (x y z)}, the shape that scopes a keyword search to a tenant. A document then matches when it holds every required token and one
-   * of the others, and scores the tokens it holds, as in the general path. Null for any other query.
+   * The scoring tokens, each with its boost in the order the BM25 pass sums them, of a query {@link FullTextTopKSearch} can answer
+   * from the postings alone, with the ones every match must hold; or null for any other query.
+   * <ul>
+   *   <li>a disjunction of terms (issue #12458): terms, caret boosts and OR groups of them, which is also what a restriction to some
+   *   fields turns an unqualified term into. It matches exactly the documents holding one of its tokens and scores each with the
+   *   tokens it holds; no token is required;</li>
+   *   <li>terms ANDed with one such disjunction of at least two distinct tokens (issue #13102), as {@code (group_id:"a") AND
+   *   (x y z)}, the shape that scopes a keyword search to a tenant. A document then matches when it holds every required token and
+   *   one of the others, and scores the tokens it holds, as in the general path.</li>
+   * </ul>
+   * A prohibited, phrase, prefix, wildcard, fuzzy or regexp clause, or more tokens than {@link #MAX_EXPANDED_SCORING_TERMS} (beyond
+   * which a token matches but does not score), keep the general path.
    */
   TermShape termShape(final String queryText) {
     resetState();
@@ -453,9 +442,13 @@ public class FullTextQueryExecutor {
     for (final String token : scoringTokens.keySet())
       if (required.contains(token))
         return null;
+    // one distinct keyword, `(x x)` as much as `(x)`, makes a conjunction of terms, which the general path answers (each bucket's
+    // best matches): `(x)` unwraps to a single term and is required, so `(x x)` must not take another path than it
+    if (scoringTokens.size() < 2)
+      return null;
     resetState();
     collectTokensOnly(query);
-    if (required.isEmpty() || scoringTokens.size() >= MAX_EXPANDED_SCORING_TERMS || scoringTokens.size() <= required.size())
+    if (required.isEmpty() || scoringTokens.size() >= MAX_EXPANDED_SCORING_TERMS)
       return null;
     return new TermShape(new LinkedHashMap<>(scoringTokens), required);
   }
