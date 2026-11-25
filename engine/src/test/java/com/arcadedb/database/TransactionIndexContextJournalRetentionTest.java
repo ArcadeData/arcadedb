@@ -18,6 +18,7 @@
  */
 package com.arcadedb.database;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import org.junit.jupiter.api.Test;
 
@@ -48,6 +49,32 @@ class TransactionIndexContextJournalRetentionTest extends TestHelper {
         .isLessThanOrEqualTo(TransactionIndexContext.RECORD_UNDO_RETAINED);
     database.commit();
     assertThat(indexChanges.recordUndoHolders()).as("holders kept after the commit")
+        .isLessThanOrEqualTo(TransactionIndexContext.RECORD_UNDO_RETAINED);
+  }
+
+  /**
+   * A statement that queues more than the journal may hold drops the holders of the records it already indexed, which leaves few holders
+   * in an array as long as the limit: the slots of the array are heap too, and go with the statement like the holders do.
+   */
+  @Test
+  void aStatementThatOutgrewTheJournalLimitDoesNotLeaveTheArrayOfItBehind() {
+    database.command("sql", "CREATE VERTEX TYPE V").close();
+    database.command("sql", "CREATE PROPERTY V.a STRING").close();
+    database.command("sql", "CREATE PROPERTY V.b STRING").close();
+    database.command("sql", "CREATE INDEX ON V (a) NOTUNIQUE").close();
+    database.command("sql", "CREATE INDEX ON V (b) NOTUNIQUE").close();
+    database.getConfiguration().setValue(GlobalConfiguration.TX_STATEMENT_SAVEPOINT_MAX_ENTRIES,
+        4 * TransactionIndexContext.RECORD_UNDO_RETAINED);
+
+    database.begin();
+    final TransactionIndexContext indexChanges = ((TransactionContext) ((DatabaseInternal) database).getTransaction()).getIndexChanges();
+    // 6,000 entries in one statement, past the limit of 1,024: the journal is abandoned part way
+    database.command("opencypher", "UNWIND range(1, 3000) AS i CREATE (:V {a: 'a' + i, b: 'b' + i})").close();
+
+    assertThat(indexChanges.recordUndoCapacity()).as("slots kept after the statement")
+        .isLessThanOrEqualTo(TransactionIndexContext.RECORD_UNDO_RETAINED);
+    database.commit();
+    assertThat(indexChanges.recordUndoCapacity()).as("slots kept after the commit")
         .isLessThanOrEqualTo(TransactionIndexContext.RECORD_UNDO_RETAINED);
   }
 }
