@@ -86,6 +86,7 @@ import com.arcadedb.query.sql.parser.LikeOperator;
 import com.arcadedb.query.sql.parser.LtOperator;
 import com.arcadedb.query.sql.parser.MathExpression;
 import com.arcadedb.query.sql.parser.MethodCall;
+import com.arcadedb.query.sql.parser.Modifier;
 import com.arcadedb.query.sql.parser.NeOperator;
 import com.arcadedb.query.sql.parser.NeqOperator;
 import com.arcadedb.query.sql.parser.Node;
@@ -128,11 +129,13 @@ import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.schema.TypeHierarchy;
 import com.arcadedb.schema.TypeIndexBuilder;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.serializer.BinaryComparator;
+import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.Pair;
@@ -2083,7 +2086,7 @@ public class SelectExecutionPlanner {
       handleIndexAsTarget(info.fetchExecutionPlan, info, target.getIndex(), null, context);
     } else if (target.getSchema() != null) {
       handleSchemaAsTarget(info.fetchExecutionPlan, target.getSchema(), context);
-    } else if (target.getRids() != null && !target.getRids().isEmpty()) {
+    } else if (target.getRids() != null) {
       final Set<String> filterClusters = info.buckets;
       final List<Rid> rids = new ArrayList<>();
       for (final Rid rid : target.getRids()) {
@@ -2595,9 +2598,6 @@ public class SelectExecutionPlanner {
 
     try {
       skipSize = info.skip == null ? 0 : info.skip.getValue(context);
-      if (skipSize < 0)
-        throw new CommandExecutionException("Cannot execute a query with a negative SKIP");
-
       limitSize = info.limit == null ? -1 : info.limit.getValue(context);
     } catch (final Exception e) {
       // Limit/skip value depends on runtime context (e.g., LET variables)
@@ -2915,6 +2915,13 @@ public class SelectExecutionPlanner {
   }
 
   private static boolean canReadTypeHierarchy(final DatabaseInternal database, final DocumentType type) {
+    if (!canReadType(database, type))
+      return false;
+    // each type below once, whatever the number of paths that lead down to it
+    return !TypeHierarchy.anySubType(type, subType -> !canReadType(database, subType));
+  }
+
+  private static boolean canReadType(final DatabaseInternal database, final DocumentType type) {
     final List<Integer> bucketIds = type.getBucketIds(false);
     if (bucketIds.isEmpty()) {
       // A type with no bucket of its own is granted by name
@@ -2927,19 +2934,14 @@ public class SelectExecutionPlanner {
       for (final Integer bucketId : bucketIds)
         if (!SecurityHelper.canAccessFile(database, bucketId, SecurityDatabaseUser.ACCESS.READ_RECORD))
           return false;
-    for (final DocumentType subType : type.getSubTypes())
-      if (!canReadTypeHierarchy(database, subType))
-        return false;
     return true;
   }
 
   private static boolean keepsIncomingLists(final DocumentType type) {
     if (type instanceof EdgeType edgeType && !edgeType.isBidirectional())
       return false;
-    for (final DocumentType subType : type.getSubTypes())
-      if (!keepsIncomingLists(subType))
-        return false;
-    return true;
+    // each type below once, whatever the number of paths that lead down to it
+    return !TypeHierarchy.anySubType(type, subType -> subType instanceof EdgeType edgeType && !edgeType.isBidirectional());
   }
 
   /**
@@ -4325,7 +4327,8 @@ public class SelectExecutionPlanner {
 
     final String timestampColumn = tsType.getTimestampColumn();
     for (final ProjectionItem item : projection.getItems()) {
-      final FunctionCall funcCall = extractFunctionCall(item.expression);
+      // ts.last(v, ts).asString() still needs the newest row only: the method reshapes the aggregated value (#12799)
+      final FunctionCall funcCall = extractFunctionCallWithValueModifier(item.expression, context);
       if (funcCall == null || !SQLFunctionTsLast.NAME.equalsIgnoreCase(funcCall.getName().getStringValue()))
         return false;
       final List<Expression> params = funcCall.getParams();
@@ -4823,18 +4826,48 @@ public class SelectExecutionPlanner {
 
   /**
    * Extracts a FunctionCall from an Expression if it's a simple function call.
-   * Returns null if the expression is not a simple function call.
+   * Returns null if the expression is not a simple function call, including a call followed by a
+   * modifier ({@code .method()}, {@code [index]}, {@code .field}): its value is not the call's value (#12799).
    */
   private static FunctionCall extractFunctionCall(final Expression expr) {
+    final BaseExpression base = functionCallBase(expr);
+    return base == null || base.modifier != null ? null : base.identifier.levelZero.functionCall;
+  }
+
+  /**
+   * Same as {@link #extractFunctionCall(Expression)}, but also accepts a call followed by a modifier that only reshapes the
+   * call's value: a chain of {@code .field} suffixes and of method calls whose arguments are record-free and hold no aggregate
+   * ({@code .asString()}, {@code .format('HH')}). Such a modifier is applied to the aggregated value after the aggregation, so it
+   * cannot change which rows the aggregate needs (#12799). Anything else (an index or range selector, a filter, a nested
+   * projection, an argument that reads the record or aggregates) declines.
+   */
+  private static FunctionCall extractFunctionCallWithValueModifier(final Expression expr, final CommandContext context) {
+    final BaseExpression base = functionCallBase(expr);
+    if (base == null)
+      return null;
+    for (Modifier m = base.modifier; m != null; m = m.next) {
+      if (m.squareBrackets || m.nestedProjection != null)
+        return null;
+      if (m.methodCall != null) {
+        if (!m.methodCall.isEarlyCalculated(context))
+          return null;
+        for (final Expression param : m.methodCall.params)
+          if (param.isAggregate(context))
+            return null;
+      } else if (m.suffix == null)
+        return null;
+    }
+    return base.identifier.levelZero.functionCall;
+  }
+
+  private static BaseExpression functionCallBase(final Expression expr) {
     if (expr == null || expr.mathExpression == null)
       return null;
     if (!(expr.mathExpression instanceof BaseExpression base))
       return null;
-    if (base.identifier == null)
+    if (base.identifier == null || base.identifier.levelZero == null || base.identifier.levelZero.functionCall == null)
       return null;
-    if (base.identifier.levelZero != null && base.identifier.levelZero.functionCall != null)
-      return base.identifier.levelZero.functionCall;
-    return null;
+    return base;
   }
 
   /**
@@ -5504,7 +5537,7 @@ public class SelectExecutionPlanner {
         final String varName = item.getVarName().getStringValue();
         // A lifted sub-query's alias (_$$$SUBQUERY$$$_0) carries no leading sigil, so variableNamesIn() never reads it
         // whole: look for it as a word of its own, so that _$$$SUBQUERY$$$_1 is not found in _$$$SUBQUERY$$$_10 (issue #12287)
-        if (SubQueryCollector.isGeneratedAlias(varName) && mentionsWord(rendered, varName))
+        if (SubQueryCollector.isGeneratedAlias(varName) && (mentionsWord(rendered, varName) || rendersLiftedSubquery(rendered, item)))
           return true;
       }
       for (final String name : variableNamesIn(rendered))
@@ -5514,6 +5547,19 @@ public class SelectExecutionPlanner {
     }
 
     return false;
+  }
+
+  /**
+   * Whether {@code rendered} holds the sub-query a generated LET alias was lifted from, written in place. A sub-query read
+   * by {@code =}, {@code <}, a method such as {@code .size()} or a projection stays in the condition as itself and only
+   * reads the alias when it runs (issue #13179), so the alias is never in the rendered text: a filter on
+   * {@code (SELECT ... $parent.$current ...).size() > 0} was planned inside the index fetch, ahead of the LET computing it,
+   * and read no value for every row (issue #12287). The text can only match too generously, which defers a filter behind
+   * the LET: a plan, never a row.
+   */
+  private static boolean rendersLiftedSubquery(final String rendered, final LetItem item) {
+    final Statement query = item.getQuery();
+    return query != null && rendered.contains("(" + query + ")");
   }
 
   /**
@@ -7262,9 +7308,12 @@ public class SelectExecutionPlanner {
 
       final boolean supportNull = index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.INDEX;
       final boolean ciCollation = isIndexCaseInsensitive(index, indexFields.indexOf(indexField));
-      final IndexSearchInfo info = new IndexSearchInfo(baseFieldName, allowsRangeQueries(index), isMap(clazz, baseFieldName),
-          isIndexByKey(index, baseFieldName), isIndexByValue(index, baseFieldName), isIndexByItem(index, baseFieldName), supportNull,
-          ciCollation, context);
+      final boolean byItem = isIndexByItem(index, baseFieldName);
+      final boolean byKey = isIndexByKey(index, baseFieldName);
+      final boolean byValue = isIndexByValue(index, baseFieldName);
+      final boolean wholeCollection = !byItem && !byKey && !byValue && isWholeCollectionKey(index, indexFields.indexOf(indexField));
+      final IndexSearchInfo info = new IndexSearchInfo(baseFieldName, allowsRangeQueries(index) && !wholeCollection,
+          isMap(clazz, baseFieldName), byKey, byValue, byItem, supportNull, ciCollation, context);
       if (!ciCollation && info.allowsRange() && baseFieldName.equals(indexField))
         addLikePrefixRange(blockCopy, info, clazz);
       blockIterator = blockCopy.getSubBlocks().iterator();
@@ -7608,6 +7657,18 @@ public class SelectExecutionPlanner {
 
   private boolean allowsRangeQueries(final Index index) {
     return index.supportsOrderedIterations();
+  }
+
+  /**
+   * Whether the key at {@code position} is a whole LIST or MAP value. The index orders such keys value by value, while a range
+   * predicate on the property (li &lt; 5) is evaluated against the items of the collection, so only the scan answers it (issue
+   * #12792).
+   */
+  private static boolean isWholeCollectionKey(final Index index, final int position) {
+    if (!(index instanceof IndexInternal internal) || position < 0)
+      return false;
+    final byte[] keyTypes = internal.getBinaryKeyTypes();
+    return position < keyTypes.length && (keyTypes[position] == BinaryTypes.TYPE_LIST || keyTypes[position] == BinaryTypes.TYPE_MAP);
   }
 
   private boolean isMap(final DocumentType clazz, final String indexField) {

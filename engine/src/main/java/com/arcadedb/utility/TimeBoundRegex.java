@@ -300,6 +300,31 @@ public final class TimeBoundRegex {
             + " alternatives, optional anchors or repeated empty groups");
   }
 
+  /**
+   * What a pattern can do between two reads of its input, for a caller that bounds a match by counting the characters it reads
+   * instead of looking at a clock (see {@link #readFreeWork(Pattern)}).
+   *
+   * @param refused    the pattern can succeed in more ways, or take more steps in one attempt, than a match that reads nothing may:
+   *                   it is not to be run
+   * @param perAttempt the steps one attempt can take without reading a character, at the end of the input, where every test that
+   *                   reads fails and every other one succeeds: it is also what the steps between two reads cost at most
+   * @param perStart   the steps each start position of a search can take without reading, in the middle of the input
+   */
+  public record ReadFreeWork(boolean refused, long perAttempt, long perStart) {
+  }
+
+  /**
+   * Measures the steps {@code pattern} can take without reading a character of its input, the ones a bound that counts reads
+   * cannot see ({@link RegexReadFreeWork}), with the same limits {@link #matchesUntil} refuses a pattern by. The measure of each
+   * pattern text is kept, so asking again for a pattern met before costs a lookup; a caller that matches the same pattern against
+   * many inputs asks once.
+   */
+  public static ReadFreeWork readFreeWork(final Pattern pattern) {
+    final RegexReadFreeWork.Measure measure = readFreeMeasure(pattern);
+    return new ReadFreeWork(measure.maxWays() > MAX_READ_FREE_WAYS || measure.work() > MAX_READ_FREE_WORK, measure.work(),
+        measure.scanWork());
+  }
+
   private static String count(final long value) {
     return value >= RegexReadFreeWork.SATURATED ? "too many" : Long.toString(value);
   }

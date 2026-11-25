@@ -29,8 +29,10 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Date;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -482,6 +484,236 @@ class NumberComparisonTest {
       assertThat(Type.isExactAsDouble(-(1L << 53))).isTrue();
       assertThat(Type.isExactAsDouble((1L << 53) + 1)).isFalse();
       assertThat(Type.isExactAsDouble(Long.MIN_VALUE)).isFalse();
+    }
+  }
+
+  /**
+   * Regression for #12694: the BigDecimal arms of {@link Type#castComparableNumber} (and the DECIMAL arm of
+   * {@link BinaryComparator#compare}) converted the other operand with {@code BigDecimal.valueOf(double)} or
+   * {@code floatToBigDecimal}, which throw {@link NumberFormatException} for an infinity or NaN, so {@code WHERE dec < (1.0 / 0)}
+   * failed where the same predicate on any other numeric property answers every row.
+   */
+  @Nested
+  class DecimalAgainstNonFinite extends TestHelper {
+    private final BigDecimal[] decimals   = { new BigDecimal("-1E+400"), new BigDecimal("-1.5"), BigDecimal.ZERO, new BigDecimal("2"),
+        new BigDecimal("1E+400") };
+    private final Number[]     nonFinites = { Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, Double.NaN, Float.POSITIVE_INFINITY,
+        Float.NEGATIVE_INFINITY, Float.NaN };
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void aDecimalOrdersBelowPositiveInfinityAndNaNAndAboveNegativeInfinityInBothOperandOrders() {
+      for (final BigDecimal decimal : decimals)
+        for (final Number nonFinite : nonFinites) {
+          final int expected = Double.isNaN(nonFinite.doubleValue()) || nonFinite.doubleValue() > 0 ? -1 : 1;
+
+          final Number[] forward = Type.castComparableNumber(decimal, nonFinite);
+          assertThat(Integer.signum(((Comparable<Object>) forward[0]).compareTo(forward[1])))
+              .as("%s vs %s", decimal, nonFinite).isEqualTo(expected);
+
+          final Number[] reverse = Type.castComparableNumber(nonFinite, decimal);
+          assertThat(Integer.signum(((Comparable<Object>) reverse[0]).compareTo(reverse[1])))
+              .as("%s vs %s", nonFinite, decimal).isEqualTo(-expected);
+        }
+    }
+
+    @Test
+    void theUntypedComparatorOrdersADecimalAgainstANonFiniteNumber() {
+      for (final BigDecimal decimal : decimals)
+        for (final Number nonFinite : nonFinites) {
+          final int expected = Double.isNaN(nonFinite.doubleValue()) || nonFinite.doubleValue() > 0 ? -1 : 1;
+          assertThat(Integer.signum(BinaryComparator.compareTo(decimal, nonFinite))).as("%s vs %s", decimal, nonFinite).isEqualTo(expected);
+          assertThat(Integer.signum(BinaryComparator.compareTo(nonFinite, decimal))).as("%s vs %s", nonFinite, decimal).isEqualTo(-expected);
+        }
+    }
+
+    @Test
+    void theTypedComparatorOrdersADecimalKeyAgainstANonFiniteBound() {
+      final BinaryComparator comparator = new BinaryComparator();
+      for (final BigDecimal decimal : decimals)
+        for (final Number nonFinite : nonFinites) {
+          final byte type = nonFinite instanceof Float ? BinaryTypes.TYPE_FLOAT : BinaryTypes.TYPE_DOUBLE;
+          final int expected = Double.isNaN(nonFinite.doubleValue()) || nonFinite.doubleValue() > 0 ? -1 : 1;
+
+          assertThat(Integer.signum(comparator.compare(decimal, BinaryTypes.TYPE_DECIMAL, nonFinite, type)))
+              .as("%s vs %s", decimal, nonFinite).isEqualTo(expected);
+          assertThat(Integer.signum(comparator.compare(nonFinite, type, decimal, BinaryTypes.TYPE_DECIMAL)))
+              .as("%s vs %s", nonFinite, decimal).isEqualTo(-expected);
+        }
+    }
+
+    @Test
+    void aDecimalPropertyAnswersTheSameAsADoublePropertyForAnInfiniteOrNaNBound() {
+      database.transaction(() -> {
+        database.command("sql", "CREATE DOCUMENT TYPE NonFinite");
+        database.command("sql", "CREATE PROPERTY NonFinite.dec DECIMAL");
+        database.command("sql", "CREATE PROPERTY NonFinite.dbl DOUBLE");
+        for (int i = 1; i <= 3; i++)
+          database.command("sql", "INSERT INTO NonFinite SET dec = " + i + ", dbl = " + i + ".5");
+      });
+
+      final String[] bounds = { "(1.0 / 0)", "(-1.0 / 0)", "(0.0 / 0)", "1e999" };
+      for (final String operator : new String[] { "<", "<=", ">", ">=", "<>", "=" })
+        for (final String bound : bounds)
+          assertThat(count("dec " + operator + " " + bound)).as("dec %s %s", operator, bound)
+              .isEqualTo(count("dbl " + operator + " " + bound));
+
+      assertThat(count("dec < (1.0 / 0)")).isEqualTo(3);
+      assertThat(count("dec > (-1.0 / 0)")).isEqualTo(3);
+      assertThat(count("dec > (1.0 / 0)")).isZero();
+      assertThat(count("dec < (-1.0 / 0)")).isZero();
+    }
+
+    @Test
+    void betweenAnswersAsTheTwoComparisonsForANonFiniteValueAndADecimalBound() {
+      // the bound used to be converted to the value's class: 1E+400 read as Infinity, so Infinity was between 0 and 1E+400
+      database.transaction(() -> {
+        database.command("sql", "CREATE DOCUMENT TYPE NonFinite");
+        database.command("sql", "CREATE PROPERTY NonFinite.dbl DOUBLE");
+        for (final double value : new double[] { Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, Double.NaN, 1.5d })
+          database.newDocument("NonFinite").set("dbl", value).save();
+      });
+
+      final BigDecimal[] bounds = { new BigDecimal("-1E+400"), BigDecimal.ZERO, new BigDecimal("1E+400") };
+      for (final BigDecimal from : bounds)
+        for (final BigDecimal to : bounds)
+          assertThat(count("dbl BETWEEN ? AND ?", from, to)).as("between %s and %s", from, to)
+              .isEqualTo(count("dbl >= ? AND dbl <= ?", from, to));
+      assertThat(count("dbl BETWEEN ? AND ?", BigDecimal.ZERO, new BigDecimal("1E+400"))).isEqualTo(1);
+      assertThat(count("dbl BETWEEN ? AND ?", new BigDecimal("-1E+400"), BigDecimal.ZERO)).isZero();
+    }
+
+    private long count(final String where, final Object... args) {
+      try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM NonFinite WHERE " + where, args)) {
+        return rs.next().<Long>getProperty("c");
+      }
+    }
+  }
+
+  /**
+   * Regression for #12681: with a {@code Short} on the left and a {@code Byte} on the right, {@link Type#castComparableNumber}
+   * converted the short to a byte instead of widening the byte to a short, so every short outside -128..127 wrapped
+   * (32767 became -1, 256 became 0) before it was compared. The mirror pair (a byte on the left) widened correctly, so
+   * {@code sh > bt} and {@code bt < sh} answered different rows.
+   */
+  @Nested
+  class ShortAgainstByte extends TestHelper {
+    private final short[] shorts = { Short.MIN_VALUE, -129, -128, -1, 0, 1, 127, 128, 255, 256, 257, Short.MAX_VALUE };
+    private final byte[]  bytes  = { Byte.MIN_VALUE, -1, 0, 1, 5, Byte.MAX_VALUE };
+
+    @Test
+    void aShortIsWidenedNotNarrowedAgainstAByte() {
+      final Number[] couple = Type.castComparableNumber((short) 32767, (byte) 5);
+
+      assertThat(couple[0]).as("the short keeps its value").isEqualTo((short) 32767);
+      assertThat(couple[1].shortValue()).isEqualTo((short) 5);
+    }
+
+    @Test
+    void everyShortAgainstEveryByteEqualsExactlyWhenTheNumbersAreEqual() {
+      for (final short s : shorts)
+        for (final byte b : bytes) {
+          assertThat(Type.numbersEqual(s, b)).as("Short %d = Byte %d", s, b).isEqualTo(s == b);
+          assertThat(Type.numbersEqual(b, s)).as("Byte %d = Short %d", b, s).isEqualTo(s == b);
+          assertThat(BinaryComparator.equals(s, b)).as("BinaryComparator.equals(Short %d, Byte %d)", s, b).isEqualTo(s == b);
+        }
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void theOrderOfAShortAgainstAByteIsTheOrderOfTheNumbersAndIsAntisymmetric() {
+      for (final short s : shorts)
+        for (final byte b : bytes) {
+          final Number[] couple = Type.castComparableNumber(s, b);
+          final int forward = Integer.signum(((Comparable<Object>) couple[0]).compareTo(couple[1]));
+          assertThat(forward).as("Short %d vs Byte %d", s, b).isEqualTo(Integer.signum(Short.compare(s, b)));
+
+          final Number[] reverse = Type.castComparableNumber(b, s);
+          assertThat(Integer.signum(((Comparable<Object>) reverse[0]).compareTo(reverse[1])))
+              .as("Byte %d vs Short %d", b, s).isEqualTo(-forward);
+        }
+    }
+
+    @Test
+    void sqlComparesAShortPropertyWithAByteProperty() {
+      database.transaction(() -> {
+        database.command("sql", "CREATE DOCUMENT TYPE Narrow");
+        database.command("sql", "CREATE PROPERTY Narrow.id INTEGER");
+        database.command("sql", "CREATE PROPERTY Narrow.sh SHORT");
+        database.command("sql", "CREATE PROPERTY Narrow.bt BYTE");
+        database.command("sql", "INSERT INTO Narrow SET id = 1, sh = 32767, bt = 5");
+        database.command("sql", "INSERT INTO Narrow SET id = 2, sh = -32768, bt = 5");
+        database.command("sql", "INSERT INTO Narrow SET id = 3, sh = 256, bt = 0");
+        database.command("sql", "INSERT INTO Narrow SET id = 4, sh = 4, bt = 5");
+      });
+
+      assertThat(ids("sh > bt")).containsExactly(1, 3);
+      assertThat(ids("bt < sh")).containsExactly(1, 3);
+      assertThat(ids("sh >= bt")).containsExactly(1, 3);
+      assertThat(ids("sh < bt")).containsExactly(2, 4);
+      assertThat(ids("bt > sh")).containsExactly(2, 4);
+      assertThat(ids("sh <= bt")).containsExactly(2, 4);
+      assertThat(ids("sh = bt")).isEmpty();
+      assertThat(ids("bt = sh")).isEmpty();
+      assertThat(ids("sh <> bt")).containsExactly(1, 2, 3, 4);
+    }
+
+    @Test
+    void sqlComparesAShortPropertyWithAByteParameter() {
+      database.transaction(() -> {
+        database.command("sql", "CREATE DOCUMENT TYPE NarrowParam");
+        database.command("sql", "CREATE PROPERTY NarrowParam.id INTEGER");
+        database.command("sql", "CREATE PROPERTY NarrowParam.sh SHORT");
+        database.command("sql", "INSERT INTO NarrowParam SET id = 1, sh = 32767");
+        database.command("sql", "INSERT INTO NarrowParam SET id = 2, sh = -32768");
+        database.command("sql", "INSERT INTO NarrowParam SET id = 3, sh = 256");
+        database.command("sql", "INSERT INTO NarrowParam SET id = 4, sh = 0");
+      });
+
+      assertThat(idsOfParam("sh > ?", (byte) 5)).containsExactly(1, 3);
+      assertThat(idsOfParam("sh < ?", (byte) 5)).containsExactly(2, 4);
+      assertThat(idsOfParam("sh = ?", (byte) 0)).containsExactly(4);
+    }
+
+    /**
+     * min() and max() meet a Short and a Byte through the same {@link Type#castComparableNumber}: the short used to wrap, so
+     * max(0, 256) answered 0 and min(5, -32768) answered 0.
+     */
+    @Test
+    void sqlMinAndMaxOfAShortAndAByteCompareTheNumbers() {
+      database.transaction(() -> {
+        database.command("sql", "CREATE DOCUMENT TYPE NarrowMinMax");
+        database.command("sql", "CREATE PROPERTY NarrowMinMax.id INTEGER");
+        database.command("sql", "CREATE PROPERTY NarrowMinMax.sh SHORT");
+        database.command("sql", "CREATE PROPERTY NarrowMinMax.bt BYTE");
+        database.command("sql", "INSERT INTO NarrowMinMax SET id = 1, sh = 256, bt = 0");
+        database.command("sql", "INSERT INTO NarrowMinMax SET id = 2, sh = -32768, bt = 5");
+      });
+
+      assertThat(minMax("max(bt, sh)", 1)).isEqualTo(256);
+      assertThat(minMax("max(sh, bt)", 1)).isEqualTo(256);
+      assertThat(minMax("min(bt, sh)", 2)).isEqualTo(-32768);
+      assertThat(minMax("min(sh, bt)", 2)).isEqualTo(-32768);
+    }
+
+    private int minMax(final String function, final int id) {
+      try (final ResultSet rs = database.query("sql", "SELECT " + function + " AS v FROM NarrowMinMax WHERE id = ?", id)) {
+        return rs.next().<Number>getProperty("v").intValue();
+      }
+    }
+
+    private List<Integer> ids(final String where) {
+      return idsOfParam(where, new Object[0]);
+    }
+
+    private List<Integer> idsOfParam(final String where, final Object... params) {
+      final String type = where.contains("?") ? "NarrowParam" : "Narrow";
+      final List<Integer> ids = new ArrayList<>();
+      try (final ResultSet rs = database.query("sql", "SELECT id FROM " + type + " WHERE " + where + " ORDER BY id", params)) {
+        while (rs.hasNext())
+          ids.add(rs.next().<Integer>getProperty("id"));
+      }
+      return ids;
     }
   }
 }

@@ -542,6 +542,30 @@ public enum Type {
   }
 
   /**
+   * {@link #canBeIndexLookupKey(Database, Object, Class)} for a key of the binary type {@code keyType}, which also holds the
+   * collection key types to it (issue #12792): a LIST key is only read from a collection or an array, a MAP key only from a map.
+   * Any other value was left as it was (or serialized) and cast by the key comparison, while it matches no row without the index.
+   */
+  public static boolean canBeIndexLookupKey(final Database database, final Object value, final byte keyType) {
+    return canBeCollectionIndexKey(value, keyType) && canBeIndexLookupKey(database, value, BinaryTypes.getClassFromType(keyType));
+  }
+
+  /** {@link #isReadAsIndexKey(Object, Object, Class)} for a key of the binary type {@code keyType}, collection key types included. */
+  public static boolean isReadAsIndexKey(final Object original, final Object converted, final byte keyType) {
+    return canBeCollectionIndexKey(original, keyType) && isReadAsIndexKey(original, converted, BinaryTypes.getClassFromType(keyType));
+  }
+
+  private static boolean canBeCollectionIndexKey(final Object value, final byte keyType) {
+    if (value == null)
+      return true;
+    return switch (keyType) {
+      case BinaryTypes.TYPE_LIST -> value instanceof Collection || value.getClass().isArray();
+      case BinaryTypes.TYPE_MAP -> value instanceof Map;
+      default -> true;
+    };
+  }
+
+  /**
    * Whether {@code targetClass} is one of the scalar key classes the index lookup checks hold to: string, boolean, numbers and
    * temporals.
    */
@@ -819,6 +843,9 @@ public enum Type {
 
     try {
       if (targetClass.equals(String.class)) {
+        // A value read from text whose type the client left unspecified is that text as a STRING (issue #12711)
+        if (value instanceof SourceText source)
+          return source.sourceText();
         // An array's toString() is its class code and identity hash ("[B@72e34f77"): not the content, not stable, and not
         // reversible. Refuse it rather than store that (issue #9041), except the two arrays an HTTP request leaves in a value
         // (see unwrapNestedPrimitiveArrays): a list nested in a map parameter arrives as a long[] / double[] and is stored as
@@ -2207,6 +2234,15 @@ public enum Type {
   }
 
   /**
+   * The {@code double} a decimal is compared with once the other operand is an infinity or NaN, which has no decimal form: the
+   * decimal itself, or the largest double of its sign when it lies past the double range, so it still orders below an infinity.
+   */
+  public static double finiteDoubleValue(final BigDecimal value) {
+    final double converted = value.doubleValue();
+    return Double.isFinite(converted) ? converted : value.signum() < 0 ? -Double.MAX_VALUE : Double.MAX_VALUE;
+  }
+
+  /**
    * Builds the {@link BigDecimal} that reads the same in decimal as the given floating point operand, so an
    * integral operand too large for {@code double} can be compared against it exactly. A {@code Float} goes through
    * {@link #floatToBigDecimal} and everything else through {@code BigDecimal.valueOf(double)}, both of which read
@@ -2354,7 +2390,8 @@ public enum Type {
       else if (right instanceof BigDecimal)
         left = new BigDecimal(left.intValue());
       else if (right instanceof Byte)
-        left = left.byteValue();
+        // the byte widens: narrowing the short to a byte wraps every value outside -128..127 (issue #12681)
+        right = right.shortValue();
       else if (right instanceof BigInteger bigInteger1) {
         // Mirrors the BigDecimal arm above: a BigInteger on the right has no narrower common type, so both
         // operands promote to BigDecimal (issue #7669).
@@ -2420,9 +2457,14 @@ public enum Type {
       // FLOAT
       if (right instanceof Double)
         left = widenFloat(left.floatValue());
-      else if (right instanceof BigDecimal)
-        left = floatToBigDecimal(left.floatValue());
-      else if (right instanceof Byte || right instanceof Short)
+      else if (right instanceof BigDecimal bigDecimal) {
+        if (isFinite(left))
+          left = floatToBigDecimal(left.floatValue());
+        else {
+          left = left.doubleValue();
+          right = finiteDoubleValue(bigDecimal);
+        }
+      } else if (right instanceof Byte || right instanceof Short)
         right = right.floatValue();
       else if (right instanceof Integer) {
         // Symmetric case of the INTEGER branch above: narrowing the integral operand to float would lose
@@ -2455,9 +2497,12 @@ public enum Type {
 
     } else if (left instanceof Double) {
       // DOUBLE
-      if (right instanceof BigDecimal)
-        left = BigDecimal.valueOf(left.doubleValue());
-      else if (right instanceof Float float1)
+      if (right instanceof BigDecimal bigDecimal) {
+        if (isFinite(left))
+          left = BigDecimal.valueOf(left.doubleValue());
+        else
+          right = finiteDoubleValue(bigDecimal);
+      } else if (right instanceof Float float1)
         right = widenFloat(float1);
       else if (right instanceof Long long1) {
         // Symmetric case of the LONG branch above (issue #7628)
@@ -2517,7 +2562,7 @@ public enum Type {
       } else if (right instanceof BigDecimal)
         left = new BigDecimal(bigInteger);
 
-    } else if (left instanceof BigDecimal) {
+    } else if (left instanceof BigDecimal bigDecimal) {
       // DOUBLE
       if (right instanceof Integer integer)
         right = new BigDecimal(integer);
@@ -2525,11 +2570,20 @@ public enum Type {
         // The Long case was missing, so the couple came back as (BigDecimal, Long) and the caller's compareTo()
         // threw ClassCastException - `WHERE decimalProperty > 3000000000` crashed rather than answered (issue #7609).
         right = new BigDecimal(long1);
-      else if (right instanceof Float float1)
-        right = floatToBigDecimal(float1);
-      else if (right instanceof Double double1)
-        right = BigDecimal.valueOf(double1);
-      else if (right instanceof Short short1)
+      else if (right instanceof Float float1) {
+        if (isFinite(float1))
+          right = floatToBigDecimal(float1);
+        else {
+          // an infinity or NaN has no decimal form: both meet at double, the decimal clamped so it still orders below an infinity (issue #12694)
+          left = finiteDoubleValue(bigDecimal);
+          right = float1.doubleValue();
+        }
+      } else if (right instanceof Double double1) {
+        if (Double.isFinite(double1))
+          right = BigDecimal.valueOf(double1);
+        else
+          left = finiteDoubleValue(bigDecimal);
+      } else if (right instanceof Short short1)
         right = new BigDecimal(short1);
       else if (right instanceof Byte byte1)
         right = new BigDecimal(byte1);
