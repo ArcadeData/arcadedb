@@ -29,6 +29,7 @@ import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.fulltext.FullTextSearch;
 import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
+import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.log.LogManager;
@@ -298,6 +299,50 @@ public class TypeIndex implements RangeIndex, IndexInternal {
         }
       }
       return keyedCursor(result != null ? result : Collections.emptyList(), keys);
+    }
+  }
+
+  /**
+   * A probe for the uniqueness check of one commit, or null when the check must ask {@link #get(Object[], int)}: an index that is not
+   * an LSM tree of this type, or one an LSM index of this type cannot probe ({@link LSMTreeIndex#newKeyProbe()}).
+   */
+  public KeyProbe newKeyProbe() {
+    checkIsValid();
+    final IndexInternal first = firstOrNull();
+    if (first == null || first.getType() != Schema.INDEX_TYPE.LSM_TREE || isResultApproximate())
+      return null;
+    return new KeyProbe();
+  }
+
+  /**
+   * Whether {@link #get(Object[], int)} answers a key with nothing, judged from the pages of the bucket indexes without building the
+   * answer: true is a promise, false is "do not know, ask {@link #get(Object[], int)}". The bucket indexes of a key are probed one
+   * after the other and the first that cannot say ends it. Each probes a snapshot of its pages taken at the first key it is asked
+   * about ({@link LSMTreeIndex.KeyProbe}), so it must only be used for the keys of one commit, by the thread of that commit, while it
+   * holds the file locks of the commit, and never after a write to the pages it probes (the dangling-entry repair of the check).
+   */
+  public final class KeyProbe {
+    // a bucket index mapped to null cannot be probed (LSMTreeIndex.newKeyProbe() said so): asked once, not once per key
+    private final Map<LSMTreeIndex, LSMTreeIndex.KeyProbe> probes = new IdentityHashMap<>();
+
+    public boolean holdsNoEntryFor(final Object[] keys) {
+      checkIsValid();
+      for (final Index index : getIndexesByKeys(keys)) {
+        if (!(index instanceof final LSMTreeIndex lsmIndex))
+          return false;
+        LSMTreeIndex.KeyProbe probe = probes.get(lsmIndex);
+        if (probe == null) {
+          if (probes.containsKey(lsmIndex))
+            return false;
+          probe = lsmIndex.newKeyProbe();
+          probes.put(lsmIndex, probe);
+          if (probe == null)
+            return false;
+        }
+        if (!probe.holdsNoEntryFor(keys))
+          return false;
+      }
+      return true;
     }
   }
 
