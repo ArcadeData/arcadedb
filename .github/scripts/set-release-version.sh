@@ -14,6 +14,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
+# SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+# SPDX-License-Identifier: Apache-2.0
+#
 # Applies the release version to every file that carries it. Run from the repository root.
 #
 # mvn-release.yml runs this in BOTH of its jobs: `central` deploys the tree it produces, and `docker-and-tag`
