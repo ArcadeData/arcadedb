@@ -117,6 +117,21 @@ class OrBranchScanCountTest extends TestHelper {
     assertThat(values("SELECT FROM Mixed WHERE id = 5 OR b = 3 ORDER BY id", "id")).containsExactlyElementsOf(expected);
   }
 
+  @Test
+  void anOrWithAFullTextBranchAndAnUnindexedBranchKeepsTheFullTextAnswer() {
+    database.getSchema().createDocumentType("Text").createProperty("txt", Type.STRING);
+    database.getSchema().createTypeIndex(Schema.INDEX_TYPE.FULL_TEXT, false, "Text", "txt");
+    database.transaction(() -> {
+      database.newDocument("Text").set("txt", "HELLO world").set("n", 0).save();
+      database.newDocument("Text").set("txt", "something else").set("n", 1).save();
+      database.newDocument("Text").set("txt", "nothing").set("n", 2).save();
+    });
+
+    // The full-text index matches by analyzer tokens, so HELLO matches 'hello'; the scan's own CONTAINSTEXT is a case-sensitive
+    // contains, which would drop it: the branch the index answers keeps being answered by it
+    assertThat(values("SELECT FROM Text WHERE txt CONTAINSTEXT 'hello' OR n = 1", "n")).containsExactlyInAnyOrder(0, 1);
+  }
+
   private static List<Integer> matching(final IntPredicate predicate) {
     final List<Integer> matches = new ArrayList<>();
     for (int i = 0; i < RECORDS; i++)

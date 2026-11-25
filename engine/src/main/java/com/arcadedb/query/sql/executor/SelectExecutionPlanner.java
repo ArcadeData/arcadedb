@@ -4772,10 +4772,12 @@ public class SelectExecutionPlanner {
 
     // An OR with a branch no index answers is one scan of the type with the whole WHERE: the branch needs the scan anyway, and
     // planning it as a union would read the type again for every such branch, plus an index search for each of the others,
-    // only to deduplicate what the one scan returns once
+    // only to deduplicate what the one scan returns once. Not when a branch is answered by a FULL_TEXT index: that matches by the
+    // analyzer's tokens, which the scan's own evaluation of the condition does not reproduce, so the branch stays planned on its own
     final List<IndexSearchDescriptor> branchIndexes =
         info.flattenedWhereClause.size() > 1 ? plainBranchIndexes(typez, info, context) : null;
-    if (branchIndexes != null && branchIndexes.contains(null))
+    if (branchIndexes != null && branchIndexes.contains(null)
+        && branchIndexes.stream().noneMatch(descriptor -> descriptor != null && isFullText(descriptor.index)))
       return false;
 
     int branchNo = 0;
