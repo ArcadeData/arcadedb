@@ -21,11 +21,11 @@ package com.arcadedb.postgres;
 import com.arcadedb.utility.TimeBoundRegex;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Set;
 import java.util.function.Supplier;
 import java.util.regex.Matcher;
@@ -2007,6 +2007,7 @@ abstract class PostgresCatalogExpression {
       final List<PostgresCatalogExpression> partitionBy = new ArrayList<>();
       final List<PostgresCatalogExpression> orderBy = new ArrayList<>();
       final List<Boolean>                   orderByDescending = new ArrayList<>();
+      final Set<ColumnKey>                  orderedColumns = new HashSet<>();
 
       if (skipKeyword("PARTITION")) {
         if (!skipKeyword("BY"))
@@ -2041,7 +2042,7 @@ abstract class PostgresCatalogExpression {
             return null;
 
           // a column named again ties exactly where its first use did, whatever direction it is given: it is no key
-          if (!namesColumnOf(orderBy, key)) {
+          if (!(key instanceof ColumnReference column) || orderedColumns.add(new ColumnKey(column.qualifier, column.name))) {
             orderBy.add(key);
             orderByDescending.add(descending);
           }
@@ -2054,14 +2055,8 @@ abstract class PostgresCatalogExpression {
       return new WindowCall(functionName, partitionBy, orderBy, orderByDescending);
     }
 
-    /** Whether {@code key} is a plain column that one of {@code keys} is already. */
-    private static boolean namesColumnOf(final List<PostgresCatalogExpression> keys, final PostgresCatalogExpression key) {
-      if (!(key instanceof ColumnReference column))
-        return false;
-      for (final PostgresCatalogExpression other : keys)
-        if (other instanceof ColumnReference known && known.name.equals(column.name) && Objects.equals(known.qualifier, column.qualifier))
-          return true;
-      return false;
+    /** A plain column as the ORDER BY of a window names it, so that a column named again is told in constant time. */
+    private record ColumnKey(String qualifier, String name) {
     }
 
     /**
