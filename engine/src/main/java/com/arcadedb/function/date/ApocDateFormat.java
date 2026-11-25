@@ -56,7 +56,7 @@ public class ApocDateFormat extends AbstractApocDateFunction {
     if (args[0] == null)
       return null;
 
-    final long millis = timeUnit(args.length > 1 ? args[1] : null).toMillis(toMillis(args[0]));
+    final long millis = timeInMillis(args[0], args.length > 1 ? args[1] : null);
     return simpleDateFormat(patternArgument(args, 2), args.length > 3 ? args[3] : null).format(new Date(millis));
   }
 }

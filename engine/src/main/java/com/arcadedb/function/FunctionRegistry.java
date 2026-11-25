@@ -102,7 +102,7 @@ public final class FunctionRegistry {
    * @return the function, or null if not found
    */
   public static Function get(final String name) {
-    return FUNCTIONS.get(key(name));
+    return FUNCTIONS.get(normalizeApocName(name));
   }
 
   /**
@@ -137,7 +137,7 @@ public final class FunctionRegistry {
    * @return true if the function is registered
    */
   public static boolean hasFunction(final String name) {
-    return FUNCTIONS.containsKey(key(name));
+    return FUNCTIONS.containsKey(normalizeApocName(name));
   }
 
   /**
@@ -163,25 +163,14 @@ public final class FunctionRegistry {
   }
 
   /**
-   * Normalizes a function name by stripping the "apoc." prefix if present.
+   * The key a function name is registered under: the lower-cased name, without its "apoc." prefix unless a function is
+   * registered under the full apoc. name, which then answers it (issue #12106).
    * This provides compatibility with Neo4j APOC procedure calls.
    *
    * @param name the function name
-   * @return the normalized name (lowercase, without apoc. prefix)
+   * @return the normalized name (lowercase, without the apoc. prefix unless that name is registered)
    */
   public static String normalizeApocName(final String name) {
-    final String lowerName = name.toLowerCase(Locale.ROOT);
-    if (lowerName.startsWith(APOC_PREFIX)) {
-      return lowerName.substring(APOC_PREFIX.length());
-    }
-    return lowerName;
-  }
-
-  /**
-   * The key {@code name} is registered under: its own lower-cased name when a function is registered under it, the name
-   * without the "apoc." prefix otherwise, so a function registered under its apoc. name answers that name (issue #12106).
-   */
-  private static String key(final String name) {
     final String lowerName = name.toLowerCase(Locale.ROOT);
     if (lowerName.startsWith(APOC_PREFIX) && !FUNCTIONS.containsKey(lowerName))
       return lowerName.substring(APOC_PREFIX.length());
@@ -273,7 +262,7 @@ public final class FunctionRegistry {
    * @return the unregistered function, or null if not found
    */
   public static Function unregister(final String name) {
-    return FUNCTIONS.remove(key(name));
+    return FUNCTIONS.remove(normalizeApocName(name));
   }
 
   /**

@@ -38,6 +38,7 @@ import com.arcadedb.function.date.DateFields;
 import com.arcadedb.function.date.DateFormat;
 import com.arcadedb.function.date.DateParse;
 import com.arcadedb.function.date.DateToISO8601;
+import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
@@ -47,6 +48,7 @@ import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.time.format.TextStyle;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -305,6 +307,83 @@ class Issue12106ApocDateSemanticsTest extends TestHelper {
         assertThat(future.get()).isEmpty();
     } finally {
       executor.shutdownNow();
+    }
+  }
+
+  // ============ a point in time is not a count in the unit ============
+
+  /**
+   * A Date, Instant, ZonedDateTime or LocalDateTime is already a point in time: the unit says what a number counts, so it must not
+   * scale one. apoc.date.format(instant, 's') used to read the instant's milliseconds as seconds and render a date 1000 times too far.
+   */
+  @Test
+  void theUnitDoesNotScaleAPointInTime() {
+    final Instant instant = Instant.parse("2024-01-15T10:30:00.250Z");
+    final List<Object> points = List.of(instant, Date.from(instant), instant.atZone(ZoneId.of("UTC")),
+        LocalDateTime.ofInstant(instant, ZoneId.systemDefault()));
+
+    for (final Object point : points) {
+      assertThat(new ApocDateFormat().execute(new Object[] { point, "s", "yyyy-MM-dd HH:mm:ss.SSS" }, null)).as(point.getClass().getName())
+          .isEqualTo("2024-01-15 10:30:00.250");
+      assertThat(new ApocDateToISO8601().execute(new Object[] { point, "s" }, null)).as(point.getClass().getName())
+          .isEqualTo("2024-01-15T10:30:00.250Z");
+      // the time is in the unit the call names, so a point in time is expressed in it before the amount is added
+      assertThat(new ApocDateAdd().execute(new Object[] { point, "s", 1L, "m" }, null)).as(point.getClass().getName())
+          .isEqualTo(instant.getEpochSecond() + 60L);
+      // ArcadeDB's date.format had the same defect
+      assertThat(new DateFormat().execute(new Object[] { point, "s", "yyyy-MM-dd HH:mm:ss.SSS" }, null)).as(point.getClass().getName())
+          .isEqualTo(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS").format(instant.atZone(ZoneId.systemDefault())));
+    }
+
+    // a number, or its text, is still a count in the unit
+    assertThat(new ApocDateFormat().execute(new Object[] { 1L, "s", "yyyy-MM-dd HH:mm:ss" }, null)).isEqualTo("1970-01-01 00:00:01");
+    assertThat(new ApocDateFormat().execute(new Object[] { "1", "s", "yyyy-MM-dd HH:mm:ss" }, null)).isEqualTo("1970-01-01 00:00:01");
+    assertThat(new ApocDateAdd().execute(new Object[] { 10L, "s", 1L, "m" }, null)).isEqualTo(70L);
+    // and an unknown unit is refused for a point in time too
+    assertThatThrownBy(() -> new ApocDateFormat().execute(new Object[] { instant, "fortnight" }, null))
+        .isInstanceOf(InvalidArgumentException.class);
+  }
+
+  // ============ unregister by an apoc. name ============
+
+  /** A function registered under its apoc. name is the one unregister removes by that name; the plain name's then answers it. */
+  @Test
+  void unregisterByAnApocNameRemovesTheFunctionRegisteredUnderIt() {
+    final StatelessFunction plain = new NamedFunction("zz12106.f");
+    final StatelessFunction apoc = new NamedFunction("apoc.zz12106.f");
+    CypherFunctionRegistry.register(plain);
+    CypherFunctionRegistry.register(apoc);
+    try {
+      assertThat(CypherFunctionRegistry.get("apoc.zz12106.f")).isSameAs(apoc);
+      assertThat(FunctionRegistry.get("apoc.zz12106.f")).isSameAs(apoc);
+      assertThat(FunctionRegistry.normalizeApocName("APOC.ZZ12106.F")).isEqualTo("apoc.zz12106.f");
+
+      assertThat(CypherFunctionRegistry.unregister("apoc.zz12106.f")).isSameAs(apoc);
+      assertThat(FunctionRegistry.unregister("apoc.zz12106.f")).isSameAs(apoc);
+
+      // with the apoc. one gone, the apoc. name strips the prefix again
+      assertThat(CypherFunctionRegistry.get("apoc.zz12106.f")).isSameAs(plain);
+      assertThat(FunctionRegistry.get("apoc.zz12106.f")).isSameAs(plain);
+      assertThat(FunctionRegistry.normalizeApocName("apoc.zz12106.f")).isEqualTo("zz12106.f");
+    } finally {
+      CypherFunctionRegistry.unregister("apoc.zz12106.f");
+      CypherFunctionRegistry.unregister("zz12106.f");
+      FunctionRegistry.unregister("apoc.zz12106.f");
+      FunctionRegistry.unregister("zz12106.f");
+    }
+    assertThat(CypherFunctionRegistry.get("zz12106.f")).isNull();
+    assertThat(FunctionRegistry.get("zz12106.f")).isNull();
+  }
+
+  private record NamedFunction(String name) implements StatelessFunction {
+    @Override
+    public String getName() {
+      return name;
+    }
+
+    @Override
+    public Object execute(final Object[] args, final CommandContext context) {
+      return name;
     }
   }
 

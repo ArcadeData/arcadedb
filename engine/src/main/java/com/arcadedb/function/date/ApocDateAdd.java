@@ -22,6 +22,8 @@ import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
+import java.util.concurrent.TimeUnit;
+
 /**
  * apoc.date.add(time, unit, addValue, addUnit) - Add {@code addValue} {@code addUnit} to a time in {@code unit}, as APOC's
  * apoc.date.add does (issue #12106): the amount is converted to {@code unit} first, truncating toward zero and saturating at
@@ -60,11 +62,13 @@ public class ApocDateAdd extends AbstractApocDateFunction {
     if (args[0] == null || args[2] == null)
       return null;
 
-    final long time = toMillis(args[0]);
+    final TimeUnit unit = timeUnit(args[1]);
+    // a point in time is expressed in the unit of the call, as a count of it already is
+    final long time = timeInUnit(args[0], unit);
     // Issue #10850: a whole number - longValue() read 1.5 hours as 1
     final long value = CypherFunctionHelper.requireWholeNumberOrTextArgument(args[2], getName(), "addValue");
     try {
-      return Math.addExact(time, timeUnit(args[1]).convert(value, timeUnit(args[3])));
+      return Math.addExact(time, unit.convert(value, timeUnit(args[3])));
     } catch (final ArithmeticException e) {
       throw new InvalidArgumentException(getName() + "(): the sum is out of the long range", e);
     }

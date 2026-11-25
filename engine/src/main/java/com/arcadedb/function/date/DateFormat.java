@@ -60,8 +60,9 @@ public class DateFormat extends AbstractDateFunction {
     final String unit = args.length > 1 && args[1] != null ? args[1].toString() : UNIT_MS;
     final String format = args.length > 2 && args[2] != null ? args[2].toString() : null;
 
-    // Convert timestamp based on unit
-    final long millis = timestamp * unitToMillis(unit);
+    // Convert timestamp based on unit: a point in time is already in milliseconds, only a count is in the unit (issue #12106)
+    final long unitMillis = unitToMillis(unit);
+    final long millis = isPointInTime(args[0]) ? timestamp : timestamp * unitMillis;
 
     // Format the timestamp
     final ZonedDateTime dateTime = Instant.ofEpochMilli(millis).atZone(ZoneId.systemDefault());

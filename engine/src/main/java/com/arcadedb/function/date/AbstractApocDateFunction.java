@@ -45,7 +45,8 @@ public abstract class AbstractApocDateFunction extends AbstractDateFunction {
 
   /**
    * The formatters of the calling thread: {@link SimpleDateFormat} is not thread-safe, and building one (with its calendar and
-   * its number format) for every row of a query was the cost of a call.
+   * its number format) for every row of a query was the cost of a call. A thread keeps at most
+   * {@link SimpleDateFormatCache#SLOTS} formatters for its lifetime (pooled server threads included): bounded, not a leak.
    */
   private static final ThreadLocal<SimpleDateFormatCache> FORMATS = ThreadLocal.withInitial(SimpleDateFormatCache::new);
 
@@ -73,6 +74,25 @@ public abstract class AbstractApocDateFunction extends AbstractDateFunction {
       case "d", "day", "days" -> TimeUnit.DAYS;
       default -> throw new InvalidArgumentException("The unit: " + InvalidArgumentException.quote(unit) + " is not correct");
     };
+  }
+
+  /**
+   * The time argument in milliseconds: a count (a number or its text) is in {@code unit}, a point in time is already one and the
+   * unit, still validated, does not scale it.
+   */
+  protected long timeInMillis(final Object time, final Object unit) {
+    final TimeUnit timeUnit = timeUnit(unit);
+    final long value = toMillis(time);
+    return isPointInTime(time) ? value : timeUnit.toMillis(value);
+  }
+
+  /**
+   * The time argument in {@code unit}: a count (a number or its text) already is, a point in time is converted from its
+   * milliseconds, truncating toward zero as {@link TimeUnit#convert(long, TimeUnit)} does.
+   */
+  protected long timeInUnit(final Object time, final TimeUnit unit) {
+    final long value = toMillis(time);
+    return isPointInTime(time) ? unit.convert(value, TimeUnit.MILLISECONDS) : value;
   }
 
   /**

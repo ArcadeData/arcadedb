@@ -55,7 +55,7 @@ public class ApocDateToISO8601 extends AbstractApocDateFunction {
     if (args[0] == null)
       return null;
 
-    final long millis = timeUnit(args.length > 1 ? args[1] : null).toMillis(toMillis(args[0]));
+    final long millis = timeInMillis(args[0], args.length > 1 ? args[1] : null);
     return simpleDateFormat(ISO_PATTERN, UTC).format(new Date(millis));
   }
 }
