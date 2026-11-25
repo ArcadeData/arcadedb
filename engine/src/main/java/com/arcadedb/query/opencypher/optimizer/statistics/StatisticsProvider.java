@@ -30,6 +30,7 @@ import com.arcadedb.query.sql.executor.SelectExecutionPlanner;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.TypeIndexBuilder;
 import com.arcadedb.schema.VertexType;
 
 import java.util.ArrayList;
@@ -210,6 +211,16 @@ public class StatisticsProvider {
   public long getCardinality(final String typeName) {
     final TypeStatistics stats = getTypeStatistics(typeName);
     return stats != null ? stats.getRecordCount() : 0L;
+  }
+
+  /**
+   * Whether a {@code BY ITEM} index over a list property of the type can hold a nested list or map as an item: such an item is keyed
+   * by its text, which Cypher equality does not follow ({@code {k: 1}} equals {@code {k: 1.0}}, the keys {@code {k=1}} and
+   * {@code {k=1.0}} differ), so a seek of it does not find every row a scan does (issue #13115). True when the schema cannot say.
+   */
+  public boolean byItemValuesMayNest(final String typeName, final String propertyName) {
+    final DocumentType type = database != null ? database.getSchema().getTypeOrNull(typeName) : null;
+    return type == null || TypeIndexBuilder.byItemValuesMayNest(type, propertyName);
   }
 
   /**

@@ -2324,7 +2324,29 @@ class CypherIndexSeekTest {
             database.command("sql", "INSERT INTO " + t + " SET k = " + i + ", aliases = ['a" + i + "', 'b" + i + "', 'shared']");
         }
         database.command("sql", "CREATE INDEX ON Indexed (aliases BY ITEM) NOTUNIQUE");
+        // lists that can hold maps: the key of an item is its text, which Cypher equality does not follow
+        for (final String[] t : new String[][] { { "IndexedUntyped", "LIST" }, { "PlainUntyped", "LIST" },
+            { "IndexedMaps", "LIST OF MAP" }, { "PlainMaps", "LIST OF MAP" } }) {
+          database.command("sql", "CREATE VERTEX TYPE " + t[0]);
+          database.command("sql", "CREATE PROPERTY " + t[0] + ".k INTEGER");
+          database.command("sql", "CREATE PROPERTY " + t[0] + ".aliases " + t[1]);
+          for (int i = 0; i < 5; i++)
+            database.command("sql", "INSERT INTO " + t[0] + " SET k = " + i + ", aliases = [{'k': " + i + "}, {'k': 100}]");
+        }
+        database.command("sql", "CREATE INDEX ON IndexedUntyped (aliases BY ITEM) NOTUNIQUE");
+        database.command("sql", "CREATE INDEX ON IndexedMaps (aliases BY ITEM) NOTUNIQUE");
       });
+    }
+
+    @Test
+    void aListThatCanHoldMapsIsScannedNotSeeked() {
+      // {k: 1.0} equals the stored {k: 1} in Cypher, but the index keys the items by their text: {k=1.0} is not {k=1}
+      for (final String[] pair : new String[][] { { "IndexedUntyped", "PlainUntyped" }, { "IndexedMaps", "PlainMaps" } }) {
+        final Map<String, Object> params = Map.of("a", Map.of("k", 1.0));
+        assertThat(keys(pair[1], "$a IN e.aliases", params)).as(pair[1]).containsExactly(1);
+        assertThat(keys(pair[0], "$a IN e.aliases", params)).as(pair[0]).isEqualTo(keys(pair[1], "$a IN e.aliases", params));
+        assertThat(planOn(pair[0], "$a IN e.aliases", params)).as(pair[0]).doesNotContain("NodeIndexSeek");
+      }
     }
 
     private List<Object> keys(final String type, final String where, final Map<String, Object> params) {
@@ -2338,7 +2360,11 @@ class CypherIndexSeekTest {
     }
 
     private String plan(final String where, final Map<String, Object> params) {
-      try (final ResultSet rs = database.query("opencypher", "EXPLAIN MATCH (e:Indexed) WHERE " + where + " RETURN e", params)) {
+      return planOn("Indexed", where, params);
+    }
+
+    private String planOn(final String type, final String where, final Map<String, Object> params) {
+      try (final ResultSet rs = database.query("opencypher", "EXPLAIN MATCH (e:" + type + ") WHERE " + where + " RETURN e", params)) {
         return rs.getExecutionPlan().get().prettyPrint(0, 3);
       }
     }

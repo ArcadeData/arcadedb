@@ -277,7 +277,9 @@ public class AnchorSelector {
       for (final Map.Entry<String, Expression> membership : membershipPredicates.entrySet()) {
         final String propertyName = membership.getKey();
         final IndexStatistics indexStats = findByItemIndex(indexes, propertyName);
-        if (indexStats == null)
+        // A list that can hold maps or lists keys them by their text, which Cypher equality does not follow ({k: 1} = {k: 1.0}): the
+        // seek would miss rows the scan finds, so only a list of scalar items is seeked
+        if (indexStats == null || statisticsProvider.byItemValuesMayNest(label, propertyName))
           continue;
 
         final Expression value = membership.getValue();
