@@ -20,10 +20,12 @@ package com.arcadedb.index.lsm;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.BeforeEach;
@@ -50,6 +52,8 @@ class UniqueCheckKeyPresenceProbeTest extends TestHelper {
   private static final int BATCHES = 5;
   private static final int PER_BATCH = 300;
   private static final int KEYS    = BATCHES * PER_BATCH;
+  // small pages, so each bucket index spans several and a compaction has sealed pages to move into a compacted series
+  private static final int INDEX_PAGE_SIZE = 512;
 
   @BeforeEach
   @Override
@@ -61,7 +65,8 @@ class UniqueCheckKeyPresenceProbeTest extends TestHelper {
   private TypeIndex createTypeWithUniqueIndex(final Type keyType) {
     database.transaction(() -> {
       database.getSchema().createDocumentType("Doc", BUCKETS).createProperty("id", keyType);
-      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Doc", "id");
+      database.getSchema().buildTypeIndex("Doc", new String[] { "id" }).withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(true)
+          .withPageSize(INDEX_PAGE_SIZE).create();
     });
     return (TypeIndex) database.getSchema().getIndexByName("Doc[id]");
   }
@@ -90,7 +95,7 @@ class UniqueCheckKeyPresenceProbeTest extends TestHelper {
   private static void compactEveryBucketIndex(final TypeIndex typeIndex) throws Exception {
     for (final Index bucketIndex : typeIndex.getIndexesOnBuckets()) {
       ((LSMTreeIndex) bucketIndex).scheduleCompaction();
-      ((LSMTreeIndex) bucketIndex).compact();
+      assertThat(((LSMTreeIndex) bucketIndex).compact()).as("compaction of %s", bucketIndex.getName()).isTrue();
     }
   }
 
@@ -224,10 +229,11 @@ class UniqueCheckKeyPresenceProbeTest extends TestHelper {
   @Test
   void aCompositeKeySharingOnlyOneComponentIsNotADuplicate() throws Exception {
     database.transaction(() -> {
-      final var type = database.getSchema().createDocumentType("Pair", BUCKETS);
+      final DocumentType type = database.getSchema().createDocumentType("Pair", BUCKETS);
       type.createProperty("a", Type.LONG);
       type.createProperty("b", Type.STRING);
-      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Pair", "a", "b");
+      database.getSchema().buildTypeIndex("Pair", new String[] { "a", "b" }).withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(true)
+          .withPageSize(INDEX_PAGE_SIZE).create();
     });
     final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("Pair[a,b]");
     database.transaction(() -> {
@@ -257,6 +263,79 @@ class UniqueCheckKeyPresenceProbeTest extends TestHelper {
     assertThat(probe.holdsNoEntryFor(new Object[] { 7L, "y" })).isFalse();
     assertThat(probe.holdsNoEntryFor(new Object[] { 401L, "x" })).isTrue();
     assertThat(probe.holdsNoEntryFor(new Object[] { 399L, "x" })).isFalse();
+  }
+
+  @Test
+  void aCompactionThatSwapsTheIndexEndsThePromisesOfAProbe() throws Exception {
+    final TypeIndex typeIndex = createTypeWithUniqueIndex(Type.LONG);
+    insertBatches(Type.LONG, 0, 2);
+
+    final Object[] absent = { (long) KEYS + 1000 };
+    final TypeIndex.KeyProbe probe = typeIndex.newKeyProbe();
+    // a key no bucket index holds reaches every bucket index, so each takes its snapshot here
+    assertThat(probe.holdsNoEntryFor(absent)).isTrue();
+
+    // the compaction swaps every bucket index to a new mutable: the snapshots now describe pages that no longer answer get()
+    compactEveryBucketIndex(typeIndex);
+    assertThat(probe.holdsNoEntryFor(absent)).as("a probe whose snapshot a compaction replaced must not promise").isFalse();
+    assertThat(probe.holdsNoEntryFor(new Object[] { 7L })).isFalse();
+
+    // and the check of a commit made after the swap still rejects a duplicate in the compacted pages
+    assertThatThrownBy(() -> database.transaction(() -> database.newDocument("Doc").set("id", 7L).save())).isInstanceOf(
+        DuplicatedKeyException.class);
+    assertThat(database.countType("Doc", true)).isEqualTo(2 * PER_BATCH);
+  }
+
+  /**
+   * The check repairs a dangling entry (its record is gone) by removing it, which writes a deletion marker into the mutable page of the
+   * bucket index in place, while the commit is running. A snapshot of that page taken after a first repair holds the entry count of
+   * the moment, and a second repair on the same page shifts the entries above its key: the highest one fell outside the snapshot and
+   * a duplicate of it got through. Bucket index 0 holds a deletion marker of the first key, so the probe stops there and takes the
+   * snapshot of bucket index 1 only at the second key, after the first repair has written into its page.
+   */
+  @Test
+  void aRepairOfADanglingEntryDuringTheCheckDoesNotLetADuplicateThrough() {
+    final TypeIndex typeIndex = createTypeWithUniqueIndex(Type.LONG);
+    // the probe asks the bucket indexes in this order
+    final Index[] bucketIndexes = typeIndex.getIndexesOnBuckets();
+    final String firstBucket = database.getSchema().getBucketById(bucketIndexes[0].getAssociatedBucketId()).getName();
+    final String secondBucket = database.getSchema().getBucketById(bucketIndexes[1].getAssociatedBucketId()).getName();
+
+    // key 1 in the first bucket index: an entry and its deletion marker
+    database.transaction(() -> database.newDocument("Doc").set("id", 1L).save(firstBucket));
+    database.transaction(() -> database.command("sql", "DELETE FROM Doc WHERE id = 1"));
+
+    // keys 1, 2 and 100 in the second; the records of 1 and 2 then vanish behind the index's back
+    final RID[] dangling = new RID[2];
+    database.transaction(() -> {
+      dangling[0] = database.newDocument("Doc").set("id", 1L).save(secondBucket).getIdentity();
+      dangling[1] = database.newDocument("Doc").set("id", 2L).save(secondBucket).getIdentity();
+      database.newDocument("Doc").set("id", 100L).save(secondBucket);
+    });
+    database.transaction(() -> {
+      for (final RID rid : dangling)
+        database.getSchema().getBucketById(rid.getBucketId()).deleteRecord(rid);
+    });
+
+    // 1 and 2 are free again (their entries dangle and are repaired), 100 is a real duplicate
+    assertThatThrownBy(() -> database.transaction(() -> {
+      for (final long id : new long[] { 1L, 2L, 100L })
+        database.newDocument("Doc").set("id", id).save(firstBucket);
+    })).isInstanceOf(DuplicatedKeyException.class);
+
+    assertThat(database.query("sql", "SELECT FROM Doc WHERE id = 100").stream().count()).isEqualTo(1);
+
+    // without the duplicate the same commit repairs both entries and goes through
+    database.transaction(() -> {
+      for (final long id : new long[] { 1L, 2L })
+        database.newDocument("Doc").set("id", id).save(firstBucket);
+    });
+    assertThat(database.query("sql", "SELECT FROM Doc WHERE id <= 2").stream().count()).isEqualTo(2);
+    assertThatThrownBy(() -> database.transaction(() -> database.newDocument("Doc").set("id", 2L).save(secondBucket))).isInstanceOf(
+        DuplicatedKeyException.class);
+
+    // the records were removed behind the bucket's back: recompute its cached count before the integrity check of the test ends
+    database.command("sql", "CHECK DATABASE FIX");
   }
 
   @Test

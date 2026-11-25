@@ -1213,18 +1213,21 @@ public class TransactionIndexContext {
 
   /**
    * Called at commit time in the middle of the lock to avoid concurrent insertion of the same key.
+   *
+   * @return true when the check repaired the index (it removed a dangling entry), which writes into the pages of a bucket index while
+   * the commit runs: a {@link TypeIndex.KeyProbe} snapshot of them taken before or after that write no longer describes them
    */
-  private void checkUniqueIndexKeys(final Index idx, final TypeIndex.KeyProbe probe, final IndexKey key, final TypeIndex typeIndex,
+  private boolean checkUniqueIndexKeys(final Index idx, final TypeIndex.KeyProbe probe, final IndexKey key, final TypeIndex typeIndex,
       final TxDeletedKeys deletedKeys) {
     if (idx != null) {
       // NEARLY EVERY KEY IS NEW: ASK THE PAGES WHETHER ANY BUCKET INDEX HOLDS IT BEFORE BUILDING AN ANSWER FOR IT
       if (probe != null && probe.holdsNoEntryFor(key.keyValues))
-        return;
+        return false;
 
       // #5662: try-with-resources - the cursor stops after at most two entries, so it is never drained
       try (final IndexCursor found = idx.get(key.keyValues, 2)) {
         if (!found.hasNext())
-          return;
+          return false;
 
         final Identifiable firstEntry = found.next();
         int totalEntries = 1;
@@ -1235,7 +1238,7 @@ public class TransactionIndexContext {
           final Set<RID> deleted = deletedKeys.of(typeIndex, key.keyValues);
           if (deleted != null && deleted.contains(firstEntry.getIdentity()))
             // DELETED IN TX
-            return;
+            return false;
 
           try {
             // PROBE THE EXISTING RECORD: IF IT LOADS, THE KEY IS A REAL DUPLICATE; OTHERWISE THE INDEX ENTRY IS DANGLING (e.g. it
@@ -1261,10 +1264,12 @@ public class TransactionIndexContext {
                     idx.getName(), Arrays.toString(key.keyValues), firstEntry.getIdentity());
 
             idx.remove(key.keyValues, firstEntry.getIdentity());
+            return true;
           }
         }
       }
     }
+    return false;
   }
 
   /**
@@ -1361,6 +1366,10 @@ public class TransactionIndexContext {
     final TxDeletedKeys deletedKeys = new TxDeletedKeys();
     // one probe per type index for the whole commit: the pages it probes are not written by anyone else until the commit ends
     final Map<Index, TypeIndex.KeyProbe> probes = new IdentityHashMap<>();
+    // ...except by this check itself, when it repairs a dangling entry: the write lands in the mutable page in place, so a snapshot of
+    // that page holds a stale entry count (and entries shifted past it). Bucket indexes are shared across type indexes (#12724), so
+    // after a repair, rare by nature, every key left in the commit goes through get()
+    boolean probing = true;
 
     for (final Map.Entry<String, TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> indexEntries : indexEntries.entrySet()) {
       final IndexInternal index = resolveIndex(indexEntries.getKey());
@@ -1371,7 +1380,7 @@ public class TransactionIndexContext {
         // once per index and commit, not per key: the lookup of the type and its index by properties
         final Index uniqueCheckIndex = uniqueCheckIndexOf(index, typeIndex);
         TypeIndex.KeyProbe probe = null;
-        if (uniqueCheckIndex instanceof final TypeIndex uniqueCheckTypeIndex)
+        if (probing && uniqueCheckIndex instanceof final TypeIndex uniqueCheckTypeIndex)
           probe = probes.computeIfAbsent(uniqueCheckIndex, k -> uniqueCheckTypeIndex.newKeyProbe());
 
         final Map<ComparableKey, Map<IndexKey, IndexKey>> txEntriesPerIndex = indexEntries.getValue();
@@ -1383,7 +1392,11 @@ public class TransactionIndexContext {
               // Skip uniqueness check for NULL keys - SQL standard: NULL != NULL (multiple NULLs allowed in unique index)
               if (LSMTreeIndexAbstract.isKeyNull(entry.keyValues))
                 continue;
-              checkUniqueIndexKeys(uniqueCheckIndex, probe, entry, typeIndex, deletedKeys);
+              if (checkUniqueIndexKeys(uniqueCheckIndex, probe, entry, typeIndex, deletedKeys) && probing) {
+                probing = false;
+                probe = null;
+                probes.clear();
+              }
               if (withLegacyKeys != null)
                 checkUniqueLegacyKeys((LSMTreeIndex) index, entry, withLegacyKeys);
             }

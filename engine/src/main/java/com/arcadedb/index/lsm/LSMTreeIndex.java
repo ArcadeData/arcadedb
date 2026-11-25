@@ -761,6 +761,10 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
    * no other transaction adds an entry to a page of the snapshot, so a key the pages lack stays absent for the whole check. A
    * compaction that swaps the index in the middle ends the promises (every answer after it is false).
    * <p>
+   * Confined to the thread of the commit and to the time it holds its file locks: the snapshot keeps views of the pages and a
+   * position per page that nothing synchronizes, and a write to those pages made by the commit itself (the dangling-entry repair of
+   * the uniqueness check) leaves the snapshot stale, so the caller drops the probe after such a write.
+   * <p>
    * Nearly every key of a commit is new, so the answer costs no cursor, no result set, and no page fetch, view or result per page
    * and key: the probes of the next key in each page start where the last one ended, which makes a sorted batch a merge instead of
    * a binary search per key.
