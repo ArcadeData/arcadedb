@@ -149,6 +149,25 @@ class HeapEstimatorNestedValuesTest {
     assertThat(HeapEstimator.estimate(row(wrap(map, levels)))).isGreaterThanOrEqualTo(1_000_000L);
   }
 
+  @ParameterizedTest
+  @ValueSource(ints = { 0, 3, 10, 31, 32, 33, 100 })
+  void theKeyOfAMapThatIsAContainerIsChargedForItsSlotsAtEveryLevel(final int levels) {
+    final Object[] arrayKey = new Object[1_000_000];
+    final List<Object> listKey = new ArrayList<>(Collections.nCopies(1_000_000, null));
+    final Set<Object> setKey = new HashSet<>(numbers(200_000));
+    final Map<Object, Object> mapKey = new LinkedHashMap<>();
+    for (final Object number : numbers(200_000))
+      mapKey.put(number, number);
+
+    for (final Object key : new Object[] { arrayKey, listKey, setKey, mapKey }) {
+      final Map<Object, Object> map = new LinkedHashMap<>();
+      map.put(key, 0L);
+
+      assertThat(HeapEstimator.estimate(row(wrap(map, levels)))).as("%s held %d levels down", key.getClass().getSimpleName(), levels)
+          .isGreaterThanOrEqualTo(200_000L * REFERENCE_BYTES);
+    }
+  }
+
   @Test
   @Timeout(60)
   void aValueHoldingItselfIsCountedOnceHoweverManyTimesItIsHeld() {
@@ -203,6 +222,58 @@ class HeapEstimatorNestedValuesTest {
       assertThat(shared.remove(row)).as("levels %d", levels).isEqualTo(added);
       assertThat(shared.containers()).as("levels %d", levels).isZero();
     }
+  }
+
+  static Stream<Arguments> smallContainersHoldingLargeArrays() {
+    final List<Arguments> arguments = new ArrayList<>();
+    for (final int levels : new int[] { 0, 3, 4, 5, 10, 20, 30, 31, 32, 33 })
+      for (final int elements : new int[] { 2, 3, HeapEstimator.SAMPLED_ELEMENTS })
+        for (final boolean distinct : new boolean[] { false, true })
+          for (final String kind : new String[] { "list", "array", "map" })
+            arguments.add(Arguments.of(kind, levels, elements, distinct));
+    return arguments.stream();
+  }
+
+  @ParameterizedTest(name = "{0} of {2} arrays (distinct: {3}) held {1} levels down")
+  @MethodSource("smallContainersHoldingLargeArrays")
+  void aSharedRegistryGivesBackWhatItChargedForASmallContainerThatStandsForItsElements(final String kind, final int levels,
+      final int elements, final boolean distinct) {
+    final byte[] shared = new byte[4_096];
+    final Object[] held = new Object[elements];
+    for (int i = 0; i < elements; i++)
+      held[i] = distinct ? new byte[4_096] : shared;
+    final Object container = switch (kind) {
+      case "list" -> new ArrayList<>(List.of(held));
+      case "array" -> held;
+      default -> {
+        final Map<Object, Object> map = new LinkedHashMap<>();
+        for (int i = 0; i < elements; i++)
+          map.put("k" + i, held[i]);
+        yield map;
+      }
+    };
+    final ResultInternal row = row(wrap(container, levels));
+    final HeapEstimator.Shared registry = new HeapEstimator.Shared();
+
+    final long added = registry.add(row);
+
+    assertThat(added).isPositive();
+    assertThat(registry.remove(row)).as("what is given back is what was charged").isEqualTo(added);
+    assertThat(registry.containers()).isZero();
+  }
+
+  @Test
+  void aSharedRegistryGivesBackWhatItChargedForTwoRowsHoldingTheSameArrayInSmallContainers() {
+    final byte[] array = new byte[4_096];
+    final ResultInternal first = row(wrap(new ArrayList<>(List.of(array, array)), 6));
+    final ResultInternal second = row(wrap(new ArrayList<>(List.of(array, array)), 6));
+    final HeapEstimator.Shared registry = new HeapEstimator.Shared();
+
+    final long charged = registry.add(first) + registry.add(second);
+    final long givenBack = registry.remove(first) + registry.remove(second);
+
+    assertThat(givenBack).isEqualTo(charged);
+    assertThat(registry.containers()).isZero();
   }
 
   @Test

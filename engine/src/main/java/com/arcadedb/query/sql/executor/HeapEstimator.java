@@ -80,7 +80,7 @@ public final class HeapEstimator {
   /** The levels the loop that follows the nesting past {@link #MAX_WALK_DEPTH} goes down, which bounds what one estimate of a shared value costs. */
   static final         int MAX_CHAIN_STEPS  = 1 << 13;
   /** What an estimate is capped at (a petabyte): above it the sum of what is estimated could overflow a long. */
-  static final         long MAX_ESTIMATE    = 1L << 50;
+  static final        long MAX_ESTIMATE    = 1L << 50;
   /** A primitive array is remembered by a {@link Shared} from this many bytes: the entry that remembers it must be small beside it. */
   static final         int SHARED_ARRAY_BYTES = 1024;
   // A String object and the header of its byte array
@@ -115,7 +115,8 @@ public final class HeapEstimator {
    * Each container is remembered with the elements that hold it, so a buffer that lets an element go ({@link #remove}) gives
    * back a container with the last element that held it, and forgets it then. The bytes charged for a container are kept with it
    * and given back as they were charged; what is walked again at {@link #remove} is the element, and the large containers nested in
-   * the container, to take away the holders they had. A container that changed while an element held it can therefore give back a
+   * the container, to take away the holders they had. A container held by an element that stands for others (a small list met deep
+   * down, of which one element is estimated) was charged for all of them, and is given back for all of them. A container that changed while an element held it can therefore give back a
    * different amount than it was charged (the operation never gives back more than it charged), so a buffer is not to change a
    * container it holds.
    * <p>
@@ -137,6 +138,8 @@ public final class HeapEstimator {
     // The container met for the first time that the current walk is inside of, null at the top of the element
     private Held    firstSighted;
     private boolean releasing;
+    // Inside the walk of a container being forgotten: what it gives back is the bytes it was charged, already scaled
+    private boolean forgetting;
     private long    releasedBytes;
 
     /**
@@ -268,8 +271,27 @@ public final class HeapEstimator {
       atDepth.remove(container);
       releasedBytes += known.bytes;
       // The containers it holds lose it as a holder, walked as they were when it was met
-      contents(container, known.depth, this);
+      final boolean wasForgetting = forgetting;
+      forgetting = true;
+      try {
+        contents(container, known.depth, this);
+      } finally {
+        forgetting = wasForgetting;
+      }
       return REFERENCE_BYTES;
+    }
+
+    /**
+     * A release gives back, for the elements of a container that were estimated, what {@link #add(Object)} charged for all the
+     * elements they stand for: the container held by the sampled element is one object, the others are charged as the first.
+     * What a container that is forgotten gives back is the bytes it was charged, which carry that already.
+     */
+    private void scaleReleased(final long releasedBefore, final long size, final int counted) {
+      if (!releasing || forgetting || counted >= size)
+        return;
+      final long sampled = releasedBytes - releasedBefore;
+      if (sampled > 0L)
+        releasedBytes = releasedBefore + extrapolate(sampled, size, counted);
     }
   }
 
@@ -371,6 +393,22 @@ public final class HeapEstimator {
     return depth < MAX_WALK_DEPTH ? DEEP_SAMPLED_ELEMENTS : 0;
   }
 
+  /** The bytes {@code shared} has given back so far, to tell what a walk of the elements of a container gave back. */
+  private static long releasedMark(final Shared shared) {
+    return shared != null ? shared.releasedBytes : 0L;
+  }
+
+  /**
+   * What {@code sampled}, the estimate of {@code counted} elements, stands for when the container holds {@code size}: the same
+   * for what {@code shared} gave back for them since {@code releasedBefore}, as it is what an add charged for all of them.
+   */
+  private static long extrapolate(final long sampled, final long size, final int counted, final Shared shared,
+      final long releasedBefore) {
+    if (shared != null)
+      shared.scaleReleased(releasedBefore, size, counted);
+    return extrapolate(sampled, size, counted);
+  }
+
   /**
    * What {@code sampled}, the estimate of {@code counted} elements, stands for when the container holds {@code size}: capped at
    * {@link #MAX_ESTIMATE}, as the product of the sizes of a few nested containers is beyond a long.
@@ -396,7 +434,7 @@ public final class HeapEstimator {
    * The estimate of a list, map or array met from {@link #MAX_WALK_DEPTH} down, the first element of each followed in a loop: a
    * value nested to any depth is charged for the levels it has, and the walk neither recurses nor looks at more than one element a
    * level, as the walk above it does below {@link #MAX_DEPTH}. A level counts its own slots, as many times as the levels above it
-   * have elements it stands for. What is held at the end of the chain, or at {@link #MAX_CHAIN_STEPS} levels, is counted as it is.
+   * have elements it stands for, and the slots of a map key that is a list, map or array. What is held at the end of the chain, or at {@link #MAX_CHAIN_STEPS} levels, is counted as it is.
    */
   private static long estimateChain(final Object start) {
     long bytes = 0L;
@@ -425,8 +463,8 @@ public final class HeapEstimator {
           final Map.Entry<?, ?> entry = entries.hasNext() ? entries.next() : null;
           first = entry == null ? null : entry.getValue();
           if (entry != null && !(entry.getKey() instanceof String))
-            // The key of each entry, as the walk above counts them: not followed, a container key counts as its slot
-            own += saturatedMultiply(size, isContainer(entry.getKey()) ? OBJECT_BYTES : estimate(entry.getKey(), MAX_WALK_DEPTH, null));
+            // The key of each entry, as the walk above counts them: not followed, a container key counts as its own slots
+            own += saturatedMultiply(size, keyBytes(entry.getKey()));
         }
       } else if (node instanceof Object[] array) {
         size = array.length;
@@ -453,8 +491,15 @@ public final class HeapEstimator {
     return Math.min(bytes, MAX_ESTIMATE);
   }
 
-  private static boolean isContainer(final Object value) {
-    return value instanceof Collection<?> || value instanceof Map<?, ?> || value instanceof Object[];
+  /** The heap a key that is not a string takes, from {@link #MAX_WALK_DEPTH}: a list, map or array by its own slots, what it holds not followed. */
+  private static long keyBytes(final Object key) {
+    if (key instanceof Collection<?> collection)
+      return LIST_BYTES + (collection instanceof Set ? HASH_ENTRY_BYTES : REFERENCE_BYTES) * (long) collection.size();
+    if (key instanceof Map<?, ?> map)
+      return MAP_BYTES + (long) HASH_ENTRY_BYTES * map.size();
+    if (key instanceof Object[] array)
+      return ARRAY_BYTES + (long) REFERENCE_BYTES * array.length;
+    return estimate(key, MAX_WALK_DEPTH, null);
   }
 
   private static Object firstOf(final Collection<?> collection) {
@@ -535,6 +580,7 @@ public final class HeapEstimator {
     else {
       final Set<String> names = result.getPropertyNames();
       final int sample = sampleSize(depth);
+      final long released = releasedMark(shared);
       int counted = 0;
       long sampled = 0L;
       for (final String name : names) {
@@ -543,7 +589,7 @@ public final class HeapEstimator {
         sampled += REFERENCE_BYTES + estimate(result.getProperty(name), depth + 1, shared);
         ++counted;
       }
-      bytes += extrapolate(sampled, names.size(), counted);
+      bytes += extrapolate(sampled, names.size(), counted, shared, released);
     }
     return bytes;
   }
@@ -553,6 +599,7 @@ public final class HeapEstimator {
       // A DOCUMENT BUILT IN MEMORY, NOT SERIALIZED YET: ITS PROPERTIES ARE WHAT IT HOLDS
       final Set<String> names = mutable.getPropertyNames();
       final int sample = sampleSize(depth);
+      final long released = releasedMark(shared);
       int counted = 0;
       long sampled = 0L;
       for (final String name : names) {
@@ -561,7 +608,7 @@ public final class HeapEstimator {
         sampled += HASH_ENTRY_BYTES + estimate(mutable.get(name), depth + 1, shared);
         ++counted;
       }
-      return RECORD_BYTES + MAP_BYTES + extrapolate(sampled, names.size(), counted);
+      return RECORD_BYTES + MAP_BYTES + extrapolate(sampled, names.size(), counted, shared, released);
     }
     if (document instanceof BaseRecord record) {
       final Binary buffer = record.getBuffer();
@@ -575,6 +622,7 @@ public final class HeapEstimator {
     if (size == 0)
       return LIST_BYTES;
     final int sample = sampleSize(depth);
+    final long released = releasedMark(shared);
     long sampled = 0L;
     int counted = 0;
     if (collection instanceof List<?> list && collection instanceof RandomAccess) {
@@ -590,15 +638,16 @@ public final class HeapEstimator {
     }
     // A SET HOLDS EVERY ELEMENT IN A HASH ENTRY, A LIST IN AN ARRAY SLOT
     final long perSlot = collection instanceof Set ? HASH_ENTRY_BYTES : REFERENCE_BYTES;
-    return LIST_BYTES + perSlot * size + extrapolate(sampled, size, counted);
+    return LIST_BYTES + perSlot * size + extrapolate(sampled, size, counted, shared, released);
   }
 
   private static long estimateArray(final Object[] array, final int depth, final Shared shared) {
     final int counted = Math.min(array.length, sampleSize(depth));
+    final long released = releasedMark(shared);
     long sampled = 0L;
     for (int i = 0; i < counted; i++)
       sampled += estimate(array[i], depth + 1, shared);
-    return ARRAY_BYTES + (long) REFERENCE_BYTES * array.length + extrapolate(sampled, array.length, counted);
+    return ARRAY_BYTES + (long) REFERENCE_BYTES * array.length + extrapolate(sampled, array.length, counted, shared, released);
   }
 
   /** The entries of a map and the values they hold; the keys are counted only when they are not strings. */
@@ -607,6 +656,7 @@ public final class HeapEstimator {
     if (size == 0)
       return 0L;
     final int sample = sampleSize(depth);
+    final long released = releasedMark(shared);
     long sampled = 0L;
     int counted = 0;
     for (final Map.Entry<?, ?> entry : map.entrySet()) {
@@ -618,6 +668,6 @@ public final class HeapEstimator {
       sampled += estimate(entry.getValue(), depth + 1, shared);
       ++counted;
     }
-    return (long) HASH_ENTRY_BYTES * size + extrapolate(sampled, size, counted);
+    return (long) HASH_ENTRY_BYTES * size + extrapolate(sampled, size, counted, shared, released);
   }
 }
