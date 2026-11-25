@@ -132,8 +132,9 @@ class CypherIngestUpsertOracleTest {
     return properties(rows.get(0).get("p"));
   }
 
+  /** Counts the rows the MATCH returns: one scanned row per record, not {@code count(*)}/{@code count(n)} over a bare label, which the engine answers from the maintained type counter. */
   private long count(final String match) {
-    return ((Number) command(match + " RETURN count(*) AS c").get(0).get("c")).longValue();
+    return command(match + " RETURN 1 AS c").size();
   }
 
   private static Map<String, Object> entityRow(final String norm, final String eid, final String now, final Map<String, Object> props,
