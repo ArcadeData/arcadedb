@@ -49,8 +49,13 @@ import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -699,6 +704,35 @@ class CypherBuiltInFunctionsTest extends TestHelper {
     // Test with a known timestamp (2024-01-15T10:30:00 UTC = 1705314600000)
     final String result = (String) fn.execute(new Object[] { 1705314600000L, "ms", "yyyy-MM-dd" }, null);
     assertThat(result).isNotNull().matches("\\d{4}-\\d{2}-\\d{2}");
+  }
+
+  @Test
+  void dateFormatPointInTimeIgnoresUnit() {
+    final StatelessFunction fn = CypherFunctionRegistry.get("date.format");
+    final long millis = 1705314600000L;
+    final Object[] points = { new Date(millis), Instant.ofEpochMilli(millis),
+        ZonedDateTime.ofInstant(Instant.ofEpochMilli(millis), ZoneId.systemDefault()),
+        LocalDateTime.ofInstant(Instant.ofEpochMilli(millis), ZoneId.systemDefault()) };
+    final String expected = (String) fn.execute(new Object[] { millis, "ms", "yyyy-MM-dd" }, null);
+    for (final Object point : points) {
+      assertThat(fn.execute(new Object[] { point, "ms", "yyyy-MM-dd" }, null)).isEqualTo(expected);
+      assertThat(fn.execute(new Object[] { point, "s", "yyyy-MM-dd" }, null)).isEqualTo(expected);
+      assertThat(fn.execute(new Object[] { point, "d", "yyyy-MM-dd" }, null)).isEqualTo(expected);
+      assertThatThrownBy(() -> fn.execute(new Object[] { point, "bogus", "yyyy-MM-dd" }, null)).isInstanceOf(RuntimeException.class);
+    }
+  }
+
+  @Test
+  void dateFormatNumericCountIsStillScaled() {
+    final StatelessFunction fn = CypherFunctionRegistry.get("date.format");
+    final String expected = (String) fn.execute(new Object[] { 1705314600000L, "ms", "yyyy-MM-dd" }, null);
+    assertThat(fn.execute(new Object[] { 1705314600L, "s", "yyyy-MM-dd" }, null)).isEqualTo(expected);
+  }
+
+  @Test
+  void dateFormatNumericOverflowIsAnError() {
+    final StatelessFunction fn = CypherFunctionRegistry.get("date.format");
+    assertThatThrownBy(() -> fn.execute(new Object[] { Long.MAX_VALUE, "d", "yyyy-MM-dd" }, null)).isInstanceOf(ArithmeticException.class);
   }
 
   @Test
