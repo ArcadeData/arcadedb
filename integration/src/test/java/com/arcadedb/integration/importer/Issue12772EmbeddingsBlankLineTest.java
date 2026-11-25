@@ -96,6 +96,19 @@ class Issue12772EmbeddingsBlankLineTest {
   }
 
   @Test
+  void aBlankLineRightAfterTheHeaderDoesNotHideTheFormat() throws Exception {
+    for (final String blank : new String[] { "\n", "   \n", "\t\n\n  \n" }) {
+      try {
+        // THE FORMAT IS SNIFFED FROM THE HEADER AND THE NEXT LINE WITH CONTENT: A CSV FALLBACK WOULD NEVER REACH THE EMBEDDINGS
+        importText("2 3\n" + blank + "alpha 1 2 3\nbeta 4 5 6\n");
+        assertWords(2, "alpha", "beta");
+      } finally {
+        cleanup();
+      }
+    }
+  }
+
+  @Test
   void aDoubledSeparatorIsNoComponent() throws Exception {
     try {
       importText("2 3\nalpha 1  2   3\nbeta  4 5 6 \n");

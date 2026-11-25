@@ -706,7 +706,12 @@ public class SourceDiscovery {
         // CARRIES INSIDE ITS VALUES (ISSUE #6946)
         if (bestSeparator.getKey() == ' ' && userDelimiter == null) {
           // CHECK IF IS A VECTOR EMBEDDING TEXT FILE
-          final String line2 = parser.isAvailable() ? readLine(parser) : "";
+          // THE SECOND LINE IS THE NEXT ONE THAT HAS CONTENT: THE IMPORTER SKIPS BLANK LINES, SO A BLANK ONE RIGHT AFTER THE
+          // HEADER (ISSUE #12772) MUST NOT HIDE THE FIRST EMBEDDING FROM THE SNIFFING
+          String line2;
+          do {
+            line2 = parser.isAvailable() ? readLine(parser) : "";
+          } while (line2.isBlank() && parser.isAvailable());
 
           final String[] fields1 = line.split(" ");
           final String[] fields2 = line2.split(" ");
