@@ -101,8 +101,13 @@ class VectorHeapBudgetOracleTest {
     // The exact boundaries, built from the model: a request that needs `r` more bytes than are available, offered r, r - 1 and r + 1
     for (final int percent : new int[] { 1, 3, 50, 90, 100 })
       for (final long bytes : new long[] { 1L, 7L, 1_000L, 123_456_789L }) {
-        final long needed = BigInteger.valueOf(bytes).multiply(HUNDRED).add(BigInteger.valueOf(Math.min(percent, 90) - 1))
-            .divide(BigInteger.valueOf(Math.min(percent, 90))).longValueExact();
+        final BigInteger p = BigInteger.valueOf(Math.min(percent, 90));
+        final long needed = BigInteger.valueOf(bytes).add(p).subtract(BigInteger.ONE).divide(p).multiply(HUNDRED).longValueExact();
+        // The reading is the least one the budget covers the request at, whatever the rounding of budgetBytes()
+        assertThat(VectorHeapBudget.budgetBytes(percent, needed)).as("budget at the needed reading covers %d", bytes)
+            .isGreaterThanOrEqualTo(bytes);
+        assertThat(VectorHeapBudget.budgetBytes(percent, needed - 1)).as("budget one byte below does not cover %d", bytes)
+            .isLessThan(bytes);
         for (final long shortfall : new long[] { 1L, 5L, 1_000L }) {
           final long available = needed - shortfall;
           if (available < 0)
@@ -116,6 +121,12 @@ class VectorHeapBudgetOracleTest {
           assertThat(VectorHeapBudget.reclaimNeededFor(bytes, percent, needed - 1, 1L)).as("one byte short, one to give").isEqualTo(1L);
         }
       }
+
+    // A request the budget does not cover is never admitted for free, whatever the rounding: 1 byte at 90% of a reading of 2
+    assertThat(VectorHeapBudget.budgetBytes(90, 2)).isZero();
+    assertThat(VectorHeapBudget.reclaimNeededFor(1L, 90, 2L, 0L)).isEqualTo(-1L);
+    assertThat(VectorHeapBudget.reclaimNeededFor(1L, 90, 2L, 98L)).isEqualTo(98L);
+    assertThat(VectorHeapBudget.reclaimNeededFor(1L, 90, 100L, 0L)).isZero();
   }
 
   @Test
@@ -274,10 +285,9 @@ class VectorHeapBudgetOracleTest {
     if (BigInteger.valueOf(bytes).multiply(HUNDRED).compareTo(BigInteger.valueOf(Long.MAX_VALUE)) > 0)
       return -1L; // "a request that large does not fit any heap anyway"
     final BigInteger p = BigInteger.valueOf(Math.min(percent, 90));
-    // ceil(bytes * 100 / p), the documented formula. budgetBytes() divides by 100 before it multiplies by p, so this reading can
-    // leave budgetBytes() up to p bytes short of `bytes` (bytes 1, percent 90, available 2: budget 0): a rounding of a few bytes
-    // on a heap of megabytes, not pinned here as a requirement
-    final BigInteger needed = BigInteger.valueOf(bytes).multiply(HUNDRED).add(p).subtract(BigInteger.ONE).divide(p);
+    // 100 * ceil(bytes / p): budgetBytes() divides by 100 before it multiplies by p, so the reading that makes it cover `bytes` is a
+    // multiple of 100 (bytes 1, percent 90, available 2: budget 0, the request does not fit)
+    final BigInteger needed = BigInteger.valueOf(bytes).add(p).subtract(BigInteger.ONE).divide(p).multiply(HUNDRED);
     final BigInteger shortfall = needed.subtract(BigInteger.valueOf(Math.max(0L, availableHeap)));
     if (shortfall.signum() <= 0)
       return 0L;
