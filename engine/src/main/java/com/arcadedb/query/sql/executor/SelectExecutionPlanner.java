@@ -134,6 +134,7 @@ import com.arcadedb.schema.VertexType;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.serializer.BinaryComparator;
+import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.Pair;
@@ -7304,9 +7305,12 @@ public class SelectExecutionPlanner {
 
       final boolean supportNull = index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.INDEX;
       final boolean ciCollation = isIndexCaseInsensitive(index, indexFields.indexOf(indexField));
-      final IndexSearchInfo info = new IndexSearchInfo(baseFieldName, allowsRangeQueries(index), isMap(clazz, baseFieldName),
-          isIndexByKey(index, baseFieldName), isIndexByValue(index, baseFieldName), isIndexByItem(index, baseFieldName), supportNull,
-          ciCollation, context);
+      final boolean byItem = isIndexByItem(index, baseFieldName);
+      final boolean byKey = isIndexByKey(index, baseFieldName);
+      final boolean byValue = isIndexByValue(index, baseFieldName);
+      final boolean wholeCollection = !byItem && !byKey && !byValue && isWholeCollectionKey(index, indexFields.indexOf(indexField));
+      final IndexSearchInfo info = new IndexSearchInfo(baseFieldName, allowsRangeQueries(index) && !wholeCollection,
+          isMap(clazz, baseFieldName), byKey, byValue, byItem, supportNull, ciCollation, context);
       if (!ciCollation && info.allowsRange() && baseFieldName.equals(indexField))
         addLikePrefixRange(blockCopy, info, clazz);
       blockIterator = blockCopy.getSubBlocks().iterator();
@@ -7650,6 +7654,18 @@ public class SelectExecutionPlanner {
 
   private boolean allowsRangeQueries(final Index index) {
     return index.supportsOrderedIterations();
+  }
+
+  /**
+   * Whether the key at {@code position} is a whole LIST or MAP value. The index orders such keys value by value, while a range
+   * predicate on the property (li &lt; 5) is evaluated against the items of the collection, so only the scan answers it (issue
+   * #12792).
+   */
+  private static boolean isWholeCollectionKey(final Index index, final int position) {
+    if (!(index instanceof IndexInternal internal) || position < 0)
+      return false;
+    final byte[] keyTypes = internal.getBinaryKeyTypes();
+    return position < keyTypes.length && (keyTypes[position] == BinaryTypes.TYPE_LIST || keyTypes[position] == BinaryTypes.TYPE_MAP);
   }
 
   private boolean isMap(final DocumentType clazz, final String indexField) {

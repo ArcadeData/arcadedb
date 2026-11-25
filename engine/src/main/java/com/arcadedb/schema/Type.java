@@ -542,6 +542,30 @@ public enum Type {
   }
 
   /**
+   * {@link #canBeIndexLookupKey(Database, Object, Class)} for a key of the binary type {@code keyType}, which also holds the
+   * collection key types to it (issue #12792): a LIST key is only read from a collection or an array, a MAP key only from a map.
+   * Any other value was left as it was (or serialized) and cast by the key comparison, while it matches no row without the index.
+   */
+  public static boolean canBeIndexLookupKey(final Database database, final Object value, final byte keyType) {
+    return canBeCollectionIndexKey(value, keyType) && canBeIndexLookupKey(database, value, BinaryTypes.getClassFromType(keyType));
+  }
+
+  /** {@link #isReadAsIndexKey(Object, Object, Class)} for a key of the binary type {@code keyType}, collection key types included. */
+  public static boolean isReadAsIndexKey(final Object original, final Object converted, final byte keyType) {
+    return canBeCollectionIndexKey(original, keyType) && isReadAsIndexKey(original, converted, BinaryTypes.getClassFromType(keyType));
+  }
+
+  private static boolean canBeCollectionIndexKey(final Object value, final byte keyType) {
+    if (value == null)
+      return true;
+    return switch (keyType) {
+      case BinaryTypes.TYPE_LIST -> value instanceof Collection || value.getClass().isArray();
+      case BinaryTypes.TYPE_MAP -> value instanceof Map;
+      default -> true;
+    };
+  }
+
+  /**
    * Whether {@code targetClass} is one of the scalar key classes the index lookup checks hold to: string, boolean, numbers and
    * temporals.
    */

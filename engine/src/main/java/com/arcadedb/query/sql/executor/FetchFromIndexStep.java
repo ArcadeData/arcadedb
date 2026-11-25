@@ -58,7 +58,9 @@ import com.arcadedb.query.sql.parser.LeOperator;
 import com.arcadedb.query.sql.parser.LtOperator;
 import com.arcadedb.query.sql.parser.PCollection;
 import com.arcadedb.query.sql.parser.ValueExpression;
+import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.IndexMetadata;
+import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.security.SecurityDatabaseUser;
@@ -89,6 +91,8 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   private static final byte   SLOT_FIRST_ITEM              = 2;
   /** A CONTAINS over items that can nest: a one-item operand is its item and also the nested list it spells (issue #11730). */
   private static final byte   SLOT_ITEM_OR_WHOLE           = 3;
+  /** {@link #scalarsAsSingletonLists} answer for a scalar no element of the declared type equals: the seek matches nothing. */
+  private static final Object[] NO_KEY                     = new Object[0];
 
   protected final String                                         indexName;
   /** Package-private so a test can observe that a restart released them instead of only dropping the references. */
@@ -862,6 +866,8 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
     final boolean[] fromNullRejectingSlots = nullRejectingSlotMask(true);
     final boolean[] toNullRejectingSlots = nullRejectingSlotMask(false);
+    final byte[] listKeyTypes = listKeyTypes();
+    final Type[] listElementTypes = listKeyTypes != null ? listElementTypes(listKeyTypes) : null;
     final List<Object[][]> seeks = new ArrayList<>(secondValueCombinations.size());
     for (int i = 0; i < secondValueCombinations.size(); i++) {
 
@@ -877,6 +883,13 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       Object[] convertedTo = convertToObjectArray(thirdValue);
       if (convertedTo.length == 0)
         convertedTo = null;
+
+      if (listKeyTypes != null) {
+        convertedFrom = scalarsAsSingletonLists(convertedFrom, listKeyTypes, listElementTypes);
+        convertedTo = scalarsAsSingletonLists(convertedTo, listKeyTypes, listElementTypes);
+        if (convertedFrom == NO_KEY || convertedTo == NO_KEY)
+          continue;
+      }
 
       // A comparison with null is never true (issue #8812): a null range bound matches nothing, it must not read as "no bound"
       // (the other endpoint of a prefix range is shorter than the range slot, and may end with such an equality null)
@@ -1074,6 +1087,86 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       }
     }
     return lossy;
+  }
+
+  /** The key types of the index when one of them is a whole LIST value, else null: the only case {@link #scalarsAsSingletonLists} rewrites. */
+  private byte[] listKeyTypes() {
+    if (!(index instanceof IndexInternal internalIndex))
+      return null;
+    final byte[] keyTypes = internalIndex.getBinaryKeyTypes();
+    if (keyTypes != null)
+      for (final byte keyType : keyTypes)
+        if (keyType == BinaryTypes.TYPE_LIST)
+          return keyTypes;
+    return null;
+  }
+
+  /**
+   * For each whole LIST key of the index, the scalar element type its property declares ({@code LIST OF INTEGER}), or null for a
+   * key with none (a plain {@code LIST}, a type that is not a scalar, a key that is not a LIST).
+   */
+  private Type[] listElementTypes(final byte[] keyTypes) {
+    final Type[] elementTypes = new Type[keyTypes.length];
+    final Schema schema = context.getDatabase().getSchema();
+    final String typeName = index.getTypeName();
+    final DocumentType type = typeName != null && schema.existsType(typeName) ? schema.getType(typeName) : null;
+    if (type == null)
+      return elementTypes;
+    final List<String> propertyNames = index.getPropertyNames();
+    for (int i = 0; i < keyTypes.length && i < propertyNames.size(); i++) {
+      if (keyTypes[i] != BinaryTypes.TYPE_LIST)
+        continue;
+      final Property property = type.getPolymorphicPropertyIfExists(propertyNames.get(i));
+      final Type elementType = property != null && property.getOfType() != null ? Type.getTypeByName(property.getOfType()) : null;
+      // getJavaImplementation, not the default: a LIST OF DATE holds what the database materialises a DATE as (#9111)
+      if (elementType != null && Type.isScalarKeyClass(elementType.getJavaImplementation(context.getDatabase())))
+        elementTypes[i] = elementType;
+    }
+    return elementTypes;
+  }
+
+  /**
+   * A value that is not a list, in the slot of a whole LIST key, as the singleton list the SQL scan compares it as (issue #12792):
+   * {@code li = 5} converts 5 to the class of the list it is compared with ({@link QueryOperatorEquals}, through
+   * {@link Type#convert}), so it matches a stored {@code [5]}, the same singleton a {@code LIST OF} property stores for a scalar
+   * (#9028). The index has to look up that list, not the scalar, which no LIST key equals. The element is read as the declared
+   * element type, the way the scan's element comparison reads {@code '5'} as 5; one that type cannot hold, or holds only rounded
+   * (5.5 for a LIST OF INTEGER), equals no element, and the key comparison is not handed what it cannot order. SQL only: openCypher
+   * keeps a scalar apart from a list ({@code [5] = 5} is false) and does not reach this step.
+   *
+   * @return the key, a copy of it with the singletons, or {@link #NO_KEY} when no row can match
+   */
+  private Object[] scalarsAsSingletonLists(final Object[] key, final byte[] keyTypes, final Type[] elementTypes) {
+    if (key == null)
+      return null;
+    final Database database = context.getDatabase();
+    Object[] converted = null;
+    for (int i = 0; i < key.length && i < keyTypes.length; i++) {
+      final Object value = key[i];
+      if (keyTypes[i] != BinaryTypes.TYPE_LIST || value == null || value instanceof Collection || MultiValue.isSequenceArray(value))
+        continue;
+      Object element = value;
+      final Type elementType = elementTypes[i];
+      if (elementType != null) {
+        if (IntegralKeyBound.isInexact(IntegralKeyBound.binaryTypeOf(elementType), value))
+          return NO_KEY;
+        final Class<?> elementClass = elementType.getJavaImplementation(database);
+        try {
+          element = Type.convertIndexKeyOrNull(database, value, elementClass);
+        } catch (final IllegalArgumentException e) {
+          return NO_KEY;
+        }
+        if (!Type.isReadAsIndexKey(value, element, elementClass))
+          return NO_KEY;
+      }
+      if (converted == null)
+        // a copy: the array can be the one the other side, or another seek, holds
+        converted = key.clone();
+      final List<Object> singleton = new ArrayList<>(1);
+      singleton.add(element);
+      converted[i] = singleton;
+    }
+    return converted != null ? converted : key;
   }
 
   private static boolean hasFloatingKeyType(final byte[] keyTypes) {
@@ -1677,7 +1770,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     for (int i = 0; i < values.length && i < keyTypes.length; i++)
       // Also a value the conversion leaves as it was or answers null for (a LocalDate for a BOOLEAN key, a List for an INTEGER one):
       // no key either, and a range reads a null bound as "no bound" (issue #10541)
-      if (!Type.canBeIndexLookupKey(database, values[i], BinaryTypes.getClassFromType(keyTypes[i])))
+      if (!Type.canBeIndexLookupKey(database, values[i], keyTypes[i]))
         return false;
     return true;
   }
