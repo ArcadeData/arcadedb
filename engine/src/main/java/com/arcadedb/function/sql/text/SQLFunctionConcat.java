@@ -26,7 +26,8 @@ import com.arcadedb.query.sql.executor.OperationHeapLimit;
 public class SQLFunctionConcat extends SQLAggregatedFunction {
   public static final String        NAME                 = "concat";
   // WHAT A CHARACTER OF THE TEXT TAKES ON THE HEAP: THE ARRAY OF THE BUILDER HOLDS A BYTE PER LATIN-1 CHARACTER AND GROWS BY
-  // DOUBLING, SO IT CAN BE TWICE AS LONG AS THE TEXT IN IT
+  // DOUBLING, SO IT CAN BE TWICE AS LONG AS THE TEXT IN IT. IT IS AN APPROXIMATION: TEXT WITH CHARACTERS BEYOND LATIN-1 TAKES
+  // TWO BYTES PER CHARACTER IN THE ARRAY BEFORE THE DOUBLING
   private static final int          HEAP_BYTES_PER_CHAR  = 2;
   private             StringBuilder sb;
   // THE VALUES APPENDED SO FAR, WHICH THE ELEMENT CAP COUNTS
