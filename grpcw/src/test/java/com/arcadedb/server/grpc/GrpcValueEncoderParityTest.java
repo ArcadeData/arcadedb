@@ -103,7 +103,7 @@ class GrpcValueEncoderParityTest {
       });
 
       final FullTextSearchResponse response = GrpcVectorSearch.fullTextSearch(database,
-          FullTextSearchRequest.newBuilder().setQueryText("graph").setTypeName("Article").build());
+          FullTextSearchRequest.newBuilder().setQueryText("graph").setTypeName("Article").build(), GrpcEncodingBudget.ofDefault());
 
       assertThat(response.getResultsCount()).isEqualTo(1);
       final GrpcValue tags = response.getResults(0).getRecord().getPropertiesOrThrow("tags");
