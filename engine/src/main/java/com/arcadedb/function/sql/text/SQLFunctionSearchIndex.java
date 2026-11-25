@@ -30,6 +30,7 @@ import com.arcadedb.index.fulltext.FullTextSearch;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.IndexableSQLFunction;
 import com.arcadedb.query.sql.executor.IndexedFunctionPushdown;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.query.sql.parser.BinaryCompareOperator;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.FromClause;
@@ -190,13 +191,13 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
 
     final List<TypeIndex> logical = MultiTypeIndexes.resolve(context.getDatabase().getSchema(), indexName);
     if (logical != null && !logical.isEmpty())
-      return search(indexName, queryString, context).explainScoring();
+      return search(indexName, queryString, context).explainScoring(context);
 
     final Index index = context.getDatabase().getSchema().getIndexByName(indexName);
     if (!(index instanceof final TypeIndex typeIndex))
       return null;
 
-    return FullTextSearch.explainScoring(typeIndex, queryString);
+    return FullTextSearch.explainScoring(typeIndex, queryString, null, WorkGuard.forCommandDeadline(context));
   }
 
   @Override

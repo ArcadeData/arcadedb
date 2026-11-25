@@ -232,13 +232,14 @@ final class FullTextFunctionSearch {
         recordFilter, order, guard);
   }
 
-  Object explainScoring() {
+  Object explainScoring(final CommandContext context) {
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
     if (indexes.size() == 1)
-      return FullTextSearch.explainScoring(indexes.getFirst(), query, restrictedFields);
+      return FullTextSearch.explainScoring(indexes.getFirst(), query, restrictedFields, guard);
     // a logical index: one explanation per member, under its name
     final JSONObject explain = new JSONObject();
     for (final TypeIndex index : indexes)
-      explain.put(index.getName(), FullTextSearch.explainScoring(index, query, restrictedFields));
+      explain.put(index.getName(), FullTextSearch.explainScoring(index, query, restrictedFields, guard));
     return explain;
   }
 

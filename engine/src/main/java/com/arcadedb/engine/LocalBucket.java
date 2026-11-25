@@ -5660,6 +5660,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // replay writes the negative size marker back.
         final boolean slotTracked = slotCandidate && !(isPlaceHolder && slotInsertedHere)//
                 && !slotTx.isSlotRebasePagePoisoned(fileId, pageId);
+        // The bytes the slot held, when the pre-image below copied them: what a same-size overwrite is diffed against
+        byte[] storedBody = null;
         if (slotCandidate) {
           // Skip the pre-image + final-image copies on a page that is already poisoned (they would be discarded).
           if (slotTracked) {
@@ -5673,6 +5675,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                       buffer.getContentBeginOffset() + bufferSize);
               final byte[] baseBody = new byte[(int) recordSize[0]];
               page.readByteArray((int) (recordPositionInPage + recordSize[1]), baseBody, 0, baseBody.length);
+              storedBody = baseBody;
               slotTx.trackRebasableUpdate(fileId, pageId, positionInPage, baseBody, finalBody,
                       isPlaceHolder ? TransactionContext.SLOT_KIND_PLACEHOLDER_CONTENT : TransactionContext.SLOT_KIND_RECORD);
             }
@@ -5695,9 +5698,31 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         final boolean packedOverwrite = bufferSize + Binary.getNumberSpace(sizeMarker) == footprintBefore;
         final boolean previousPackedWrite = packedOverwrite && page.beginPackedWrite();
         try {
-          recordSize[1] = page.writeNumber(recordPositionInPage, sizeMarker);
+          // An overwrite of the same footprint that the pre-image above can be compared with writes only the bytes that differ: the
+          // first edge of a vertex changes the 12 bytes of one head pointer of a 4.5 KB record, and the page, the write-ahead log and
+          // the replicas had all been handed the whole record. The size marker is the same value (equal footprints mean equal sizes),
+          // so it is not written either. The page ends up byte for byte what the whole write left, and a record that differs nowhere
+          // is written whole as before.
+          int writeFrom = 0;
+          int writeTo = bufferSize;
+          final byte[] bodyBytes = buffer.getContent();
+          final int bodyBegin = buffer.getContentBeginOffset();
+          if (packedOverwrite && storedBody != null && storedBody.length == bufferSize) {
+            final int first = Arrays.mismatch(storedBody, 0, bufferSize, bodyBytes, bodyBegin, bodyBegin + bufferSize);
+            if (first >= 0) {
+              int last = bufferSize - 1;
+              while (storedBody[last] == bodyBytes[bodyBegin + last])
+                --last;
+              writeFrom = first;
+              writeTo = last + 1;
+            }
+          }
+          if (writeFrom > 0 || writeTo < bufferSize)
+            recordSize[1] = Binary.getNumberSpace(sizeMarker);
+          else
+            recordSize[1] = page.writeNumber(recordPositionInPage, sizeMarker);
           final int recordContentPositionInPage = (int) (recordPositionInPage + recordSize[1]);
-          page.writeByteArray(recordContentPositionInPage, buffer.getContent(), buffer.getContentBeginOffset(), bufferSize);
+          page.writeByteArray(recordContentPositionInPage + writeFrom, bodyBytes, bodyBegin + writeFrom, writeTo - writeFrom);
         } finally {
           if (packedOverwrite)
             page.endPackedWrite(previousPackedWrite);
