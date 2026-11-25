@@ -24,6 +24,8 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -119,6 +121,28 @@ class CypherSkipLimitBeyondIntIssue12757Test extends TestHelper {
     assertThatThrownBy(() -> xs("UNWIND [1, 2, 3] AS x RETURN x LIMIT 'te'")).isInstanceOf(CommandParsingException.class)
         .hasMessageContaining("InvalidArgumentType");
     assertThatThrownBy(() -> xs("UNWIND [1, 2, 3] AS x RETURN x SKIP $s", Map.of("s", "1"))).isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("InvalidArgumentType");
+  }
+
+  /** {@code longValue()} keeps the low 64 bits of a BigInteger or a BigDecimal: 2^64 + 1 reads as 1, 2^63 as a negative, -2^63 - 1 as MAX. */
+  @Test
+  void bigNumbersAreReadBySignAndSizeNotByTheirLow64Bits() {
+    final String limit = "UNWIND [1, 2, 3] AS x RETURN x LIMIT $n";
+    final String skip = "UNWIND [1, 2, 3] AS x RETURN x SKIP $n";
+    for (final Number big : new Number[] { new BigInteger("18446744073709551617"), new BigInteger("9223372036854775808"),
+        new BigDecimal("1E+30"), new BigDecimal("9223372036854775808") }) {
+      assertThat(xs(limit, Map.of("n", big))).as("LIMIT " + big).hasSize(3);
+      assertThat(xs(skip, Map.of("n", big))).as("SKIP " + big).isEmpty();
+    }
+    for (final Number negative : new Number[] { new BigInteger("-9223372036854775809"), new BigInteger("-18446744073709551615"),
+        new BigDecimal("-1E+30") })
+      for (final String query : new String[] { limit, skip })
+        assertThatThrownBy(() -> xs(query, Map.of("n", negative))).as(query + " " + negative).isInstanceOf(CommandParsingException.class)
+            .hasMessageContaining("NegativeIntegerArgument");
+
+    assertThat(xs(limit, Map.of("n", new BigInteger("2")))).hasSize(2);
+    assertThat(xs(skip, Map.of("n", new BigDecimal("2.0")))).hasSize(1);
+    assertThatThrownBy(() -> xs(limit, Map.of("n", new BigDecimal("1.5")))).isInstanceOf(CommandParsingException.class)
         .hasMessageContaining("InvalidArgumentType");
   }
 }

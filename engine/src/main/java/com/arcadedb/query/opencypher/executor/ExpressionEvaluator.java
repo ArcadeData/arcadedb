@@ -40,6 +40,8 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.VariableOverlayResult;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -49,6 +51,8 @@ import java.util.Map;
  * Handles variables, property access, and function calls.
  */
 public class ExpressionEvaluator {
+  private static final BigDecimal MAX_INT = BigDecimal.valueOf(Integer.MAX_VALUE);
+
   /**
    * Aggregation overrides are stored thread-locally so that all
    * {@code ExpressionEvaluator} instances - including the shared static one
@@ -308,6 +312,15 @@ public class ExpressionEvaluator {
         final double d = num.doubleValue();
         if (d != Math.floor(d) || Double.isInfinite(d))
           throw new CommandParsingException("InvalidArgumentType: SKIP/LIMIT value must be an integer, got: Float(" + d + ")");
+      }
+      if (num instanceof BigInteger || num instanceof BigDecimal) {
+        // longValue() keeps the low 64 bits of these: the sign and the size are read before any narrowing
+        final BigDecimal exact = num instanceof BigInteger big ? new BigDecimal(big) : (BigDecimal) num;
+        if (exact.signum() < 0)
+          throw new CommandParsingException("NegativeIntegerArgument: SKIP/LIMIT value must not be negative, got: " + exact.toPlainString());
+        if (exact.stripTrailingZeros().scale() > 0)
+          throw new CommandParsingException("InvalidArgumentType: SKIP/LIMIT value must be an integer, got: Decimal(" + exact.toPlainString() + ")");
+        return exact.compareTo(MAX_INT) > 0 ? Integer.MAX_VALUE : exact.intValue();
       }
       final long longVal = num.longValue();
       if (longVal < 0)
