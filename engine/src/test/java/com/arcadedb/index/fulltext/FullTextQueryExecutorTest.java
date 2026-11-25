@@ -20,7 +20,9 @@ package com.arcadedb.index.fulltext;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseRID;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
@@ -581,5 +583,37 @@ class FullTextQueryExecutorTest extends TestHelper {
 
       stopwatch.assertGaveUpWithin(5000, "the configured 200ms deadline from an unbounded scan");
     });
+  }
+
+  /** The identities a search returns are bound to the database of the index, whichever similarity ranks them. */
+  @Test
+  void theIdentitiesOfTheMatchesAreBoundToTheDatabaseOfTheIndex() {
+    for (final String similarity : new String[] { "BM25", "CLASSIC" }) {
+      final String type = "Bound" + similarity;
+      database.transaction(() -> {
+        database.command("sql", "CREATE DOCUMENT TYPE " + type);
+        database.command("sql", "CREATE PROPERTY " + type + ".content STRING");
+        database.command("sql", "CREATE INDEX ON " + type + " (content) FULL_TEXT METADATA {\"similarity\": \"" + similarity + "\"}");
+        database.command("sql", "INSERT INTO " + type + " SET content = 'java programming'");
+        database.command("sql", "INSERT INTO " + type + " SET content = 'java database'");
+      });
+
+      database.transaction(() -> {
+        final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName(type + "[content]");
+        int count = 0;
+        for (final var bucketIndex : index.getIndexesOnBuckets()) {
+          final LSMTreeFullTextIndex ftIndex = (LSMTreeFullTextIndex) bucketIndex;
+          final IndexCursor cursor = new FullTextQueryExecutor(ftIndex).search("java", -1);
+          while (cursor.hasNext()) {
+            final RID rid = cursor.next().getIdentity();
+            assertThat(rid).as("%s: a match is bound to a database", similarity).isInstanceOf(DatabaseRID.class);
+            assertThat(((DatabaseRID) rid).getBoundDatabase()).as("%s: the database of the index", similarity)
+                .isSameAs(ftIndex.getDatabase());
+            count++;
+          }
+        }
+        assertThat(count).as("%s: both documents match", similarity).isEqualTo(2);
+      });
+    }
   }
 }

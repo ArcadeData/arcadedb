@@ -787,14 +787,16 @@ public class FullTextQueryExecutor {
     final long[] postingPositions = postings.positions();
     final int postingCount = postings.size();
     long df = 0L;
+    // The identities are bound to the database the index belongs to, as the cursor over the postings gave them: a result that reaches the
+    // caller loads its record from that database, not from whichever one is active on the calling thread
+    final DatabaseInternal database = index.getDatabase();
     for (int i = 0; i < postingCount; ++i) {
       tick();
-      final RID rid = new RID(postingBuckets[i], postingPositions[i]);
       // Deletion markers carry a negative bucket id: they are not live documents and must not inflate the document frequency.
-      if (rid.getBucketId() < 0)
+      if (postingBuckets[i] < 0)
         continue;
       ++df;
-      scoreMap.computeIfAbsent(rid, k -> new AtomicInteger(0)).incrementAndGet();
+      scoreMap.computeIfAbsent(database.newRID(postingBuckets[i], postingPositions[i]), k -> new AtomicInteger(0)).incrementAndGet();
     }
     recordDocumentFrequency(searchKey, df);
   }
