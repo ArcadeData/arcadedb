@@ -55,7 +55,6 @@ import java.util.logging.Level;
 import static com.arcadedb.postgres.PostgresCatalogRowSets.aggregateOf;
 import static com.arcadedb.postgres.PostgresCatalogRowSets.combine;
 import static com.arcadedb.postgres.PostgresCatalogRowSets.compareValues;
-import static com.arcadedb.postgres.PostgresCatalogRowSets.distinctKey;
 import static com.arcadedb.postgres.PostgresCatalogSyntax.MAX_NESTING;
 import static com.arcadedb.postgres.PostgresCatalogSyntax.containsSetOperation;
 import static com.arcadedb.postgres.PostgresCatalogSyntax.isName;
@@ -3210,9 +3209,9 @@ public class PostgresCatalog {
 
     if (statement.distinct) {
       final List<Map<String, Object>> distinct = new ArrayList<>(result.size());
-      final Set<List<Object>> seen = new HashSet<>();
+      final Set<PostgresCatalogRowKey> seen = new HashSet<>();
       for (final Map<String, Object> row : result)
-        if (seen.add(distinctKey(new ArrayList<>(row.values()))))
+        if (seen.add(PostgresCatalogRowKey.of(row.values())))
           distinct.add(row);
       result = distinct;
     }
@@ -3284,10 +3283,10 @@ public class PostgresCatalog {
   private static List<Map<String, Object>> aggregate(final Statement statement, final Projection projection,
       final List<Joined> surviving, final List<FromEntry> from, final Context context,
       final Map<String, Collection<String>> columnsByRelation, final RowResolver outer) {
-    final Map<List<Object>, List<Joined>> groups = new LinkedHashMap<>();
+    final Map<PostgresCatalogRowKey, List<Joined>> groups = new LinkedHashMap<>();
 
     if (statement.groupBy == null)
-      groups.put(List.of(), surviving);
+      groups.put(PostgresCatalogRowKey.of(List.of()), surviving);
     else {
       final List<PostgresCatalogExpression> keys = groupKeys(statement.groupBy, projection);
       if (keys == null)
@@ -3301,7 +3300,7 @@ public class PostgresCatalog {
             return null;
           key.add(value);
         }
-        groups.computeIfAbsent(distinctKey(key), k -> new ArrayList<>()).add(joined);
+        groups.computeIfAbsent(PostgresCatalogRowKey.of(key), k -> new ArrayList<>()).add(joined);
       }
     }
 
@@ -3382,7 +3381,7 @@ public class PostgresCatalog {
         return null;
 
       final Object[] values = new Object[rows.size()];
-      final Map<List<Object>, List<Integer>> partitions = new LinkedHashMap<>();
+      final Map<PostgresCatalogRowKey, List<Integer>> partitions = new LinkedHashMap<>();
 
       for (int i = 0; i < rows.size(); i++) {
         final RowResolver resolver = new RowResolver(rows.get(i).row(), rows.get(i).nulled(), from, context, outer);
@@ -3393,7 +3392,7 @@ public class PostgresCatalog {
             return null;
           key.add(value);
         }
-        partitions.computeIfAbsent(key, k -> new ArrayList<>()).add(i);
+        partitions.computeIfAbsent(PostgresCatalogRowKey.of(key), k -> new ArrayList<>()).add(i);
       }
 
       for (final List<Integer> partition : partitions.values()) {
@@ -3875,7 +3874,7 @@ public class PostgresCatalog {
         return PostgresCatalogExpression.UNKNOWN;
 
       final List<Object> values = new ArrayList<>(group.size());
-      final Set<List<Object>> seen = call.distinct ? new HashSet<>() : null;
+      final Set<PostgresCatalogRowKey> seen = call.distinct ? new HashSet<>() : null;
       final List<Object> separators = "string_agg".equals(call.name) ? new ArrayList<>(group.size()) : null;
       for (final Joined joined : group) {
         if (call.argument == null) {
@@ -3890,7 +3889,7 @@ public class PostgresCatalog {
         // Aggregates skip NULLs; array_agg is the one that collects them.
         if (value == null && !"array_agg".equals(call.name))
           continue;
-        if (seen != null && !seen.add(distinctKey(Collections.singletonList(value))))
+        if (seen != null && !seen.add(PostgresCatalogRowKey.ofValue(value)))
           continue;
         values.add(value);
         if (separators != null) {
