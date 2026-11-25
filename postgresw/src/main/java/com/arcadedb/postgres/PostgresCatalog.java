@@ -1709,10 +1709,8 @@ public class PostgresCatalog {
       rows.add(row);
     }
 
-    if (operation.orderBy != null) {
-      context.charge(sortCost(rows.size()));
-      rows = sort(operation.orderBy, rows);
-    }
+    if (operation.orderBy != null)
+      rows = sort(context, operation.orderBy, rows, null);
     if (rows == null)
       return DECLINED;
     if (operation.limit != null && rows.size() > operation.limit)
@@ -1721,9 +1719,20 @@ public class PostgresCatalog {
     return new Answer(unionColumns(keys, answers, rows), rows, filtersExactly);
   }
 
-  /** The comparisons of sorting {@code rows} rows, about {@code rows * log2(rows)}: what the work budget is charged for a sort. */
-  private static int sortCost(final int rows) {
-    return (int) Math.min((long) rows * (Integer.SIZE - Integer.numberOfLeadingZeros(rows)), Integer.MAX_VALUE);
+  /**
+   * The comparisons of sorting {@code rows} rows by {@code keys} keys: about {@code rows * log2(rows)} of them, each reading as many
+   * keys as tie, so every key in the worst case. What the work budget is charged for a sort, before it is done.
+   */
+  private static int sortCost(final int rows, final int keys) {
+    if (rows < 2 || keys < 1)
+      return 0;
+    final long perKey = (long) rows * (Integer.SIZE - Integer.numberOfLeadingZeros(rows));
+    return perKey > Integer.MAX_VALUE / keys ? Integer.MAX_VALUE : (int) (perKey * keys);
+  }
+
+  /** {@code units} of work as the {@code int} the work budget is charged in: more than any budget when it does not fit. */
+  private static int unitsOf(final long units) {
+    return (int) Math.min(units, Integer.MAX_VALUE);
   }
 
   private static Family mostSpecific(final Family current, final Family candidate) {
@@ -3217,7 +3226,7 @@ public class PostgresCatalog {
     }
 
     if (statement.orderBy != null)
-      result = sort(statement.orderBy, result, projection);
+      result = sort(context, statement.orderBy, result, projection);
     if (result == null)
       return DECLINED;
 
@@ -3291,6 +3300,8 @@ public class PostgresCatalog {
       final List<PostgresCatalogExpression> keys = groupKeys(statement.groupBy, projection);
       if (keys == null)
         return null;
+      // every row has the keys of its group evaluated
+      context.charge(unitsOf((long) surviving.size() * keys.size()));
       for (final Joined joined : surviving) {
         final RowResolver resolver = new RowResolver(joined.row(), joined.nulled(), from, context, outer);
         final List<Object> key = new ArrayList<>(keys.size());
@@ -3379,6 +3390,8 @@ public class PostgresCatalog {
 
       if (!"row_number".equals(call.name))
         return null;
+      // every row is numbered, and has the keys of its partition and of its order evaluated
+      context.charge(unitsOf((long) rows.size() * (1 + call.partitionBy.size() + call.orderBy.size())));
 
       final Object[] values = new Object[rows.size()];
       final Map<PostgresCatalogRowKey, List<Integer>> partitions = new LinkedHashMap<>();
@@ -3397,6 +3410,7 @@ public class PostgresCatalog {
 
       for (final List<Integer> partition : partitions.values()) {
         if (!call.orderBy.isEmpty()) {
+          context.charge(sortCost(partition.size(), call.orderBy.size()));
           final Map<Integer, List<Object>> keys = new LinkedHashMap<>();
           for (final Integer index : partition) {
             final RowResolver resolver = new RowResolver(rows.get(index).row(), rows.get(index).nulled(), from, context,
@@ -3517,30 +3531,32 @@ public class PostgresCatalog {
   /**
    * Sorts the projected rows. ORDER BY items may name a projected alias, an ordinal position or a source
    * column; an item that resolves to none of those leaves the rows in the order the catalog built them,
-   * which is by name, rather than declining a query whose data is perfectly answerable.
+   * which is by name, rather than declining a query whose data is perfectly answerable. An item may also be written as a
+   * qualified column ({@code i.indisprimary DESC}) when {@code projection} carries that column, which is how psql orders the indexes
+   * of {@code \d} (issue #10473), and may name a column the projection carries under another name: {@code SELECT nspname AS
+   * schema_name ... ORDER BY nspname}, DbVisualizer's schema list, was answered unsorted (found with issue #10745).
+   * <p>
+   * The work is charged to the statement before it is done: finding the column of each item, then the comparisons of the sort for
+   * each key. An item that names a column an earlier item named is no key, as it never breaks a tie the earlier one left.
+   *
+   * @param projection the projection of the statement, null for the rows of a set operation
    *
    * @return the sorted rows, or null when an item names two output columns alike - ambiguous, so declined
    */
-  private static List<Map<String, Object>> sort(final List<PostgresCatalogToken> orderBy,
-      final List<Map<String, Object>> projected) {
-    return sort(orderBy, projected, null);
-  }
-
-  /**
-   * {@link #sort(List, List)} that also reads an item written as a qualified column ({@code i.indisprimary DESC}) when the
-   * projection carries that column, which is how psql orders the indexes of {@code \d} (issue #10473), and one naming a column the
-   * projection carries under another name: {@code SELECT nspname AS schema_name ... ORDER BY nspname}, DbVisualizer's schema list,
-   * was answered unsorted (found with issue #10745).
-   */
-  private static List<Map<String, Object>> sort(final List<PostgresCatalogToken> orderBy,
+  private static List<Map<String, Object>> sort(final Context context, final List<PostgresCatalogToken> orderBy,
       final List<Map<String, Object>> projected, final Projection projection) {
     final List<List<PostgresCatalogToken>> items = splitTopLevel(orderBy);
     if (items == null || items.isEmpty())
       return projected;
 
-    final List<Integer> keys = new ArrayList<>(items.size());
-    final List<Boolean> descending = new ArrayList<>(items.size());
     final List<String> aliases = new ArrayList<>(projected.isEmpty() ? List.of() : projected.get(0).keySet());
+    // each item is looked up among the output columns
+    context.charge(unitsOf((long) items.size() * Math.max(1, aliases.size())));
+
+    final int[] keys = new int[items.size()];
+    final boolean[] descending = new boolean[items.size()];
+    final boolean[] named = new boolean[aliases.size()];
+    int keyCount = 0;
 
     for (final List<PostgresCatalogToken> item : items) {
       if (item.isEmpty())
@@ -3559,51 +3575,55 @@ public class PostgresCatalog {
       }
 
       int index = -1;
-      if (key.size() == 3 && key.get(1).isSymbol(".") && projection != null) {
+      if (key.size() == 3 && key.get(1).isSymbol(".") && projection != null)
         index = projectedColumn(projection, key.get(0).text.toLowerCase(Locale.ENGLISH), key.get(2).text.toLowerCase(Locale.ENGLISH));
-        if (index < 0)
-          return projected;
-        keys.add(index);
-        descending.add(desc);
-        continue;
-      }
-      if (key.size() != 1)
+      else if (key.size() != 1)
         return projected;
-
-      final PostgresCatalogToken token = key.get(0);
-      if (token.type == PostgresCatalogToken.Type.NUMBER) {
-        try {
-          index = Integer.parseInt(token.text) - 1;
-        } catch (final NumberFormatException e) {
-          return projected;
-        }
-      } else {
-        for (int i = 0; i < aliases.size(); i++)
-          if (announcedName(aliases.get(i)).equalsIgnoreCase(token.text)) {
-            if (index >= 0)
-              // Two output columns go by this name: PostgreSQL refuses an ambiguous ORDER BY rather than pick one.
-              return null;
-            index = i;
+      else {
+        final PostgresCatalogToken token = key.get(0);
+        if (token.type == PostgresCatalogToken.Type.NUMBER) {
+          try {
+            index = Integer.parseInt(token.text) - 1;
+          } catch (final NumberFormatException e) {
+            return projected;
           }
-        // no output column has the name: PostgreSQL then reads it as a column of the input, which the projection may carry aliased
-        if (index < 0 && projection != null)
-          index = projectedColumn(projection, null, token.text);
+        } else {
+          for (int i = 0; i < aliases.size(); i++)
+            if (announcedName(aliases.get(i)).equalsIgnoreCase(token.text)) {
+              if (index >= 0)
+                // Two output columns go by this name: PostgreSQL refuses an ambiguous ORDER BY rather than pick one.
+                return null;
+              index = i;
+            }
+          // no output column has the name: PostgreSQL then reads it as a column of the input, which the projection may carry aliased
+          if (index < 0 && projection != null)
+            index = projectedColumn(projection, null, token.text);
+        }
       }
 
       if (index < 0 || index >= aliases.size())
         return projected;
 
-      keys.add(index);
-      descending.add(desc);
+      // a column named again ties exactly where the first time it was named did: it is no key
+      if (!named[index]) {
+        named[index] = true;
+        keys[keyCount] = index;
+        descending[keyCount++] = desc;
+      }
     }
+
+    context.charge(sortCost(projected.size(), keyCount));
+
+    final String[] columns = new String[keyCount];
+    for (int i = 0; i < keyCount; i++)
+      columns[i] = aliases.get(keys[i]);
 
     final List<Map<String, Object>> sorted = new ArrayList<>(projected);
     sorted.sort((left, right) -> {
-      for (int i = 0; i < keys.size(); i++) {
-        final String alias = aliases.get(keys.get(i));
-        final int comparison = compareValues(left.get(alias), right.get(alias));
+      for (int i = 0; i < columns.length; i++) {
+        final int comparison = compareValues(left.get(columns[i]), right.get(columns[i]));
         if (comparison != 0)
-          return descending.get(i) ? -comparison : comparison;
+          return descending[i] ? -comparison : comparison;
       }
       return 0;
     });
