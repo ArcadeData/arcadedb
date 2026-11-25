@@ -20,11 +20,14 @@ package com.arcadedb.schema;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.async.AsyncQuiesce;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TypeAlreadyExistsException;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.security.SecurityDatabaseUser;
@@ -240,6 +243,15 @@ public class TypeBuilder<T> {
     return t;
   }
 
+  /** The kind of record the type this builder creates stores, for the same-kind rule of its super types (issue #12029). */
+  private byte recordKind() {
+    if (VertexType.class.isAssignableFrom(type))
+      return Vertex.RECORD_TYPE;
+    if (EdgeType.class.isAssignableFrom(type))
+      return Edge.RECORD_TYPE;
+    return Document.RECORD_TYPE;
+  }
+
   private T createInternal(final LocalSchema schema) {
     final LocalDocumentType t = schema.typeMap().get(typeName);
     if (t != null) {
@@ -329,7 +341,7 @@ public class TypeBuilder<T> {
       // refused create would leave a half-built type behind (issues #9846, #10394)
       if (superTypes != null)
         for (final LocalDocumentType sup : superTypes)
-          LocalDocumentType.checkSuperTypeOfNewType(typeName, sup, edgeLightweight);
+          LocalDocumentType.checkSuperTypeOfNewType(typeName, recordKind(), sup, edgeLightweight);
 
       // The same for a bucket another type owns, or one listed twice: addBucket refuses it, but only after the type is registered,
       // which left the type behind with the buckets before it (issue #10317)
@@ -344,12 +356,8 @@ public class TypeBuilder<T> {
         c = new LocalVertexType(schema, typeName);
       else if (type.equals(EdgeType.class))
         c = new LocalEdgeType(schema, typeName, edgeBidirectional, edgeLightweight, edgeUnique);
-      else {
+      else
         c = new LocalDocumentType(schema, typeName);
-
-        // CREATE ENTRY IN DICTIONARY IF NEEDED. THIS IS USED BY EMBEDDED DOCUMENT WHERE THE DICTIONARY ID IS SAVED
-        schema.getDictionary().getIdByName(typeName, true);
-      }
 
       schema.typeMap().put(typeName, c);
 
@@ -385,6 +393,14 @@ public class TypeBuilder<T> {
           LocalEdgeType.applyUniqueConstraint(schema, edgeType);
 
         schema.updateSecurity();
+
+        // CREATE ENTRY IN DICTIONARY IF NEEDED. THIS IS USED BY EMBEDDED DOCUMENT WHERE THE DICTIONARY ID IS SAVED. Registered LAST,
+        // once nothing above can refuse: the registration commits a transaction of its own into the dictionary, a file that
+        // stays when the take-back below drops the type, so on a Raft leader a refusal after it left a page change the schema
+        // session could not publish and quarantined the leader (issue #13092). Nothing above needs the id: only the
+        // serialization of an embedded document of the type reads it
+        if (!(c instanceof LocalVertexType) && !(c instanceof LocalEdgeType))
+          schema.getDictionary().getIdByName(typeName, true);
       } catch (final RuntimeException e) {
         takeBack(schema, c, notMadeByTheType, e);
         throw e;

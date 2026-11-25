@@ -22,6 +22,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.query.sql.executor.CommandContext;
 import org.locationtech.spatial4j.context.SpatialContext;
+import org.locationtech.spatial4j.exception.InvalidShapeException;
 
 /**
  * Deprecated alias for {@code circle()}: returns a circle shape centered at (x, y) with the given radius.
@@ -54,8 +55,13 @@ public class SQLFunctionCircle extends SQLFunctionAbstract {
     checkArity(params);
 
     final SpatialContext spatialContext = GeoUtils.getSpatialContext();
-    return spatialContext.getShapeFactory()
-        .circle(GeoUtils.getDoubleValue(params[0]), GeoUtils.getDoubleValue(params[1]), GeoUtils.getDoubleValue(params[2]));
+    try {
+      return spatialContext.getShapeFactory()
+          .circle(GeoUtils.getDoubleValue(params[0]), GeoUtils.getDoubleValue(params[1]), GeoUtils.getDoubleValue(params[2]));
+    } catch (final InvalidShapeException e) {
+      // a centre outside the world or a negative radius is the caller's value, not a server fault (issue #12744)
+      throw new IllegalArgumentException(NAME + "() " + e.getMessage(), e);
+    }
   }
 
   @Override
