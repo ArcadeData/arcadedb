@@ -47,12 +47,12 @@ class CypherInlineMapIntegerBeyondDoublePrecisionTest extends TestHelper {
     });
     final Map<String, Object> p = Map.of("f", ROUNDED);
 
-    assertThat(count("MATCH (:E)-[r:R {w: $f}]->(:E) RETURN count(*) AS c", p)).as("inline map").isZero();
-    assertThat(count("MATCH (:E)-[r:R]->(:E) WHERE r.w = $f RETURN count(*) AS c", p)).as("WHERE").isZero();
-    assertThat(count("MATCH (a:E {k: 1}) WHERE (a)-[:R {w: $f}]->(:E) RETURN count(*) AS c", p)).as("pattern predicate").isZero();
+    assertThat(count("MATCH (:E)-[r:R {w: $f}]->(:E) RETURN count(r) AS c", p)).as("inline map").isZero();
+    assertThat(count("MATCH (:E)-[r:R]->(:E) WHERE r.w = $f RETURN count(r) AS c", p)).as("WHERE").isZero();
+    assertThat(count("MATCH (a:E {k: 1}) WHERE (a)-[:R {w: $f}]->(:E) RETURN count(a) AS c", p)).as("pattern predicate").isZero();
     assertThat(count("MATCH (a:E {k: 1}) RETURN size([(a)-[:R {w: $f}]->(b) | b]) AS c", p)).as("pattern comprehension").isZero();
-    assertThat(count("MATCH (a:E {k: 1})-[:R*1..2 {w: $f}]->(b) RETURN count(*) AS c", p)).as("variable-length").isZero();
-    assertThat(count("MATCH (a:E {k: 1}) WHERE EXISTS { (a)-[:R {w: $f}]->() } RETURN count(*) AS c", p)).as("EXISTS").isZero();
+    assertThat(count("MATCH (a:E {k: 1})-[:R*1..2 {w: $f}]->(b) RETURN count(b) AS c", p)).as("variable-length").isZero();
+    assertThat(count("MATCH (a:E {k: 1}) WHERE EXISTS { (a)-[:R {w: $f}]->() } RETURN count(a) AS c", p)).as("EXISTS").isZero();
   }
 
   @Test
@@ -60,10 +60,10 @@ class CypherInlineMapIntegerBeyondDoublePrecisionTest extends TestHelper {
     database.transaction(() -> database.command("opencypher", "CREATE (:E {n: " + BEYOND + "})"));
     final Map<String, Object> p = Map.of("f", ROUNDED);
 
-    assertThat(count("MATCH (n:E {n: $f}) RETURN count(*) AS c", p)).as("MATCH of the same pattern").isZero();
+    assertThat(count("MATCH (n:E {n: $f}) RETURN count(n) AS c", p)).as("MATCH of the same pattern").isZero();
     database.transaction(() -> database.command("opencypher", "MERGE (n:E {n: $f}) ON CREATE SET n.created = true", p));
-    assertThat(count("MATCH (n:E) RETURN count(*) AS c", Map.of())).as("MERGE created the float key").isEqualTo(2L);
-    assertThat(count("MATCH (n:E {created: true}) RETURN count(*) AS c", Map.of())).isEqualTo(1L);
+    assertThat(rows("MATCH (n:E) RETURN n")).as("MERGE created the float key").isEqualTo(2L);
+    assertThat(count("MATCH (n:E {created: true}) RETURN count(n) AS c", Map.of())).isEqualTo(1L);
   }
 
   @Test
@@ -80,12 +80,12 @@ class CypherInlineMapIntegerBeyondDoublePrecisionTest extends TestHelper {
         "CREATE (:E {k: 1})-[:R {w: 9007199254740992}]->(:E {k: 2}), (:E {k: 3})-[:R {w: 9007199254740994}]->(:E {k: 4}), (:E {n: 7})"));
 
     // 2^53 and 2^53 + 2 are exact doubles: the integer and the float are the same number
-    assertThat(count("MATCH ()-[r:R {w: $f}]->() RETURN count(*) AS c", Map.of("f", 9007199254740992.0d))).isEqualTo(1L);
-    assertThat(count("MATCH ()-[r:R {w: $f}]->() RETURN count(*) AS c", Map.of("f", 9007199254740994.0d))).isEqualTo(1L);
-    assertThat(count("MATCH (a:E {k: 1}) WHERE (a)-[:R {w: $f}]->(:E) RETURN count(*) AS c", Map.of("f", 9007199254740992.0d))).isEqualTo(1L);
+    assertThat(count("MATCH ()-[r:R {w: $f}]->() RETURN count(r) AS c", Map.of("f", 9007199254740992.0d))).isEqualTo(1L);
+    assertThat(count("MATCH ()-[r:R {w: $f}]->() RETURN count(r) AS c", Map.of("f", 9007199254740994.0d))).isEqualTo(1L);
+    assertThat(count("MATCH (a:E {k: 1}) WHERE (a)-[:R {w: $f}]->(:E) RETURN count(a) AS c", Map.of("f", 9007199254740992.0d))).isEqualTo(1L);
     // a small integer meets its float as before
     database.transaction(() -> database.command("opencypher", "MERGE (n:E {n: 7.0})"));
-    assertThat(count("MATCH (n:E) RETURN count(*) AS c", Map.of())).isEqualTo(5L);
+    assertThat(rows("MATCH (n:E) RETURN n")).isEqualTo(5L);
   }
 
   @Test
@@ -94,20 +94,32 @@ class CypherInlineMapIntegerBeyondDoublePrecisionTest extends TestHelper {
     // 2^64 + 1: its low 64 bits are 1
     final Map<String, Object> p = Map.of("b", new BigInteger("18446744073709551617"));
 
-    assertThat(count("MATCH (n:E {n: $b}) RETURN count(*) AS c", p)).as("node inline map").isZero();
-    assertThat(count("MATCH ()-[r:R {w: $b}]->() RETURN count(*) AS c", p)).as("relationship inline map").isZero();
-    assertThat(count("MATCH (a:E {k: 1}) WHERE (a)-[:R {w: $b}]->(:E) RETURN count(*) AS c", p)).as("pattern predicate").isZero();
+    assertThat(count("MATCH (n:E {n: $b}) RETURN count(n) AS c", p)).as("node inline map").isZero();
+    assertThat(count("MATCH ()-[r:R {w: $b}]->() RETURN count(r) AS c", p)).as("relationship inline map").isZero();
+    assertThat(count("MATCH (a:E {k: 1}) WHERE (a)-[:R {w: $b}]->(:E) RETURN count(a) AS c", p)).as("pattern predicate").isZero();
     database.transaction(() -> database.command("opencypher", "MERGE (n:E {n: $b})", p));
-    assertThat(count("MATCH (n:E) WHERE n.n IS NOT NULL RETURN count(*) AS c", Map.of())).as("MERGE created a node").isEqualTo(2L);
+    assertThat(count("MATCH (n:E) WHERE n.n IS NOT NULL RETURN count(n) AS c", Map.of())).as("MERGE created a node").isEqualTo(2L);
 
     // a BigInteger that holds a small number still is that number
     final Map<String, Object> one = Map.of("b", BigInteger.ONE);
-    assertThat(count("MATCH ()-[r:R {w: $b}]->() RETURN count(*) AS c", one)).isEqualTo(1L);
+    assertThat(count("MATCH ()-[r:R {w: $b}]->() RETURN count(r) AS c", one)).isEqualTo(1L);
   }
 
   private long count(final String query, final Map<String, Object> params) {
     try (final ResultSet rs = database.query("opencypher", query, params)) {
       return rs.next().<Number>getProperty("c").longValue();
     }
+  }
+
+  /** Number of rows a plain scan returns: unlike a bare {@code count(n)} over a label, it cannot be answered from the maintained type counter. */
+  private long rows(final String query) {
+    long rows = 0;
+    try (final ResultSet rs = database.query("opencypher", query)) {
+      while (rs.hasNext()) {
+        rs.next();
+        ++rows;
+      }
+    }
+    return rows;
   }
 }
