@@ -22,6 +22,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.function.BiConsumer;
 
@@ -51,7 +52,7 @@ class RedisCommandArityTest {
     final int max = range[1];
     if (min > 0)
       assertThatThrownBy(() -> check.accept(command, min - 1)).as("%s with %d arguments", command, min - 1).isInstanceOf(RedisException.class)
-          .hasMessage("wrong number of arguments for '" + command.toLowerCase() + "' command");
+          .hasMessage("wrong number of arguments for '" + command.toLowerCase(Locale.ROOT) + "' command");
     assertThatCode(() -> check.accept(command, min)).as("%s with %d arguments", command, min).doesNotThrowAnyException();
     if (max < 0) {
       assertThatCode(() -> check.accept(command, 1000)).as("%s with 1000 arguments", command).doesNotThrowAnyException();
