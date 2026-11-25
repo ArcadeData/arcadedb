@@ -101,6 +101,43 @@ class AlterLightweightEdgeTypeWithEdgesIssue12248Test extends TestHelper {
   }
 
   @Test
+  void combinedAlterIsRefusedAndLeavesBothFlagsAsTheyWere() {
+    createGraph(false);
+    assertThatThrownBy(() -> database.command("sql", "ALTER TYPE L WITH lightweight = false, unique = true"))
+        .isInstanceOf(SchemaException.class).hasMessageContaining("lightweight edge");
+    assertThat(typeL().isLightweight()).isTrue();
+    assertThat(typeL().isUnique()).isFalse();
+    assertThat(database.getSchema().existsIndex(LocalEdgeType.uniqueIndexName("L"))).isFalse();
+    assertThat(countL()).isEqualTo(2L);
+    // still not enforced: the refused ALTER left the type as it was
+    database.transaction(() -> a.newEdge("L", b));
+  }
+
+  @Test
+  void uniqueIsRefusedThroughTheJavaApiToo() {
+    createGraph(true);
+    assertThatThrownBy(() -> ((LocalEdgeType) typeL()).setUnique(true)).isInstanceOf(SchemaException.class)
+        .hasMessageContaining("UNIQUE");
+    assertThat(typeL().isUnique()).isFalse();
+  }
+
+  @Test
+  void edgesOfAnotherLightweightTypeDoNotBlockTheAlter() {
+    createGraph(true);
+    database.getSchema().buildEdgeType().withName("Other").withLightweight(true).create();
+    database.transaction(() -> database.command("sql", "DELETE FROM L"));
+    database.transaction(() -> {
+      a.newEdge("Other", b);
+      a.newEdge("Other", b);
+    });
+    database.command("sql", "ALTER TYPE L WITH unique = true");
+    assertThat(typeL().isUnique()).isTrue();
+    database.command("sql", "ALTER TYPE L WITH unique = false");
+    database.command("sql", "ALTER TYPE L WITH lightweight = false");
+    assertThat(typeL().isLightweight()).isFalse();
+  }
+
+  @Test
   void uniqueIsAcceptedWhenEveryPairIsDistinctAndThenEnforced() {
     createGraph(false);
     database.command("sql", "ALTER TYPE L WITH unique = true");

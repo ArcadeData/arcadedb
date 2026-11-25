@@ -104,18 +104,19 @@ public class LocalEdgeType extends LocalDocumentType implements EdgeType {
         if (bucket.count() > 0)
           throw new SchemaException("Cannot declare edge type '" + getName()
               + "' LIGHTWEIGHT because it already contains edge records. Create a new lightweight type instead");
-    if (!lightweight && this.lightweight) {
-      final String found = findLightweightEdge(false);
-      if (found != null)
-        throw new SchemaException("Cannot declare edge type '" + getName() + "' not LIGHTWEIGHT because it holds " + found
-            + ", which would no longer be reachable through the type. Delete them first or create a new type instead");
-    }
     // Inside a schema recording session, which saves schema.json and, under HA, ships it to the followers (issue #9747).
     // The inherited-constraint check is part of it, under the lock that orders it against a CREATE PROPERTY or an
-    // addSuperType elsewhere in the hierarchy (issue #9846)
+    // addSuperType elsewhere in the hierarchy (issue #9846). So is the walk for light edges (issue #12248): under the
+    // database write lock no transaction can commit a new light edge between the walk and the flip
     getSchema().getEmbedded().recordChange(() -> {
       if (lightweight && !this.lightweight)
         checkCanBeLightweight(getName(), this);
+      if (!lightweight && this.lightweight) {
+        final String found = findLightweightEdge(false);
+        if (found != null)
+          throw new SchemaException("Cannot declare edge type '" + getName() + "' not LIGHTWEIGHT because it holds " + found
+              + ", which would no longer be reachable through the type. Delete them first or create a new type instead");
+      }
       this.lightweight = lightweight;
     });
   }
@@ -204,20 +205,25 @@ public class LocalEdgeType extends LocalDocumentType implements EdgeType {
    */
   public void setUnique(final boolean unique) {
     checkForSchemaMutation();
-    if (unique && !this.unique && lightweight) {
-      final String duplicate = findLightweightEdge(true);
-      if (duplicate != null)
-        throw new SchemaException("Cannot declare edge type '" + getName() + "' UNIQUE because it holds " + duplicate
-            + ". Delete the extra edges first");
-    }
-    // See setLightweight: a lightweight type builds no index, so nothing else would have shipped this flag (issue #9747)
-    getSchema().getEmbedded().recordChange(() -> this.unique = unique);
+    // See setLightweight: a lightweight type builds no index, so nothing else would have shipped this flag (issue #9747).
+    // The walk for a duplicate pair runs under the same lock as the flip, so no duplicate can be committed in between
+    getSchema().getEmbedded().recordChange(() -> {
+      if (unique && !this.unique && lightweight) {
+        final String duplicate = findLightweightEdge(true);
+        if (duplicate != null)
+          throw new SchemaException("Cannot declare edge type '" + getName() + "' UNIQUE because it holds " + duplicate
+              + ". Delete the extra edges first");
+      }
+      this.unique = unique;
+    });
   }
 
   /**
    * Walks the outgoing edge list of every vertex for the lightweight edges of this type: they have no record, so the vertices'
    * lists are the only place they are stored (the bucket scan of a type never sees them, see DROP TYPE). Stops at the first
-   * one, or with {@code duplicatePair} at the first ordered pair of vertices that holds two of them.
+   * one, or with {@code duplicatePair} at the first ordered pair of vertices that holds two of them. The cost of a walk that
+   * finds nothing scales with the number of vertices in the database, not with the size of this type, as for DROP TYPE: it
+   * runs only for the DDL transitions it can refuse.
    *
    * @return what was found, worded for an error message, or null
    */
