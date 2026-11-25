@@ -178,8 +178,40 @@ class SearchCacheFairShareTest extends TestHelper {
     final long budget = available / 100 * percent;
 
     final long entries = narrow.affordableSearchCacheEntries(percent, narrowBytes, available, false);
-    assertThat(entries).as("what is left past the 1,024 entries of the wide index")
-        .isEqualTo((budget - SLOTS * wideBytes) / narrowBytes);
+    assertThat(entries).as("what is left past the 1,024 entries of the wide index, once the narrow cache's fill has lowered the budget")
+        .isEqualTo((budget - SLOTS * wideBytes) * 100 / (100 + percent) / narrowBytes);
+  }
+
+  /**
+   * The first cache is sized, fills, and a collection counts it in the heap reading: the budget the index sized next sees is the
+   * percent of what is left, and it must still be owed its smallest plan. Two indexes of 64 and 768 dimensions, the narrow one with
+   * ids over a range of 16,384, a budget of 5,500,000 bytes.
+   */
+  @Test
+  void anIndexOfOtherDimensionsStillGetsItsSmallestPlanOnceTheFirstCacheHasFilled() {
+    final LSMVectorIndex narrow = createBucketIndexes("Narrow", 1, 64)[0];
+    final LSMVectorIndex wide = createBucketIndexes("Wide", 1, 768)[0];
+    database.transaction(() -> {
+      for (int i = 0; i < 9_000; i++) {
+        final float[] vector = new float[64];
+        vector[i % 64] = 1f + i;
+        vector[(i + 1) % 64] += 1f;
+        database.newDocument("Narrow").set("embedding", vector).save();
+      }
+    });
+    final long narrowBytes = FlatVectorCache.bytesPerVector(64);
+    final long available = availableFor(5_500_000L);
+
+    final FlatVectorCache first = narrow.getSearchVectorCache(() -> available);
+    assertThat(first).isNotNull();
+    assertThat(first.capacity()).as("precondition: the narrow cache took what the budget leaves past the wide index's smallest plan")
+        .isGreaterThan(SLOTS);
+    // The reading once the cache has filled and a collection counted it
+    final long fell = available - first.capacity() * narrowBytes;
+
+    final FlatVectorCache second = wide.getSearchVectorCache(() -> fell);
+    assertThat(second).as("the wide index is cached after the narrow one's cache lowered the reading").isNotNull();
+    assertThat(second.capacity()).isGreaterThanOrEqualTo(SLOTS);
   }
 
   /** The cache an index was cut to is the one it keeps: asking again with the same reading does not rebuild it. */

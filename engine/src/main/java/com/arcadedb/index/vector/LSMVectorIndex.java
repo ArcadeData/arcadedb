@@ -15343,7 +15343,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (othersPlan == 0L) {
       if (budget / bytesPerEntry < MIN_SEARCH_CACHE_SIZE)
         return MIN_SEARCH_CACHE_SIZE;
-      final long beyondPending = Math.max(0L, budget - pendingMinimum) / bytesPerEntry;
+      // This cache lowers the reading by its own size once it is filled, and the budget by the percent of that: the caches the
+      // others are owed are kept out of what is left after that fall, as below
+      final long room = Math.max(0L, budget - pendingMinimum);
+      final long beyondPending = (pendingMinimum > 0L ? room * 100 / (100 + Math.min(heapPercent, 90)) : room) / bytesPerEntry;
       return Math.min(Math.max(beyondPending, MIN_SEARCH_CACHE_SLOTS), fair);
     }
 
