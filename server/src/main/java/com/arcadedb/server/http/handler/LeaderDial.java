@@ -85,6 +85,17 @@ public record LeaderDial(String address, boolean https, HttpClient client, Strin
   public static final long MIN_FORWARD_TIMEOUT_MS = 1L;
 
   /**
+   * The HTTP version every follower-to-leader forward is sent with (issue #12442). The JDK client's default is HTTP/2,
+   * which it gets on a plain-HTTP connection by an h2c upgrade and over TLS by ALPN. An HTTP/2 connection keeps reading
+   * frames while a stream waits, and the client sends nothing while it waits for the answer, so the leader's read timeout
+   * ({@code arcadedb.network.socketTimeout}) closed the connection one timeout into any statement longer than that: the
+   * read-timeout lift of #9953 covers HTTP/1.1 exchanges only. Over HTTP/1.1 no read timer runs while the statement does:
+   * over TLS Undertow does not read the connection until the exchange completes, and on plain HTTP the client-disconnect
+   * watch lifts the timeout. The follower's forward is answered however long the statement runs.
+   */
+  public static final HttpClient.Version FORWARD_HTTP_VERSION = HttpClient.Version.HTTP_1_1;
+
+  /**
    * Builds the plain-HTTP client a follower-to-leader forward dials on, with
    * {@link GlobalConfiguration#HA_PROXY_CONNECT_TIMEOUT} applied unconditionally (issues
    * #7526/#7527/#7542/#7543): a leader that never even accepts the connection has no bound without this,
@@ -98,6 +109,7 @@ public record LeaderDial(String address, boolean https, HttpClient client, Strin
   public static HttpClient newConnectTimeoutBoundedClient(final ContextConfiguration configuration) {
     final long configured = configuration.getValueAsLong(GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT);
     return HttpClient.newBuilder()
+        .version(FORWARD_HTTP_VERSION)
         .connectTimeout(Duration.ofMillis(Math.max(configured, MIN_FORWARD_TIMEOUT_MS)))
         .build();
   }
@@ -140,7 +152,7 @@ public record LeaderDial(String address, boolean https, HttpClient client, Strin
    * <li>{@code shutdownNow()} is prompt - it cancels the in-flight exchanges rather than waiting them out - but
    * it only <em>requests</em> the shutdown: the selector thread and the executor unwind after it returns, so
    * {@code isTerminated()} read straight afterwards is a race (issue #7677, the intermittently red
-   * {@code Issue7507ForwarderClientLifecycleTest});</li>
+   * {@code ForwarderClientLifecycleTest.StopReleasesForwarderClient});</li>
    * <li>{@code close()} does leave the client terminated, but it waits for every submitted operation to
    * complete first, with no bound of its own (issue #7739).</li>
    * </ul>

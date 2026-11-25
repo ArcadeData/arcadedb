@@ -24,7 +24,6 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.util.BitSet;
 import java.util.List;
 import java.util.stream.Stream;
 
@@ -87,30 +86,32 @@ public class AlgoTotalNeighbors extends AbstractAlgoProcedure {
 
     final Database db = context.getDatabase();
 
-    final GraphData graph = loadGraph(db, null, relTypes, context);
+    // Two rows are all the answer reads: no view, no loading of the whole graph (issue #12176)
+    final Neighbourhood graph = openNeighbourhood(db, relTypes, context, node1.getIdentity(), node2.getIdentity());
 
-
-    final int n = graph.nodeCount;
-    if (n == 0)
-      return Stream.empty();
-    final int[][] adj = graph.adjacency(dir, relTypes);
-
-    final int idx1 = graph.indexOf(node1.getIdentity());
-    final int idx2 = graph.indexOf(node2.getIdentity());
+    final int idx1 = graph.nodeOf(node1.getIdentity());
+    final int idx2 = graph.nodeOf(node2.getIdentity());
     if (idx1 < 0 || idx2 < 0)
       return Stream.empty();
 
-    // |N(u) ∪ N(v)| = |N(u)| + |N(v)| - |N(u) ∩ N(v)|
-    final BitSet n1Set = new BitSet(n);
-    for (final int j : adj[idx1])
-      n1Set.set(j);
+    // |N(u) ∪ N(v)| = |N(u)| + |N(v)| - |N(u) ∩ N(v)|, over the distinct neighbours: a parallel or a reciprocal relationship is one
+    // neighbour (issue #12934)
+    final int[] adj1 = graph.distinctNeighbors(idx1, dir);
+    final int[] adj2 = graph.distinctNeighbors(idx2, dir);
 
+    // Both sorted: one merge pass counts the intersection
     int common = 0;
-    for (final int j : adj[idx2]) {
-      if (n1Set.get(j))
+    for (int i = 0, j = 0; i < adj1.length && j < adj2.length; )
+      if (adj1[i] < adj2[j])
+        i++;
+      else if (adj1[i] > adj2[j])
+        j++;
+      else {
         common++;
-    }
-    final long total = (long) adj[idx1].length + adj[idx2].length - common;
+        i++;
+        j++;
+      }
+    final long total = (long) adj1.length + adj2.length - common;
 
     final ResultInternal r = new ResultInternal();
     r.setProperty("node1", node1);

@@ -18,7 +18,6 @@
  */
 package com.arcadedb.function.sql.vector;
 
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
@@ -37,6 +36,7 @@ import com.arcadedb.index.vector.GroupAdmissionState;
 import com.arcadedb.index.vector.GroupedTopUpPlanner;
 import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.RidHashSet;
@@ -46,11 +46,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Callable;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 
 /**
  * Returns the top-K nearest records by sparse-vector dot product against a {@code LSM_SPARSE_VECTOR}
@@ -83,10 +78,19 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
   }
 
   @Override
+  public int getMinArgs() {
+    return 4;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 5;
+  }
+
+  @Override
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
-    if (params == null || params.length < 4 || params.length > 5)
-      throw new CommandSQLParsingException(getSyntax());
+    checkArity(params);
 
     // An index is not a value a row can lack: a NULL one is the caller's mistake, refused rather than a NullPointerException
     validateNotNull(params[0], NAME + " index name");
@@ -206,6 +210,10 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
       final float[] queryValues, final int k, final Set<RID> allowedRIDs, final String groupBy, final int groupSize,
       final float minScore, final CommandContext context) {
 
+    // One bound for every pass and every index searched: the command's deadline and the termination of its statement,
+    // honoured between the passes, while the records of the answer are loaded and inside each index search
+    final WorkGuard guard = WorkGuard.forCommand(context, NAME + "()");
+
     // Memory-budget guard. The integrated grouped path (issue #4071) no longer over-fetches
     // candidates - the per-group min-heap inside BMW DAAT bounds memory at O(k * groupSize) per
     // bucket. We still apply the historical cap to reject pathological combinations (e.g.
@@ -229,11 +237,11 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
     if (groupBy != null)
       return searchGroupedWithStaleTopUp(k, groupSize, MAX_FETCH_CANDIDATES,
           (fetchGroups, fetchGroupSize, staleRids) -> searchAndEmit(indexes, queryIndices, queryValues, k, fetchGroups,
-              allowedRIDs, groupBy, fetchGroupSize, groupSize, minScore, context, new int[1], staleRids, null));
+              allowedRIDs, groupBy, fetchGroupSize, groupSize, minScore, context, guard, new int[1], staleRids, null));
 
     return VectorUtils.searchWithStaleTopUp(k,
         (fetchK, staleSkipped, saturated) -> searchAndEmit(indexes, queryIndices, queryValues, k, fetchK, allowedRIDs, null,
-            groupSize, groupSize, minScore, context, staleSkipped, null, saturated));
+            groupSize, groupSize, minScore, context, guard, staleSkipped, null, saturated));
   }
 
   /**
@@ -246,10 +254,14 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
    */
   private ArrayList<Object> searchAndEmit(final List<LSMSparseVectorIndex> indexes, final int[] queryIndices,
       final float[] queryValues, final int k, final int fetchK, final Set<RID> allowedRIDs, final String groupBy,
-      final int fetchGroupSize, final int groupSize, final float minScore, final CommandContext context,
+      final int fetchGroupSize, final int groupSize, final float minScore, final CommandContext context, final WorkGuard guard,
       final int[] staleSkipped, final Set<RID> staleRids, final boolean[] saturated) {
+    // Every pass, the top-ups included, starts on a bound that may have been reached since the last one
+    guard.check();
     final ArrayList<RidScore> merged = new ArrayList<>();
     final BasicDatabase databaseRef = context.getDatabase();
+    // What the searches read: the same bound without the interrupt flag, because they run on scoring pool threads too
+    final WorkGuard searchGuard = guard.withoutInterrupt();
 
     // One resolver for every search of this pass and for the emit below, so they all group a candidate the same way
     // and a record that changed under the search is caught at emit (issue #10002) - see GroupKeyMemo.
@@ -272,22 +284,26 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
     for (final LSMSparseVectorIndex idx : indexes)
       overlays.add(idx.transactionOverlay());
 
-    final List<Callable<List<RidScore>>> searches = new ArrayList<>(indexes.size());
-    for (int i = 0; i < indexes.size(); i++) {
-      final LSMSparseVectorIndex idx = indexes.get(i);
-      final SparseTransactionOverlay overlay = overlays.get(i);
-      if (groupBy == null)
-        searches.add(() -> idx.topK(queryIndices, queryValues, fetchK, allowedRIDs, overlay));
-      else
-        searches.add(() -> idx.topKGrouped(queryIndices, queryValues, groupBudget, fetchGroupSize, allowedRIDs, groupKeyResolver,
-            overlay));
-    }
     // Serial on the caller's thread whenever it holds uncommitted changes. A pool worker has no view of the caller's
     // transaction: it reads committed pages only, and a group key it resolves comes from the committed record, never
     // the pending or updated one - so the transaction's own rows would be grouped wrongly (issue #8002), and a flush
     // inside the transaction would go unseen. The engine refuses to split its own traversal for the same reason.
     final boolean serial = SparseVectorScoringPool.callerHoldsUncommittedChanges(databaseRef.getDatabasePath());
-    final List<List<RidScore>> perIndex = runAll(searches, serial);
+
+    // The weights actually scored, resolved ONCE for the pass and shared by every search below, the top-ups included.
+    final float[] weights = indexes.isEmpty() ? queryValues : indexes.get(0).effectiveWeights(queryIndices, queryValues, guard);
+
+    final List<Callable<List<RidScore>>> searches = new ArrayList<>(indexes.size());
+    for (int i = 0; i < indexes.size(); i++) {
+      final LSMSparseVectorIndex idx = indexes.get(i);
+      final SparseTransactionOverlay overlay = overlays.get(i);
+      if (groupBy == null)
+        searches.add(() -> idx.topKWeighted(queryIndices, weights, fetchK, allowedRIDs, overlay, searchGuard));
+      else
+        searches.add(() -> idx.topKGroupedWeighted(queryIndices, weights, groupBudget, fetchGroupSize, allowedRIDs,
+            groupKeyResolver, overlay, searchGuard));
+    }
+    final List<List<RidScore>> perIndex = SparseVectorScoringPool.runAll(searches, serial, guard);
     for (final List<RidScore> partial : perIndex) {
       merged.addAll(partial);
       // Any sub-index at its budget may hold more, so the answer as a whole can grow. Over several sub-indexes this can
@@ -302,12 +318,16 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
     // top k may still hold members of it, and never returned them. The planner names the buckets that may, for which
     // winners, and below what score nothing they hold could matter; it asks none in the common case.
     if (groupBy != null && indexes.size() > 1) {
+      guard.check();
       final GroupedTopUpPlanner planner = new GroupedTopUpPlanner(fetchK, fetchGroupSize);
+      int resolved = 0;
       for (final List<RidScore> partial : perIndex) {
         final List<RID> rids = new ArrayList<>(partial.size());
         final float[] scores = new float[partial.size()];
         final List<Object> keys = new ArrayList<>(partial.size());
         for (int i = 0; i < partial.size(); i++) {
+          // The group key of a candidate is read off its record
+          guard.checkPeriodically(++resolved);
           rids.add(partial.get(i).rid());
           scores[i] = partial.get(i).score();
           keys.add(groupKeyResolver.apply(partial.get(i).rid()));
@@ -320,10 +340,10 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
         for (final GroupedTopUpPlanner.TopUp topUp : topUps) {
           final LSMSparseVectorIndex idx = indexes.get(topUp.source());
           final SparseTransactionOverlay overlay = overlays.get(topUp.source());
-          topUpSearches.add(() -> idx.topKForGroups(queryIndices, queryValues, topUp.groupKeys(), fetchGroupSize, topUp.floor(),
-              allowedRIDs, groupKeyResolver, overlay));
+          topUpSearches.add(() -> idx.topKForGroupsWeighted(queryIndices, weights, topUp.groupKeys(), fetchGroupSize,
+              topUp.floor(), allowedRIDs, groupKeyResolver, overlay, searchGuard));
         }
-        for (final List<RidScore> partial : runAll(topUpSearches, serial))
+        for (final List<RidScore> partial : SparseVectorScoringPool.runAll(topUpSearches, serial, guard))
           merged.addAll(partial);
       }
     }
@@ -342,7 +362,10 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
     // near Integer.MAX_VALUE overflow the power-of-two rounding to a negative capacity.
     final RidHashSet emitted = new RidHashSet(Math.min(k, merged.size()));
 
+    int visited = 0;
     for (final RidScore neighbor : merged) {
+      // One record is loaded per candidate, and a caller can ask for as many candidates as the index holds
+      guard.checkPeriodically(++visited);
       if (groupBy == null) {
         if (result.size() >= k)
           break;
@@ -387,95 +410,6 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
     }
 
     return result;
-  }
-
-  /**
-   * Runs one search per sub-index and returns their answers in the same order. A single search runs on the calling
-   * thread: there is no parallelism to gain and no pool dispatch to pay for. So does every search when {@code serial}
-   * is set, for a caller whose transaction a worker could not see.
-   * <p>
-   * Several are a multi-bucket fan-out (#4085). Per-bucket sub-indexes are independent: different buckets contain
-   * disjoint RID ranges, so the searches share no mutable state and need no coordination. Each is submitted to the
-   * dedicated SparseVectorScoringPool; its CallerRuns rejection policy guarantees the call always completes - worst
-   * case it runs inline on the submitter thread, which is exactly the serial fallback.
-   */
-  private static List<List<RidScore>> runAll(final List<Callable<List<RidScore>>> searches, final boolean serial) {
-    final List<List<RidScore>> out = new ArrayList<>(searches.size());
-    if (serial || searches.size() <= 1) {
-      for (final Callable<List<RidScore>> search : searches) {
-        try {
-          out.add(search.call());
-        } catch (final RuntimeException e) {
-          throw e;
-        } catch (final Exception e) {
-          throw new RuntimeException("Sparse-vector top-K failed", e);
-        }
-      }
-      return out;
-    }
-
-    final ExecutorService pool = SparseVectorScoringPool.getInstance().getExecutorService();
-    final List<Future<List<RidScore>>> futures = new ArrayList<>(searches.size());
-    for (final Callable<List<RidScore>> search : searches)
-      futures.add(pool.submit(search));
-    // Drain ALL futures even when one fails: a partial drain leaves the still-running tasks
-    // contending for index I/O after the caller has moved on. Collect the per-future errors,
-    // attach the rest as suppressed, then throw the first. On interrupt, cancel outstanding work
-    // so we do not pay for compute we will never observe.
-    // <p>
-    // Single deadline across the whole fan-out: caps the total wall-clock at
-    // SPARSE_VECTOR_SCORING_TIMEOUT_SECONDS regardless of bucket count. A per-future timeout
-    // would let N wedged buckets accumulate up to N * timeoutSeconds before the caller sees an
-    // error (e.g. 16 buckets * 30s = 8-minute hang for a deadlocked compaction). The deadline
-    // approach keeps the worst case at a single timeoutSeconds. timeoutSeconds <= 0 disables
-    // the deadline entirely (untimed gets); not recommended in production.
-    final int timeoutSeconds = GlobalConfiguration.SPARSE_VECTOR_SCORING_TIMEOUT_SECONDS.getValueAsInteger();
-    final long deadlineNs = timeoutSeconds > 0
-        ? System.nanoTime() + TimeUnit.SECONDS.toNanos(timeoutSeconds)
-        : Long.MAX_VALUE;
-    final List<Throwable> errors = new ArrayList<>();
-    for (final Future<List<RidScore>> f : futures) {
-      try {
-        final List<RidScore> partial;
-        if (timeoutSeconds <= 0) {
-          partial = f.get();
-        } else {
-          // Compute the remaining budget for this future from the shared deadline; if zero or
-          // negative the deadline has already passed and we treat this as a timeout without
-          // even attempting to await.
-          final long remainingNs = deadlineNs - System.nanoTime();
-          if (remainingNs <= 0L)
-            throw new TimeoutException("deadline elapsed before draining future");
-          partial = f.get(remainingNs, TimeUnit.NANOSECONDS);
-        }
-        out.add(partial);
-      } catch (final InterruptedException ie) {
-        Thread.currentThread().interrupt();
-        for (final Future<?> other : futures)
-          other.cancel(true);
-        throw new RuntimeException("Interrupted during sparse-vector top-K fan-out", ie);
-      } catch (final TimeoutException te) {
-        // Cancel every still-pending future so the pool stops working on results we will not
-        // observe. The cancelled-from-the-pool task may still throw an InterruptedException
-        // inside its IO; we don't await those (cancel(true) returns immediately).
-        for (final Future<?> other : futures)
-          other.cancel(true);
-        throw new RuntimeException("Sparse-vector top-K fan-out timed out after "
-            + timeoutSeconds + "s (configurable via "
-            + GlobalConfiguration.SPARSE_VECTOR_SCORING_TIMEOUT_SECONDS.getKey() + ")", te);
-      } catch (final ExecutionException ee) {
-        errors.add(ee.getCause() != null ? ee.getCause() : ee);
-      }
-    }
-    if (!errors.isEmpty()) {
-      final Throwable first = errors.getFirst();
-      final RuntimeException toThrow = first instanceof RuntimeException re ? re
-          : new RuntimeException("Sparse-vector top-K fan-out failed", first);
-      for (int i = 1; i < errors.size(); i++)
-        toThrow.addSuppressed(errors.get(i));
-      throw toThrow;
-    }
-    return out;
   }
 
   private static int[] sparseToIntArray(final Object o) {

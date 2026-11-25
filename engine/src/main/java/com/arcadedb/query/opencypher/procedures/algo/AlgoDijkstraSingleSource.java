@@ -30,12 +30,9 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
-import java.util.PriorityQueue;
 import java.util.Set;
 import java.util.stream.Stream;
 
@@ -73,6 +70,9 @@ import java.util.stream.Stream;
  */
 public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
   public static final String NAME = "algo.dijkstra.singleSource";
+
+  /** Entries the row buffers start with: a row of that many or fewer is priced by the batch of entries reserved with the rows. */
+  private static final int INITIAL_ROW_BUFFER = 16;
 
   @Override
   public String getName() {
@@ -170,70 +170,117 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
 
   private Stream<Result> executeWithOLTP(final Database db, final Vertex startNode,
       final String[] relTypes, final String weightProperty, final Vertex.DIRECTION dir, final CommandContext context) {
-    final List<Vertex> vertices = loadVertices(db, null, newMemoryBudget(db));
+    final GraphData graph = loadGraphFromRecords(db, null, context);
 
-    final int n = vertices.size();
+    final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
 
-    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
-    final Integer startIdxObj = ridToIdx.get(startNode.getIdentity());
-    if (startIdxObj == null)
+    final int src = graph.indexOf(startNode.getIdentity());
+    if (src < 0)
       return Stream.empty();
-    final int src = startIdxObj;
 
-    // Build weighted adjacency once to avoid OLTP per-vertex during Dijkstra
+    // Build weighted adjacency once to avoid OLTP per-vertex during Dijkstra. Priced against the call's budget as the rows are built,
+    // with the distances, the reached ids and the frontier beside them (issue #12554)
+    final MemoryBudget memory = graph.memory();
+    memory.reserve(saturatingSum(saturatingProduct(n, 2 * MATRIX_ROW_OVERHEAD_BYTES), saturatingProduct(n, DOUBLE_BYTES + 3 * INT_BYTES)),
+        "the weighted adjacency rows and the search state", n + " nodes");
     final Set<String> relTypeSet = relTypes != null ? new HashSet<>(Arrays.asList(relTypes)) : null;
     final int[][] adjNeighbors = new int[n][];
     final double[][] adjWeights = new double[n][];
+    // One growable primitive buffer per column, reused across every node and copied out at its exact size
+    int[] nbrBuf = new int[INITIAL_ROW_BUFFER];
+    double[] wtBuf = new double[INITIAL_ROW_BUFFER];
+    long unpriced = 0;
     for (int i = 0; i < n; i++) {
-      final Vertex v = vertices.get(i);
-      final List<int[]> nbrs = new ArrayList<>();
-      final List<Double> wts = new ArrayList<>();
-      // the incoming side of a unidirectional edge type is on the other end only (issue #8629)
-      for (final Edge edge : edgesOf(context, v, dir, relTypes)) {
-        if (relTypeSet != null && !relTypeSet.contains(edge.getTypeName()))
-          continue;
-        final RID neighborRid = neighborRid(edge, v.getIdentity(), dir);
-        final Integer nbrIdx = ridToIdx.get(neighborRid);
-        if (nbrIdx == null)
-          continue;
-        // the rule every weighted path finder shares (issue #9443): a NaN weight used to slip past `weight < 0`
-        final double weight = weightProperty != null ? EdgeWeight.of(edge.get(weightProperty)) : EdgeWeight.MISSING;
-        if (!EdgeWeight.isWalkable(weight))
-          continue;
-        nbrs.add(new int[]{ nbrIdx });
-        wts.add(weight);
+      // A vertex deleted since the graph was loaded has no edges
+      final Vertex v = graph.getVertex(i);
+      int count = 0;
+      if (v != null) {
+        // the incoming side of a unidirectional edge type is on the other end only (issue #8629)
+        for (final Edge edge : edgesOf(context, v, dir, relTypes)) {
+          if (relTypeSet != null && !relTypeSet.contains(edge.getTypeName()))
+            continue;
+          final RID neighborRid = neighborRid(edge, v.getIdentity(), dir);
+          final int nbrIdx = neighborRid != null ? graph.indexOf(neighborRid) : -1;
+          if (nbrIdx < 0)
+            continue;
+          // the rule every weighted path finder shares (issue #9443): a NaN weight used to slip past `weight < 0`
+          final double weight = weightProperty != null ? EdgeWeight.of(edge.get(weightProperty)) : EdgeWeight.MISSING;
+          if (!EdgeWeight.isWalkable(weight))
+            continue;
+          if (count == nbrBuf.length) {
+            // Priced before the buffers are allocated: a supernode doubles them again and again. The new ones are alive beside the old
+            // ones, which are reserved already, and beside the rows read before this one that are not reserved yet, until the copy is
+            // made, so the budget is asked whether they fit in full, reserving nothing. The buffers stay for the rows that follow, so each
+            // growth is charged once, by the entries it adds, and the copy of a row is charged beside it with the batch below
+            final int newLength = (int) Math.min(2L * count, Integer.MAX_VALUE - 8L);
+            memory.checkRoom(saturatingProduct(saturatingSum(newLength, unpriced), INT_BYTES + DOUBLE_BYTES),
+                "the neighbour buffers of one node", "a row of more than " + count + " edge entries, " + unpriced
+                    + " more not reserved yet");
+            memory.reserve(saturatingProduct(newLength - count, INT_BYTES + DOUBLE_BYTES), "the neighbour buffers of one node",
+                "a row of more than " + count + " edge entries");
+            nbrBuf = Arrays.copyOf(nbrBuf, newLength);
+            wtBuf = Arrays.copyOf(wtBuf, newLength);
+          }
+          nbrBuf[count] = nbrIdx;
+          wtBuf[count] = weight;
+          count++;
+        }
       }
-      adjNeighbors[i] = new int[nbrs.size()];
-      adjWeights[i] = new double[wts.size()];
-      for (int j = 0; j < nbrs.size(); j++) {
-        adjNeighbors[i][j] = nbrs.get(j)[0];
-        adjWeights[i][j] = wts.get(j);
+      // The copy of a long row is refused before it is made when the budget cannot hold it beside the rows still waiting to be
+      // reserved; the batch below reserves it, so nothing is reserved here
+      if (count > INITIAL_ROW_BUFFER)
+        memory.checkRoom(saturatingProduct(saturatingSum(unpriced, count), INT_BYTES + DOUBLE_BYTES), "the weighted adjacency list",
+            "a row of " + count + " edge entries, " + unpriced + " more not reserved yet");
+      adjNeighbors[i] = Arrays.copyOf(nbrBuf, count);
+      adjWeights[i] = Arrays.copyOf(wtBuf, count);
+      unpriced += count;
+      // The batch is capped by what the budget has left, recomputed after every reservation, as weightedAdjacency does: a fixed batch
+      // could be allocated past a budget that is nearly spent before it is refused
+      final long checkpoint = Math.min(ADJACENCY_CHECKPOINT_ENTRIES / 3, memory.capacityFor(INT_BYTES + DOUBLE_BYTES));
+      if (unpriced >= checkpoint || (i & 1023) == 1023) {
+        memory.reserve(saturatingProduct(unpriced, INT_BYTES + DOUBLE_BYTES), "the weighted adjacency list", unpriced + " edge entries");
+        unpriced = 0;
       }
     }
+    memory.reserve(saturatingProduct(unpriced, INT_BYTES + DOUBLE_BYTES), "the weighted adjacency list", unpriced + " edge entries");
 
     // Dijkstra purely in-memory
     final double[] dist = new double[n];
     Arrays.fill(dist, Double.POSITIVE_INFINITY);
     dist[src] = 0.0;
 
-    final PriorityQueue<double[]> heap = new PriorityQueue<>((a, b) -> Double.compare(a[0], b[0]));
-    heap.offer(new double[]{ 0.0, src });
+    // The frontier is an indexed binary heap over primitive arrays: a node is in it at most once, and a shorter way to it moves it up
+    // instead of adding an entry beside the stale one. A heap of one boxed entry per relaxation held up to one array per edge, which no
+    // reservation could see (issue #12554); this one is the two int arrays of the node count priced above
+    final int[] heap = new int[n];
+    final int[] where = new int[n];
+    Arrays.fill(where, -1);
+    int size = 1;
+    heap[0] = src;
+    where[src] = 0;
 
-    while (!heap.isEmpty()) {
-      final double[] entry = heap.poll();
-      final double d = entry[0];
-      final int u = (int) entry[1];
-      if (d > dist[u])
-        continue;
+    while (size > 0) {
+      final int u = heap[0];
+      where[u] = -1;
+      if (--size > 0) {
+        heap[0] = heap[size];
+        where[heap[0]] = 0;
+        siftDown(heap, where, dist, size, 0);
+      }
+      final double d = dist[u];
 
       for (int j = 0; j < adjNeighbors[u].length; j++) {
         final int v = adjNeighbors[u][j];
         final double newDist = d + adjWeights[u][j];
         if (newDist < dist[v]) {
           dist[v] = newDist;
-          heap.offer(new double[]{ newDist, v });
+          if (where[v] < 0) {
+            heap[size] = v;
+            where[v] = size++;
+          }
+          siftUp(heap, where, dist, where[v]);
         }
       }
     }
@@ -247,9 +294,44 @@ public class AlgoDijkstraSingleSource extends AbstractAlgoProcedure {
 
     return Arrays.stream(reached, 0, reachable).mapToObj(i -> {
       final ResultInternal r = new ResultInternal();
-      r.setProperty("node", vertices.get(i).getIdentity());
+      r.setProperty("node", graph.getRID(i));
       r.setProperty("cost", dist[i]);
       return (Result) r;
     });
+  }
+
+  /** Moves the node at {@code i} up until its parent is not further away; {@code where[node]} is the position of a node in the heap. */
+  private static void siftUp(final int[] heap, final int[] where, final double[] key, final int start) {
+    int i = start;
+    final int node = heap[i];
+    while (i > 0) {
+      final int parent = (i - 1) >>> 1;
+      if (key[heap[parent]] <= key[node])
+        break;
+      heap[i] = heap[parent];
+      where[heap[i]] = i;
+      i = parent;
+    }
+    heap[i] = node;
+    where[node] = i;
+  }
+
+  /** Moves the node at {@code i} down until none of its children is nearer. */
+  private static void siftDown(final int[] heap, final int[] where, final double[] key, final int size, final int start) {
+    int i = start;
+    final int node = heap[i];
+    final int half = size >>> 1;
+    while (i < half) {
+      int child = 2 * i + 1;
+      if (child + 1 < size && key[heap[child + 1]] < key[heap[child]])
+        child++;
+      if (key[node] <= key[heap[child]])
+        break;
+      heap[i] = heap[child];
+      where[heap[i]] = i;
+      i = child;
+    }
+    heap[i] = node;
+    where[node] = i;
   }
 }

@@ -279,11 +279,12 @@ public class EdgeLinkedList {
   public boolean containsLightEdge(final int edgeTypeBucketId, final RID vertexRID) {
     EdgeSegment current = lastSegment;
     final ChainCycleGuard guard = newCycleGuard();
+    final char walkMark = walkMark();
     while (current != null) {
       if (current.containsLightEdge(edgeTypeBucketId, vertexRID))
         return true;
 
-      current = previousOf(current, guard);
+      current = previousOf(current, guard, walkMark);
     }
 
     return false;
@@ -292,11 +293,12 @@ public class EdgeLinkedList {
   public boolean containsEdge(final RID rid) {
     EdgeSegment current = lastSegment;
     final ChainCycleGuard guard = newCycleGuard();
+    final char walkMark = walkMark();
     while (current != null) {
       if (current.containsEdge(rid))
         return true;
 
-      current = previousOf(current, guard);
+      current = previousOf(current, guard, walkMark);
     }
 
     return false;
@@ -307,6 +309,7 @@ public class EdgeLinkedList {
 
     EdgeSegment current = lastSegment;
     final ChainCycleGuard guard = newCycleGuard();
+    final char walkMark = walkMark();
     while (current != null) {
       final JSONObject j = current.toJSON(false);
       if (j.has("entries")) {
@@ -314,7 +317,7 @@ public class EdgeLinkedList {
         for (int i = 0; i < a.length(); ++i)
           array.put(a.getJSONObject(i));
       }
-      current = previousOf(current, guard);
+      current = previousOf(current, guard, walkMark);
     }
 
     return array;
@@ -323,12 +326,13 @@ public class EdgeLinkedList {
   public RID getFirstEdgeConnectedToVertex(final RID ridVertex, final int[] edgeBucketFilter) {
     EdgeSegment current = lastSegment;
     final ChainCycleGuard guard = newCycleGuard();
+    final char walkMark = walkMark();
     while (current != null) {
       final RID edgeConnectedToVertex = current.getFirstEdgeConnectedToVertex(ridVertex, edgeBucketFilter);
       if (edgeConnectedToVertex != null)
         return edgeConnectedToVertex;
 
-      current = previousOf(current, guard);
+      current = previousOf(current, guard, walkMark);
     }
 
     return null;
@@ -359,12 +363,13 @@ public class EdgeLinkedList {
   public boolean containsVertex(final RID rid, final int[] edgeBucketFilter) {
     EdgeSegment current = lastSegment;
     final ChainCycleGuard guard = newCycleGuard();
+    final char walkMark = walkMark();
     while (current != null) {
       final RID edgeConnectedToVertex = current.getFirstEdgeConnectedToVertex(rid, edgeBucketFilter);
       if (edgeConnectedToVertex != null)
         return true;
 
-      current = previousOf(current, guard);
+      current = previousOf(current, guard, walkMark);
     }
 
     return false;
@@ -387,17 +392,41 @@ public class EdgeLinkedList {
    * of the chain shares (see {@link ResettableIteratorBase#moveToPreviousChunk()}) and {@code CHECK DATABASE} reports.
    * Every walk in this class hops through here or {@link #previousRIDOf}, so none can be the one left without the
    * guard: {@link #count} was, and hung the thread running an ordinary degree query on such a chain (issue #8568).
+   * <p>
+   * The hop itself is {@link EdgeSegment#getPrevious(char)}, the resolver the iterators use, with the mark the walk took when it
+   * began: a chunk a concurrent commit deleted behind the walk's image is passed, or answers the retryable conflict, instead of
+   * the {@link RecordNotFoundException} a raw lookup answered to the degree count and the containment probes (issue #12019).
    */
-  private EdgeSegment previousOf(final EdgeSegment current, final ChainCycleGuard guard) {
+  private static EdgeSegment previousOf(final EdgeSegment current, final ChainCycleGuard guard, final char walkMark) {
     final RID previousRID = previousRIDOf(current, guard);
-    return previousRID == null ? null : (EdgeSegment) ((DatabaseInternal) vertex.getDatabase()).lookupByRID(previousRID, true);
+    if (previousRID == null)
+      return null;
+    // THE SAME RESOLVER THE ITERATORS HOP THROUGH (#12019): A CHUNK THE OPEN TRANSACTION DELETED IS PASSED (#11234), AND ONE A COMMIT
+    // DELETED SINCE THE WALK BEGAN IS PASSED FROM THE NEWEST COMMITTED IMAGE OF CURRENT, OR ANSWERS THE RETRYABLE CONFLICT WHEN THE
+    // WALK LOST ITS PLACE (#11713). ONLY A POINTER DANGLING WITH NO COMMIT IN BETWEEN STILL ANSWERS RecordNotFoundException
+    final EdgeSegment previous = current.getPrevious(walkMark);
+    if (previous == null)
+      return null;
+    // THE CHUNK REACHED THROUGH A RELINK IS NOT THE ONE THE GUARD WAS SHOWN: IT ENDS THE WALK ON THE SAME TERMS
+    final RID reached = previous.getIdentity();
+    if (!reached.equals(previousRID) && (reached.equals(current.getIdentity()) || (guard != null && guard.revisits(reached))))
+      return null;
+    return previous;
   }
 
   /**
    * The chunk before {@code current} for the callers that do not walk the chain (only the self-pointer is checked).
    */
   private EdgeSegment previousOf(final EdgeSegment current) {
-    return previousOf(current, null);
+    return previousOf(current, null, walkMark());
+  }
+
+  /**
+   * The mark of a walk of this list that begins now, taken once per walk (as {@link ResettableIteratorBase} does): a chunk found
+   * gone during the walk is judged against the commits published since then (issue #12019).
+   */
+  private char walkMark() {
+    return ((DatabaseInternal) vertex.getDatabase()).graphWalkMark();
   }
 
   /**
@@ -436,9 +465,10 @@ public class EdgeLinkedList {
     long total = 0;
     EdgeSegment current = lastSegment;
     final ChainCycleGuard guard = newCycleGuard();
+    final char walkMark = walkMark();
     while (current != null) {
       total += current.count(mask);
-      current = previousOf(current, guard);
+      current = previousOf(current, guard, walkMark);
     }
 
     return total;
@@ -457,9 +487,10 @@ public class EdgeLinkedList {
     final RID owner = skipSelfLoops != null ? vertex.getIdentity() : null;
     EdgeSegment current = lastSegment;
     final ChainCycleGuard guard = newCycleGuard();
+    final char walkMark = walkMark();
     while (current != null) {
       current.countInto(edgeMasks, neighborMasks, skipSelfLoops, owner, counts);
-      current = previousOf(current, guard);
+      current = previousOf(current, guard, walkMark);
     }
   }
 
@@ -484,8 +515,8 @@ public class EdgeLinkedList {
       // would orphan the concurrent chunk (lost edges) - surface a retryable conflict instead.
       final MutableVertex modifiableV = vertex.modify();
       final RID reloadedHead = direction == Vertex.DIRECTION.OUT ?
-          modifiableV.getOutEdgesHeadChunk() :
-          modifiableV.getInEdgesHeadChunk();
+          modifiableV.peekOutEdgesHeadChunk() :
+          modifiableV.peekInEdgesHeadChunk();
       if (reloadedHead != null && !reloadedHead.equals(lastSegment.getIdentity()))
         throw new ConcurrentModificationException(
             "Edge list " + direction + " head of vertex " + vertex.getIdentity() + " changed by a concurrent transaction");
@@ -533,8 +564,8 @@ public class EdgeLinkedList {
         if (currentVertex == vertex) {
           // First flip of this batch: same stale-head guard as add() (modify() may have reloaded the record).
           final RID reloadedHead = direction == Vertex.DIRECTION.OUT ?
-              modifiableV.getOutEdgesHeadChunk() :
-              modifiableV.getInEdgesHeadChunk();
+              modifiableV.peekOutEdgesHeadChunk() :
+              modifiableV.peekInEdgesHeadChunk();
           if (reloadedHead != null && !reloadedHead.equals(lastSegment.getIdentity()))
             throw new ConcurrentModificationException(
                 "Edge list " + direction + " head of vertex " + vertex.getIdentity() + " changed by a concurrent transaction");
@@ -688,6 +719,13 @@ public class EdgeLinkedList {
     if (tx != null && tx.getWrittenRecord(chunkRID) instanceof EdgeSegment written)
       return written;
     final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(chunkRID.getBucketId());
+    // #12644: a chunk the committed page has and the transaction's own image of its page does not (the image predates the commit
+    // that created it) can be read, but not written: the write goes through that image. Refused here, at the statement, rather
+    // than at the commit, and with the reason: a retry starts from the current page
+    if (bucket.isRecordHiddenByOwnPageImage(chunkRID))
+      throw new ConcurrentModificationException(
+          "Edge list " + direction + " chunk " + chunkRID + " of vertex " + vertex.getIdentity()
+              + " is not in the transaction's own copy of its page, which predates the commit that created it. Please retry the operation");
     try {
       bucket.fetchPageInTransaction(chunkRID);
       // Read THROUGH the anchored page, bypassing the record cache: a cached copy read before the anchor can be
@@ -737,9 +775,10 @@ public class EdgeLinkedList {
       long totalBytes = 0;
       EdgeSegment segment = lastSegment;
       final ChainCycleGuard guard = newCycleGuard();
+      final char walkMark = walkMark();
       for (int walked = 0; segment != null && walked < 4096; ++walked) {
         totalBytes += segment.getRecordSize();
-        segment = previousOf(segment, guard);
+        segment = previousOf(segment, guard, walkMark);
       }
       estimatedEdges = totalBytes / 8;
       if (estimatedEdges < threshold)
@@ -758,8 +797,8 @@ public class EdgeLinkedList {
     // stale-head guard as the flip path above) BEFORE creating the directory and stripe chunks.
     final MutableVertex modifiableV = vertex.modify();
     final RID reloadedHead = direction == Vertex.DIRECTION.OUT ?
-        modifiableV.getOutEdgesHeadChunk() :
-        modifiableV.getInEdgesHeadChunk();
+        modifiableV.peekOutEdgesHeadChunk() :
+        modifiableV.peekInEdgesHeadChunk();
     if (reloadedHead != null && !reloadedHead.equals(lastSegment.getIdentity()))
       throw new ConcurrentModificationException(
           "Edge list " + direction + " head of vertex " + vertex.getIdentity() + " changed by a concurrent transaction");
@@ -864,8 +903,9 @@ public class EdgeLinkedList {
     final TransactionContext tx = ((DatabaseInternal) vertex.getDatabase()).getTransactionIfExists();
     EdgeSegment current = lastSegment;
     final ChainCycleGuard guard = newExactCycleGuard();
+    final char walkMark = walkMark();
     while (current != null) {
-      final EdgeSegment prev = previousOf(current, guard);
+      final EdgeSegment prev = previousOf(current, guard, walkMark);
       // Deleting a chunk does not commute with a concurrent append on its page: exclude the page from the
       // append-merge so a rebase can never re-derive it from committed-state + appends and lose the deletion
       // (uniformly enforces the "every non-append edge-list write poisons its page" invariant).

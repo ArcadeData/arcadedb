@@ -109,7 +109,9 @@ class RaftHTTPGraphConcurrentIT extends BaseRaftHATest {
               + " WHERE id = \"u1111\" )");
 
       assertThat(select.getJSONObject("result").getJSONArray("records").length())
-          .withFailMessage("Some edges were missing when executing from server " + serverIndex)
+          // Exactly, not at least: a script the cluster executed twice shows up as MORE edges than acknowledged writes (issue
+          // #12635, 402 for 400 when a follower replayed a forwarded write)
+          .as("every script run through server %d must have created exactly one edge", serverIndex)
           .isEqualTo(THREADS * SCRIPTS);
 
       assertClusterConsistency();

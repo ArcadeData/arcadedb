@@ -69,10 +69,26 @@ public interface HAReplicatedDatabase {
   }
 
   /**
-   * Returns the last applied Raft index, or -1 if not available.
-   * Used to set the commit index bookmark header in write responses.
+   * Returns the last applied index of this node, or -1 if not available: the index of the last entry its state machine
+   * applied, which leaves out the metadata entries the replication layer appends on its own (issue #11742). It is what a
+   * response's read-your-writes bookmark is built from. Two cases answer an index that is not such an entry: before the state
+   * machine has applied anything the replication layer's own applied index stands in, which may be a metadata entry, and
+   * after a restart or a snapshot install the index starts at the snapshot marker the copy was restored to. Both are at or
+   * past every entry this node holds, so a read waiting for them misses no write.
    */
   default long getLastAppliedIndex() {
     return -1;
+  }
+
+  /**
+   * The read-your-writes bookmark for the response to the request served on this thread: the {@code X-ArcadeDB-Commit-Index}
+   * a read waits for to see what the request wrote. The maximum of this node's applied index ({@link #getLastAppliedIndex()})
+   * and the highest index a write of the request is known to be committed at: the leader's bookmark for a write it forwarded
+   * to the leader (issue #11740), and the index the cluster acknowledged a write committed here at, which an apply that
+   * failed or outlasted its wait leaves above the applied index (issue #11742). Either side can be the higher one: this node
+   * may have applied past the leader's bookmark by the time the response is written.
+   */
+  default long getCommitIndexBookmark() {
+    return getLastAppliedIndex();
   }
 }

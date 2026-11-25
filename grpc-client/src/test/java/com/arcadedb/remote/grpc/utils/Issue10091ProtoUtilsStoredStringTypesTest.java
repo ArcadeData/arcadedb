@@ -35,7 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Issue #10091, client side: every type {@code Type.isConvertedFromStoredString()} names must cross {@link ProtoUtils}
- * tagged and come back as the same type. The server-side twin is {@code Issue10091GrpcStoredStringTypesAreTaggedTest}; the
+ * tagged and come back as the same type. The server-side twin is {@code GrpcTypeConverterTest}; the
  * two ends share {@code GrpcTemporalCodec}, and this keeps a type added to the schema authority from being a {@code String}
  * on the client's side of the wire only.
  *

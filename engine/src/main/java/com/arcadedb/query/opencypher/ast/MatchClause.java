@@ -202,6 +202,62 @@ public class MatchClause {
     return false;
   }
 
+  /**
+   * True when any path pattern of any given MATCH clause holds a relationship, of any length ({@code (a)-[r]->(b)}); a pattern
+   * of lone nodes does not.
+   * <p>
+   * A relationship is expanded by walking the edge list of the node it starts from while the rows of that node are still
+   * being produced, so a write clause following it with no intervening aggregation can change the list under the walk: a
+   * {@code DETACH DELETE} of the node, or of the node at the other end, removes the relationships the walk has not reached
+   * yet and the rows they would have produced are never read (issue #12254).
+   *
+   * @param matchClauses the MATCH clause(s) of the segment feeding the write clause in question
+   * @return true when at least one of them has a relationship pattern
+   */
+  public static boolean hasRelationshipPatterns(final List<MatchClause> matchClauses) {
+    if (matchClauses == null)
+      return false;
+    for (final MatchClause match : matchClauses)
+      for (final PathPattern path : match.pathPatterns)
+        if (path.getRelationshipCount() > 0)
+          return true;
+    return false;
+  }
+
+  /**
+   * The number of relationships ({@code -[r]->}) the given MATCH clause(s) hold in all, over every hop of every path pattern. A
+   * statement whose MATCH is exactly one relationship expands one edge list per row and reaches each relationship of it once
+   * (issue #12521, see {@code EagerBarriers.relationshipsMayBeReadAgain}).
+   *
+   * @param matchClauses the MATCH clause(s) of the segment feeding the write clause in question
+   */
+  public static int countRelationshipPatterns(final List<MatchClause> matchClauses) {
+    if (matchClauses == null)
+      return 0;
+    int count = 0;
+    for (final MatchClause match : matchClauses)
+      for (final PathPattern path : match.pathPatterns)
+        count += path.getRelationshipCount();
+    return count;
+  }
+
+  /**
+   * True when any relationship of the given MATCH clause(s) has no direction ({@code -[r]-}): it is reached from each of its two
+   * ends, so a row of it is produced twice, once per end (issue #12521).
+   *
+   * @param matchClauses the MATCH clause(s) of the segment feeding the write clause in question
+   */
+  public static boolean hasUndirectedRelationships(final List<MatchClause> matchClauses) {
+    if (matchClauses == null)
+      return false;
+    for (final MatchClause match : matchClauses)
+      for (final PathPattern path : match.pathPatterns)
+        for (final RelationshipPattern relationship : path.getRelationships())
+          if (relationship.getDirection() == Direction.BOTH)
+            return true;
+    return false;
+  }
+
   private static boolean computeDisconnected(final List<PathPattern> pathPatterns) {
     if (pathPatterns.size() < 2)
       return false;

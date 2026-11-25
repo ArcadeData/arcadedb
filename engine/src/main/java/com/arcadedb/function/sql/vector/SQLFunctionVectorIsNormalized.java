@@ -40,10 +40,19 @@ public class SQLFunctionVectorIsNormalized extends SQLFunctionVectorAbstract {
   }
 
   @Override
+  public int getMinArgs() {
+    return 1;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 2;
+  }
+
+  @Override
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
-    if (params == null || (params.length != 1 && params.length != 2))
-      throw new CommandSQLParsingException(getSyntax());
+    checkArity(params);
 
     final Object vectorObj = params[0];
     if (vectorObj == null)
@@ -63,7 +72,7 @@ public class SQLFunctionVectorIsNormalized extends SQLFunctionVectorAbstract {
     // Calculate L2 norm
     double sumSquares = 0.0;
     for (final float value : vector) {
-      sumSquares += value * value;
+      sumSquares += (double) value * value;
     }
     final float norm = (float) Math.sqrt(sumSquares);
 

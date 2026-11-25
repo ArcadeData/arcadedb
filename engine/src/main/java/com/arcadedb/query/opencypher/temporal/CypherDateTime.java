@@ -18,6 +18,8 @@
  */
 package com.arcadedb.query.opencypher.temporal;
 
+import com.arcadedb.exception.ArithmeticErrorException;
+
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -29,15 +31,16 @@ import java.time.temporal.IsoFields;
 import java.time.temporal.WeekFields;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
-import static com.arcadedb.query.opencypher.temporal.CypherDate.toInt;
-import static com.arcadedb.query.opencypher.temporal.CypherDate.toLong;
 
 /**
  * OpenCypher DateTime value wrapping java.time.ZonedDateTime.
  * Represents a date and time with timezone.
  */
 public class CypherDateTime implements CypherTemporalValue {
+  private static final Set<String> DATETIME_SELECTIONS = Set.of("date", "time", "datetime", "timezone", "epochSeconds", "epochMillis");
+
   private final ZonedDateTime value;
   // True for a value read out of a column that stores no zone: the zone it carries was materialized, not chosen, so in
   // a comparison it adopts the other operand's zone, as a java.util.Date parameter does (issue #9325). Not part of the
@@ -69,79 +72,15 @@ public class CypherDateTime implements CypherTemporalValue {
     return new CypherDateTime(ZonedDateTime.now());
   }
 
+  /**
+   * Parses a datetime in the ISO 8601 forms Neo4j accepts, see {@link TemporalParser}. An offset that contradicts the zone the
+   * text also names is refused (issue #12298).
+   */
   public static CypherDateTime parse(final String str) {
-    // Extract named timezone in brackets if present: 2015-07-21T21:40:32[Europe/London]
-    String input = str;
-    ZoneId namedZone = null;
-    final int bracketIdx = input.indexOf('[');
-    if (bracketIdx >= 0) {
-      final int endBracket = input.indexOf(']', bracketIdx);
-      if (endBracket > bracketIdx) {
-        namedZone = TemporalUtil.parseZone(input.substring(bracketIdx + 1, endBracket));
-        input = input.substring(0, bracketIdx);
-      }
-    }
-
-    // Normalize compact timezone offsets: +0200 → +02:00
-    input = TemporalUtil.normalizeOffsetInString(input);
-
-    // Find offset marker
-    final int tIdx = input.indexOf('T');
-    if (tIdx < 0) {
-      // Date only with possible offset
-      final LocalDate date = CypherDate.parseLocalDate(input);
-      final ZoneId zone = namedZone != null ? namedZone : ZoneOffset.UTC;
-      return new CypherDateTime(date.atStartOfDay(zone));
-    }
-
-    // Check if there's an offset in the time part
-    final String afterT = input.substring(tIdx + 1);
-    final int offsetIdx = findOffsetIndex(afterT);
-
-    if (offsetIdx >= 0) {
-      // Has offset: parse as standard datetime with offset
-      try {
-        ZonedDateTime parsed = ZonedDateTime.parse(input);
-        if (namedZone != null)
-          parsed = parsed.withZoneSameLocal(namedZone);
-        return new CypherDateTime(parsed);
-      } catch (final Exception e) {
-        // Fall through to manual parsing
-      }
-      // Manual parsing for compact formats
-      final String datePart = input.substring(0, tIdx);
-      final String timePart = afterT.substring(0, offsetIdx);
-      final String offsetPart = afterT.substring(offsetIdx);
-
-      final LocalDate date = CypherDate.parseLocalDate(datePart);
-      final LocalTime time = CypherLocalTime.parseLocalTime(timePart);
-      final ZoneOffset offset = "Z".equalsIgnoreCase(offsetPart) ? ZoneOffset.UTC : ZoneOffset.of(offsetPart);
-      final ZoneId zone = namedZone != null ? namedZone : offset;
-      return new CypherDateTime(ZonedDateTime.of(date, time, zone));
-    }
-
-    // No offset in the time part
-    final String datePart = input.substring(0, tIdx);
-    final String timePart = afterT;
-    final LocalDate date = CypherDate.parseLocalDate(datePart);
-    final LocalTime time = CypherLocalTime.parseLocalTime(timePart);
-    final ZoneId zone = namedZone != null ? namedZone : ZoneOffset.UTC;
-    return new CypherDateTime(ZonedDateTime.of(date, time, zone));
+    return new CypherDateTime(TemporalParser.parseDateTime(str));
   }
 
-  private static int findOffsetIndex(final String timeStr) {
-    // Look for Z, +, or - that indicates timezone offset
-    // Must skip the initial characters (could be time digits)
-    for (int i = timeStr.length() - 1; i >= 1; i--) {
-      final char c = timeStr.charAt(i);
-      if (c == 'Z' || c == 'z')
-        return i;
-      // + or - after at least one digit
-      if ((c == '+' || c == '-') && i >= 2 && Character.isDigit(timeStr.charAt(i - 1)))
-        return i;
-    }
-    return -1;
-  }
+
 
   public static CypherDateTime fromEpoch(final long seconds, final long nanosAdjustment) {
     final Instant instant = Instant.ofEpochSecond(seconds, nanosAdjustment);
@@ -153,95 +92,83 @@ public class CypherDateTime implements CypherTemporalValue {
     return new CypherDateTime(ZonedDateTime.ofInstant(instant, ZoneOffset.UTC));
   }
 
+  /**
+   * A datetime from a map of fields: an epoch instant, or a {@code datetime:} base, or a {@code date:} and a {@code time:}
+   * base, each adjusted by the fields the map gives (see {@link TemporalMapFields}, issue #12297), in the map's
+   * {@code timezone}. A map holding nothing but a {@code timezone} is the current datetime in that zone, which needs the
+   * statement clock and is answered by the {@code datetime()} function.
+   */
   public static CypherDateTime fromMap(final Map<String, Object> map) {
+    TemporalMapFields.checkKeys(map, true, true, DATETIME_SELECTIONS);
+
     // Epoch-based construction: the instant, read in the map's timezone (UTC without one), then every field the map also
     // gives, as Neo4j applies them. The timezone used to be ignored, so datetime({epochSeconds: 0, timezone: '+05:30'}) was
     // midnight UTC instead of 05:30 at +05:30 (issue #10199)
     final boolean epochMillis = map.containsKey("epochMillis");
     if (epochMillis || map.containsKey("epochSeconds")) {
+      final String epochKey = epochMillis ? "epochMillis" : "epochSeconds";
       if (epochMillis && map.containsKey("epochSeconds"))
-        throw new IllegalArgumentException("epochMillis cannot be selected together with epochSeconds");
-      final Instant instant = epochMillis ?
-          Instant.ofEpochMilli(toLong(map.get("epochMillis"))) :
-          Instant.ofEpochSecond(toLong(map.get("epochSeconds")));
-      final ZoneId zone = map.containsKey("timezone") ? TemporalUtil.parseZone(map.get("timezone").toString()) : ZoneOffset.UTC;
+        throw new IllegalArgumentException("epochMillis cannot be selected together with epochSeconds.");
+      if (map.containsKey("datetime"))
+        throw new IllegalArgumentException(epochKey + " cannot be selected together with datetime.");
+      if (map.containsKey("date") || map.containsKey("time"))
+        throw new IllegalArgumentException(epochKey + " cannot be selected together with date or time.");
+      final long epoch = TemporalMapFields.epochValue(epochKey, map.get(epochKey));
+      final Instant instant = epochMillis ? Instant.ofEpochMilli(epoch) : Instant.ofEpochSecond(epoch);
+      final ZoneId zone = map.containsKey("timezone") ? TemporalUtil.parseZone(TemporalMapFields.timezoneText(map)) : ZoneOffset.UTC;
       return new CypherDateTime(withFieldOverrides(instant.atZone(zone), map));
     }
 
-    // Check for base datetime
     if (map.containsKey("datetime")) {
+      if (map.containsKey("date") || map.containsKey("time"))
+        throw new IllegalArgumentException("datetime cannot be selected together with date or time.");
       final Object dtVal = map.get("datetime");
-      ZonedDateTime base = null;
-      boolean baseHasTimezone = false;
-      if (dtVal instanceof CypherDateTime) {
-        base = ((CypherDateTime) dtVal).getValue();
-        baseHasTimezone = true;
-      } else if (dtVal instanceof CypherLocalDateTime)
-        base = ((CypherLocalDateTime) dtVal).getValue().atZone(ZoneOffset.UTC);
-      if (base != null) {
-        // Apply timezone conversion FIRST if specified
-        if (map.containsKey("timezone")) {
-          final ZoneId newZone = TemporalUtil.parseZone(map.get("timezone").toString());
-          if (baseHasTimezone)
-            base = base.withZoneSameInstant(newZone);
-          else
-            base = base.withZoneSameLocal(newZone);
-        }
-        // Individual field overrides apply on the (possibly timezone-converted) base
-        return new CypherDateTime(withFieldOverrides(base, map));
+      final boolean baseHasTimezone = dtVal instanceof CypherDateTime;
+      // A local datetime has no zone: it is read in UTC, or in the map's timezone below
+      final ZonedDateTime base = baseHasTimezone ?
+          ((CypherDateTime) dtVal).getValue() :
+          TemporalMapFields.dateTimeOf(dtVal).atZone(ZoneOffset.UTC);
+      // The fields apply in the base's own zone, then a zoned base moves to the map's timezone at the same instant, as Neo4j
+      // does: {datetime: datetime('2021-05-15T10:00+02:00'), timezone: '+01:00', hour: 3} is 02:00+01:00. Converting first
+      // answered 03:00+01:00, another instant (issue #12297). A local base has no instant to keep: its overridden local
+      // date-time is read in the timezone, so a gap of the zone is resolved on the final value, not on the base
+      final ZonedDateTime overridden = withFieldOverrides(base, map);
+      if (map.containsKey("timezone")) {
+        final ZoneId newZone = TemporalUtil.parseZone(TemporalMapFields.timezoneText(map));
+        return new CypherDateTime(baseHasTimezone ? overridden.withZoneSameInstant(newZone) : overridden.withZoneSameLocal(newZone));
       }
+      return new CypherDateTime(overridden);
     }
 
-    // Date part
-    final LocalDate datePart = CypherDate.fromMap(map).getValue();
+    final LocalDate baseDate = map.containsKey("date") ? TemporalMapFields.dateOf(map.get("date")) : null;
 
-    // Time part — check if there's a base temporal with time
-    int hour = 0, minute = 0, second = 0;
-    int nanos = 0;
-    ZoneId timeZone = null; // timezone from time source (null = no timezone)
+    // Time part: a base with a zone gives it its zone
+    LocalTime baseTime = null;
+    ZoneId timeZone = null;
     boolean timeHasTimezone = false;
     if (map.containsKey("time")) {
       final Object timeVal = map.get("time");
+      baseTime = TemporalMapFields.timeOf(timeVal);
       if (timeVal instanceof CypherTime ct) {
-        hour = ct.getValue().getHour();
-        minute = ct.getValue().getMinute();
-        second = ct.getValue().getSecond();
-        nanos = ct.getValue().getNano();
         timeZone = ct.getValue().getOffset();
         timeHasTimezone = true;
-      } else if (timeVal instanceof CypherLocalTime clt) {
-        hour = clt.getValue().getHour();
-        minute = clt.getValue().getMinute();
-        second = clt.getValue().getSecond();
-        nanos = clt.getValue().getNano();
-      } else if (timeVal instanceof CypherLocalDateTime cldt) {
-        hour = cldt.getValue().getHour();
-        minute = cldt.getValue().getMinute();
-        second = cldt.getValue().getSecond();
-        nanos = cldt.getValue().getNano();
       } else if (timeVal instanceof CypherDateTime cdt) {
-        hour = cdt.getValue().getHour();
-        minute = cdt.getValue().getMinute();
-        second = cdt.getValue().getSecond();
-        nanos = cdt.getValue().getNano();
         timeZone = cdt.getValue().getZone();
         timeHasTimezone = true;
       }
     }
-    if (map.containsKey("hour"))
-      hour = toInt(map.get("hour"));
-    if (map.containsKey("minute"))
-      minute = toInt(map.get("minute"));
-    if (map.containsKey("second"))
-      second = toInt(map.get("second"));
-    nanos = TemporalUtil.computeNanos(map, nanos);
+
+    final LocalDate datePart = TemporalMapFields.resolveDate(map, baseDate, baseTime != null || TemporalMapFields.hasTimeField(map));
+    if (datePart == null)
+      throw new IllegalArgumentException("year must be specified");
+    final LocalTime timePart = TemporalMapFields.resolveTime(map, baseTime);
 
     // Determine timezone: time source timezone → explicit timezone override
     final ZoneId initialZone = timeZone != null ? timeZone : ZoneOffset.UTC;
-    ZonedDateTime result = ZonedDateTime.of(datePart, LocalTime.of(hour, minute, second, nanos), initialZone);
+    ZonedDateTime result = ZonedDateTime.of(datePart, timePart != null ? timePart : LocalTime.MIDNIGHT, initialZone);
 
     if (map.containsKey("timezone")) {
-      final ZoneId newZone = TemporalUtil.parseZone(map.get("timezone").toString());
+      final ZoneId newZone = TemporalUtil.parseZone(TemporalMapFields.timezoneText(map));
       if (timeHasTimezone)
         result = result.withZoneSameInstant(newZone);
       else
@@ -276,7 +203,7 @@ public class CypherDateTime implements CypherTemporalValue {
       case "weekYear" -> (long) value.get(WeekFields.ISO.weekBasedYear());
       case "dayOfWeek", "weekDay" -> (long) value.getDayOfWeek().getValue();
       case "ordinalDay" -> (long) value.getDayOfYear();
-      case "dayOfQuarter" -> (long) value.get(IsoFields.DAY_OF_QUARTER);
+      case "dayOfQuarter", "quarterDay" -> (long) value.get(IsoFields.DAY_OF_QUARTER);
       // Time properties
       case "hour" -> (long) value.getHour();
       case "minute" -> (long) value.getMinute();
@@ -291,9 +218,18 @@ public class CypherDateTime implements CypherTemporalValue {
       case "offsetSeconds" -> (long) value.getOffset().getTotalSeconds();
       // Epoch properties
       case "epochSeconds" -> value.toEpochSecond();
-      case "epochMillis" -> value.toInstant().toEpochMilli();
+      case "epochMillis" -> epochMillis();
       default -> null;
     };
+  }
+
+  /** The instant in milliseconds; a datetime past year 292278994 has none, which is the caller's value and not a server fault (issue #12706). */
+  private long epochMillis() {
+    try {
+      return value.toInstant().toEpochMilli();
+    } catch (final ArithmeticException e) {
+      throw new ArithmeticErrorException("Temporal overflow: epochMillis of " + this + " does not fit a long", e);
+    }
   }
 
   @Override

@@ -106,7 +106,7 @@ class RemoteMaterializedViewIT extends BaseGraphServerTest {
   /**
    * Issue #7688: {@code buildMaterializedView()} used to throw remotely. It now renders the builder as
    * {@code CREATE MATERIALIZED VIEW} and returns the view the server stored; the embedded-vs-remote parity is pinned by
-   * {@code Issue7688RemoteViewBuildersIT}.
+   * {@code com.arcadedb.server.RemoteViewBuildersIT.ViewBuilders}.
    */
   @Test
   void buildMaterializedViewCreatesTheViewRemotely() throws Exception {

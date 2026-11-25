@@ -67,9 +67,16 @@ public final class BoltErrorCodes {
   // A CALL of a procedure nothing answers (UnknownProcedureException): Neo4j's own title for it, where a function nothing answers
   // is a SyntaxError. It was the generic DatabaseError, an unexplained server fault to a driver (issue #11384)
   public static final String PROCEDURE_NOT_FOUND_ERROR = "Neo.ClientError.Procedure.ProcedureNotFound";
+  // An external resource the statement names - a LOAD CSV URL - that cannot be opened or read (ExternalResourceException):
+  // Neo4j's own title for it. It was the generic DatabaseError, an unexplained server fault to a driver (issue #11974)
+  public static final String EXTERNAL_RESOURCE_FAILED_ERROR = "Neo.ClientError.Statement.ExternalResourceFailed";
 
   // Transaction errors
   public static final String TRANSACTION_ERROR = "Neo.ClientError.Transaction.TransactionNotFound";
+  // A statement that runs only in an implicit (auto-commit) transaction, sent in an explicit or managed one: CALL { ... } IN
+  // TRANSACTIONS (ImplicitTransactionRequiredException). Neo4j's own code for it, a DatabaseError despite being the caller's
+  // context, kept as is so a driver that branches on it behaves the same against both servers (issue #12161)
+  public static final String TRANSACTION_START_FAILED_ERROR = "Neo.DatabaseError.Transaction.TransactionStartFailed";
 
   // Transient (retryable) errors. ArcadeDB's optimistic-concurrency conflicts (NeedRetryException:
   // ConcurrentModificationException / LockTimeoutException) map here so Neo4j drivers auto-retry a

@@ -33,6 +33,7 @@ import com.arcadedb.schema.MaterializedView;
 import com.arcadedb.schema.MaterializedViewStatus;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.TypeHierarchy;
 import com.arcadedb.security.SecurityHelper;
 
 import java.util.ArrayList;
@@ -55,7 +56,6 @@ import java.util.logging.Level;
 import static com.arcadedb.postgres.PostgresCatalogRowSets.aggregateOf;
 import static com.arcadedb.postgres.PostgresCatalogRowSets.combine;
 import static com.arcadedb.postgres.PostgresCatalogRowSets.compareValues;
-import static com.arcadedb.postgres.PostgresCatalogRowSets.distinctKey;
 import static com.arcadedb.postgres.PostgresCatalogSyntax.MAX_NESTING;
 import static com.arcadedb.postgres.PostgresCatalogSyntax.containsSetOperation;
 import static com.arcadedb.postgres.PostgresCatalogSyntax.isName;
@@ -170,6 +170,13 @@ public class PostgresCatalog {
    * {@link PostgresTypeCatalog}'s {@code typowner}, so the two surfaces cannot drift apart on who owns what.
    */
   static final int OWNER_OID = 10;
+  /** The {@code pg_collation} row of the default collation, which the text types name: on every row, as the one of a text type. */
+  private static final Object[] DEFAULT_COLLATION_VALUES = { "oid", PostgresTypeCatalog.DEFAULT_COLLATION_OID, "collname", "default",
+      "collnamespace", PostgresTypeCatalog.PG_CATALOG_OID, "collowner", OWNER_OID, "collprovider", "d" };
+  /** The {@code pg_collation} row of the {@code C} collation, which {@code name} names in typcollation (issue #12449). */
+  private static final Object[] C_COLLATION_VALUES       = { "oid", PostgresTypeCatalog.C_COLLATION_OID, "collname", "C",
+      "collnamespace", PostgresTypeCatalog.PG_CATALOG_OID, "collowner", OWNER_OID, "collprovider", "c", "collcollate", "C", "collctype",
+      "C" };
   /**
    * The schema PostgreSQL's own built-in objects live in, which is what {@code pg_type.typnamespace} answers here
    * (issue #7224). It is deliberately NOT the one schema this catalog emulates for the user's own types: a
@@ -448,8 +455,8 @@ public class PostgresCatalog {
     // The access methods. Every type is a heap table here, which is what psql's \dt and \d join it for, and every index is of one
     // of the families of index: a statement reading pg_am alone reads all of them, as a join does (issue #10745).
     relation("pg_am", Family.ACCESS_METHODS, "oid", "amname", "amhandler", "amtype");
-    // The one collation, the default every text type names in typcollation: a row of the single-row bucket, as
-    // information_schema.collations is (issue #10711)
+    // The collations pg_type names in typcollation: the default every text type names (issue #10711), and C, the collation of name
+    // (issue #12449). A family of its own, as pg_am is: each type row carries the one its typcollation names
     relation("pg_collation", Family.COLLATIONS, "oid", "collname", "collnamespace", "collowner", "collprovider", "collcollate",
         "collctype");
 
@@ -535,7 +542,7 @@ public class PostgresCatalog {
         "min_val", "max_val", "enumvals", "boot_val", "reset_val", "sourcefile", "sourceline", "pending_restart");
 
     // The declared type of every column that is not a varchar: what the rows of each relation carry, held to it by
-    // Issue10869CatalogColumnTypesTest over every modelled relation
+    // PostgresCatalogColumnsTest.ColumnTypes over every modelled relation
     columnTypes("pg_namespace", PostgresType.INTEGER, "oid", "nspowner");
     columnTypes("pg_class", PostgresType.INTEGER, "oid", "relnamespace", "reltype", "reloftype", "relowner", "relam", "relfilenode",
         "reltablespace", "relpages", "reltuples", "reltoastrelid", "relnatts", "relchecks", "relrewrite");
@@ -1684,13 +1691,16 @@ public class PostgresCatalog {
       if (answer.columns.size() != keys.size())
         return DECLINED;
       filtersExactly |= answer.filtersExactly;
+      // a row of an arm is copied, combined, and built again as a row of the answer: each pass is work of the statement
+      context.charge(answer.rows.size());
       final List<List<Object>> values = new ArrayList<>(answer.rows.size());
       for (final Map<String, Object> row : answer.rows)
         values.add(new ArrayList<>(row.values()));
       arms.add(values);
     }
 
-    final List<List<Object>> combined = combine(operation.operators, operation.all, arms);
+    final List<List<Object>> combined = combine(operation.operators, operation.all, arms, context::charge);
+    context.charge(combined.size());
 
     List<Map<String, Object>> rows = new ArrayList<>(combined.size());
     for (final List<Object> values : combined) {
@@ -1701,13 +1711,29 @@ public class PostgresCatalog {
     }
 
     if (operation.orderBy != null)
-      rows = sort(operation.orderBy, rows);
+      rows = sort(context, operation.orderBy, rows, null);
     if (rows == null)
       return DECLINED;
     if (operation.limit != null && rows.size() > operation.limit)
       rows = new ArrayList<>(rows.subList(0, operation.limit));
 
     return new Answer(unionColumns(keys, answers, rows), rows, filtersExactly);
+  }
+
+  /**
+   * The comparisons of sorting {@code rows} rows by {@code keys} keys: about {@code rows * log2(rows)} of them, each reading as many
+   * keys as tie, so every key in the worst case. What the work budget is charged for a sort, before it is done.
+   */
+  private static int sortCost(final int rows, final int keys) {
+    if (rows < 2 || keys < 1)
+      return 0;
+    final long perKey = (long) rows * (Integer.SIZE - Integer.numberOfLeadingZeros(rows));
+    return perKey > Integer.MAX_VALUE / keys ? Integer.MAX_VALUE : (int) (perKey * keys);
+  }
+
+  /** {@code units} of work as the {@code int} the work budget is charged in: more than any budget when it does not fit. */
+  private static int unitsOf(final long units) {
+    return (int) Math.min(units, Integer.MAX_VALUE);
   }
 
   private static Family mostSpecific(final Family current, final Family candidate) {
@@ -1767,13 +1793,16 @@ public class PostgresCatalog {
    */
   private static int rank(final Family family) {
     return switch (family) {
-      case ROLES, DATABASES, PRIVILEGES, CHARACTER_SETS, COLLATIONS -> 0;
-      case SCHEMAS -> 1;
-      case ACCESS_METHODS -> 2;
-      case TYPES -> 3;
-      case TABLES, VIEWS, MATVIEWS, CLASSES -> 4;
-      case ATTRDEFS -> 5;
-      case COLUMNS, ATTRIBUTES -> 6;
+      case ROLES, DATABASES, PRIVILEGES, CHARACTER_SETS -> 0;
+      // above the single-row families, whose one row each collation carries, and below pg_namespace: a statement naming a schema and
+      // a collation is one row per schema, as before the C collation of name was modelled (issue #12449)
+      case COLLATIONS -> 1;
+      case SCHEMAS -> 2;
+      case ACCESS_METHODS -> 3;
+      case TYPES -> 4;
+      case TABLES, VIEWS, MATVIEWS, CLASSES -> 5;
+      case ATTRDEFS -> 6;
+      case COLUMNS, ATTRIBUTES -> 7;
     };
   }
 
@@ -1902,6 +1931,11 @@ public class PostgresCatalog {
     private final Map<Family, List<Row>> rowsByFamily = new EnumMap<>(Family.class);
     private int                          nesting;
     private long                         work;
+    /**
+     * The character reads the text patterns of the statement may make in all: one for every expression of it, and for every
+     * sub-select parsed again for a row of the query around it (see {@link PostgresCatalogExpression.StatementPatterns}).
+     */
+    private final PostgresCatalogExpression.StatementPatterns patterns = new PostgresCatalogExpression.StatementPatterns();
 
     private List<PostgresCatalogIndexes.Info>         indexes;
     private Set<String>                               indexedTypes;
@@ -2048,6 +2082,10 @@ public class PostgresCatalog {
       work += units;
       if (work > WORK_BUDGET)
         throw new PostgresCatalogExpression.BudgetExceeded();
+    }
+
+    PostgresCatalogExpression.StatementPatterns patterns() {
+      return patterns;
     }
 
     Database database() {
@@ -2209,7 +2247,8 @@ public class PostgresCatalog {
       // about cannot change the answer. Splitting them into five builders is what left them FROM-order dependent:
       // a ROLES row carried no pg_database, so `SELECT r.rolname, d.datname FROM pg_roles r, pg_database d` read
       // datname out of the null fill while the same query with the FROM order swapped answered it.
-      case DATABASES, ROLES, PRIVILEGES, CHARACTER_SETS, COLLATIONS -> List.of(singletonRow(context).complete());
+      case DATABASES, ROLES, PRIVILEGES, CHARACTER_SETS -> List.of(singletonRow(context).complete());
+      case COLLATIONS -> collationRows(context);
       case SCHEMAS -> schemaRows(context);
       case ACCESS_METHODS -> accessMethodRows(context);
       case TABLES -> relationRows(context, RELKIND_TABLE);
@@ -2252,6 +2291,10 @@ public class PostgresCatalog {
       // (issue #7868), re-pointed at pg_catalog afterwards: that is the schema typnamespace says these types are
       // in, so the join column and the joined row agree.
       final Row row = describeType(singletonRow(context), type);
+      // and carrying the collation its typcollation names, as a relation's row carries its access method: a join on typcollation
+      // finds name's C (issue #12449)
+      if (PostgresTypeCatalog.collation(type) == PostgresTypeCatalog.C_COLLATION_OID)
+        row.with("pg_collation", C_COLLATION_VALUES);
       rows.add(inSchema(row, row.of("pg_type").get("typnamespace"), PG_CATALOG_SCHEMA).complete());
     }
 
@@ -2342,8 +2385,17 @@ public class PostgresCatalog {
         .with("information_schema.collations", "collation_catalog", schema, "collation_schema", PG_CATALOG_SCHEMA,//
             "collation_name", "default", "pad_attribute", "NO PAD")//
         // the collation every text type names in pg_type.typcollation, with PostgreSQL's own OID and provider (issue #10711)
-        .with("pg_collation", "oid", PostgresTypeCatalog.DEFAULT_COLLATION_OID, "collname", "default", "collnamespace",
-            PostgresTypeCatalog.PG_CATALOG_OID, "collowner", OWNER_OID, "collprovider", "d");
+        .with("pg_collation", DEFAULT_COLLATION_VALUES);
+  }
+
+  /**
+   * {@code pg_collation} and {@code information_schema.collations}: the default collation every text type names in typcollation
+   * (issue #10711), then {@code C}, the one {@code name} names (issue #12449). The same two rows whichever statement reads them,
+   * alone or through a join.
+   */
+  private static List<Row> collationRows(final Context context) {
+    return List.of(singletonRow(context).complete(), singletonRow(context).with("pg_collation", C_COLLATION_VALUES)
+        .with("information_schema.collations", "collation_name", "C").complete());
   }
 
   /**
@@ -2954,15 +3006,8 @@ public class PostgresCatalog {
 
   /** The declaration of {@code name} that {@link #collectProperties} keeps for {@code type}, or null if it has none. */
   private static Property nearestProperty(final DocumentType type, final String name) {
-    final Property own = type.getPropertyIfExists(name);
-    if (own != null)
-      return own;
-    for (final DocumentType superType : type.getSuperTypes()) {
-      final Property inherited = nearestProperty(superType, name);
-      if (inherited != null)
-        return inherited;
-    }
-    return null;
+    // the type's own declaration, then its super types in order, depth first, each type once
+    return type.getPolymorphicPropertyIfExists(name);
   }
 
   /**
@@ -2988,8 +3033,10 @@ public class PostgresCatalog {
   private static void collectProperties(final DocumentType type, final Map<String, Property> byName) {
     for (final Property property : type.getProperties())
       byName.putIfAbsent(property.getName(), property);
-    for (final DocumentType superType : type.getSuperTypes())
-      collectProperties(superType, byName);
+    // each super type once, whatever the number of paths that lead up to it
+    for (final DocumentType superType : TypeHierarchy.allSuperTypes(type))
+      for (final Property property : superType.getProperties())
+        byName.putIfAbsent(property.getName(), property);
   }
 
   /**
@@ -3176,15 +3223,15 @@ public class PostgresCatalog {
 
     if (statement.distinct) {
       final List<Map<String, Object>> distinct = new ArrayList<>(result.size());
-      final Set<List<Object>> seen = new HashSet<>();
+      final Set<PostgresCatalogRowKey> seen = new HashSet<>();
       for (final Map<String, Object> row : result)
-        if (seen.add(distinctKey(new ArrayList<>(row.values()))))
+        if (seen.add(PostgresCatalogRowKey.of(row.values())))
           distinct.add(row);
       result = distinct;
     }
 
     if (statement.orderBy != null)
-      result = sort(statement.orderBy, result, projection);
+      result = sort(context, statement.orderBy, result, projection);
     if (result == null)
       return DECLINED;
 
@@ -3250,14 +3297,16 @@ public class PostgresCatalog {
   private static List<Map<String, Object>> aggregate(final Statement statement, final Projection projection,
       final List<Joined> surviving, final List<FromEntry> from, final Context context,
       final Map<String, Collection<String>> columnsByRelation, final RowResolver outer) {
-    final Map<List<Object>, List<Joined>> groups = new LinkedHashMap<>();
+    final Map<PostgresCatalogRowKey, List<Joined>> groups = new LinkedHashMap<>();
 
     if (statement.groupBy == null)
-      groups.put(List.of(), surviving);
+      groups.put(PostgresCatalogRowKey.of(List.of()), surviving);
     else {
       final List<PostgresCatalogExpression> keys = groupKeys(statement.groupBy, projection);
       if (keys == null)
         return null;
+      // every row has the keys of its group evaluated
+      context.charge(unitsOf((long) surviving.size() * keys.size()));
       for (final Joined joined : surviving) {
         final RowResolver resolver = new RowResolver(joined.row(), joined.nulled(), from, context, outer);
         final List<Object> key = new ArrayList<>(keys.size());
@@ -3267,7 +3316,7 @@ public class PostgresCatalog {
             return null;
           key.add(value);
         }
-        groups.computeIfAbsent(distinctKey(key), k -> new ArrayList<>()).add(joined);
+        groups.computeIfAbsent(PostgresCatalogRowKey.of(key), k -> new ArrayList<>()).add(joined);
       }
     }
 
@@ -3346,9 +3395,11 @@ public class PostgresCatalog {
 
       if (!"row_number".equals(call.name))
         return null;
+      // every row is numbered, and has the keys of its partition and of its order evaluated
+      context.charge(unitsOf((long) rows.size() * (1 + call.partitionBy.size() + call.orderBy.size())));
 
       final Object[] values = new Object[rows.size()];
-      final Map<List<Object>, List<Integer>> partitions = new LinkedHashMap<>();
+      final Map<PostgresCatalogRowKey, List<Integer>> partitions = new LinkedHashMap<>();
 
       for (int i = 0; i < rows.size(); i++) {
         final RowResolver resolver = new RowResolver(rows.get(i).row(), rows.get(i).nulled(), from, context, outer);
@@ -3359,11 +3410,12 @@ public class PostgresCatalog {
             return null;
           key.add(value);
         }
-        partitions.computeIfAbsent(key, k -> new ArrayList<>()).add(i);
+        partitions.computeIfAbsent(PostgresCatalogRowKey.of(key), k -> new ArrayList<>()).add(i);
       }
 
       for (final List<Integer> partition : partitions.values()) {
         if (!call.orderBy.isEmpty()) {
+          context.charge(sortCost(partition.size(), call.orderBy.size()));
           final Map<Integer, List<Object>> keys = new LinkedHashMap<>();
           for (final Integer index : partition) {
             final RowResolver resolver = new RowResolver(rows.get(index).row(), rows.get(index).nulled(), from, context,
@@ -3484,30 +3536,32 @@ public class PostgresCatalog {
   /**
    * Sorts the projected rows. ORDER BY items may name a projected alias, an ordinal position or a source
    * column; an item that resolves to none of those leaves the rows in the order the catalog built them,
-   * which is by name, rather than declining a query whose data is perfectly answerable.
+   * which is by name, rather than declining a query whose data is perfectly answerable. An item may also be written as a
+   * qualified column ({@code i.indisprimary DESC}) when {@code projection} carries that column, which is how psql orders the indexes
+   * of {@code \d} (issue #10473), and may name a column the projection carries under another name: {@code SELECT nspname AS
+   * schema_name ... ORDER BY nspname}, DbVisualizer's schema list, was answered unsorted (found with issue #10745).
+   * <p>
+   * The work is charged to the statement before it is done: finding the column of each item, then the comparisons of the sort for
+   * each key. An item that names a column an earlier item named is no key, as it never breaks a tie the earlier one left.
+   *
+   * @param projection the projection of the statement, null for the rows of a set operation
    *
    * @return the sorted rows, or null when an item names two output columns alike - ambiguous, so declined
    */
-  private static List<Map<String, Object>> sort(final List<PostgresCatalogToken> orderBy,
-      final List<Map<String, Object>> projected) {
-    return sort(orderBy, projected, null);
-  }
-
-  /**
-   * {@link #sort(List, List)} that also reads an item written as a qualified column ({@code i.indisprimary DESC}) when the
-   * projection carries that column, which is how psql orders the indexes of {@code \d} (issue #10473), and one naming a column the
-   * projection carries under another name: {@code SELECT nspname AS schema_name ... ORDER BY nspname}, DbVisualizer's schema list,
-   * was answered unsorted (found with issue #10745).
-   */
-  private static List<Map<String, Object>> sort(final List<PostgresCatalogToken> orderBy,
+  private static List<Map<String, Object>> sort(final Context context, final List<PostgresCatalogToken> orderBy,
       final List<Map<String, Object>> projected, final Projection projection) {
     final List<List<PostgresCatalogToken>> items = splitTopLevel(orderBy);
     if (items == null || items.isEmpty())
       return projected;
 
-    final List<Integer> keys = new ArrayList<>(items.size());
-    final List<Boolean> descending = new ArrayList<>(items.size());
     final List<String> aliases = new ArrayList<>(projected.isEmpty() ? List.of() : projected.get(0).keySet());
+    // each item is looked up among the output columns
+    context.charge(unitsOf((long) items.size() * Math.max(1, aliases.size())));
+
+    final int[] keys = new int[items.size()];
+    final boolean[] descending = new boolean[items.size()];
+    final boolean[] named = new boolean[aliases.size()];
+    int keyCount = 0;
 
     for (final List<PostgresCatalogToken> item : items) {
       if (item.isEmpty())
@@ -3526,51 +3580,55 @@ public class PostgresCatalog {
       }
 
       int index = -1;
-      if (key.size() == 3 && key.get(1).isSymbol(".") && projection != null) {
+      if (key.size() == 3 && key.get(1).isSymbol(".") && projection != null)
         index = projectedColumn(projection, key.get(0).text.toLowerCase(Locale.ENGLISH), key.get(2).text.toLowerCase(Locale.ENGLISH));
-        if (index < 0)
-          return projected;
-        keys.add(index);
-        descending.add(desc);
-        continue;
-      }
-      if (key.size() != 1)
+      else if (key.size() != 1)
         return projected;
-
-      final PostgresCatalogToken token = key.get(0);
-      if (token.type == PostgresCatalogToken.Type.NUMBER) {
-        try {
-          index = Integer.parseInt(token.text) - 1;
-        } catch (final NumberFormatException e) {
-          return projected;
-        }
-      } else {
-        for (int i = 0; i < aliases.size(); i++)
-          if (announcedName(aliases.get(i)).equalsIgnoreCase(token.text)) {
-            if (index >= 0)
-              // Two output columns go by this name: PostgreSQL refuses an ambiguous ORDER BY rather than pick one.
-              return null;
-            index = i;
+      else {
+        final PostgresCatalogToken token = key.get(0);
+        if (token.type == PostgresCatalogToken.Type.NUMBER) {
+          try {
+            index = Integer.parseInt(token.text) - 1;
+          } catch (final NumberFormatException e) {
+            return projected;
           }
-        // no output column has the name: PostgreSQL then reads it as a column of the input, which the projection may carry aliased
-        if (index < 0 && projection != null)
-          index = projectedColumn(projection, null, token.text);
+        } else {
+          for (int i = 0; i < aliases.size(); i++)
+            if (announcedName(aliases.get(i)).equalsIgnoreCase(token.text)) {
+              if (index >= 0)
+                // Two output columns go by this name: PostgreSQL refuses an ambiguous ORDER BY rather than pick one.
+                return null;
+              index = i;
+            }
+          // no output column has the name: PostgreSQL then reads it as a column of the input, which the projection may carry aliased
+          if (index < 0 && projection != null)
+            index = projectedColumn(projection, null, token.text);
+        }
       }
 
       if (index < 0 || index >= aliases.size())
         return projected;
 
-      keys.add(index);
-      descending.add(desc);
+      // a column named again ties exactly where the first time it was named did: it is no key
+      if (!named[index]) {
+        named[index] = true;
+        keys[keyCount] = index;
+        descending[keyCount++] = desc;
+      }
     }
+
+    context.charge(sortCost(projected.size(), keyCount));
+
+    final String[] columns = new String[keyCount];
+    for (int i = 0; i < keyCount; i++)
+      columns[i] = aliases.get(keys[i]);
 
     final List<Map<String, Object>> sorted = new ArrayList<>(projected);
     sorted.sort((left, right) -> {
-      for (int i = 0; i < keys.size(); i++) {
-        final String alias = aliases.get(keys.get(i));
-        final int comparison = compareValues(left.get(alias), right.get(alias));
+      for (int i = 0; i < columns.length; i++) {
+        final int comparison = compareValues(left.get(columns[i]), right.get(columns[i]));
         if (comparison != 0)
-          return descending.get(i) ? -comparison : comparison;
+          return descending[i] ? -comparison : comparison;
       }
       return 0;
     });
@@ -3776,6 +3834,11 @@ public class PostgresCatalog {
     }
 
     @Override
+    public PostgresCatalogExpression.StatementPatterns statementPatterns() {
+      return context.patterns();
+    }
+
+    @Override
     public Object window(final PostgresCatalogExpression.WindowCall call) {
       if (windows == null)
         return PostgresCatalogExpression.UNKNOWN;
@@ -3841,7 +3904,7 @@ public class PostgresCatalog {
         return PostgresCatalogExpression.UNKNOWN;
 
       final List<Object> values = new ArrayList<>(group.size());
-      final Set<List<Object>> seen = call.distinct ? new HashSet<>() : null;
+      final Set<PostgresCatalogRowKey> seen = call.distinct ? new HashSet<>() : null;
       final List<Object> separators = "string_agg".equals(call.name) ? new ArrayList<>(group.size()) : null;
       for (final Joined joined : group) {
         if (call.argument == null) {
@@ -3856,7 +3919,7 @@ public class PostgresCatalog {
         // Aggregates skip NULLs; array_agg is the one that collects them.
         if (value == null && !"array_agg".equals(call.name))
           continue;
-        if (seen != null && !seen.add(distinctKey(Collections.singletonList(value))))
+        if (seen != null && !seen.add(PostgresCatalogRowKey.ofValue(value)))
           continue;
         values.add(value);
         if (separators != null) {

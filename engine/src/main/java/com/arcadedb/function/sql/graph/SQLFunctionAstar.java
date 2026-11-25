@@ -32,6 +32,7 @@ import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.NodeEdgeWeights;
+import com.arcadedb.graph.RelationshipPattern;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.function.sql.FunctionOptions;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -78,6 +79,13 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
       PARAM_CUSTOM_HEURISTIC_FORMULA);
 
   private String paramWeightFieldName = "weight";
+  // The weight of an edge without the weight property: APOC's defaultWeight when a Cypher caller sets one (issue #12103)
+  private double missingWeight        = EdgeWeight.MISSING;
+  // A relationship pattern whose alternatives mix directions ('KNOWS>|<LIKES'), which direction + edgeTypeNames cannot say, and
+  // the types it follows outgoing and incoming (null: none, empty: every type), worked out once and not per expanded vertex
+  private RelationshipPattern relationshipPattern;
+  private String[]            patternOutTypes;
+  private String[]            patternInTypes;
   // The number of edges between the source and the vertex whose estimate is being asked for: the "depth" a heuristic receives
   private long   currentDepth         = 0;
 
@@ -295,7 +303,9 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
 
     // Pinned for the statement: the id, the weighted neighbours and their records come from one snapshot, and so does every node
     // the search expands (issue #10415)
-    final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(ctx, paramEdgeTypeNames);
+    final GraphTraversalProvider provider = relationshipPattern == null ?
+        GraphTraversalProviderRegistry.findProvider(ctx, paramEdgeTypeNames) :
+        null;
     if (provider != null) {
       final int nodeId = provider.getNodeId(node.getIdentity());
       // edgeWeightsOf() answers null unless the provider can serve THIS property for EVERY type in play, and it
@@ -304,7 +314,7 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
       // values are served per type, and a BOTH lookup has no adjacency slice at all, so it found no value for
       // any edge and quietly priced the whole neighbourhood at the old 0 default - free.
       final NodeEdgeWeights edges = nodeId >= 0 ?
-          provider.edgeWeightsOf(nodeId, paramDirection, paramWeightFieldName, EdgeWeight.MISSING, paramEdgeTypeNames) :
+          provider.edgeWeightsOf(nodeId, paramDirection, paramWeightFieldName, missingWeight, paramEdgeTypeNames) :
           null;
       if (edges != null) {
         final int[] neighborIds = edges.neighbors();
@@ -334,8 +344,20 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
 
     // OLTP fallback. A path search asks about the graph, not about what a vertex stores: the incoming side of a
     // unidirectional edge type comes from the edges that end in the node, as the view above answers it (issue #8629)
-    for (final Iterator<Edge> edges = IncomingEdgeLookup.getEdges(ctx, node, paramDirection,
-        paramEdgeTypeNames != null ? paramEdgeTypeNames : ANY_EDGE_TYPE); edges.hasNext(); ) {
+    if (relationshipPattern == null)
+      addNeighbors(node, ctx, paramDirection, paramEdgeTypeNames != null ? paramEdgeTypeNames : ANY_EDGE_TYPE, result);
+    else {
+      if (patternOutTypes != null)
+        addNeighbors(node, ctx, Vertex.DIRECTION.OUT, patternOutTypes, result);
+      if (patternInTypes != null)
+        addNeighbors(node, ctx, Vertex.DIRECTION.IN, patternInTypes, result);
+    }
+    return result;
+  }
+
+  private void addNeighbors(final Vertex node, final CommandContext ctx, final Vertex.DIRECTION direction, final String[] types,
+      final Map<Vertex, Double> result) {
+    for (final Iterator<Edge> edges = IncomingEdgeLookup.getEdges(ctx, node, direction, types); edges.hasNext(); ) {
       final Edge edge = edges.next();
       try {
         final double weight = getDistance(edge);
@@ -349,7 +371,30 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
         GhostEdgeReporter.reportSkipped(e);
       }
     }
-    return result;
+  }
+
+  /**
+   * Walks only the relationships an APOC relationship pattern follows ({@code 'KNOWS>|<LIKES'}: KNOWS outgoing, LIKES incoming),
+   * for the Cypher {@code algo.*} path finders (issue #12103). A pattern whose alternatives share one direction is said with the
+   * {@code direction} and {@code edgeTypeNames} options instead, which keep the graph analytical view's fast path.
+   * <p>
+   * Like every other field of this function, it is state of the call: the instance has to be one the call owns (the
+   * {@code algo.*} procedures create a new one each time), never one shared between concurrent calls.
+   */
+  public SQLFunctionAstar setRelationshipPattern(final RelationshipPattern pattern) {
+    this.relationshipPattern = pattern;
+    this.patternOutTypes = pattern != null ? pattern.typesFor(Vertex.DIRECTION.OUT) : null;
+    this.patternInTypes = pattern != null ? pattern.typesFor(Vertex.DIRECTION.IN) : null;
+    return this;
+  }
+
+  /**
+   * The weight of an edge without the weight property, {@link EdgeWeight#MISSING} unless set (APOC's {@code defaultWeight}).
+   * State of the call, as {@link #setRelationshipPattern} is.
+   */
+  public SQLFunctionAstar setMissingWeight(final double weight) {
+    this.missingWeight = weight;
+    return this;
   }
 
   private void bindAdditionalParams(final Object additionalParams, final SQLFunctionAstar astar) {
@@ -457,9 +502,14 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
     return cheapest;
   }
 
-  /** The weight of {@code edge} by the rule every weighted path finder shares, {@link EdgeWeight#of(Object)}. */
+  /**
+   * The weight of {@code edge} by the rule every weighted path finder shares, {@link EdgeWeight#of(Object)}, except that an
+   * edge without a numeric weight weighs {@link #setMissingWeight the missing weight}, which is {@link EdgeWeight#MISSING}
+   * unless a caller set one. The graph analytical view's weight columns say the same, so a search answers alike with and
+   * without a view.
+   */
   protected double getDistance(final Edge edge) {
-    return edge != null ? EdgeWeight.of(edge.get(paramWeightFieldName)) : EdgeWeight.MISSING;
+    return edge != null && edge.get(paramWeightFieldName) instanceof Number weight ? EdgeWeight.of(weight) : missingWeight;
   }
 
   @Override

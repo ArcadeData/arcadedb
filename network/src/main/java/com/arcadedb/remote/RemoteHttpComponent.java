@@ -22,6 +22,8 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseStats;
+import com.arcadedb.database.Document;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.ConcurrentModificationException;
@@ -44,6 +46,7 @@ import com.arcadedb.network.BoundedHttpExchange;
 import com.arcadedb.network.HostUtil;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
+import com.arcadedb.schema.Property;
 import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.Pair;
@@ -51,6 +54,7 @@ import com.arcadedb.utility.RWLockContext;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.math.BigDecimal;
 import java.net.ConnectException;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -59,14 +63,18 @@ import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collection;
+import java.util.Date;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -74,6 +82,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
@@ -94,6 +103,11 @@ public class RemoteHttpComponent extends RWLockContext {
   private static final String RETRY_AFTER_HEADER = "Retry-After";
   // HOW MUCH OF AN ERROR BODY THAT IS NOT JSON (A PROXY'S ERROR PAGE) GOES INTO THE EXCEPTION AND THE LOG (ISSUE #11387)
   static final         int    NON_JSON_BODY_EXCERPT_MAX = 256;
+  /**
+   * The {@code limit} of a request that asks the server for every row (any value {@code <= 0} means unlimited): the
+   * server's hard ceiling {@code arcadedb.server.httpQueryMaxResultRows} still applies, and refuses rather than truncates.
+   */
+  static final         int    UNLIMITED_ROWS            = -1;
   /**
    * The server's refusal of a request it did not run, with the back-off in {@code exceptionArgs}. Matched by name: the
    * class lives in the server module, which this client does not depend on.
@@ -305,7 +319,8 @@ public class RemoteHttpComponent extends RWLockContext {
 
   /**
    * Maximum number of rows the server is asked to serialize per command, or {@code null} (the default) to
-   * leave the decision to the server.
+   * leave the decision to the server. It governs the commands the application writes: the driver's own whole-result
+   * reads, {@code iterateType()} and {@code iterateBucket()}, ignore it and ask for every row (issue #12185).
    *
    * @see #setMaxResultRows(Integer)
    */
@@ -320,6 +335,12 @@ public class RemoteHttpComponent extends RWLockContext {
    * always honored as written, while a query stating none is capped by the server default
    * ({@code arcadedb.server.httpQueryDefaultLimit}) and the driver logs a warning when that cap drops rows
    * (issue #5711).
+   * <p>
+   * The cap applies to {@code query()}, {@code command()} and the streams ({@code queryStream()}, {@code commandStream()}).
+   * With {@code null} the buffered calls keep the server default, but a stream asks for every row, because it is the API
+   * for results too large to buffer (issue #12185). {@code iterateType()} and {@code iterateBucket()} ignore this setting
+   * altogether: their contract is the whole type or bucket, so a small cap must not hand the application a partial
+   * iteration that {@code countType()} contradicts.
    * <p>
    * Beware that removing the cap makes the server materialize the whole result set in memory before answering,
    * up to the server's hard ceiling ({@code arcadedb.server.httpQueryMaxResultRows}, 1,000,000 rows by
@@ -370,6 +391,66 @@ public class RemoteHttpComponent extends RWLockContext {
 
   Pair<String, Integer> getLeaderServer() {
     return leaderServer;
+  }
+
+  /**
+   * How many servers a request that may go to any of them is tried against before giving up: the configured HA error retries,
+   * or every known server once when none is configured.
+   */
+  int maxFailoverAttempts() {
+    return Math.max(1, haServerErrorRetries == 0 ? getReplicaServerList().size() + 1 : haServerErrorRetries);
+  }
+
+  /**
+   * The server a request that failed over goes to next, once the caller has run {@link #reloadClusterConfiguration()}: the leader
+   * when the request prefers it, else the server that answered the reload, else the next known server not tried yet. Shared by
+   * {@code httpCommand()} and {@code RemoteDatabase.begin()} so the two failover paths cannot drift (issue #12615). The advertised
+   * leader is not trusted otherwise: during an election the server that answered can still name the stopped node as leader.
+   * <p>
+   * Without an answer to the reload the replicas are walked first, then the leader, which can still accept requests while it
+   * refuses the topology, skipping every server this call already tried; only once each known server was tried does the walk
+   * revisit them. A walk that ignored the attempts could start on the server that just failed (the replica list names it too when
+   * the client was connected to a replica) and never reach the leader at all.
+   *
+   * @param failed    the server the last attempt could not reach
+   * @param attempted every server this call could not reach so far, {@code failed} included
+   *
+   * @return the server to try next, or {@code null} when none is known
+   */
+  Pair<String, Integer> nextFailoverServer(final Pair<String, Integer> failed, final boolean leaderIsPreferable,
+      final Set<Pair<String, Integer>> attempted) {
+    final Pair<String, Integer> snapshotLeader = leaderServer;
+    if (leaderIsPreferable && snapshotLeader != null && !failed.equals(snapshotLeader))
+      return snapshotLeader;
+
+    // The server's list names every configured peer, dead ones included, so its first entry proves nothing (issue #11304). A responder
+    // this call already could not reach goes behind the servers not tried yet
+    final Pair<String, Integer> answeringServer = lastConfigurationSource;
+    if (answeringServer != null && !answeringServer.equals(failed) && !attempted.contains(answeringServer))
+      return answeringServer;
+
+    for (int i = 0, known = replicaServerList.size(); i < known; i++) {
+      final Pair<String, Integer> replica = getNextReplicaAddress();
+      if (replica != null && !attempted.contains(replica))
+        return replica;
+    }
+
+    if (snapshotLeader != null && !attempted.contains(snapshotLeader))
+      return snapshotLeader;
+
+    // EVERY KNOWN SERVER WAS TRIED: WALK THEM AGAIN, AS THE BUDGET MAY OUTLAST ONE ROUND
+    return getNextReplicaAddress();
+  }
+
+  /** The server a raw request ({@link #getUrl(String)}) is routed to: the sticky pin, else the current server. */
+  Pair<String, Integer> getRoutedServer() {
+    final Pair<String, Integer> pin = getStickyPin();
+    return pin != null ? pin : new Pair<>(currentServer, currentPort);
+  }
+
+  /** The URL of {@code command} on an explicit server, for a raw request that failed over away from {@link #getUrl(String)}. */
+  String getUrl(final Pair<String, Integer> server, final String command) {
+    return buildUrl(server.getFirst(), server.getSecond(), command);
   }
 
   List<Pair<String, Integer>> getReplicaServerList() {
@@ -433,7 +514,25 @@ public class RemoteHttpComponent extends RWLockContext {
       final String errorOperation,
       final boolean replayable) {
     return httpCommand(method, extendedURL, operation, language, payloadCommand, params, leaderIsPreferable, autoReconnect,
-        callback, errorOperation, replayable, null);
+        callback, errorOperation, replayable, null, null);
+  }
+
+  /**
+   * Runs a query on {@code extendedURL} as {@link #httpCommand(String, String, String, String, String, Map, boolean, boolean,
+   * Callback)} runs one ({@code POST}, {@code query} route, any replica, reconnecting), sending {@code rowLimit} as the
+   * {@code limit} of the request instead of {@link #getMaxResultRows()}. For the driver's own reads whose contract is the
+   * whole result rather than a page of it ({@code iterateType()}, {@code iterateBucket()}): {@link #UNLIMITED_ROWS} asks
+   * for every row, and the server refuses (HTTP 413) a result above its hard ceiling instead of truncating it, so the read
+   * never ends short without saying so (issue #12185).
+   */
+  Object httpQueryWithRowLimit(final String extendedURL,
+      final String language,
+      final String query,
+      final Map<String, Object> params,
+      final Callback callback,
+      final int rowLimit) {
+    return httpCommand("POST", extendedURL, "query", language, query, params, false, true, callback, query,
+        isReplayable("POST", "query"), null, rowLimit);
   }
 
   /**
@@ -461,7 +560,7 @@ public class RemoteHttpComponent extends RWLockContext {
     // Leader-preferred like every server command (list databases included): that keeps the same-server retry budget, which
     // a read spread over a stale replica list would lose. isReplayable only looks at the method (GET); the path has a query string.
     return (JSONObject) httpCommand(method, null, path, null, null, null, true, true, (response, json) -> json, operation,
-        isReplayable(method, path), new ControlPlaneRequest(body, urlGuard));
+        isReplayable(method, path), new ControlPlaneRequest(body, urlGuard), null);
   }
 
   private Object httpCommand(final String method,
@@ -475,7 +574,8 @@ public class RemoteHttpComponent extends RWLockContext {
       final Callback callback,
       final String errorOperation,
       final boolean replayable,
-      final ControlPlaneRequest controlPlane) {
+      final ControlPlaneRequest controlPlane,
+      final Integer rowLimit) {
 
     // The route of a control-plane request carries names and ids; messages and logs name the operation instead
     final String messageLabel = controlPlane != null ? errorOperation : operation;
@@ -488,7 +588,7 @@ public class RemoteHttpComponent extends RWLockContext {
     int maxRetry =
         leaderIsPreferable || connectionStrategy == CONNECTION_STRATEGY.FIXED || stickyPinned ?
             sameServerErrorRetries :
-            haServerErrorRetries == 0 ? getReplicaServerList().size() + 1 : haServerErrorRetries;
+            maxFailoverAttempts();
     if (maxRetry < 1)
       maxRetry = 1;
 
@@ -528,6 +628,8 @@ public class RemoteHttpComponent extends RWLockContext {
     final Map<String, String> instancesAtStart = requestId != null ? new HashMap<>(serverReplayInstances) : Map.of();
     // Once a reload found no server able to answer, asking them all again on every retry only multiplies the timeouts of a dead cluster
     boolean reloadFailed = false;
+    // The servers this call could not reach, so a failover walks the ones not tried yet first: allocated on the first failover only
+    Set<Pair<String, Integer>> unreachable = null;
 
     for (int retry = 0; retry < maxAttempts && connectToServer != null; ++retry) {
       server = connectToServer.getFirst() + ":" + connectToServer.getSecond();
@@ -584,8 +686,9 @@ public class RemoteHttpComponent extends RWLockContext {
           // non-element (projection/aggregate) column, opts in explicitly.
           jsonRequest.put("typeHints", true);
           jsonRequest.put("retries", txRetries);
-          if (maxResultRows != null)
-            jsonRequest.put("limit", maxResultRows);
+          final Integer limit = rowLimit != null ? rowLimit : maxResultRows;
+          if (limit != null)
+            jsonRequest.put("limit", limit);
 
           if (params != null)
             jsonRequest.put("params", new JSONObject(encodeParameters(params)));
@@ -675,16 +778,10 @@ public class RemoteHttpComponent extends RWLockContext {
             reloadFailed = !reloadClusterConfiguration();
 
           final Pair<String, Integer> currentConnectToServer = connectToServer;
-          final Pair<String, Integer> snapshotLeader = leaderServer;
-          final Pair<String, Integer> answeringServer = lastConfigurationSource;
-
-          if (leaderIsPreferable && snapshotLeader != null && !currentConnectToServer.equals(snapshotLeader)) {
-            connectToServer = snapshotLeader;
-          } else if (answeringServer != null && !answeringServer.equals(currentConnectToServer))
-            // The server's list names every configured peer, dead ones included, so its first entry proves nothing (issue #11304)
-            connectToServer = answeringServer;
-          else
-            connectToServer = getNextReplicaAddress();
+          if (unreachable == null)
+            unreachable = new HashSet<>();
+          unreachable.add(currentConnectToServer);
+          connectToServer = nextFailoverServer(currentConnectToServer, leaderIsPreferable, unreachable);
 
           if (connectToServer != null)
             LogManager.instance()
@@ -708,7 +805,11 @@ public class RemoteHttpComponent extends RWLockContext {
                 + ": a hop in front of the server answered 503 (" + e.getMessage()
                 + "), possibly after forwarding the request, so the server may already have applied it. It is not sent again,"
                 + " because a replay could apply it twice", e);
-        }
+        } else if (this instanceof RemoteDatabase sessionDb && sessionDb.getSessionId() != null)
+          // The server itself answered a request of a remote transaction (issue #13405). A failure while the request ran rolls
+          // the session's transaction back, so a resend in that session is refused, or runs without the work it lost: the
+          // answer goes to the caller, and the retry is the transaction owner's (RemoteDatabase.transaction() re-runs the block)
+          throw e;
         // Transient server-side condition (election in progress, snapshot install) - retry the SAME
         // server after a delay. Bounded by the election budget only, never by maxRetry, so the FIXED
         // strategy's maxRetry of 1 does not reduce this to a single attempt.
@@ -819,10 +920,22 @@ public class RemoteHttpComponent extends RWLockContext {
   }
 
   /**
-   * Query parameters as they go on the wire. A {@link LocalDate} is sent as the typed marker {@code {"$date": "2024-01-15"}} rather
-   * than as a number: the server reads a number in a comparison as epoch days, so {@code WHERE fecha = ?} never matched the epoch
-   * milliseconds the plain JSON form carries (issue #10908). A server older than the marker sees a map for such a parameter.
-   * Returns the same map when no parameter holds a date.
+   * Query parameters as they go on the wire. A value JSON cannot carry with its type is sent as a typed marker the server
+   * decodes before binding it, so the parameter is bound as the embedded API binds the same Java value:
+   * <ul>
+   * <li>{@link LocalDate}: {@code {"$date": "2024-01-15"}}. The server reads a number in a comparison as epoch days, so
+   * {@code WHERE fecha = ?} never matched the epoch milliseconds the plain JSON form carried (issue #10908)</li>
+   * <li>{@link RID}, and a record that has an identity: {@code {"$rid": "#12:0"}}, a link rather than its text</li>
+   * <li>{@link BigDecimal}: {@code {"$decimal": "0.10"}}, rather than a JSON number the server parses as a double</li>
+   * <li>{@code byte[]}: {@code {"$bytes": "<base64>"}}, rather than a list of integers</li>
+   * <li>{@link Date}: {@code {"$datetime": <epoch millis>}}; {@link LocalDateTime}, {@link Instant} and {@link ZonedDateTime}:
+   * {@code $localDateTime}, {@code $instant} and {@code $zonedDateTime} with their ISO-8601 text, nanoseconds and zone kept,
+   * rather than LONG epoch milliseconds (issue #12187)</li>
+   * <li>a document without an identity (an embedded document): a map of its properties, encoded the same way, with its
+   * {@code @type}</li>
+   * </ul>
+   * Collections and maps are encoded item by item. A server older than a marker sees a map for such a parameter.
+   * Returns the same map when no parameter needed a marker.
    */
   static Map<String, Object> encodeParameters(final Map<String, Object> params) {
     Map<String, Object> result = null;
@@ -836,9 +949,38 @@ public class RemoteHttpComponent extends RWLockContext {
     return result != null ? result : params;
   }
 
-  private static Object encodeParameter(final Object value) {
+  static Object encodeParameter(final Object value) {
+    if (value == null || value instanceof String || value instanceof Number && !(value instanceof BigDecimal) || value instanceof Boolean)
+      return value;
     if (value instanceof LocalDate date)
       return Map.of("$date", date.toString());
+    if (value instanceof RID rid)
+      return Map.of("$rid", rid.toString());
+    if (value instanceof BigDecimal decimal)
+      return Map.of("$decimal", decimal.toString());
+    if (value instanceof byte[] bytes)
+      return Map.of("$bytes", Base64.getEncoder().encodeToString(bytes));
+    if (value instanceof Date date)
+      return Map.of("$datetime", date.getTime());
+    if (value instanceof LocalDateTime dateTime)
+      return Map.of("$localDateTime", dateTime.toString());
+    if (value instanceof Instant instant)
+      return Map.of("$instant", instant.toString());
+    if (value instanceof ZonedDateTime zoned)
+      return Map.of("$zonedDateTime", zoned.format(DateTimeFormatter.ISO_ZONED_DATE_TIME));
+    if (value instanceof Document document) {
+      if (document.getIdentity() != null)
+        return Map.of("$rid", document.getIdentity().toString());
+      // An embedded document: its properties, each encoded, and the type the server builds it with
+      final Map<String, Object> embedded = new LinkedHashMap<>();
+      if (document.getTypeName() != null)
+        embedded.put(Property.TYPE_PROPERTY, document.getTypeName());
+      for (final String name : document.getPropertyNames())
+        embedded.put(name, encodeParameter(document.get(name)));
+      return embedded;
+    }
+    if (value instanceof Identifiable identifiable && identifiable.getIdentity() != null)
+      return Map.of("$rid", identifiable.getIdentity().toString());
     if (value instanceof Collection<?> collection) {
       List<Object> rewritten = null;
       int i = 0;

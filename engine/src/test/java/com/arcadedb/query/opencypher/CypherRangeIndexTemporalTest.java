@@ -285,7 +285,7 @@ class CypherRangeIndexTemporalTest {
     void stringStoredBeforeTheDeclarationIsConvertedOnReadAndSavedNatively() {
       database.getSchema().createVertexType("Old");
       database.transaction(() -> {
-        database.newVertex("Old").set("t", "09:00-17:00").set("lt", "10:15:30").set("dt", "2024-01-01T10:00:00+02:00[Europe/Rome]")
+        database.newVertex("Old").set("t", "09:00-17:00").set("lt", "10:15:30").set("dt", "2024-01-01T10:00:00+01:00[Europe/Rome]")
             .set("d", "P1M2DT3S").save();
       });
       // undeclared: a String is a String, with no interpretation
@@ -380,7 +380,7 @@ class CypherRangeIndexTemporalTest {
   class Issue8572UndeclaredTemporalSniff extends TestHelper {
 
     @ParameterizedTest
-    @ValueSource(strings = { "09:00-17:00", "09:00-19:00", "P100D", "10:35:00-08:00", "2024-01-01T10:00:00+02:00[Europe/Rome]" })
+    @ValueSource(strings = { "09:00-17:00", "09:00-19:00", "P100D", "10:35:00-08:00", "2024-01-01T10:00:00+01:00[Europe/Rome]" })
     void undeclaredStringThatLooksTemporalStaysAString(final String text) {
       database.getSchema().createVertexType("Loose");
       database.command("opencypher", "CREATE (:Loose {name: 'a', v: $v})", Map.of("v", text));
@@ -398,7 +398,7 @@ class CypherRangeIndexTemporalTest {
     void undeclaredTemporalsStillRoundTripAsTemporals() {
       database.getSchema().createVertexType("Loose");
       database.command("opencypher",
-          "CREATE (:Loose {t: time('09:00-17:00'), lt: localtime('10:15:30'), dt: datetime('2024-01-01T10:00:00+02:00[Europe/Rome]'),"
+          "CREATE (:Loose {t: time('09:00-17:00'), lt: localtime('10:15:30'), dt: datetime('2024-01-01T10:00:00+01:00[Europe/Rome]'),"
               + " d: duration('P1M2DT3S')})");
 
       try (final ResultSet rs = database.query("opencypher",
@@ -437,7 +437,7 @@ class CypherRangeIndexTemporalTest {
     void nativeTemporalsSerializeToJsonAndSurviveReopen() {
       database.getSchema().createVertexType("Loose");
       database.command("opencypher",
-          "CREATE (:Loose {t: time('09:00-17:00'), lt: localtime('10:15:30'), dt: datetime('2024-01-01T10:00:00+02:00[Europe/Rome]'),"
+          "CREATE (:Loose {t: time('09:00-17:00'), lt: localtime('10:15:30'), dt: datetime('2024-01-01T10:00:00+01:00[Europe/Rome]'),"
               + " d: duration('P1M2DT3S')})");
       try (final ResultSet rs = database.query("sql", "SELECT FROM Loose")) {
         final String json = rs.next().toJSON().toString();
@@ -463,7 +463,7 @@ class CypherRangeIndexTemporalTest {
         final var r = rs.next();
         assertThat(r.<String>getProperty("dt")).isEqualTo("1969-12-31T23:59:59.123456789-03:30");
         assertThat(r.<String>getProperty("lt")).isEqualTo("23:59:59.999999999");
-        assertThat(r.<String>getProperty("t")).isEqualTo("00:00+18:00");
+        assertThat(r.<String>getProperty("t")).isEqualTo("00:00:00+18:00");
         assertThat(r.<String>getProperty("d")).isEqualTo(
             TemporalUtil.toStorageText(new CypherDuration(-14, 3, -90, 5)));
       }
