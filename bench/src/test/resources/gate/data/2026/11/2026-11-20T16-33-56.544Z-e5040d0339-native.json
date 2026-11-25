@@ -1,0 +1,495 @@
+{
+  "schemaVersion": 1,
+  "runId": "2026-11-20T16-33-56.544Z-e5040d0339-native",
+  "startedAt": "2026-11-20T16:33:56.544452561Z",
+  "finishedAt": "2026-11-20T19:11:38.076127208Z",
+  "trigger": "release",
+  "source": "bench",
+  "arcadedb": {
+    "commit": "e5040d03399113b4f12081692f556160a7a9f696",
+    "commitDate": "2026-10-15T17:42:09Z",
+    "version": "26.10.2",
+    "variant": "native",
+    "image": "arcadedata/arcadedb:26.10.2-native",
+    "imageDigest": "sha256:407cc519e35db738cafb0d43e1164e173ea4c791f385911fc17e404e7d2490b5",
+    "revision": "unknown",
+    "tag": "26.10.2"
+  },
+  "machine": {
+    "id": "perf-01",
+    "cpu": "13th Gen Intel(R) Core(TM) i5-13500",
+    "cores": 8,
+    "memGb": 63,
+    "os": "Ubuntu 24.04.5 LTS",
+    "kernel": "6.8.0-149-generic",
+    "governor": "performance",
+    "noTurbo": "1"
+  },
+  "config": {
+    "heap": "8g",
+    "cpuset": "0-11",
+    "memLimitGb": 16,
+    "settings": {
+      "arcadedb.server.rootPassword": "***",
+      "arcadedb.backup.enabled": "false",
+      "arcadedb.server.plugins": "PrometheusMetricsPlugin",
+      "arcadedb.network.socketTimeout": "1800000"
+    },
+    "benchCommit": "c686325fe99e1d4ccf79791fa7dd21308d281ea6",
+    "reps": 5,
+    "warmup": 2,
+    "timeoutMin": 30,
+    "seed": 42,
+    "serverCpus": "0-11",
+    "clientCpus": "12-19"
+  },
+  "results": [
+    {
+      "workload": "ingestion",
+      "case": "bulk-import-csv",
+      "scale": "L",
+      "params": {},
+      "reps": 5,
+      "warmup": 2,
+      "metrics": [],
+      "status": "failed",
+      "error": "com.arcadedb.exception.CommandExecutionException: Error on importing database -> Garbage-collected heap size exceeded. Consider increasing the maximum Java heap size, for example with '-Xmx'."
+    },
+    {
+      "workload": "ingestion",
+      "case": "tx-insert-1t",
+      "scale": "L",
+      "params": {},
+      "reps": 5,
+      "warmup": 2,
+      "metrics": [],
+      "status": "timeout",
+      "error": "case exceeded 1800000 ms"
+    },
+    {
+      "workload": "ingestion",
+      "case": "tx-insert-8t",
+      "scale": "L",
+      "params": {},
+      "reps": 5,
+      "warmup": 2,
+      "metrics": [],
+      "status": "timeout",
+      "error": "case exceeded 1800000 ms"
+    },
+    {
+      "workload": "graph-oltp",
+      "case": "point-lookup-cypher",
+      "scale": "L",
+      "params": {},
+      "reps": 5,
+      "warmup": 2,
+      "metrics": [],
+      "status": "failed",
+      "error": "com.arcadedb.index.IndexException: Error on creating index on type 'Photo', properties [location]: Error during write lock -> Error during write lock -> ExceptionInInitializerError -> class org.locationtech.spatial4j.shape.impl.ShapeFactoryImpl needs a constructor that takes: [SpatialContext{geo=true, calculator=null, worldBounds=null}, org.locationtech.spatial4j.context.SpatialContextFactory@7648a5f]"
+    },
+    {
+      "workload": "graph-oltp",
+      "case": "point-lookup-sql",
+      "scale": "L",
+      "params": {},
+      "reps": 5,
+      "warmup": 2,
+      "metrics": [],
+      "status": "failed",
+      "error": "java.lang.IllegalStateException: graph build failed earlier: com.arcadedb.index.IndexException: Error on creating index on type 'Photo', properties [location]: Error during write lock -> Error during write lock -> ExceptionInInitializerError -> class org.locationtech.spatial4j.shape.impl.ShapeFactoryImpl needs a constructor that takes: [SpatialContext{geo=true, calculator=null, worldBounds=null}, org.locationtech.spatial4j.context.SpatialContextFactory@7648a5f]"
+    },
+    {
+      "workload": "graph-oltp",
+      "case": "hop1-cypher",
+      "scale": "L",
+      "params": {},
+      "reps": 5,
+      "warmup": 2,
+      "metrics": [],
+      "status": "failed",
+      "error": "java.lang.IllegalStateException: graph build failed earlier: com.arcadedb.index.IndexException: Error on creating index on type 'Photo', properties [location]: Error during write lock -> Error during write lock -> ExceptionInInitializerError -> class org.locationtech.spatial4j.shape.impl.ShapeFactoryImpl needs a constructor that takes: [SpatialContext{geo=true, calculator=null, worldBounds=null}, org.locationtech.spatial4j.context.SpatialContextFactory@7648a5f]"
+    },
+    {
+      "workload": "graph-oltp",
+      "case": "hop1-sql",
+      "scale": "L",
+      "params": {},
+      "reps": 5,
+      "warmup": 2,
+      "metrics": [],
+      "status": "failed",
+      "error": "java.lang.IllegalStateException: graph build failed earlier: com.arcadedb.index.IndexException: Error on creating index on type 'Photo', properties [location]: Error during write lock -> Error during write lock -> ExceptionInInitializerError -> class org.locationtech.spatial4j.shape.impl.ShapeFactoryImpl needs a constructor that takes: [SpatialContext{geo=true, calculator=null, worldBounds=null}, org.locationtech.spatial4j.context.SpatialContextFactory@7648a5f]"
+    },
+    {
+      "workload": "graph-oltp",
+      "case": "hop2-cypher",
+      "scale": "L",
+      "params": {},
+      "reps": 5,
+      "warmup": 2,
+      "metrics": [],
+      "status": "failed",
+      "error": "java.lang.IllegalStateException: graph build failed earlier: com.arcadedb.index.IndexException: Error on creating index on type 'Photo', properties [location]: Error during write lock -> Error during write lock -> ExceptionInInitializerError -> class org.locationtech.spatial4j.shape.impl.ShapeFactoryImpl needs a constructor that takes: [SpatialContext{geo=true, calculator=null, worldBounds=null}, org.locationtech.spatial4j.context.SpatialContextFactory@7648a5f]"
+    },
+    {
+      "workload": "graph-oltp",
+      "case": "hop2-sql",
+      "scale": "L",
+      "params": {},
+      "reps": 5,
+      "warmup": 2,
+      "metrics": [],
+      "status": "failed",
+      "error": "java.lang.IllegalStateException: graph build failed earlier: com.arcadedb.index.IndexException: Error on creating index on type 'Photo', properties [location]: Error during write lock -> Error during write lock -> ExceptionInInitializerError -> class org.locationtech.spatial4j.shape.impl.ShapeFactoryImpl needs a constructor that takes: [SpatialContext{geo=true, calculator=null, worldBounds=null}, org.locationtech.spatial4j.context.SpatialContextFactory@7648a5f]"
+    },
+    {
+      "workload": "graph-oltp",
+      "case": "hop3-cypher",
+      "scale": "L",
+      "params": {},
+      "reps": 5,
+      "warmup": 2,
+      "metrics": [],
+      "status": "failed",
+      "error": "java.lang.IllegalStateException: graph build failed earlier: com.arcadedb.index.IndexException: Error on creating index on type 'Photo', properties [location]: Error during write lock -> Error during write lock -> ExceptionInInitializerError -> class org.locationtech.spatial4j.shape.impl.ShapeFactoryImpl needs a constructor that takes: [SpatialContext{geo=true, calculator=null, worldBounds=null}, org.locationtech.spatial4j.context.SpatialContextFactory@7648a5f]"
+    },
+    {
+      "workload": "graph-oltp",
+      "case": "hop3-sql",
+      "scale": "L",
+      "params": {},
+      "reps": 5,
+      "warmup": 2,
+      "metrics": [],
+      "status": "failed",
+      "error": "java.lang.IllegalStateException: graph build failed earlier: com.arcadedb.index.IndexException: Error on creating index on type 'Photo', properties [location]: Error during write lock -> Error during write lock -> ExceptionInInitializerError -> class org.locationtech.spatial4j.shape.impl.ShapeFactoryImpl needs a constructor that takes: [SpatialContext{geo=true, calculator=null, worldBounds=null}, org.locationtech.spatial4j.context.SpatialContextFactory@7648a5f]"
+    },
+    {
+      "workload": "graph-oltp",
+      "case": "pattern-like-cypher",
+      "scale": "L",
+      "params": {},
+      "reps": 5,
+      "warmup": 2,
+      "metrics": [],
+      "status": "failed",
+      "error": "java.lang.IllegalStateException: graph build failed earlier: com.arcadedb.index.IndexException: Error on creating index on type 'Photo', properties [location]: Error during write lock -> Error during write lock -> ExceptionInInitializerError -> class org.locationtech.spatial4j.shape.impl.ShapeFactoryImpl needs a constructor that takes: [SpatialContext{geo=true, calculator=null, worldBounds=null}, org.locationtech.spatial4j.context.SpatialContextFactory@7648a5f]"
+    },
+    {
+      "workload": "graph-oltp",
+      "case": "pattern-like-sql",
+      "scale": "L",
+      "params": {},
+      "reps": 5,
+      "warmup": 2,
+      "metrics": [],
+      "status": "failed",
+      "error": "java.lang.IllegalStateException: graph build failed earlier: com.arcadedb.index.IndexException: Error on creating index on type 'Photo', properties [location]: Error during write lock -> Error during write lock -> ExceptionInInitializerError -> class org.locationtech.spatial4j.shape.impl.ShapeFactoryImpl needs a constructor that takes: [SpatialContext{geo=true, calculator=null, worldBounds=null}, org.locationtech.spatial4j.context.SpatialContextFactory@7648a5f]"
+    },
+    {
+      "workload": "vector",
+      "case": "build",
+      "scale": "L",
+      "params": {},
+      "reps": 5,
+      "warmup": 2,
+      "metrics": [],
+      "status": "timeout",
+      "error": "case exceeded 1800000 ms"
+    },
+    {
+      "workload": "vector",
+      "case": "knn-k10",
+      "scale": "L",
+      "params": {},
+      "reps": 5,
+      "warmup": 2,
+      "metrics": [
+        {
+          "name": "queries_per_s",
+          "unit": "queries/s",
+          "better": "higher",
+          "median": 314.70144666659496,
+          "values": [
+            314.70144666659496
+          ]
+        },
+        {
+          "name": "latency_p50_ms",
+          "unit": "ms",
+          "better": "lower",
+          "median": 3.076591,
+          "values": [
+            3.076591
+          ]
+        },
+        {
+          "name": "latency_p95_ms",
+          "unit": "ms",
+          "better": "lower",
+          "median": 5.152751,
+          "values": [
+            5.152751
+          ]
+        },
+        {
+          "name": "latency_p99_ms",
+          "unit": "ms",
+          "better": "lower",
+          "median": 6.252615,
+          "values": [
+            6.252615
+          ]
+        },
+        {
+          "name": "recall_at_10",
+          "unit": "ratio",
+          "better": "higher",
+          "median": 0.7012999999999978,
+          "values": [
+            0.7012999999999978
+          ]
+        }
+      ],
+      "status": "failed",
+      "error": "recall@10 0.7012999999999978 is below the minimum 0.9"
+    },
+    {
+      "workload": "fulltext",
+      "case": "build",
+      "scale": "L",
+      "params": {},
+      "reps": 5,
+      "warmup": 2,
+      "metrics": [],
+      "status": "timeout",
+      "error": "case exceeded 1800000 ms"
+    },
+    {
+      "workload": "fulltext",
+      "case": "bm25-single-term",
+      "scale": "L",
+      "params": {},
+      "reps": 5,
+      "warmup": 2,
+      "metrics": [
+        {
+          "name": "queries_per_s",
+          "unit": "queries/s",
+          "better": "higher",
+          "median": 1296.4466332082138,
+          "values": [
+            1569.1996070027458,
+            1527.2041618036094,
+            519.0587008322398,
+            1296.4466332082138,
+            1267.6644991429168
+          ]
+        },
+        {
+          "name": "latency_p50_ms",
+          "unit": "ms",
+          "better": "lower",
+          "median": 0.769864,
+          "values": [
+            0.630094,
+            0.632809,
+            0.769864,
+            0.773449,
+            0.774669
+          ]
+        },
+        {
+          "name": "latency_p95_ms",
+          "unit": "ms",
+          "better": "lower",
+          "median": 0.823153,
+          "values": [
+            0.698973,
+            0.772054,
+            1.03045,
+            0.823153,
+            0.89625
+          ]
+        },
+        {
+          "name": "latency_p99_ms",
+          "unit": "ms",
+          "better": "lower",
+          "median": 0.872531,
+          "values": [
+            0.773974,
+            0.812652,
+            1.123209,
+            0.872531,
+            0.947983
+          ]
+        }
+      ],
+      "status": "ok",
+      "error": null
+    },
+    {
+      "workload": "fulltext",
+      "case": "bm25-multi-term",
+      "scale": "L",
+      "params": {},
+      "reps": 5,
+      "warmup": 2,
+      "metrics": [
+        {
+          "name": "queries_per_s",
+          "unit": "queries/s",
+          "better": "higher",
+          "median": 411.2374875941319,
+          "values": [
+            422.63191611688285,
+            411.2374875941319,
+            661.8029576066828,
+            369.6334753713293,
+            355.89082939194026
+          ]
+        },
+        {
+          "name": "latency_p50_ms",
+          "unit": "ms",
+          "better": "lower",
+          "median": 1.477156,
+          "values": [
+            1.318353,
+            1.460503,
+            1.477156,
+            1.716271,
+            1.894928
+          ]
+        },
+        {
+          "name": "latency_p95_ms",
+          "unit": "ms",
+          "better": "lower",
+          "median": 1.763998,
+          "values": [
+            1.471032,
+            1.763998,
+            1.729994,
+            1.897302,
+            2.04741
+          ]
+        },
+        {
+          "name": "latency_p99_ms",
+          "unit": "ms",
+          "better": "lower",
+          "median": 2.108639,
+          "values": [
+            1.955254,
+            2.108639,
+            1.773975,
+            2.313625,
+            2.504133
+          ]
+        }
+      ],
+      "status": "ok",
+      "error": null
+    },
+    {
+      "workload": "fulltext",
+      "case": "bm25-phrase",
+      "scale": "L",
+      "params": {},
+      "reps": 5,
+      "warmup": 2,
+      "metrics": [
+        {
+          "name": "queries_per_s",
+          "unit": "queries/s",
+          "better": "higher",
+          "median": 275.08100184411745,
+          "values": [
+            298.80333891229344,
+            275.08100184411745,
+            275.72439243640025,
+            206.23103227846678,
+            212.03166984914398
+          ]
+        },
+        {
+          "name": "latency_p50_ms",
+          "unit": "ms",
+          "better": "lower",
+          "median": 2.788824,
+          "values": [
+            2.530079,
+            2.710874,
+            2.788824,
+            3.103005,
+            3.809265
+          ]
+        },
+        {
+          "name": "latency_p95_ms",
+          "unit": "ms",
+          "better": "lower",
+          "median": 3.064566,
+          "values": [
+            2.784506,
+            2.980347,
+            3.064566,
+            3.604301,
+            3.998704
+          ]
+        },
+        {
+          "name": "latency_p99_ms",
+          "unit": "ms",
+          "better": "lower",
+          "median": 3.145342,
+          "values": [
+            2.838363,
+            3.078473,
+            3.145342,
+            3.823304,
+            4.166472
+          ]
+        }
+      ],
+      "status": "ok",
+      "error": null
+    },
+    {
+      "workload": "fulltext",
+      "case": "hybrid",
+      "scale": "L",
+      "params": {},
+      "reps": 5,
+      "warmup": 2,
+      "metrics": [],
+      "status": "timeout",
+      "error": "case exceeded 1800000 ms"
+    },
+    {
+      "workload": "facet",
+      "case": "facet-query-after-load",
+      "scale": "L",
+      "params": {},
+      "reps": 5,
+      "warmup": 2,
+      "metrics": [],
+      "status": "failed",
+      "error": "com.arcadedb.exception.CommandSQLParsingException: Index type 'COLUMNAR' is not supported"
+    },
+    {
+      "workload": "facet",
+      "case": "facet-under-ingest",
+      "scale": "L",
+      "params": {},
+      "reps": 5,
+      "warmup": 2,
+      "metrics": [],
+      "status": "failed",
+      "error": "java.lang.IllegalStateException: facet build failed earlier: com.arcadedb.exception.CommandSQLParsingException: Index type 'COLUMNAR' is not supported"
+    }
+  ]
+}

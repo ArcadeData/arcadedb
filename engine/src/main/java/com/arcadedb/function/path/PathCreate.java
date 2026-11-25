@@ -32,8 +32,8 @@ import java.util.Collection;
 import java.util.List;
 
 /**
- * path.create(start, relationships) - Create a path from a start node and a list of relationships (APOC's
- * {@code apoc.path.create}).
+ * path.create(start, [relationships]) - Create a path from a start node and a list of relationships (APOC's
+ * {@code apoc.path.create}). The relationships default to none, as in APOC: the path of the start node alone (issue #12105).
  * <p>
  * Each relationship continues the path from the node the previous one reached, in whichever direction it is stored,
  * so the nodes of the path are derived from the relationships; a relationship that does not touch that node is an
@@ -50,7 +50,7 @@ public class PathCreate extends AbstractPathFunction {
 
   @Override
   public int getMinArgs() {
-    return 2;
+    return 1;
   }
 
   @Override
@@ -80,12 +80,13 @@ public class PathCreate extends AbstractPathFunction {
 
     Vertex current = start instanceof Vertex vertex ? vertex : (Vertex) start.getRecord();
     final TraversalPath path = new TraversalPath(current);
-    for (final Object element : toList(args[1])) {
+    final Object relationships = args.length > 1 ? args[1] : null;
+    for (final Object element : toList(relationships)) {
       if (element == null)
         continue;
       if (!(element instanceof Identifiable identifiable) || !(identifiable instanceof Edge
           || identifiable.getRecord() instanceof Edge))
-        throw CypherFunctionHelper.typeMismatch(getName(), "a LIST<RELATIONSHIP>", args[1]);
+        throw CypherFunctionHelper.typeMismatch(getName(), "a LIST<RELATIONSHIP>", relationships);
 
       final Edge relationship = identifiable instanceof Edge edge ? edge : (Edge) identifiable.getRecord();
       final RID at = current.getIdentity();

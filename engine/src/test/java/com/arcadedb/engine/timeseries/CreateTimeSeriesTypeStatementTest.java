@@ -67,6 +67,40 @@ class CreateTimeSeriesTypeStatementTest extends TestHelper {
     assertThat(tsType.getTsColumns()).hasSize(4); // ts + host + cpu + mem
   }
 
+  // #12691
+  @Test
+  void aRetentionOrCompactionIntervalThatOverflowsALongIsRefused() {
+    // 213503982335 days wrapped to 34448384 ms (9.6 hours): a retention that deletes nearly everything
+    assertThatThrownBy(() -> database.command("sql",
+        "CREATE TIMESERIES TYPE WrappedRetention TIMESTAMP ts FIELDS (value DOUBLE) RETENTION 213503982335 DAYS"))
+        .hasMessageContaining("long overflow");
+    // 999999999999 days wrapped to a negative number, which was dropped as "no retention"
+    assertThatThrownBy(() -> database.command("sql",
+        "CREATE TIMESERIES TYPE NegativeRetention TIMESTAMP ts FIELDS (value DOUBLE) RETENTION 999999999999 DAYS"))
+        .hasMessageContaining("long overflow");
+    assertThatThrownBy(() -> database.command("sql",
+        "CREATE TIMESERIES TYPE WrappedCompaction TIMESTAMP ts FIELDS (value DOUBLE) COMPACTION_INTERVAL 5124095576031 HOURS"))
+        .hasMessageContaining("long overflow");
+    assertThatThrownBy(() -> database.command("sql",
+        "CREATE TIMESERIES TYPE WrappedCompaction TIMESTAMP ts FIELDS (value DOUBLE) COMPACTION INTERVAL 5124095576031 HOURS"))
+        .hasMessageContaining("long overflow");
+
+    assertThat(database.getSchema().existsType("WrappedRetention")).isFalse();
+    assertThat(database.getSchema().existsType("NegativeRetention")).isFalse();
+    assertThat(database.getSchema().existsType("WrappedCompaction")).isFalse();
+  }
+
+  // #12691
+  @Test
+  void theLargestRetentionAndCompactionIntervalALongHoldsAreStillAccepted() {
+    database.command("sql",
+        "CREATE TIMESERIES TYPE LargestValues TIMESTAMP ts FIELDS (value DOUBLE) RETENTION 106751991 DAYS COMPACTION_INTERVAL 2562047788 HOURS");
+
+    final LocalTimeSeriesType tsType = (LocalTimeSeriesType) database.getSchema().getType("LargestValues");
+    assertThat(tsType.getRetentionMs()).isEqualTo(106751991L * 86400000L);
+    assertThat(tsType.getCompactionBucketIntervalMs()).isEqualTo(2562047788L * 3600000L);
+  }
+
   @Test
   void createWithRetentionHours() {
     database.command("sql",

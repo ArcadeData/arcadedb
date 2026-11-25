@@ -18,6 +18,7 @@
  */
 package com.arcadedb.remote;
 
+import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
@@ -28,6 +29,8 @@ import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
@@ -255,19 +258,39 @@ class RemoteDocumentTypeTest {
     assertThat(type.getCustomValue("key1")).isEqualTo("value1");
   }
 
+  /** Issue #12193: the lookups answer from the server's schema:indexes, here listing no index. */
+  private void serverListsNoIndex() {
+    when(mockDatabase.commandUncounted(eq("sql"), anyString(), any(Map.class))).thenReturn(new InternalResultSet());
+  }
+
   @Test
-  void getIndexesByPropertiesReturnsEmpty() {
+  void getIndexesByPropertiesReturnsEmptyWhenTheServerListsNoIndex() {
+    serverListsNoIndex();
     assertThat(type.getIndexesByProperties(List.of("prop1"))).isEmpty();
   }
 
   @Test
-  void getPolymorphicIndexByPropertiesReturnsNull() {
+  void getPolymorphicIndexByPropertiesReturnsNullWhenTheServerListsNoIndex() {
+    serverListsNoIndex();
     assertThat(type.getPolymorphicIndexByProperties("prop1")).isNull();
   }
 
   @Test
-  void getPolymorphicIndexByPropertiesListReturnsNull() {
+  void getPolymorphicIndexByPropertiesListReturnsNullWhenTheServerListsNoIndex() {
+    serverListsNoIndex();
     assertThat(type.getPolymorphicIndexByProperties(List.of("prop1"))).isNull();
+  }
+
+  @Test
+  void getAllIndexesReturnsEmptyWhenTheServerListsNoIndex() {
+    serverListsNoIndex();
+    assertThat(type.getAllIndexes(false)).isEmpty();
+  }
+
+  @Test
+  void getIndexesByPropertiesVarargReturnsEmptyWhenTheServerListsNoIndex() {
+    serverListsNoIndex();
+    assertThat(type.getIndexesByProperties("prop1", "prop2")).isEmpty();
   }
 
   // UnsupportedOperationException tests
@@ -345,20 +368,8 @@ class RemoteDocumentTypeTest {
   }
 
   @Test
-  void getAllIndexesThrowsUnsupported() {
-    assertThatThrownBy(() -> type.getAllIndexes(false))
-        .isInstanceOf(UnsupportedOperationException.class);
-  }
-
-  @Test
   void getPolymorphicBucketIndexByBucketIdThrowsUnsupported() {
     assertThatThrownBy(() -> type.getPolymorphicBucketIndexByBucketId(0, null))
-        .isInstanceOf(UnsupportedOperationException.class);
-  }
-
-  @Test
-  void getIndexesByPropertiesVarargThrowsUnsupported() {
-    assertThatThrownBy(() -> type.getIndexesByProperties("prop1", "prop2"))
         .isInstanceOf(UnsupportedOperationException.class);
   }
 

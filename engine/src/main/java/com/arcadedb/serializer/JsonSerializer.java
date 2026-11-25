@@ -268,8 +268,10 @@ public class JsonSerializer {
           final Type propertyType = declaredType(type, entry.getKey());
           // Issue #11016: same rule as an element row below - a property the schema does not declare and whose value is
           // non-finite needs a hint, or the client reads the marker string back as a String. Issue #12195: so does a link, or a
-          // list or map of links, which the client reads back as its "#12:0" text
-          if (projectionTypes != null && propertyType == null && (carriesNonFinite(entry.getValue()) || carriesLinks(entry.getValue()))) {
+          // list or map of links, which the client reads back as its "#12:0" text. Issue #12598: and so does a LIST or MAP
+          // declared with no element type
+          if (projectionTypes != null && schemaSaysNothingOfTheItems(type, entry.getKey(), propertyType)
+              && (carriesNonFinite(entry.getValue()) || carriesLinks(entry.getValue()))) {
             // a Set or any other Collection goes out as a JSON array, and getTypeByClass answers null for it
             final Type hintType = entry.getValue() instanceof Collection<?> ? Type.LIST : Type.getTypeByClass(entry.getValue().getClass());
             if (hintType != null)
@@ -323,9 +325,11 @@ public class JsonSerializer {
         // Issue #10905: an ELEMENT row takes its types from the schema on the client, so it carries a hint only for a
         // property the schema does not declare AND whose value (or collection elements) is non-finite: nothing else
         // tells the client the marker string stands for a number. Issue #12195: the same holds for a LINK, or a list or
-        // map of links, which goes out as its "#12:0" text and was read back by the remote client as a String. Every other
-        // element row keeps its shape.
-        final boolean hintElementRow = type != null && schemaPropertyType == null && (carriesNonFinite(value) || carriesLinks(value));
+        // map of links, which goes out as its "#12:0" text and was read back by the remote client as a String. Issue #12598:
+        // a LIST or MAP the schema declares with no element type says no more about its items than no declaration does.
+        // Every other element row keeps its shape.
+        final boolean hintElementRow = type != null && schemaSaysNothingOfTheItems(type, propertyName, schemaPropertyType)
+            && (carriesNonFinite(value) || carriesLinks(value));
         final boolean hint = propertyType != null && (type == null ?
             (!JSON_ROUND_TRIP_FAITHFUL_TYPES.contains(propertyType) || isNonFiniteDouble(value)) :
             hintElementRow);
@@ -746,6 +750,21 @@ public class JsonSerializer {
       case null, default -> object.put(CAT_PROPERTY, "d");
     }
 
+  }
+
+  /**
+   * True when the schema tells a client reading an element row nothing about the items of a property: the property is not
+   * declared, or it is a LIST or MAP declared with no element type (issue #12598). The remote client takes the types of an
+   * element row from the schema, so only then can a link or a non-finite number among the items need an {@code @props} hint.
+   * The declared property is looked up only for a LIST or MAP, so a row of declared scalars pays nothing.
+   */
+  private static boolean schemaSaysNothingOfTheItems(final DocumentType type, final String propertyName, final Type schemaPropertyType) {
+    if (schemaPropertyType == null)
+      return true;
+    if (type == null || (schemaPropertyType != Type.LIST && schemaPropertyType != Type.MAP))
+      return false;
+    final Property property = type.getPolymorphicPropertyIfExists(propertyName);
+    return property == null || property.getOfType() == null;
   }
 
   /**

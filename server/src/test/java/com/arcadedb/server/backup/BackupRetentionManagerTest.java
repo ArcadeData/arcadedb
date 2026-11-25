@@ -143,6 +143,39 @@ class BackupRetentionManagerTest {
       assertThat(file).exists();
   }
 
+  /**
+   * Issue #12530: the sweep of stale partial archives needs no retention manager, no registered database and no policy, because
+   * the on-demand backups that leave a partial behind run on servers with auto-backup off, where none of those exists.
+   */
+  @Test
+  void stalePartialArchivesAreSweptWithoutARetentionManager() throws Exception {
+    final List<File> files = createBackupFiles(2, LocalDateTime.now().minusDays(1));
+    final File stale = writeBackupFile(DATABASE_NAME + "-backup-" + LocalDateTime.now().minusDays(2).format(BACKUP_FORMAT) + ".zip"
+        + BackupRetentionManager.PARTIAL_SUFFIX);
+    assertThat(stale.setLastModified(System.currentTimeMillis() - BackupRetentionManager.STALE_PARTIAL_MILLIS - 60_000)).isTrue();
+    final File running = writeBackupFile(DATABASE_NAME + "-backup-" + LocalDateTime.now().format(BACKUP_FORMAT) + ".zip"
+        + BackupRetentionManager.PARTIAL_SUFFIX);
+    // Not an archive this server writes, whatever its age: the sweep deletes only what its name says a backup left
+    final File foreign = writeBackupFile("notes.partial");
+    assertThat(foreign.setLastModified(System.currentTimeMillis() - BackupRetentionManager.STALE_PARTIAL_MILLIS - 60_000)).isTrue();
+
+    assertThat(BackupRetentionManager.deleteStalePartialArchives(dbBackupDir)).isEqualTo(1);
+
+    assertThat(stale).as("left by a backup that was cut").doesNotExist();
+    assertThat(running).as("a backup may still be writing it").exists();
+    assertThat(foreign).as("not a backup archive").exists();
+    for (final File file : files)
+      assertThat(file).as("a complete archive is never the sweep's business").exists();
+
+    assertThat(BackupRetentionManager.deleteStalePartialArchives(dbBackupDir)).as("nothing left to sweep").isZero();
+  }
+
+  /** Issue #12530: a database nobody ever backed up has no directory yet, which the sweep must take as nothing to do. */
+  @Test
+  void sweepOfAMissingDirectoryDoesNothing() {
+    assertThat(BackupRetentionManager.deleteStalePartialArchives(new File(tempDir.toFile(), "never-backed-up"))).isZero();
+  }
+
   @Test
   void tieredRetentionHourly() throws Exception {
     // Create backups for the last 48 hours (one per hour)

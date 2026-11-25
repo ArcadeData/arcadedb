@@ -192,11 +192,12 @@ class MergedEdgeRegistryTest {
   }
 
   /**
-   * Issue #11782: the table of committed keys is bounded and starts over once full. A transaction that began before it last started
-   * over cannot tell a key from its stripe any more, and is refused by a moved stripe as before; one that began after is not.
+   * Issue #11782: the tables of committed keys are bounded: once the current one is full it replaces the previous one and a new one
+   * starts. A transaction that began before the previous table started cannot tell a key from its stripe any more, and is refused by
+   * a moved stripe as before; one that began after is not.
    */
   @Test
-  void aTransactionOlderThanTheTableOfCommittedKeysFallsBackToTheStripe() {
+  void aTransactionOlderThanTheTablesOfCommittedKeysFallsBackToTheStripe() {
     final MergedEdgeRegistry registry = new MergedEdgeRegistry();
     final long first = MergedEdgeRegistry.keyOf(A, B, "R", null);
     final long sharingItsStripe = MergedEdgeRegistry.keyOf(A, ridSharingTheStripe(), "R", null);
@@ -204,20 +205,46 @@ class MergedEdgeRegistryTest {
 
     assertThat(registry.reserve(new long[] { first }, 1, new long[] { first }, 1, beforeTheRestart)).isTrue();
     registry.committed(new long[] { first }, 1);
-    // Enough other keys to fill the table, in commits of 1,000
-    final long[] filler = new long[1_000];
-    for (int commit = 0; commit <= MergedEdgeRegistry.EXACT_KEYS / filler.length; commit++) {
-      for (int i = 0; i < filler.length; i++)
-        filler[i] = MergedEdgeRegistry.keyOf(new RID(7, (long) commit * filler.length + i), A, "S", null);
-      assertThat(registry.reserve(filler, filler.length, filler, filler.length, registry.getSequence())).isTrue();
-      registry.committed(filler, filler.length);
-    }
+    // Enough other keys to fill both tables, in commits of 1,000
+    fill(registry, 0, 2 * (MergedEdgeRegistry.EXACT_KEYS / 1_000 + 1));
     final long afterTheRestart = registry.getSequence();
     registry.reserve(new long[] { first }, 1, new long[] { first }, 1, afterTheRestart);
     registry.committed(new long[] { first }, 1);
 
     assertThat(registry.reserve(new long[] { sharingItsStripe }, 1, new long[] { sharingItsStripe }, 1, beforeTheRestart)).isFalse();
     assertThat(registry.reserve(new long[] { sharingItsStripe }, 1, new long[] { sharingItsStripe }, 1, afterTheRestart)).isTrue();
+  }
+
+  /**
+   * Issue #12643: a transaction that began before the current table started, but after the previous one did, still decides its keys
+   * one by one: a bulk load of 500 relationships a commit marks about 3,000 keys, so one table starts over every ten commits, and a
+   * transaction of 8 writers spans that many. Refused by any moved stripe, its commits were refused for relationships nobody created.
+   */
+  @Test
+  void aTransactionOlderThanTheCurrentTableIsDecidedByTheKeysOfThePreviousOne() {
+    final MergedEdgeRegistry registry = new MergedEdgeRegistry();
+    final long first = MergedEdgeRegistry.keyOf(A, B, "R", null);
+    final long sharingItsStripe = MergedEdgeRegistry.keyOf(A, ridSharingTheStripe(), "R", null);
+    final long beforeTheRestart = registry.getSequence();
+
+    registry.reserve(new long[] { first }, 1, new long[] { first }, 1, beforeTheRestart);
+    registry.committed(new long[] { first }, 1);
+    // Enough other keys to fill one table: the one holding the first key becomes the previous one
+    fill(registry, 0, MergedEdgeRegistry.EXACT_KEYS / 1_000 + 1);
+
+    assertThat(registry.reserve(new long[] { sharingItsStripe }, 1, new long[] { sharingItsStripe }, 1, beforeTheRestart)).isTrue();
+    registry.release(new long[] { sharingItsStripe }, 1);
+    assertThat(registry.reserve(new long[] { first }, 1, new long[] { first }, 1, beforeTheRestart)).as("its own key moved").isFalse();
+  }
+
+  private static void fill(final MergedEdgeRegistry registry, final int fromCommit, final int commits) {
+    final long[] filler = new long[1_000];
+    for (int commit = fromCommit; commit < fromCommit + commits; commit++) {
+      for (int i = 0; i < filler.length; i++)
+        filler[i] = MergedEdgeRegistry.keyOf(new RID(7, (long) commit * filler.length + i), A, "S", null);
+      assertThat(registry.reserve(filler, filler.length, filler, filler.length, registry.getSequence())).isTrue();
+      registry.committed(filler, filler.length);
+    }
   }
 
   @Test

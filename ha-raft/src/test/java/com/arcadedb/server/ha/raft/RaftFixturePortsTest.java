@@ -205,14 +205,23 @@ class RaftFixturePortsTest {
     final List<String> offenders = new ArrayList<>();
 
     // Surefire runs with the module directory as the working directory, so the sibling modules sit one level up.
-    final int haRaftFixtures = scanRaftFixtures(Path.of("src", "test", "java"), fixedRaftPort, offenders);
-    final int boltFixtures = scanRaftFixtures(Path.of("..", "bolt", "src", "test", "java"), fixedRaftPort, offenders);
-    final int grpcFixtures = scanRaftFixtures(Path.of("..", "grpcw", "src", "test", "java"), fixedRaftPort, offenders);
+    final List<String> haRaftFixtures = scanRaftFixtures(Path.of("src", "test", "java"), fixedRaftPort, offenders);
+    final List<String> boltFixtures = scanRaftFixtures(Path.of("..", "bolt", "src", "test", "java"), fixedRaftPort, offenders);
+    final List<String> grpcFixtures = scanRaftFixtures(Path.of("..", "grpcw", "src", "test", "java"), fixedRaftPort, offenders);
 
     final int sharedClusterFixtures = countFiles(Path.of("src", "test", "java"), SHARED_CLUSTER_FIXTURE);
-    assertThat(haRaftFixtures).as("the scan must find the ha-raft fixtures it guards, or it proves nothing").isGreaterThan(100);
-    assertThat(boltFixtures).as("the scan must find the Bolt HA fixtures it guards, or it proves nothing").isGreaterThanOrEqualTo(2);
-    assertThat(grpcFixtures).as("the scan must find the gRPC HA fixtures it guards, or it proves nothing").isGreaterThanOrEqualTo(10);
+    assertThat(haRaftFixtures).as("the scan must find the ha-raft fixtures it guards, or it proves nothing").hasSizeGreaterThan(100);
+    // The Bolt and gRPC floors are fixtures named, not file counts: consolidating the issue-named classes of a module into
+    // nested classes of one topic fixture (#13233 took the gRPC fixtures from 18 files to 8) changes how many files hold
+    // them, not whether the scan reaches them. A moved source root or a renamed base class still loses these names.
+    assertThat(boltFixtures).as("the scan must find the Bolt HA fixtures it guards, or it proves nothing")
+        .anyMatch(name -> name.endsWith("BoltFollowerForwardingIT.java"))
+        .anyMatch(name -> name.endsWith("Bolt5002RoutingTableIT.java"));
+    assertThat(grpcFixtures).as("the scan must find the gRPC HA fixtures it guards, or it proves nothing")
+        .anyMatch(name -> name.endsWith("GrpcRaftReplicationIT.java"))
+        .anyMatch(name -> name.endsWith("GrpcLeaderRoutingIT.java"))
+        .anyMatch(name -> name.endsWith("GrpcFollowerForwardingIT.java"))
+        .anyMatch(name -> name.endsWith("GrpcHaAcceptRpcsIT.java"));
     assertThat(sharedClusterFixtures)
         .as("the scan must reach the fixtures extending SharedClusterRaftHATest, or the next intermediate base reopens the hole")
         .isGreaterThanOrEqualTo(10);
@@ -229,9 +238,9 @@ class RaftFixturePortsTest {
     final Pattern fixedRaftPort = Pattern.compile("\\b" + FORMER_BASE_RAFT_PORT + "\\b|BASE_RAFT(_PORT)?\\s*=");
     final List<String> offenders = new ArrayList<>();
 
-    final int fixtures = scanRaftFixtures(dir, fixedRaftPort, offenders);
+    final List<String> fixtures = scanRaftFixtures(dir, fixedRaftPort, offenders);
 
-    assertThat(fixtures).as("both classes extend a Raft fixture base and must be counted").isEqualTo(2);
+    assertThat(fixtures).as("both classes extend a Raft fixture base and must be counted").containsExactlyInAnyOrder("Probe.java", "Clean.java");
     assertThat(offenders).containsExactly("Probe.java");
   }
 
@@ -246,10 +255,14 @@ class RaftFixturePortsTest {
     return count;
   }
 
-  /** Adds every Raft fixture under {@code root} that matches {@code fixedRaftPort} to {@code offenders}; returns how many fixtures it saw. */
-  private static int scanRaftFixtures(final Path root, final Pattern fixedRaftPort, final List<String> offenders) throws IOException {
+  /**
+   * Adds every Raft fixture under {@code root} that matches {@code fixedRaftPort} to {@code offenders}; returns the fixtures it
+   * saw, as paths relative to {@code root}.
+   */
+  private static List<String> scanRaftFixtures(final Path root, final Pattern fixedRaftPort, final List<String> offenders)
+      throws IOException {
     assertThat(root).as("source root %s must exist, or the guard silently scans less than it claims", root).isDirectory();
-    int fixtures = 0;
+    final List<String> fixtures = new ArrayList<>();
     try (final Stream<Path> files = Files.walk(root)) {
       for (final Path file : files.filter(p -> p.toString().endsWith(".java")).toList()) {
         if (file.getFileName().toString().equals(RaftFixturePortsTest.class.getSimpleName() + ".java"))
@@ -257,7 +270,7 @@ class RaftFixturePortsTest {
         final String source = Files.readString(file, StandardCharsets.UTF_8);
         if (!RAFT_FIXTURE.matcher(source).find())
           continue;
-        fixtures++;
+        fixtures.add(root.relativize(file).toString());
         if (fixedRaftPort.matcher(source).find())
           offenders.add(root.relativize(file).toString());
       }
