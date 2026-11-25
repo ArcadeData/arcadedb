@@ -831,7 +831,11 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       }
     }
 
-    cursor = index.get(keys);
+    // The lookup reads the postings of every word before it answers its first entry, so the check per emitted row of the step is
+    // too late: the deadline of the statement is checked inside the read
+    cursor = index instanceof final TypeIndex typeIndex ?
+        typeIndex.get(keys, -1, WorkGuard.forCommandDeadline(context)) :
+        index.get(keys);
     fetchNextEntry();
     return true;
   }
