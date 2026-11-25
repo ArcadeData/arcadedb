@@ -25,6 +25,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
+import com.sun.management.ThreadMXBean;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -37,6 +38,7 @@ import java.util.Map;
 import java.util.Random;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * A search that scores a vector the search cache does not hold reads its quantized row from the index page. The answer must be
@@ -78,13 +80,19 @@ class SearchVectorMissPathTest {
 
   @Test
   void aMissDoesNotAllocateAVectorPerCandidate() {
+    // Without per-thread allocation accounting both samples read -1 and the bound below would hold without measuring anything
+    final ThreadMXBean mx = allocationMeter();
+    assumeTrue(mx.isThreadAllocatedMemorySupported(), "the JVM does not measure per-thread allocation");
+    if (!mx.isThreadAllocatedMemoryEnabled())
+      mx.setThreadAllocatedMemoryEnabled(true);
+
     final float[][] vectors = createIndex();
 
     // 100 slots for 2,000 vectors: nearly every candidate is read from its page. The row was dequantized into a new float[512]
     // (2 KB), after a new byte[512], and wrapped for every one of them
     final Run missing = searchWith(100, vectors);
     assertThat(missing.fetches()).isGreaterThan(QUERIES * 50L);
-    assertThat(missing.bytesPerFetch()).as("bytes allocated per vector read from its page").isLessThan(1_000);
+    assertThat(missing.bytesPerFetch()).as("bytes allocated per vector read from its page").isNotNegative().isLessThan(1_000);
   }
 
   private float[][] createIndex() {
@@ -129,15 +137,21 @@ class SearchVectorMissPathTest {
 
         final List<List<Pair<RID, Float>>> answers = new ArrayList<>();
         final long fetchesBefore = fetches(index);
-        final com.sun.management.ThreadMXBean mx = (com.sun.management.ThreadMXBean) ManagementFactory.getThreadMXBean();
+        final ThreadMXBean mx = allocationMeter();
         final long bytesBefore = mx.getCurrentThreadAllocatedBytes();
         for (int i = 0; i < QUERIES; i++)
           answers.add(index.findNeighborsFromVector(vectors[i * 7], K, EF_SEARCH));
-        final long bytes = mx.getCurrentThreadAllocatedBytes() - bytesBefore;
+        final long bytesAfter = mx.getCurrentThreadAllocatedBytes();
         final long fetches = fetches(index) - fetchesBefore;
-        return new Run(answers, fetches, fetches == 0 ? 0 : bytes / fetches);
+        // -1 when allocation is not measured: reported as such, never as a difference of two -1 samples (zero)
+        final long bytesPerFetch = bytesBefore < 0 || bytesAfter < 0 ? -1 : fetches == 0 ? 0 : (bytesAfter - bytesBefore) / fetches;
+        return new Run(answers, fetches, bytesPerFetch);
       }
     }
+  }
+
+  private static ThreadMXBean allocationMeter() {
+    return (ThreadMXBean) ManagementFactory.getThreadMXBean();
   }
 
   private static long fetches(final LSMVectorIndex index) {

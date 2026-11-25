@@ -302,10 +302,10 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
 
   /** The quantized row, its scales and the dequantized components of one vector, and the vector over them. Used by one thread. */
   private static final class MissScratch {
-    final Thread        owner = Thread.currentThread();
-    final byte[]        row;
-    final float[]       scales = new float[2];
-    final float[]       components;
+    final Thread         owner  = Thread.currentThread();
+    final byte[]         row;
+    final float[]        scales = new float[2];
+    final float[]        components;
     final VectorFloat<?> vector;
 
     MissScratch(final int dimensions) {
