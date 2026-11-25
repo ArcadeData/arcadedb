@@ -45,6 +45,7 @@ import org.junit.jupiter.api.Test;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.format.TextStyle;
 import java.util.ArrayList;
@@ -52,6 +53,7 @@ import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.TimeZone;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -322,7 +324,7 @@ class Issue12106ApocDateSemanticsTest extends TestHelper {
   void theUnitDoesNotScaleAPointInTime() {
     final Instant instant = Instant.parse("2024-01-15T10:30:00.250Z");
     final List<Object> points = List.of(instant, Date.from(instant), instant.atZone(ZoneId.of("UTC")),
-        LocalDateTime.ofInstant(instant, ZoneId.systemDefault()));
+        LocalDateTime.ofInstant(instant, ZoneOffset.UTC));
 
     for (final Object point : points) {
       assertThat(new ApocDateFormat().execute(new Object[] { point, "s", "yyyy-MM-dd HH:mm:ss.SSS" }, null)).as(point.getClass().getName())
@@ -341,6 +343,57 @@ class Issue12106ApocDateSemanticsTest extends TestHelper {
     // and an unknown unit is refused for a point in time too
     assertThatThrownBy(() -> new ApocDateFormat().execute(new Object[] { instant, "fortnight" }, null))
         .isInstanceOf(InvalidArgumentException.class);
+  }
+
+  /**
+   * A stored DATETIME reads back as a LocalDateTime holding the UTC wall clock: the apoc. names read it in UTC, as APOC reads
+   * every time, so the JVM's zone does not shift it.
+   */
+  @Test
+  void aStoredDatetimeIsReadInUtcWhateverTheJvmZone() {
+    final TimeZone saved = TimeZone.getDefault();
+    TimeZone.setDefault(TimeZone.getTimeZone("Asia/Tokyo"));
+    try {
+      database.command("sql", "CREATE VERTEX TYPE Issue12106Event");
+      database.command("sql", "CREATE PROPERTY Issue12106Event.at DATETIME");
+      database.transaction(() -> database.command("sql", "INSERT INTO Issue12106Event SET at = ?",
+          Date.from(Instant.parse("2020-01-02T03:04:05Z"))));
+
+      // the value as the engine hands it to a function: the record's own property, not a Cypher temporal wrapper
+      final Object stored;
+      try (final ResultSet rs = database.query("sql", "SELECT FROM Issue12106Event")) {
+        stored = rs.next().toElement().get("at");
+      }
+      assertThat(stored).isInstanceOf(LocalDateTime.class);
+
+      assertThat(new ApocDateFormat().execute(new Object[] { stored }, null)).isEqualTo("2020-01-02 03:04:05");
+      assertThat(new ApocDateField().execute(new Object[] { stored, "h" }, null)).isEqualTo(3L);
+      assertThat(new ApocDateToISO8601().execute(new Object[] { stored }, null)).isEqualTo("2020-01-02T03:04:05.000Z");
+      assertThat(new ApocDateAdd().execute(new Object[] { stored, "s", 0L, "s" }, null)).isEqualTo(
+          Instant.parse("2020-01-02T03:04:05Z").getEpochSecond());
+    } finally {
+      TimeZone.setDefault(saved);
+    }
+  }
+
+  /** A pattern that is only a zone gets no default zone in APOC: the text's own offset, or the JVM's zone when formatting. */
+  @Test
+  @SuppressWarnings("unchecked")
+  void aZoneOnlyPatternGetsNoDefaultZone() {
+    assertThat((Map<String, Object>) cypher("apoc.date.fields('+02:00', 'XXX')")).containsEntry("zoneid", "+02:00");
+    // a pattern with more than the zone keeps UTC as the default
+    assertThat((Map<String, Object>) cypher("apoc.date.fields('2020-01-02 03:04:05', 'yyyy-MM-dd HH:mm:ss')")).containsEntry("zoneid",
+        "UTC");
+
+    final TimeZone saved = TimeZone.getDefault();
+    TimeZone.setDefault(TimeZone.getTimeZone("Asia/Tokyo"));
+    try {
+      assertThat(cypher("apoc.date.format(0, 'ms', 'XXX')")).isEqualTo("+09:00");
+      assertThat(cypher("apoc.date.format(0, 'ms', 'yyyy XXX')")).isEqualTo("1970 Z");
+      assertThat(cypher("apoc.date.format(0, 'ms', 'XXX', 'UTC')")).isEqualTo("Z");
+    } finally {
+      TimeZone.setDefault(saved);
+    }
   }
 
   // ============ unregister by an apoc. name ============

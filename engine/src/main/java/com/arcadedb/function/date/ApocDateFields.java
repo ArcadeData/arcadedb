@@ -46,7 +46,9 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>
  * The text is parsed whole, and the map holds the fields the parsed text supports under APOC's keys: {@code years},
  * {@code months}, {@code weekdays} (1 = Monday), {@code days}, {@code hours}, {@code minutes}, {@code seconds}, plus
- * {@code zoneid}, the short name of the zone the text names or, when it names none (an offset is not a zone), UTC.
+ * {@code zoneid}, the short name of the zone the text names or, when it names none (an offset is not a zone), UTC. A pattern
+ * that is only a zone ({@code XXX}, {@code z}, ...) gets no default zone, as in APOC, so there {@code zoneid} is the zone or
+ * offset the text names.
  * <p>
  * The {@code timezone} argument is an ArcadeDB extension APOC does not have: a text that names an instant (a date, a time
  * and an offset or a zone) is expressed in that zone, one that names none is read in it, and {@code zoneid} is its name.
@@ -92,11 +94,13 @@ public class ApocDateFields extends AbstractApocDateFunction {
     final String text = args[0].toString();
     final String pattern = patternArgument(args, 1);
     final boolean zoneAsked = args.length > 2 && args[2] != null;
-    final ZoneId zoneId = zoneAsked ? zoneIdArgument(args, 2) : UTC_ZONE;
+    // a pattern that is only a zone gets no default zone, as in APOC, so the zone or offset the text names is the zoneid
+    final ZoneId zoneId = zoneAsked ? zoneIdArgument(args, 2) : isZoneOnlyPattern(pattern) ? null : UTC_ZONE;
 
     final TemporalAccessor read;
     try {
-      read = formatter(pattern).withZone(zoneId).parse(text);
+      final DateTimeFormatter formatter = formatter(pattern);
+      read = (zoneId != null ? formatter.withZone(zoneId) : formatter).parse(text);
     } catch (final DateTimeException e) {
       // issue #11589: a text the format cannot read is the caller's mistake, not a raw DateTimeParseException
       throw new InvalidArgumentException(getName() + "(): '" + InvalidArgumentException.quote(text) + "' cannot be parsed with the format '"

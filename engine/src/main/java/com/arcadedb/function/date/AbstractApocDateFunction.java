@@ -22,7 +22,10 @@ import com.arcadedb.exception.InvalidArgumentException;
 
 import java.text.SimpleDateFormat;
 import java.time.DateTimeException;
+import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.time.ZoneOffset;
+import java.util.Calendar;
 import java.util.Locale;
 import java.util.TimeZone;
 import java.util.concurrent.TimeUnit;
@@ -77,6 +80,31 @@ public abstract class AbstractApocDateFunction extends AbstractDateFunction {
   }
 
   /**
+   * A stored DATETIME reads back as a {@link LocalDateTime} holding the UTC wall clock, and APOC's zone is UTC unless the call
+   * names one, so a {@link LocalDateTime} is read in UTC here, not in the JVM's zone as ArcadeDB's date.* functions read it.
+   */
+  @Override
+  protected long toMillis(final Object timestamp) {
+    if (timestamp instanceof LocalDateTime localDateTime)
+      return localDateTime.toInstant(ZoneOffset.UTC).toEpochMilli();
+    return super.toMillis(timestamp);
+  }
+
+  /**
+   * Whether the whole pattern is a zone pattern, the case APOC applies no default zone to ({@code containsTimeZonePattern}: the
+   * pattern matches {@code [XxZzVO]{1,3}}). Checked by hand, so a call allocates nothing.
+   */
+  protected static boolean isZoneOnlyPattern(final String pattern) {
+    final int length = pattern.length();
+    if (length < 1 || length > 3)
+      return false;
+    for (int i = 0; i < length; i++)
+      if ("XxZzVO".indexOf(pattern.charAt(i)) < 0)
+        return false;
+    return true;
+  }
+
+  /**
    * The time argument in milliseconds: a count (a number or its text) is in {@code unit}, a point in time is already one and the
    * unit, still validated, does not scale it.
    */
@@ -121,7 +149,8 @@ public abstract class AbstractApocDateFunction extends AbstractDateFunction {
   /**
    * The {@link SimpleDateFormat} APOC's apoc.date.format/parse/toISO8601 use: its pattern letters, its lenient parsing (a
    * prefix of the text is enough, a month 13 rolls over) and its Julian calendar before 1582. Its time zone is
-   * {@code timezone}, UTC when it is null or empty. The locale is pinned, so a textual field renders the same on every server
+   * {@code timezone}, UTC when it is null or empty, except for a pattern that is only a zone, which APOC leaves in the JVM's
+   * zone ({@link #isZoneOnlyPattern}). The locale is pinned, so a textual field renders the same on every server
    * (issue #7144).
    * <p>
    * APOC reads the zone with {@link TimeZone#getTimeZone(String)}, which answers GMT for an id it does not know, so a typo
@@ -132,7 +161,12 @@ public abstract class AbstractApocDateFunction extends AbstractDateFunction {
    * and do not hand it on.
    */
   protected static SimpleDateFormat simpleDateFormat(final String pattern, final Object timezone) {
-    return FORMATS.get().get(pattern, timezone == null || timezone.toString().isEmpty() ? UTC : timezone.toString());
+    final String zoneId;
+    if (timezone != null && !timezone.toString().isEmpty())
+      zoneId = timezone.toString();
+    else
+      zoneId = isZoneOnlyPattern(pattern) ? TimeZone.getDefault().getID() : UTC;
+    return FORMATS.get().get(pattern, zoneId);
   }
 
   private static TimeZone timeZone(final String id) {
@@ -148,14 +182,18 @@ public abstract class AbstractApocDateFunction extends AbstractDateFunction {
   }
 
   /**
-   * A few formatters of one thread, by pattern and zone, replaced in turn once all slots are taken. A hit allocates nothing.
+   * A few formatters of one thread, by pattern and zone, replaced in turn once all slots are taken. A hit allocates nothing,
+   * except once a second per slot to move the two-digit-year window along.
    */
   private static final class SimpleDateFormatCache {
-    private static final int                SLOTS     = 8;
-    private final        String[]           patterns  = new String[SLOTS];
-    private final        String[]           zoneIds   = new String[SLOTS];
-    private final        TimeZone[]         timeZones = new TimeZone[SLOTS];
-    private final        SimpleDateFormat[] formats   = new SimpleDateFormat[SLOTS];
+    private static final int                SLOTS                 = 8;
+    /** How long a formatter keeps the two-digit-year window it was given before it is moved to the current one. */
+    private static final long               CENTURY_REFRESH_MILLIS = 1_000L;
+    private final        String[]           patterns              = new String[SLOTS];
+    private final        String[]           zoneIds               = new String[SLOTS];
+    private final        TimeZone[]         timeZones             = new TimeZone[SLOTS];
+    private final        SimpleDateFormat[] formats               = new SimpleDateFormat[SLOTS];
+    private final        long[]             centuryStamps         = new long[SLOTS];
     private              int                next;
 
     private SimpleDateFormat get(final String pattern, final String zoneId) {
@@ -163,6 +201,16 @@ public abstract class AbstractApocDateFunction extends AbstractDateFunction {
         if (formats[i] != null && patterns[i].equals(pattern) && zoneIds[i].equals(zoneId)) {
           // parsing a text that names a zone ('z') sets that zone on the formatter, so the zone asked for is set back each time
           formats[i].setTimeZone(timeZones[i]);
+          // SimpleDateFormat fixes the window a two-digit year ('yy') is read in (80 years back, 20 ahead) when it is built, and
+          // APOC builds one per call: a formatter kept for days would read a year near the window's edge in the wrong century
+          final long now = System.currentTimeMillis();
+          if (now - centuryStamps[i] >= CENTURY_REFRESH_MILLIS) {
+            final Calendar start = (Calendar) formats[i].getCalendar().clone();
+            start.setTimeInMillis(now);
+            start.add(Calendar.YEAR, -80);
+            formats[i].set2DigitYearStart(start.getTime());
+            centuryStamps[i] = now;
+          }
           return formats[i];
         }
 
@@ -181,6 +229,7 @@ public abstract class AbstractApocDateFunction extends AbstractDateFunction {
       zoneIds[slot] = zoneId;
       timeZones[slot] = timeZone;
       formats[slot] = format;
+      centuryStamps[slot] = System.currentTimeMillis();
       return format;
     }
   }
