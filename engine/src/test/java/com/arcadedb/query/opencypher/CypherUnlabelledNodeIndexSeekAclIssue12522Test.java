@@ -28,6 +28,7 @@ import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -42,7 +43,8 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  * An unlabelled node pattern reads every vertex type, so a user who may not read one of them is refused by the walk of its buckets
  * whatever the value is. Answering the pattern from the indexes (issue #12522) must not turn that refusal into an answer to "is
  * there a vertex with this value in the type I may not read": the statement is refused the same way for a value the denied type
- * holds, for one it does not, and for one no type holds.
+ * holds, for one it does not, and for one no type holds. A list of values ({@code WHERE n.uuid IN $keys}, issue #12546) is answered
+ * from the indexes by the same plan and is refused the same way.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -120,6 +122,50 @@ class CypherUnlabelledNodeIndexSeekAclIssue12522Test {
 
     assertThat(drain("MATCH (n {uuid: $u}) RETURN n.uuid AS uuid", "secret-1")).isEqualTo(1);
     assertThat(drain("MATCH (n {uuid: $u}) RETURN n.uuid AS uuid", "nobody")).isZero();
+  }
+
+  /** The same refusal for a list of values (issue #12546): the keys the denied type holds, the ones it does not, and the ones no type holds. */
+  @Test
+  void aTypeTheUserMayNotReadRefusesAListWhateverTheKeysAre() {
+    deny("Secret");
+
+    for (final List<String> keys : List.of(List.of("open-1"), List.of("secret-1"), List.of("open-1", "secret-1"), List.of("walked-1"),
+        List.of("nobody"), List.of("nobody", "never"))) {
+      final Throwable thrown = catchThrowable(() -> drain("MATCH (n) WHERE n.uuid IN $keys RETURN n.uuid AS uuid", keys));
+      assertThat(thrown).as("the keys %s: a denied type refuses the statement, it does not tell whether it holds a key", keys)
+          .isInstanceOf(SecurityException.class);
+    }
+  }
+
+  @Test
+  void aTypeWithoutAnIndexTheUserMayNotReadRefusesAListToo() {
+    deny("Walked");
+
+    for (final List<String> keys : List.of(List.of("open-1"), List.of("walked-1"), List.of("nobody"))) {
+      final Throwable thrown = catchThrowable(() -> drain("MATCH (n) WHERE n.uuid IN $keys RETURN n.uuid AS uuid", keys));
+      assertThat(thrown).as("the keys %s", keys).isInstanceOf(SecurityException.class);
+    }
+  }
+
+  @Test
+  void aUserWhoMayReadEveryTypeIsAnsweredForAList() {
+    deny();
+
+    assertThat(drain("MATCH (n) WHERE n.uuid IN $keys RETURN n.uuid AS uuid", List.of("secret-1", "open-1", "walked-1"))).isEqualTo(3);
+    assertThat(drain("MATCH (n) WHERE n.uuid IN $keys RETURN n.uuid AS uuid", List.of("nobody"))).isZero();
+  }
+
+  private int drain(final String cypher, final List<String> keys) {
+    final Map<String, Object> params = new HashMap<>();
+    params.put("keys", keys);
+    int rows = 0;
+    try (final ResultSet rs = database.query("opencypher", cypher, params)) {
+      while (rs.hasNext()) {
+        rs.next();
+        rows++;
+      }
+    }
+    return rows;
   }
 
   private int drain(final String cypher, final String value) {

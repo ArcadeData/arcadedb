@@ -55,17 +55,25 @@ class Issue7798StdioExitStatusTest extends BaseGraphServerTest {
   /** A server that never boots anything: only its lifecycle is under test here. */
   private static class StubServer extends ArcadeDBServer {
     private final RuntimeException startFailure;
+    private final Error            startError;
     private final AtomicInteger    stops = new AtomicInteger();
 
     StubServer(final RuntimeException startFailure) {
+      this(startFailure, null);
+    }
+
+    StubServer(final RuntimeException startFailure, final Error startError) {
       super(new ContextConfiguration());
       this.startFailure = startFailure;
+      this.startError = startError;
     }
 
     @Override
     public void start() {
       if (startFailure != null)
         throw startFailure;
+      if (startError != null)
+        throw startError;
     }
 
     @Override
@@ -87,6 +95,19 @@ class Issue7798StdioExitStatusTest extends BaseGraphServerTest {
     assertThat(err.toString(StandardCharsets.UTF_8))
         .as("the status must come from the reported failure, not from some other arm")
         .contains("port 2480 already bound");
+  }
+
+  @Test
+  void aStartupThatRunsOutOfStackExitsNonZeroAndStopsTheServer() {
+    final StubServer server = new StubServer(null, new StackOverflowError("stack exhausted during startup"));
+
+    final ByteArrayOutputStream err = new ByteArrayOutputStream();
+    final int status = runCapturingStdErr(err, () -> MCPStdioServer.startup(server, "anyPassword", emptyStdin(),
+        discardedStdout()));
+
+    assertThat(status).as("a supervisor must see a crash, not a clean shutdown").isEqualTo(1);
+    assertThat(server.stops.get()).as("the failure path still runs the finally").isEqualTo(1);
+    assertThat(err.toString(StandardCharsets.UTF_8)).contains("stack exhausted during startup");
   }
 
   @Test

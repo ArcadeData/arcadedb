@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.ast;
 
 import com.arcadedb.database.Document;
+import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -113,6 +114,8 @@ public class MapProjectionExpression implements Expression {
 
     if (variable == null)
       return null;
+
+    DeletedEntityMarker.checkNotDeleted(variable);
 
     final Map<String, Object> projectedMap = new LinkedHashMap<>();
 

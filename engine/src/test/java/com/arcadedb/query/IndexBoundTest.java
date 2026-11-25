@@ -19,6 +19,7 @@
 package com.arcadedb.query;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.index.IndexKeyEquality;
 import com.arcadedb.index.IntegralKeyBound;
@@ -695,6 +696,252 @@ class IndexBoundTest {
       final List<Object> rows = new ArrayList<>();
       try (final ResultSet rs = database.query("opencypher", query, params)) {
         rs.forEachRemaining(r -> rows.add(r.getProperty("i")));
+      }
+      return rows;
+    }
+  }
+
+  /**
+   * Regression for #12694 (the index side): a DECIMAL key has no form for an infinite or NaN double, so the index answered no rows for
+   * {@code dec < (1.0 / 0)} where the scan, and every other numeric key, selects every non-null row. Every query runs on the indexed
+   * type {@code I} and on the identical unindexed type {@code S}, and the two must agree.
+   */
+  @Nested
+  class DecimalIndexNonFiniteBound extends TestHelper {
+    private static final String[] OPERATORS = { "<", "<=", ">", ">=", "=" };
+    private static final String[] INDEXED   = { "d", "u", "n", "h", "x" };
+
+    @Override
+    public void beginTest() {
+      database.transaction(() -> {
+        for (final String type : new String[] { "I", "S" }) {
+          database.command("sql", "CREATE DOCUMENT TYPE " + type);
+          database.command("sql", "CREATE PROPERTY " + type + ".id INTEGER");
+          for (final String property : new String[] { "d", "u", "n", "h", "e", "f", "x" })
+            database.command("sql", "CREATE PROPERTY " + type + "." + property + " DECIMAL");
+          database.command("sql", "CREATE PROPERTY " + type + ".c INTEGER");
+        }
+        database.command("sql", "CREATE INDEX ON I (d) NOTUNIQUE");
+        database.command("sql", "CREATE INDEX ON I (u) UNIQUE");
+        // a NULL_STRATEGY SKIP index does not hold the null keys; x holds them, set to null explicitly, ahead of every other key
+        database.command("sql", "CREATE INDEX ON I (n) NOTUNIQUE NULL_STRATEGY SKIP");
+        database.command("sql", "CREATE INDEX ON I (x) NOTUNIQUE NULL_STRATEGY INDEX");
+        database.command("sql", "CREATE INDEX ON I (h) UNIQUE_HASH");
+        database.command("sql", "CREATE INDEX ON I (c, e) NOTUNIQUE");
+        database.command("sql", "CREATE INDEX ON I (c, f) NOTUNIQUE NULL_STRATEGY SKIP");
+
+        final String[] values = { "-1E+400", "-1.5", "0", "2", "1E+400", null, "-1.5", null };
+        for (final String type : new String[] { "I", "S" })
+          for (int i = 0; i < values.length; i++) {
+            final BigDecimal value = values[i] == null ? null : new BigDecimal(values[i]);
+            final MutableDocument document = database.newDocument(type).set("id", i, "c", i % 2, "x", value);
+            if (value != null)
+              document.set("d", value, "e", value, "f", value, "n", value);
+            // a unique and a hash key must not repeat
+            if (value != null && i != 6)
+              document.set("u", value, "h", value);
+            document.save();
+          }
+      });
+    }
+
+    @Test
+    void theIndexesAreUsed() {
+      for (final String where : new String[] { "d < ?", "u > ?", "n <= ?", "c = 1 AND e < ?", "c = 1 AND f >= ?", "d BETWEEN ? AND ?" })
+        try (final ResultSet rs = database.query("sql", "EXPLAIN SELECT id FROM I WHERE " + where,
+            where.contains("AND ?") ? new Object[] { 1.5d, 2.5d } : new Object[] { 1.5d })) {
+          assertThat(rs.next().<String>getProperty("executionPlanAsString")).as(where).contains("FETCH FROM INDEX");
+        }
+    }
+
+    @Test
+    void everyOperatorOnEveryNonFiniteBoundAgreesWithTheScan() {
+      final Object[] bounds = { Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, Double.NaN, Float.POSITIVE_INFINITY,
+          Float.NEGATIVE_INFINITY, Float.NaN, Double.MAX_VALUE, -Double.MAX_VALUE, Float.MAX_VALUE, -Float.MAX_VALUE, 2.5d, -1.5d };
+      for (final String field : INDEXED)
+        for (final String op : OPERATORS)
+          for (final Object bound : bounds) {
+            final String where = field + " " + op + " ?";
+            assertThat(ids("I", where, bound)).as(where + " with " + describe(bound)).isEqualTo(ids("S", where, bound));
+          }
+    }
+
+    @Test
+    void theRowsOfTheIssueComeBack() {
+      // the three non-null rows of a type with no null and no huge decimal
+      assertThat(ids("I", "d < ?", Double.POSITIVE_INFINITY)).containsExactly(0, 1, 2, 3, 4, 6);
+      assertThat(ids("I", "d > ?", Double.NEGATIVE_INFINITY)).containsExactly(0, 1, 2, 3, 4, 6);
+      assertThat(ids("I", "d < ?", Double.NaN)).containsExactly(0, 1, 2, 3, 4, 6);
+      assertThat(ids("I", "d > ?", Double.POSITIVE_INFINITY)).isEmpty();
+      assertThat(ids("I", "d < ?", Double.NEGATIVE_INFINITY)).isEmpty();
+      assertThat(ids("I", "d > ?", Double.NaN)).isEmpty();
+      assertThat(ids("I", "d <= ?", Float.POSITIVE_INFINITY)).containsExactly(0, 1, 2, 3, 4, 6);
+      assertThat(ids("I", "d >= ?", Float.NEGATIVE_INFINITY)).containsExactly(0, 1, 2, 3, 4, 6);
+      // BETWEEN, in the scan and the index: a bound a decimal has no form for was refused, and the row was not between
+      for (final String type : new String[] { "I", "S" }) {
+        assertThat(ids(type, "d BETWEEN ? AND ?", Double.NEGATIVE_INFINITY, Double.POSITIVE_INFINITY)).as(type)
+            .containsExactly(0, 1, 2, 3, 4, 6);
+        assertThat(ids(type, "d BETWEEN ? AND ?", Double.NEGATIVE_INFINITY, 0.5d)).as(type).containsExactly(0, 1, 2, 6);
+        assertThat(ids(type, "d BETWEEN ? AND ?", 0.5d, Float.NaN)).as(type).containsExactly(3, 4);
+        assertThat(ids(type, "d BETWEEN ? AND ?", Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY)).as(type).isEmpty();
+        assertThat(ids(type, "d BETWEEN ? AND ?", Double.NEGATIVE_INFINITY, Double.NEGATIVE_INFINITY)).as(type).isEmpty();
+      }
+    }
+
+    @Test
+    void sqlLiteralBoundsAgreeWithTheScan() {
+      for (final String field : INDEXED)
+        for (final String op : OPERATORS)
+          for (final String literal : new String[] { "(1.0 / 0)", "(-1.0 / 0)", "(0.0 / 0)", "1e999", "-1e999" }) {
+            final String where = field + " " + op + " " + literal;
+            assertThat(ids("I", where)).as(where).isEqualTo(ids("S", where));
+          }
+    }
+
+    @Test
+    void twoSidedRangesAndBetweenAgreeWithTheScan() {
+      final double[] bounds = { Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, 0.5d, -1.5d };
+      for (final String field : INDEXED)
+        for (final double from : bounds)
+          for (final double to : bounds) {
+            for (final String where : new String[] { field + " BETWEEN ? AND ?", field + " > ? AND " + field + " < ?",
+                field + " >= ? AND " + field + " <= ?" })
+              assertThat(ids("I", where, from, to)).as(where + " with " + from + ", " + to).isEqualTo(ids("S", where, from, to));
+          }
+    }
+
+    @Test
+    void compositeIndexesKeepThePrefixAndTheNullKeys() {
+      final Object[] bounds = { Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, Double.NaN, Float.POSITIVE_INFINITY, 0.5d };
+      for (final String field : new String[] { "e", "f" })
+        for (final String prefix : new String[] { "c = 0", "c = 1", "c = 2" })
+          for (final String op : OPERATORS)
+            for (final Object bound : bounds) {
+              final String where = prefix + " AND " + field + " " + op + " ?";
+              assertThat(ids("I", where, bound)).as(where + " with " + describe(bound)).isEqualTo(ids("S", where, bound));
+            }
+      final double[] ends = { Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, 0.5d };
+      for (final String field : new String[] { "e", "f" })
+        for (final double from : ends)
+          for (final double to : ends)
+            for (final String where : new String[] { "c = 1 AND " + field + " BETWEEN ? AND ?",
+                "c = 1 AND " + field + " > ? AND " + field + " < ?" })
+              assertThat(ids("I", where, from, to)).as(where + " with " + from + ", " + to).isEqualTo(ids("S", where, from, to));
+    }
+
+    @Test
+    void anInListPrefixMapsEverySeekOfTheCompositeRange() {
+      // one seek per IN element, each of them mapped and then put in index order: every row of both prefixes, and no null key
+      final List<Integer> prefixes = List.of(1, 0, 2);
+      for (final String field : new String[] { "e", "f" }) {
+        try (final ResultSet rs = database.query("sql", "EXPLAIN SELECT id FROM I WHERE c IN ? AND " + field + " < ?", prefixes, 1.5d)) {
+          assertThat(rs.next().<String>getProperty("executionPlanAsString")).as(field).contains("FETCH FROM INDEX");
+        }
+        for (final String op : OPERATORS)
+          for (final Object bound : new Object[] { Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, Double.NaN, Float.NaN, 0.5d }) {
+            final String where = "c IN ? AND " + field + " " + op + " ?";
+            assertThat(ids("I", where, prefixes, bound)).as(where + " with " + describe(bound))
+                .isEqualTo(ids("S", where, prefixes, bound));
+            for (final String order : new String[] { " ORDER BY c, " + field, " ORDER BY c DESC, " + field + " DESC" })
+              assertThat(ordered("I", where + order, prefixes, bound)).as(where + order + " with " + describe(bound))
+                  .isEqualTo(ordered("S", where + order, prefixes, bound));
+          }
+        assertThat(ids("I", "c IN ? AND " + field + " < ?", prefixes, Double.POSITIVE_INFINITY)).containsExactly(0, 1, 2, 3, 4, 6);
+      }
+    }
+
+    @Test
+    void descendingOrderAndInListsAgreeWithTheScan() {
+      // ids 1 and 6 share d = -1.5: the id breaks the tie, the order of two equal keys is not specified
+      for (final String where : new String[] { "d < ? ORDER BY d DESC, id", "d > ? ORDER BY d DESC, id", "d >= ? ORDER BY d, id",
+          "d <= ? ORDER BY d, id" })
+        for (final Object bound : new Object[] { Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, Double.NaN })
+          assertThat(ordered("I", where, bound)).as(where + " with " + describe(bound)).isEqualTo(ordered("S", where, bound));
+      for (final String field : INDEXED)
+        assertThat(ids("I", field + " IN ?", List.of(Double.POSITIVE_INFINITY, Double.NaN, 2.0d)))
+            .isEqualTo(ids("S", field + " IN ?", List.of(Double.POSITIVE_INFINITY, Double.NaN, 2.0d)));
+    }
+
+    @Test
+    void fluentSelectAgreesWithTheScan() {
+      // the fluent API seeks the index with its own bound handling: an infinite bound on a DECIMAL key answered no row there too
+      final Object[] bounds = { Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, Double.NaN, Float.POSITIVE_INFINITY,
+          Float.NEGATIVE_INFINITY, Float.NaN, 0.5d };
+      final SelectOperator[] operators = { SelectOperator.eq, SelectOperator.lt, SelectOperator.le, SelectOperator.gt, SelectOperator.ge };
+      for (final String field : INDEXED)
+        for (final SelectOperator operator : operators)
+          for (final Object bound : bounds)
+            for (final int limit : new int[] { -1, 1, 3 }) {
+              if (field.equals("h") && operator != SelectOperator.eq)
+                // a HASH index answers no range, which the fluent API does not check for yet (issue #13372)
+                continue;
+              final String what = field + " " + operator + " " + describe(bound) + " limit " + limit;
+              assertThat(fluent("I", field, operator, limit, bound)).as(what).isEqualTo(fluent("S", field, operator, limit, bound));
+            }
+      final double[] ends = { Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, 0.5d };
+      for (final String field : new String[] { "d", "u", "n", "x" })
+        for (final double from : ends)
+          for (final double to : ends)
+            for (final int limit : new int[] { -1, 1 })
+              assertThat(fluent("I", field, SelectOperator.between, limit, from, to))
+                  .as(field + " between " + from + " and " + to + " limit " + limit)
+                  .isEqualTo(fluent("S", field, SelectOperator.between, limit, from, to));
+
+      assertThat(fluent("I", "d", SelectOperator.lt, -1, Double.POSITIVE_INFINITY)).containsExactly(0, 1, 2, 3, 4, 6);
+      assertThat(fluent("I", "d", SelectOperator.gt, -1, Double.NEGATIVE_INFINITY)).containsExactly(0, 1, 2, 3, 4, 6);
+      assertThat(fluent("I", "n", SelectOperator.ge, 2, Float.NEGATIVE_INFINITY)).hasSize(2);
+      assertThat(fluent("I", "d", SelectOperator.between, -1, Double.NEGATIVE_INFINITY, Double.POSITIVE_INFINITY))
+          .containsExactly(0, 1, 2, 3, 4, 6);
+      assertThat(fluent("I", "d", SelectOperator.gt, -1, Double.POSITIVE_INFINITY)).isEmpty();
+      assertThat(fluent("I", "d", SelectOperator.lt, -1, Double.NEGATIVE_INFINITY)).isEmpty();
+      // the null keys sort first: an open lower end that started at them spent the limit on rows the condition then dropped, with
+      // a finite bound too
+      for (final Object bound : new Object[] { Double.POSITIVE_INFINITY, 0.5d, 3 })
+        for (final SelectOperator operator : new SelectOperator[] { SelectOperator.lt, SelectOperator.le })
+          assertThat(fluent("I", "x", operator, 1, bound)).as("x " + operator + " " + describe(bound)).hasSize(1);
+    }
+
+    /**
+     * The ids the fluent API answers, sorted. With a limit only the count is compared: which rows come first is not specified,
+     * but the cap on the candidates an index cursor yields must not cut the answer short.
+     */
+    private List<Integer> fluent(final String type, final String property, final SelectOperator operator, final int limit,
+        final Object... value) {
+      final SelectWhereOperatorBlock where = database.select().fromType(type).where().property(property);
+      final SelectWhereAfterBlock after = switch (operator) {
+        case lt -> where.lt().value(value[0]);
+        case le -> where.le().value(value[0]);
+        case gt -> where.gt().value(value[0]);
+        case ge -> where.ge().value(value[0]);
+        case eq -> where.eq().value(value[0]);
+        default -> where.between().values(value[0], value[1]);
+      };
+      if (limit > 0)
+        after.limit(limit);
+      final List<Integer> rows = new ArrayList<>();
+      after.documents().forEachRemaining(d -> rows.add(d.getInteger("id")));
+      if (limit > 0) {
+        final List<Integer> sized = new ArrayList<>();
+        for (int i = 0; i < rows.size(); i++)
+          sized.add(-1);
+        return sized;
+      }
+      rows.sort(null);
+      return rows;
+    }
+
+    private static String describe(final Object bound) {
+      return bound.getClass().getSimpleName() + " " + bound;
+    }
+
+    private List<Integer> ids(final String type, final String where, final Object... args) {
+      return ordered(type, where + (where.contains("ORDER BY") ? "" : " ORDER BY id"), args);
+    }
+
+    private List<Integer> ordered(final String type, final String where, final Object... args) {
+      final List<Integer> rows = new ArrayList<>();
+      try (final ResultSet rs = database.query("sql", "SELECT id FROM " + type + " WHERE " + where, args)) {
+        rs.forEachRemaining(r -> rows.add(r.getProperty("id")));
       }
       return rows;
     }

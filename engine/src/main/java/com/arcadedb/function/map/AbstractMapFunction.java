@@ -18,6 +18,7 @@
  */
 package com.arcadedb.function.map;
 
+import com.arcadedb.database.Document;
 import com.arcadedb.function.StatelessFunction;
 
 import java.util.Map;
@@ -42,7 +43,7 @@ public abstract class AbstractMapFunction implements StatelessFunction {
   }
 
   /**
-   * Safely extract a Map from an argument.
+   * Safely extract a Map from an argument. A node or relationship is the map of its properties, as for an APOC map argument.
    */
   @SuppressWarnings("unchecked")
   protected Map<String, Object> asMap(final Object arg) {
@@ -51,6 +52,11 @@ public abstract class AbstractMapFunction implements StatelessFunction {
     if (arg instanceof Map) {
       return (Map<String, Object>) arg;
     }
+    // The properties only (no @rid, @type and the other metadata entries Document.toMap() adds), read in one pass over the record
+    // header: a get() per property name walks the header again for each one. Only a node or relationship argument pays for the
+    // copy, a map argument is read as it is
+    if (arg instanceof Document document)
+      return document.toMap(false);
     throw new IllegalArgumentException("Expected a map, got " + arg.getClass().getSimpleName());
   }
 }

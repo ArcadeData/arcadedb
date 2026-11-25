@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.antlr;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.DownsamplingTier;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.function.FunctionRegistry;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.query.literal.LiteralParameterizer;
@@ -249,6 +250,10 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    * vector.size()}) for as long as no function is registered under that name: a registered name ({@code vector.max()}) wins
    * over the method of a property called {@code vector}, as the run-time lookup this replaced already did, and back-ticking the
    * property ({@code `vector`.max()}) makes it a property again (issue #9076).
+   * <p>
+   * The set is read for a single identifier before the call only. A longer chain ({@code node.relationship.exists(n)},
+   * {@code apoc.text.indexOf(s, t)}) is a function call when it spells a registered function, or always when it starts with
+   * {@code apoc.}; any other ({@code map.a.size()}) stays a property chain (issue #12086).
    */
   private static final Set<String> FUNCTION_NAMESPACES = Set.of("ts", "geo", "text", "math", "convert", "date", "util", "coll",
       "map", "agg", "node", "rel", "path", "create");
@@ -408,6 +413,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    * map.get('x') = 1}) still parses as the namespaced function {@code map.get}. That ambiguity predates aliases -
    * it applies to any property named {@code map}, {@code ts}, {@code geo}, ... - and is left as is; backtick-quote
    * the alias (or the property, as in {@code `map`.values()}), or pick another name, to address the record instead.
+   * The same holds for an alias called {@code apoc} followed by a longer chain: {@code SELECT FROM Foo apoc WHERE
+   * apoc.name.toUpperCase() = 'X'} parses as the function {@code apoc.name.toUpperCase}, since every multi-part name that
+   * starts with {@code apoc.} is a function call (issue #12086). The same back-ticks address the record.
    *
    * @return {@code expr}, rewritten in place when it was alias-qualified
    */
@@ -801,7 +809,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       // -9223372036854775808: only the negated literal fits a long
       if (negative)
         try {
-          return Long.parseLong("-" + (text.endsWith("L") || text.endsWith("l") ? text.substring(0, text.length() - 1) : text));
+          return parseNegatedLongLiteral(text);
         } catch (final NumberFormatException ignored) {
           // reported below
         }
@@ -3433,17 +3441,20 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     for (int i = 0; i < text.length(); i++)
       if (!Character.isDigit(text.charAt(i)))
-        return null; // hex/octal-shaped: not the plain-decimal shape we fold here
+        return null; // hex-shaped: not the digits-only shape we fold here
 
+    // a leading 0 makes the digits octal (#12082): the magnitude of Long.MIN_VALUE is 01000000000000000000000. `text` is the
+    // digits without the L suffix, tested for fit here; the fold below takes `originalText` and strips the suffix itself
+    final int radix = integerLiteralRadix(text);
     try {
-      Long.parseLong(text);
+      Long.parseLong(text, radix);
       return null; // magnitude fits on its own: let the existing 0 - X handling run as before
     } catch (final NumberFormatException magnitudeOverflow) {
       // only Long.MIN_VALUE's magnitude can still be represented once the sign is folded in;
       // anything larger is a genuine overflow and keeps raising the original error
       try {
         final BaseExpression baseExpr = new BaseExpression();
-        baseExpr.number = new PInteger().setValue(Long.parseLong("-" + text));
+        baseExpr.number = new PInteger().setValue(parseNegatedLongLiteral(originalText));
         return baseExpr;
       } catch (final NumberFormatException stillInvalid) {
         throw new CommandSQLParsingException("Invalid integer: " + originalText);
@@ -3578,15 +3589,20 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
-   * Parses an {@code INTEGER_LITERAL} token: decimal or hexadecimal ({@code 0xFF}), with an optional {@code L} suffix. A value
-   * above {@code Integer.MAX_VALUE} (hexadecimal included, so {@code 0xFFFFFFFF} is 4294967295 and not -1) is a long.
+   * Parses the {@code INTEGER_LITERAL} token of a numeric literal: decimal, hexadecimal ({@code 0xFF}) or octal (a leading
+   * {@code 0} followed by more digits: {@code 010} is 8, as the documentation and the lexer's {@code OCTAL_LITERAL} say, issue
+   * #12082), with an optional {@code L} suffix. A value above {@code Integer.MAX_VALUE} (hexadecimal and octal included, so
+   * {@code 0xFFFFFFFF} is 4294967295 and not -1) is a long.
+   * <p>
+   * Only the positions that read a numeric value come here. The positions that name something with a number (a bucket id, a
+   * bucket or shard count, a page size, a retry count, a {@code $N} parameter, the parts of a RID) keep reading plain decimal
+   * digits, as they always did: {@code bucket:010} is bucket 10, like {@code #10:0}.
    */
   static Number parseIntegerLiteral(final String text) {
     final boolean isLong = text.endsWith("L") || text.endsWith("l");
     final String digits = isLong ? text.substring(0, text.length() - 1) : text;
-    final boolean isHex = digits.length() > 2 && digits.charAt(0) == '0' && (digits.charAt(1) == 'x' || digits.charAt(1) == 'X');
-    final String body = isHex ? digits.substring(2) : digits;
-    final int radix = isHex ? 16 : 10;
+    final int radix = integerLiteralRadix(digits);
+    final String body = radix == 16 ? digits.substring(2) : digits;
     if (isLong)
       return Long.parseLong(body, radix);
     try {
@@ -3595,6 +3611,30 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       // If it's too large for int, try long
       return Long.parseLong(body, radix);
     }
+  }
+
+  /**
+   * The value of a directly negated {@code INTEGER_LITERAL} (optionally {@code L}-suffixed) whose magnitude does not fit a
+   * long on its own: only the magnitude of {@code Long.MIN_VALUE} can still be represented once the sign is folded in, anything
+   * larger raises {@link NumberFormatException}. The digits are read in the radix {@link #parseIntegerLiteral} reads them in,
+   * except that a hexadecimal one is refused (the {@code x} of its prefix is no digit): folding the minimum of a hexadecimal
+   * literal was never accepted.
+   */
+  static long parseNegatedLongLiteral(final String text) {
+    final String digits = text.endsWith("L") || text.endsWith("l") ? text.substring(0, text.length() - 1) : text;
+    return Long.parseLong("-" + digits, integerLiteralRadix(digits));
+  }
+
+  /**
+   * The radix of the digits of an {@code INTEGER_LITERAL} without its {@code L} suffix: 16 for {@code 0x}, 8 for a leading
+   * {@code 0} followed by more digits, 10 otherwise ({@code 0} alone is 0).
+   */
+  private static int integerLiteralRadix(final String digits) {
+    if (digits.length() > 1 && digits.charAt(0) == '0') {
+      final char second = digits.charAt(1);
+      return second == 'x' || second == 'X' ? 16 : 8;
+    }
+    return 10;
   }
 
   /**
@@ -3964,18 +4004,19 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     if (ctx.identifier() != null) {
       final SQLParser.IdentifierContext firstIdCtx = ctx.identifier();
 
-      // Detect namespace-qualified function calls: geo.methodName(args), vector.sum(v)
-      // Pattern: exactly one base identifier, no additional DOT-identifiers and at least one methodCall, where the first
-      // methodCall names a function of that namespace → rewrite as FunctionCall("namespace.methodName", args) and chain
-      // whatever follows it as modifiers. Done here, on the AST, because everything the planner decides about a call (whether
-      // it aggregates above all) it decides by walking the AST.
-      if (ctx.propertyName().isEmpty() && CollectionUtils.isNotEmpty(ctx.methodCall())
+      // Detect namespace-qualified function calls: geo.methodName(args), vector.sum(v), node.relationship.exists(n),
+      // apoc.text.indexOf(s, t)
+      // Pattern: a base identifier, any DOT-identifiers and at least one methodCall, where the dotted name up to and including
+      // the first methodCall names a function → rewrite as FunctionCall("namespace.methodName", args) and chain whatever follows
+      // it as modifiers. Done here, on the AST, because everything the planner decides about a call (whether it aggregates
+      // above all) it decides by walking the AST.
+      if (CollectionUtils.isNotEmpty(ctx.methodCall())
           && firstIdCtx.RID_ATTR() == null && firstIdCtx.TYPE_ATTR() == null
           && firstIdCtx.IN_ATTR() == null && firstIdCtx.OUT_ATTR() == null && firstIdCtx.THIS() == null
           && firstIdCtx.CAT_ATTR() == null) {
-        final String baseIdText = firstIdCtx.getText();
-        if (isNamespacedFunctionCall(baseIdText, ctx.methodCall(0)))
-          return buildNamespaceQualifiedFunctionCall(baseIdText, ctx.methodCall(), ctx);
+        final String qualifier = functionQualifier(firstIdCtx, ctx.propertyName());
+        if (qualifier != null && isNamespacedFunctionCall(qualifier, !ctx.propertyName().isEmpty(), ctx.methodCall(0)))
+          return buildNamespaceQualifiedFunctionCall(qualifier, ctx.methodCall(), ctx);
       }
 
       // Check if the first identifier is a record attribute (@rid, @type, @in, @out, @this),
@@ -4064,15 +4105,47 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
-   * Whether {@code <baseIdText>.<methodCall>(...)} is a call of the function {@code <baseIdText>.<methodCall>} rather than a
-   * method call on a property called {@code baseIdText}: the namespaces of {@link #FUNCTION_NAMESPACES} always are, any other is
-   * exactly when that function is registered. A back-ticked identifier is a property, never a namespace (issue #9076), and its
+   * The dotted name a call written as {@code <base>.<p1>...<pN>.<method>(...)} would be a function of: the base alone when the
+   * chain has no property names, {@code base.p1...pN} otherwise. Null when a property name is back-ticked or a record attribute
+   * ({@code @rid}...), since such a chain addresses a record and never spells a function name.
+   */
+  private static String functionQualifier(final SQLParser.IdentifierContext firstIdCtx,
+      final List<SQLParser.PropertyNameContext> propertyNames) {
+    final String baseIdText = firstIdCtx.getText();
+    if (propertyNames.isEmpty())
+      return baseIdText;
+    if (!isPlainNameSegment(baseIdText))
+      return null;
+
+    final StringBuilder qualifier = new StringBuilder(baseIdText);
+    for (final SQLParser.PropertyNameContext propCtx : propertyNames) {
+      final String segment = propCtx.getText();
+      if (!isPlainNameSegment(segment))
+        return null;
+      qualifier.append('.').append(segment);
+    }
+    return qualifier.toString();
+  }
+
+  private static boolean isPlainNameSegment(final String segment) {
+    return !segment.isEmpty() && segment.charAt(0) != '`' && segment.charAt(0) != '@';
+  }
+
+  /**
+   * Whether {@code <qualifier>.<methodCall>(...)} is a call of the function {@code <qualifier>.<methodCall>} rather than a
+   * method call on the property chain {@code qualifier}: exactly when that function is registered (any letter case, with or
+   * without the {@code apoc.} prefix, as {@link FunctionRegistry} resolves it for SQL and Cypher alike), and also, for an unknown
+   * function, when a single-identifier qualifier is one of the {@link #FUNCTION_NAMESPACES} or a multi-part qualifier starts with
+   * {@code apoc.}, so that a typo is reported as an unknown function and not answered as a method call on a missing property
+   * (issue #12086). Any other multi-part qualifier ({@code a.b.size()}, {@code node.label.toUpperCase()}) stays a property chain
+   * unless it spells a registered function. A back-ticked identifier is a property, never a namespace (issue #9076), and its
    * text keeps the back-ticks, so it matches neither.
    */
-  private static boolean isNamespacedFunctionCall(final String baseIdText, final SQLParser.MethodCallContext methodCtx) {
-    if (FUNCTION_NAMESPACES.contains(baseIdText.toLowerCase(Locale.ROOT)))
+  private static boolean isNamespacedFunctionCall(final String qualifier, final boolean multipart,
+      final SQLParser.MethodCallContext methodCtx) {
+    if (multipart ? FunctionRegistry.hasApocPrefix(qualifier) : FUNCTION_NAMESPACES.contains(qualifier.toLowerCase(Locale.ROOT)))
       return true;
-    return DefaultSQLFunctionFactory.getInstance().hasNamespacedFunction(baseIdText + "." + methodCtx.identifier().getText());
+    return DefaultSQLFunctionFactory.getInstance().hasNamespacedFunction(qualifier + "." + methodCtx.identifier().getText());
   }
 
   /**
@@ -4744,7 +4817,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
-   * Visit integer (positive or negative integer for RIDs).
+   * Visit integer (positive or negative integer for RIDs). The parts of a RID are read in decimal, as the RID's own text form
+   * ({@code #12:10}, {@code new RID("#12:010")}) is: a record address, not a numeric literal, so {@code #12:010} is
+   * {@code #12:10} and not the octal {@code #12:8} (issue #12082).
    */
   @Override
   public PInteger visitInteger(final SQLParser.IntegerContext ctx) {
@@ -7190,7 +7265,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
       // The first tsRetentionUnit after RETENTION belongs to RETENTION
       final long multiplier = resolveTimeUnitAfterKeyword(bodyCtx, SQLParser.RETENTION, 86400000L);
-      stmt.retentionMs = retentionValue * multiplier;
+      stmt.retentionMs = Math.multiplyExact(retentionValue, multiplier);
     }
 
     // COMPACTION_INTERVAL or COMPACTION INTERVAL - value with optional time unit
@@ -7214,7 +7289,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       }
 
       final long multiplier = resolveTimeUnitAfterKeyword(bodyCtx, compactionTokenType, 3600000L);
-      stmt.compactionIntervalMs = compactionValue * multiplier;
+      stmt.compactionIntervalMs = Math.multiplyExact(compactionValue, multiplier);
     }
 
     // DOWNSAMPLING POLICY AFTER ... GRANULARITY ... (issue #7689). Same tier clause, and the same ascending sort,
@@ -8550,8 +8625,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       final String[] parts = inclusive ? tokenText.split("\\.\\.\\.") : tokenText.split("\\.\\.");
 
       if (parts.length == 2) {
-        final int from = Integer.parseInt(parts[0].trim());
-        final int to = Integer.parseInt(parts[1].trim());
+        final int from = parseRangeBound(parts[0].trim());
+        final int to = parseRangeBound(parts[1].trim());
 
         // Set from and to fields
         selector.from = from;
@@ -8569,6 +8644,16 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     }
 
     return selector;
+  }
+
+  /**
+   * A bound of an integer range token ({@code [01..010]}, optionally negative): a leading {@code 0} followed by more digits is
+   * octal like in every numeric literal, so the token and {@code [01 .. 010]}, which goes through the expression parser, agree
+   * (issue #12082). Hexadecimal and the {@code L} suffix were never accepted in the token and still raise
+   * {@link NumberFormatException}: neither the {@code x} nor the {@code L} is a digit of the radix chosen.
+   */
+  private static int parseRangeBound(final String text) {
+    return Integer.parseInt(text, integerLiteralRadix(text.startsWith("-") ? text.substring(1) : text));
   }
 
   /**

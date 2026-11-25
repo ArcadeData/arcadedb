@@ -18,6 +18,8 @@
  */
 package com.arcadedb.engine;
 
+import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.ConfigurationException;
@@ -934,16 +936,37 @@ public class WALFile extends LockContext {
   }
 
   public static FlushType getWALFlushType(final int txFlushType) {
-    switch (txFlushType) {
-    case 0:
-      return FlushType.NO;
-    case 1:
-      return FlushType.YES_NOMETADATA;
-    case 2:
-      return FlushType.YES_FULL;
-    default:
+    final FlushType flushType = flushTypeOf(txFlushType);
+    if (flushType == null)
       throw new ConfigurationException("Invalid TX_WAL_FLUSH setting " + txFlushType);
-    }
+    return flushType;
+  }
+
+  /**
+   * The flush mode a database's {@code configuration} sets through {@link GlobalConfiguration#TX_WAL_FLUSH}, read whenever a
+   * transaction context is built. Every writer of external text refuses a value outside 0..2 before storing it, but
+   * {@link ContextConfiguration#setValue(GlobalConfiguration, Object)} stores what the API hands it: such a value falls back to the
+   * global one with a warning instead of failing every transaction of the database, its open and its drop included (issue #12817).
+   */
+  public static FlushType getWALFlushType(final ContextConfiguration configuration) {
+    final int configured = configuration.getValueAsInteger(GlobalConfiguration.TX_WAL_FLUSH);
+    final FlushType flushType = flushTypeOf(configured);
+    if (flushType != null)
+      return flushType;
+
+    final int fallback = GlobalConfiguration.TX_WAL_FLUSH.getValueAsInteger();
+    LogManager.instance().log(null, Level.WARNING, "Invalid value %d for setting '%s': the allowed values are 0, 1 and 2. Using %d",
+        configured, GlobalConfiguration.TX_WAL_FLUSH.getKey(), fallback);
+    return getWALFlushType(fallback);
+  }
+
+  private static FlushType flushTypeOf(final int txFlushType) {
+    return switch (txFlushType) {
+      case 0 -> FlushType.NO;
+      case 1 -> FlushType.YES_NOMETADATA;
+      case 2 -> FlushType.YES_FULL;
+      default -> null;
+    };
   }
 
   private long readLong(final long pos) throws IOException {

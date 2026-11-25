@@ -117,12 +117,12 @@ public class AlgoKNN extends AbstractAlgoProcedure {
     if (k == 0)
       return Stream.empty();
 
-    // |N(u)| and |N(v)| in the union count every entry, a parallel edge included; the intersection counts distinct neighbours
+    // |N(u)| and |N(v)| are the sizes of the neighbour sets: a parallel or a reciprocal relationship is one neighbour (issue #12934)
     final int[][] adj = graph.adjacency(dir, relTypes);
+    toDistinctNeighbours(adj, guard);
     final int[] degree = new int[n];
     for (int i = 0; i < n; i++)
       degree[i] = adj[i].length;
-    toDistinctNeighbours(adj, guard);
     // v lists w in its row exactly as often as w lists v in its row of the opposite direction: the walk from u reaches every v
     // that shares a neighbour with it through that row (issue #12172)
     final int[][] back;

@@ -20,6 +20,7 @@ package com.arcadedb.query.sql;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.ValidationException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Nested;
@@ -125,7 +126,7 @@ class SqlExistingRecordsDdlTest {
     void mandatoryIsRefusedWhenARecordLacksTheProperty() {
       load();
       assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY T.v MANDATORY true"))
-          .isInstanceOf(CommandExecutionException.class).hasMessageContaining("T.v").hasMessageContaining("mandatory");
+          .isInstanceOf(ValidationException.class).hasMessageContaining("T.v").hasMessageContaining("mandatory");
       assertThat(database.getSchema().getType("T").getProperty("v").isMandatory()).isFalse();
     }
 
@@ -135,7 +136,7 @@ class SqlExistingRecordsDdlTest {
       database.command("sql", "CREATE PROPERTY N.v INTEGER");
       database.transaction(() -> database.newDocument("N").set("v", (Object) null).save());
       assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY N.v NOTNULL true"))
-          .isInstanceOf(CommandExecutionException.class).hasMessageContaining("cannot be null");
+          .isInstanceOf(ValidationException.class).hasMessageContaining("cannot be null");
       assertThat(database.getSchema().getType("N").getProperty("v").isNotNull()).isFalse();
     }
 
@@ -145,7 +146,7 @@ class SqlExistingRecordsDdlTest {
       // NOTNULL alone only rejects an explicit null, so it is accepted; MANDATORY is the one refused
       database.command("sql", "ALTER PROPERTY T.v NOTNULL true");
       assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY T.v MANDATORY true"))
-          .isInstanceOf(CommandExecutionException.class);
+          .isInstanceOf(ValidationException.class);
       assertThat(count("SELECT id FROM T")).isEqualTo(5);
       assertThat(count("SELECT FROM T ORDER BY v")).isEqualTo(5);
     }
@@ -185,7 +186,7 @@ class SqlExistingRecordsDdlTest {
       load();
       assertThatThrownBy(() -> database.command("sqlscript",
           "CREATE DOCUMENT TYPE Other;\nALTER PROPERTY T.v MANDATORY true;"))
-          .isInstanceOf(CommandExecutionException.class);
+          .isInstanceOf(ValidationException.class);
       assertThat(database.getSchema().getType("T").getProperty("v").isMandatory()).isFalse();
     }
 
@@ -196,7 +197,7 @@ class SqlExistingRecordsDdlTest {
       database.command("sql", "CREATE DOCUMENT TYPE C EXTENDS P");
       database.transaction(() -> database.newDocument("C").set("other", 1).save());
       assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY P.v MANDATORY true"))
-          .isInstanceOf(CommandExecutionException.class).hasMessageContaining("#").hasMessageContaining("is mandatory");
+          .isInstanceOf(ValidationException.class).hasMessageContaining("#").hasMessageContaining("is mandatory");
     }
   }
 
@@ -224,7 +225,7 @@ class SqlExistingRecordsDdlTest {
     void createPropertyRefusesStringOverInteger() {
       database.command("sql", "CREATE DOCUMENT TYPE T");
       insert("T", "v = 'abc'");
-      assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY T.v INTEGER")).isInstanceOf(CommandExecutionException.class)
+      assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY T.v INTEGER")).isInstanceOf(ValidationException.class)
           .hasMessageContaining("T.v").hasMessageContaining("abc");
       assertThat(hasProperty("T", "v")).isFalse();
     }
@@ -233,7 +234,7 @@ class SqlExistingRecordsDdlTest {
     void createPropertyRefusesBooleanOverInteger() {
       database.command("sql", "CREATE DOCUMENT TYPE T");
       insert("T", "v = true");
-      assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY T.v INTEGER")).isInstanceOf(CommandExecutionException.class);
+      assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY T.v INTEGER")).isInstanceOf(ValidationException.class);
       assertThat(hasProperty("T", "v")).isFalse();
     }
 
@@ -242,7 +243,7 @@ class SqlExistingRecordsDdlTest {
       database.command("sql", "CREATE DOCUMENT TYPE T");
       insert("T", "v = 'not a date'");
       assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY T.v DATETIME")).isInstanceOf(
-          CommandExecutionException.class);
+          ValidationException.class);
       assertThat(hasProperty("T", "v")).isFalse();
     }
 
@@ -263,7 +264,7 @@ class SqlExistingRecordsDdlTest {
       database.command("sql", "CREATE DOCUMENT TYPE C EXTENDS P");
       insert("C", "v = 'abc'");
       assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY P.v INTEGER")).isInstanceOf(
-          CommandExecutionException.class);
+          ValidationException.class);
       assertThat(hasProperty("P", "v")).isFalse();
     }
 
@@ -273,7 +274,7 @@ class SqlExistingRecordsDdlTest {
       insert("C", "id = 1, v = 10");
       insert("C", "id = 2");
       assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY C.v INTEGER (mandatory true, notnull true)")).isInstanceOf(
-          CommandExecutionException.class).hasMessageContaining("C.v");
+          ValidationException.class).hasMessageContaining("C.v");
       assertThat(hasProperty("C", "v")).isFalse();
     }
 
@@ -282,7 +283,7 @@ class SqlExistingRecordsDdlTest {
       database.command("sql", "CREATE DOCUMENT TYPE N");
       insert("N", "id = 1, v = null");
       assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY N.v INTEGER (notnull true)")).isInstanceOf(
-          CommandExecutionException.class);
+          ValidationException.class);
       assertThat(hasProperty("N", "v")).isFalse();
     }
 
@@ -291,11 +292,11 @@ class SqlExistingRecordsDdlTest {
       database.command("sql", "CREATE DOCUMENT TYPE M");
       insert("M", "id = 1, a = 5, b = 25, c = 'ABC'");
       assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY M.a INTEGER (min 10)")).isInstanceOf(
-          CommandExecutionException.class);
+          ValidationException.class);
       assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY M.b INTEGER (max 20)")).isInstanceOf(
-          CommandExecutionException.class);
+          ValidationException.class);
       assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY M.c STRING (regexp '[a-z]+')")).isInstanceOf(
-          CommandExecutionException.class);
+          ValidationException.class);
       assertThat(hasProperty("M", "a") || hasProperty("M", "b") || hasProperty("M", "c")).isFalse();
     }
 
@@ -318,11 +319,11 @@ class SqlExistingRecordsDdlTest {
       database.command("sql", "CREATE PROPERTY T.b INTEGER");
       database.command("sql", "CREATE PROPERTY T.c STRING");
       insert("T", "a = 5, b = 25, c = 'ABC'");
-      assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY T.a MIN 10")).isInstanceOf(CommandExecutionException.class)
+      assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY T.a MIN 10")).isInstanceOf(ValidationException.class)
           .hasMessageContaining("T.a");
-      assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY T.b MAX 20")).isInstanceOf(CommandExecutionException.class);
+      assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY T.b MAX 20")).isInstanceOf(ValidationException.class);
       assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY T.c REGEXP '[a-z]+'")).isInstanceOf(
-          CommandExecutionException.class);
+          ValidationException.class);
       assertThat(database.getSchema().getType("T").getProperty("a").getMin()).isNull();
       assertThat(database.getSchema().getType("T").getProperty("b").getMax()).isNull();
       assertThat(database.getSchema().getType("T").getProperty("c").getRegexp()).isNull();
@@ -366,7 +367,7 @@ class SqlExistingRecordsDdlTest {
     void refusedCreatePropertyCanBeRetriedAfterFixingTheData() {
       database.command("sql", "CREATE DOCUMENT TYPE T");
       insert("T", "v = 'abc'");
-      assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY T.v INTEGER")).isInstanceOf(CommandExecutionException.class);
+      assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY T.v INTEGER")).isInstanceOf(ValidationException.class);
       assertThat(hasProperty("T", "v")).isFalse();
       database.transaction(() -> database.command("sql", "UPDATE T SET v = 5").close());
       database.command("sql", "CREATE PROPERTY T.v INTEGER");
@@ -402,7 +403,7 @@ class SqlExistingRecordsDdlTest {
     void createPlainStringPropertyOverStoredNumbersIsRefused() {
       database.command("sql", "CREATE DOCUMENT TYPE T");
       insert("T", "s = 5");
-      assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY T.s STRING")).isInstanceOf(CommandExecutionException.class)
+      assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY T.s STRING")).isInstanceOf(ValidationException.class)
           .hasMessageContaining("STRING");
       assertThat(hasProperty("T", "s")).isFalse();
     }
@@ -422,7 +423,7 @@ class SqlExistingRecordsDdlTest {
       database.command("sql", "CREATE PROPERTY P.v INTEGER");
       database.command("sql", "CREATE DOCUMENT TYPE C EXTENDS P");
       insert("C", "v = 5");
-      assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY P.v MIN 10")).isInstanceOf(CommandExecutionException.class);
+      assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY P.v MIN 10")).isInstanceOf(ValidationException.class);
       assertThat(database.getSchema().getType("P").getProperty("v").getMin()).isNull();
     }
 
@@ -430,7 +431,7 @@ class SqlExistingRecordsDdlTest {
     void createPropertyRefusesALossyNarrowing() {
       database.command("sql", "CREATE DOCUMENT TYPE T");
       insert("T", "v = 3000000000");
-      assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY T.v INTEGER")).isInstanceOf(CommandExecutionException.class)
+      assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY T.v INTEGER")).isInstanceOf(ValidationException.class)
           .hasMessageContaining("3000000000");
       assertThat(hasProperty("T", "v")).isFalse();
       database.command("sql", "CREATE PROPERTY T.v LONG");
@@ -457,7 +458,7 @@ class SqlExistingRecordsDdlTest {
       database.command("sql", "CREATE DOCUMENT TYPE T");
       insert("T", "v = 5");
       assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY T.v INTEGER (mandatory true, min 10)")).isInstanceOf(
-          CommandExecutionException.class);
+          ValidationException.class);
       assertThat(hasProperty("T", "v")).isFalse();
     }
 
@@ -465,7 +466,7 @@ class SqlExistingRecordsDdlTest {
     void createPropertyRefusesNaNOverAnIntegralType() {
       database.command("sql", "CREATE DOCUMENT TYPE T");
       database.transaction(() -> database.newDocument("T").set("v", Double.NaN).save());
-      assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY T.v INTEGER")).isInstanceOf(CommandExecutionException.class);
+      assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY T.v INTEGER")).isInstanceOf(ValidationException.class);
       assertThat(hasProperty("T", "v")).isFalse();
     }
 
@@ -482,7 +483,7 @@ class SqlExistingRecordsDdlTest {
     void createPropertyRefusesAnOverflowingStringOverInteger() {
       database.command("sql", "CREATE DOCUMENT TYPE T");
       insert("T", "v = '3000000000'");
-      assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY T.v INTEGER")).isInstanceOf(CommandExecutionException.class);
+      assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY T.v INTEGER")).isInstanceOf(ValidationException.class);
       assertThat(hasProperty("T", "v")).isFalse();
     }
 
@@ -491,7 +492,7 @@ class SqlExistingRecordsDdlTest {
       database.command("sql", "CREATE DOCUMENT TYPE T");
       database.transaction(() -> database.command("sql", "INSERT INTO T SET l = [[1, 2], 3]").close());
       assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY T.l LIST OF INTEGER")).isInstanceOf(
-          CommandExecutionException.class);
+          ValidationException.class);
       assertThat(hasProperty("T", "l")).isFalse();
     }
 
@@ -518,7 +519,7 @@ class SqlExistingRecordsDdlTest {
       insert("T", "v = 'abc'");
       for (int i = 0; i < 2; i++)
         assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY T.v INTEGER")).isInstanceOf(
-            CommandExecutionException.class).hasMessageContaining("T.v");
+            ValidationException.class).hasMessageContaining("T.v");
     }
   }
 }
