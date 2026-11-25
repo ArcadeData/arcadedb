@@ -110,32 +110,53 @@ public final class GrpcErrorMapper {
   static final String CONCEALED_DESCRIPTION = ArcadeDBServer.CONCEALED_ERROR_MESSAGE;
 
   /**
-   * The longest error description this transport sends, in characters.
-   * <p>
-   * The description travels as the {@code grpc-message} metadata entry, and gRPC caps the metadata a peer receives at 16 KB
-   * (issue #5048 raised the cap for the INBOUND side; the OUTBOUND one is the client's hard limit). An engine message
-   * that carries the offending statement - a SQL syntax error quotes the line it failed on - therefore does not fit once
-   * the statement is longer than about 12 KB, and the client is answered with a bare {@code RESOURCE_EXHAUSTED} instead of
-   * the error: the failure is reported as a transport failure, and the caller cannot tell a malformed statement from a
-   * server that ran out of room. The other transports carry the same message in a body with no such cap, so the same
-   * statement is refused by gRPC and accepted by Bolt and HTTP.
-   * <p>
-   * A description longer than this is cut, with the cut marked, so the verdict (which status, which exception class) still
-   * reaches the client: the class name travels in its own trailer, and the status code is the verdict.
+   * The most bytes the error description takes on the wire (issue #12567). It travels as the {@code grpc-message} entry,
+   * UTF-8 then percent-encoded, and a client refuses metadata over its limit (8 KB by default in grpc-java) with a transport
+   * failure instead of the error. 6 KB leaves room for the other trailers.
    */
-  static final int MAX_DESCRIPTION_LENGTH = 8 * 1024;
+  static final int MAX_ENCODED_DESCRIPTION = 6 * 1024;
+
+  private static final String TRUNCATED_MARK = "... (truncated)";
 
   /**
-   * The description of a failure, cut to {@link #MAX_DESCRIPTION_LENGTH} characters.
-   * <p>
-   * The cut is at the end of the text, where the exception's own words are: a SQL syntax error puts the statement it
-   * quotes after the sentence that says what was wrong, so the sentence survives the cut and only the quoted statement is
-   * shortened.
+   * The description, cut at a whole code point so its encoded {@code grpc-message} fits {@link #MAX_ENCODED_DESCRIPTION},
+   * with the cut marked. The cut is at the end, so the exception's own words at the front survive.
    */
   static String boundDescription(final String description) {
-    if (description == null || description.length() <= MAX_DESCRIPTION_LENGTH)
+    // A char takes at most 9 encoded bytes (3 UTF-8 bytes, each escaped as %XX), so a short text needs no measuring
+    if (description == null || description.length() * 9 <= MAX_ENCODED_DESCRIPTION)
       return description;
-    return description.substring(0, MAX_DESCRIPTION_LENGTH) + "... (truncated)";
+
+    final int budget = MAX_ENCODED_DESCRIPTION - TRUNCATED_MARK.length();
+    final int length = description.length();
+    int size = 0;
+    int cut = -1;
+    for (int i = 0; i < length; ) {
+      final int codePoint = description.codePointAt(i);
+      final int cost = encodedSize(codePoint);
+      if (cut < 0 && size + cost > budget)
+        cut = i;
+      size += cost;
+      if (size > MAX_ENCODED_DESCRIPTION)
+        return description.substring(0, cut) + TRUNCATED_MARK;
+      i += Character.charCount(codePoint);
+    }
+    return description;
+  }
+
+  /**
+   * The bytes one code point takes in {@code grpc-message}: its UTF-8 bytes, each escaped as {@code %XX} unless it is
+   * printable ASCII other than {@code %} and {@code ~}, as grpc-java's status message marshaller does. A lone surrogate is
+   * counted as the widest 3-byte sequence, never less than what it is encoded to.
+   */
+  private static int encodedSize(final int codePoint) {
+    if (codePoint < 0x80)
+      return codePoint < ' ' || codePoint >= '~' || codePoint == '%' ? 3 : 1;
+    if (codePoint < 0x800)
+      return 6;
+    if (codePoint < 0x10000)
+      return 9;
+    return 12;
   }
 
   private GrpcErrorMapper() {

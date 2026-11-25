@@ -23,7 +23,6 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * The SQL syntax error quotes the offending line of the statement, and a line can be longer than the field the message
@@ -92,9 +91,26 @@ class SQLErrorListenerQuoteTest {
   }
 
   @Test
-  @DisplayName("The budget is inside what a gRPC peer receives")
-  void theBudgetFitsTheMetadataLimit() {
-    assertThat(QUOTE_BUDGET).isLessThan(16 * 1024);
+  @DisplayName("A short line keeps the caret at the parser's column, also one past its end")
+  void aShortLineKeepsTheCaretAtTheColumn() {
+    final String statement = "SELECT * FROM";
+
+    // An error at the end of the input is reported one column past the last character
+    final String[] lines = messageFor(statement, statement.length()).split("\n");
+
+    assertThat(lines[1]).isEqualTo(statement);
+    assertThat(lines[2]).isEqualTo(" ".repeat(statement.length()) + "^");
+  }
+
+  @Test
+  @DisplayName("A short line keeps the caret under the failing character")
+  void aShortLineKeepsTheCaretUnderTheFailingCharacter() {
+    final String statement = "SELECT * FORM Foo";
+
+    final String[] lines = messageFor(statement, 9).split("\n");
+
+    assertThat(lines[1]).isEqualTo(statement);
+    assertThat(lines[2]).isEqualTo(" ".repeat(9) + "^");
   }
 
   /**
@@ -107,12 +123,5 @@ class SQLErrorListenerQuoteTest {
     } catch (final CommandSQLParsingException e) {
       return e.getMessage();
     }
-  }
-
-  @Test
-  @DisplayName("The listener raises the parser's own exception")
-  void theListenerRaises() {
-    assertThatThrownBy(() -> new SQLErrorListener("SELECT").syntaxError(null, null, 1, 0, "mismatched input", null))
-        .isInstanceOf(CommandSQLParsingException.class);
   }
 }

@@ -32,16 +32,13 @@ import java.util.Locale;
 public class SQLErrorListener extends BaseErrorListener {
 
   /**
-   * The most characters of the offending line the message quotes.
-   * <p>
-   * The message travels to the client in a field with a hard size limit: over gRPC the metadata a peer receives is capped at
-   * 16 KB, and the whole quoted line went into it, so a statement whose line was longer than about 12 KB was answered with
-   * a transport failure instead of the syntax error. The budget keeps the message inside what every transport can carry.
+   * The most characters of the offending line the message quotes, so the message fits a transport with a size limit, such
+   * as the gRPC metadata (issue #12567).
    */
   static final int QUOTE_BUDGET = 4 * 1024;
 
   /**
-   * The characters before the failing character the quote keeps, so the caret points into the quoted text.
+   * The characters before the failing character a cut quote keeps, so the caret points into the quoted text.
    */
   static final int QUOTE_WINDOW = 512;
 
@@ -97,28 +94,21 @@ public class SQLErrorListener extends BaseErrorListener {
   }
 
   /**
-   * The offending line of the statement, quoted within a budget of characters, and where the
-   * caret that points at the failing character goes under it.
-   * <p>
-   * The line is quoted whole so the caret under it points at the character that failed, but a line can be longer than any
-   * budget: a statement that is one long line (a generated {@code INSERT}, a wide {@code CREATE}) carries every character
-   * of it into the message, and the message travels to the client in a field with a hard size limit - over gRPC the
-   * metadata a peer receives is capped at 16 KB, so a statement longer than about 12 KB was answered with a transport
-   * failure instead of the syntax error that named the offending character. The budget keeps the message inside what every
-   * transport can carry.
-   * <p>
-   * The window around the failing character is kept: the quote starts {@code QUOTE_WINDOW} characters before it and ends
-   * {@code QUOTE_BUDGET} characters after it, so the caret still points into the quoted text. The caret is placed under
-   * the quoted text and not under the original column: padding it to the original column would put back every character
-   * the budget removed.
+   * The offending line, quoted whole when it fits {@link #QUOTE_BUDGET}, otherwise cut around the failing character with
+   * the caret placed under the cut quote.
    */
   private static Snippet snippetOf(final String errorLine, final int charPositionInLine) {
     if (errorLine.length() <= QUOTE_BUDGET)
-      return new Snippet(errorLine, Math.max(0, Math.min(charPositionInLine, errorLine.length() - 1)));
+      return new Snippet(errorLine, charPositionInLine);
 
     final int position = Math.max(0, Math.min(charPositionInLine, errorLine.length() - 1));
-    final int start = Math.max(0, position - QUOTE_WINDOW);
-    final int end = Math.min(errorLine.length(), start + QUOTE_BUDGET);
+    int start = Math.max(0, position - QUOTE_WINDOW);
+    // A cut never splits a surrogate pair
+    if (start > 0 && Character.isLowSurrogate(errorLine.charAt(start)))
+      --start;
+    int end = Math.min(errorLine.length(), start + QUOTE_BUDGET);
+    if (end < errorLine.length() && Character.isLowSurrogate(errorLine.charAt(end)))
+      --end;
     final StringBuilder out = new StringBuilder(QUOTE_BUDGET + 32);
     if (start > 0)
       out.append("...");

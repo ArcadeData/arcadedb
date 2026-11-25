@@ -19,6 +19,9 @@
 package com.arcadedb.server.grpc;
 
 import com.arcadedb.exception.CommandSQLParsingException;
+import io.grpc.InternalMetadata;
+import io.grpc.InternalStatus;
+import io.grpc.Metadata;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import org.junit.jupiter.api.DisplayName;
@@ -30,20 +33,17 @@ import static org.assertj.core.api.Assertions.assertThat;
  * A statement whose error text is longer than the metadata a gRPC peer receives is refused with a transport failure instead
  * of the error (issue #12567).
  * <p>
- * The SQL parser quotes the offending line in its error message, so a statement that is one long line carries every
- * character of it into the message. The message travels as the {@code grpc-message} metadata entry, and gRPC caps the
- * metadata a peer receives at 16 KB: a statement longer than about 12 KB was therefore answered with a bare
- * {@code RESOURCE_EXHAUSTED}, and the caller could not tell a malformed statement from a server that ran out of room. The
- * other transports carry the same message in a body with no such cap.
+ * The description travels as the {@code grpc-message} metadata entry, UTF-8 then percent-encoded, and a gRPC client caps
+ * the metadata it receives (8 KB by default in grpc-java, 16 KB hard limit in grpc-core). The bound is on the ENCODED size,
+ * measured here with gRPC's own marshaller.
  */
 class GrpcErrorDescriptionLengthTest {
 
   /**
-   * The longest error description this transport sends, in characters. The mapper has a
-   * constant of its own for it; the test states the limit itself so that it fails on a
-   * mapper that sends the whole message.
+   * The most bytes the description may take on the wire. The mapper has a constant of its own for it; the test states the
+   * limit itself so that it fails on a mapper that sends the whole message.
    */
-  private static final int MAX_DESCRIPTION_LENGTH = 8 * 1024;
+  private static final int MAX_ENCODED_DESCRIPTION = 6 * 1024;
 
   @Test
   @DisplayName("A description longer than the metadata limit is cut, so the error still reaches the client")
@@ -54,7 +54,7 @@ class GrpcErrorDescriptionLengthTest {
         new CommandSQLParsingException(description), null);
 
     final String sent = sre.getStatus().getDescription();
-    assertThat(sent).hasSizeLessThanOrEqualTo(MAX_DESCRIPTION_LENGTH + "... (truncated)".length());
+    assertThat(encodedLength(sent)).isLessThanOrEqualTo(MAX_ENCODED_DESCRIPTION);
     // The verdict still travels: the status code is what the client acts on.
     assertThat(sre.getStatus().getCode()).isEqualTo(Status.Code.INVALID_ARGUMENT);
     // What the exception said is still there, at the front, where its own words are.
@@ -74,9 +74,58 @@ class GrpcErrorDescriptionLengthTest {
   }
 
   @Test
-  @DisplayName("The cut description fits what a gRPC peer receives")
-  void theCutDescriptionFitsTheMetadataLimit() {
-    // The metadata a peer receives is capped at 16 KB; the description travels in one entry of it.
-    assertThat(MAX_DESCRIPTION_LENGTH).isLessThan(16 * 1024);
+  @DisplayName("A short non-ASCII description is sent whole")
+  void aShortNonAsciiDescriptionIsSentWhole() {
+    final String description = "Type with name '\u8868\u683c\uD83D\uDE00' was not found\n100%";
+
+    assertThat(GrpcErrorMapper.boundDescription(description)).isEqualTo(description);
+  }
+
+  @Test
+  @DisplayName("CJK text is bounded by its encoded size, not by its characters")
+  void cjkIsBoundedByEncodedSize() {
+    assertBoundedPrefix("Type with name '" + "\u8868".repeat(10_000) + "' was not found");
+  }
+
+  @Test
+  @DisplayName("Emoji are bounded by their encoded size and never split between their two surrogates")
+  void emojiAreNeverSplit() {
+    // A 1-char prefix shifts the surrogate pairs, so whichever parity the cut lands on is exercised
+    assertBoundedPrefix("\uD83D\uDE00".repeat(10_000));
+    assertBoundedPrefix("x" + "\uD83D\uDE00".repeat(10_000));
+  }
+
+  @Test
+  @DisplayName("Newlines and percent signs, which are escaped on the wire, count three bytes each")
+  void escapedAsciiIsBoundedByEncodedSize() {
+    assertBoundedPrefix("\n".repeat(10_000));
+    assertBoundedPrefix("%".repeat(10_000));
+    assertBoundedPrefix("SQL syntax error\n" + "a%\n~".repeat(5_000));
+  }
+
+  /**
+   * The bound description fits the encoded budget, is a prefix of the original cut at a whole code point, and the cut is
+   * marked.
+   */
+  private static void assertBoundedPrefix(final String description) {
+    final String sent = GrpcErrorMapper.boundDescription(description);
+
+    assertThat(encodedLength(sent)).isLessThanOrEqualTo(MAX_ENCODED_DESCRIPTION);
+    assertThat(sent).endsWith("... (truncated)");
+    final String kept = sent.substring(0, sent.length() - "... (truncated)".length());
+    assertThat(description).startsWith(kept);
+    assertThat(Character.isHighSurrogate(kept.charAt(kept.length() - 1))).isFalse();
+    // The cut keeps as much as the budget allows, not a token amount
+    assertThat(encodedLength(sent)).isGreaterThan(MAX_ENCODED_DESCRIPTION - 16);
+  }
+
+  /**
+   * The bytes the description takes as the {@code grpc-message} entry, encoded by gRPC itself.
+   */
+  private static int encodedLength(final String description) {
+    final Metadata metadata = new Metadata();
+    metadata.put(InternalStatus.MESSAGE_KEY, description);
+    final byte[][] serialized = InternalMetadata.serialize(metadata);
+    return serialized[1].length;
   }
 }
