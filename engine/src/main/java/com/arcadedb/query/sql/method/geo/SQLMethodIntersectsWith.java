@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.method.geo;
 
+import org.locationtech.spatial4j.shape.Shape;
 import org.locationtech.spatial4j.shape.SpatialRelation;
 
 /**
@@ -34,8 +35,8 @@ public class SQLMethodIntersectsWith extends AbstractSQLGeoRelationMethod {
   }
 
   @Override
-  protected boolean matches(final SpatialRelation relation) {
-    return relation != SpatialRelation.DISJOINT;
+  protected boolean matches(final Shape value, final Shape shape) {
+    return value.relate(shape) != SpatialRelation.DISJOINT;
   }
 
   @Override

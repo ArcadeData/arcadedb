@@ -99,6 +99,15 @@ public interface IndexableSQLFunction {
   }
 
   /**
+   * Whether a limit handed over in {@link IndexedFunctionPushdown} is only where the answer starts: past those rows, best first,
+   * it goes on in the same order until every match is answered. A filter after the fetch can then reject rows without the
+   * statement coming up short, so the plan may hand the limit over although a filter follows.
+   */
+  default boolean continuesPastLimit() {
+    return false;
+  }
+
+  /**
    * Whether a condition {@code function(...) <operator> <right>} selects the records a boolean predicate function MATCHES,
    * which is all an index of matches can answer: {@code = true}. Any other comparison ({@code = false}, {@code <> true})
    * selects the records it does not match, and answering it with the matches returns the wrong rows, so a predicate

@@ -30,6 +30,7 @@ import com.arcadedb.engine.MaintenanceCoordinator.Reservation;
 import com.arcadedb.engine.OperationProgress;
 import com.arcadedb.engine.OperationProgressRegistry;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.query.OperationType;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -42,6 +43,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 public class ImportDatabaseStatement extends SimpleExecStatement {
 
@@ -62,6 +64,16 @@ public class ImportDatabaseStatement extends SimpleExecStatement {
   @Override
   public boolean managesItsOwnTransactions() {
     return true;
+  }
+
+  /**
+   * An import writes records and recreates the schema of the source it reads (types, properties, indexes, and for a JSONL export its
+   * settings, triggers, views, function libraries and extensions), so it is a schema change besides a write: a caller that gates the
+   * two apart (the MCP configuration) must see both.
+   */
+  @Override
+  protected Set<OperationType> getOperationTypesItself() {
+    return Set.of(OperationType.SCHEMA, OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE);
   }
 
   @Override

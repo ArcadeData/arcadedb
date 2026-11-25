@@ -116,6 +116,19 @@ class IssueTextTest {
   }
 
   @Test
+  void aNightlyTitleNamesItsScaleUnlessM() {
+    final Marker s = Marker.create("nightly", B, "S", A);
+    s.putLine(TIME_ID, entry(A, "2026-11-20T01-00-00Z-1-jvm", 100, 150));
+    assertThat(IssueText.title(s)).isEqualTo("Performance regression: 1 line worse between aaaaaaa..bbbbbbb (scale S)");
+    final Marker m = Marker.create("nightly", B, "M", A);
+    m.putLine(TIME_ID, entry(A, "2026-11-20T01-00-00Z-1-jvm", 100, 150));
+    assertThat(IssueText.title(m)).isEqualTo("Performance regression: 1 line worse between aaaaaaa..bbbbbbb");
+    // a marker without a scale (phase 3) is an M nightly: its title does not change
+    assertThat(IssueText.title(Marker.parse(sample().render()))).isEqualTo(IssueText.title(sample()))
+        .isEqualTo("Performance regression: 1 line worse between aaaaaaa..bbbbbbb");
+  }
+
+  @Test
   void titles() {
     assertThat(IssueText.title(sample())).isEqualTo("Performance regression: 1 line worse between aaaaaaa..bbbbbbb");
     final Marker oneRelease = Marker.create("release", "26.11.1", "26.10.2");

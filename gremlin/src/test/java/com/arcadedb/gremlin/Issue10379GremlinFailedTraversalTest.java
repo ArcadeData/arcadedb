@@ -91,9 +91,13 @@ class Issue10379GremlinFailedTraversalTest {
     assertThat(values()).containsExactly(100, 101, 102);
   }
 
+  /**
+   * No transaction is open when the traversal starts, so it is the transaction of the statement (issue #10220): the traversal runs to
+   * its end inside the call, and the half it wrote before it failed is rolled back with it. Before, the graph opened a transaction
+   * while the result was read and left it open, and a commit of the caller was the one to refuse it.
+   */
   @Test
-  void aTraversalThatOpensTheTransactionItselfAndFailsCannotBeCommittedHalfApplied() {
-    // no transaction is open when the traversal starts: the graph opens one while the result is read, and it is the traversal's
+  void aTraversalThatFailsWithNoTransactionOpenLeavesNothingBehind() {
     assertThat(database.isTransactionActive()).isFalse();
     final AtomicReference<Throwable> caught = new AtomicReference<>();
 
@@ -105,9 +109,7 @@ class Issue10379GremlinFailedTraversalTest {
     }
 
     assertThat(caught.get()).as("the traversal failed").isNotNull();
-    assertThat(database.isTransactionActive()).as("the traversal left its transaction open").isTrue();
-    assertThatThrownBy(() -> database.commit()).isInstanceOf(TransactionException.class).hasMessageContaining("cannot be committed");
-    database.rollback();
+    assertThat(database.isTransactionActive()).as("the traversal left its transaction open").isFalse();
     assertThat(values()).containsExactly(100, 101, 102);
   }
 

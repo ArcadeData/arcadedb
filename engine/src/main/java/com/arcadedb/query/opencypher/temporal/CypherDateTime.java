@@ -18,6 +18,8 @@
  */
 package com.arcadedb.query.opencypher.temporal;
 
+import com.arcadedb.exception.ArithmeticErrorException;
+
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -216,9 +218,18 @@ public class CypherDateTime implements CypherTemporalValue {
       case "offsetSeconds" -> (long) value.getOffset().getTotalSeconds();
       // Epoch properties
       case "epochSeconds" -> value.toEpochSecond();
-      case "epochMillis" -> value.toInstant().toEpochMilli();
+      case "epochMillis" -> epochMillis();
       default -> null;
     };
+  }
+
+  /** The instant in milliseconds; a datetime past year 292278994 has none, which is the caller's value and not a server fault (issue #12706). */
+  private long epochMillis() {
+    try {
+      return value.toInstant().toEpochMilli();
+    } catch (final ArithmeticException e) {
+      throw new ArithmeticErrorException("Temporal overflow: epochMillis of " + this + " does not fit a long", e);
+    }
   }
 
   @Override

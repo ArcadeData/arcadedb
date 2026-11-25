@@ -18,10 +18,12 @@
  */
 package com.arcadedb.bench.gate;
 
+import com.arcadedb.bench.workload.Scale;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -30,6 +32,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.stream.Collectors;
 
 /**
  * Turns the judged lines and the tracked issues into a plan of GitHub actions: {@code create}, {@code update} (title and body),
@@ -42,6 +45,12 @@ import java.util.TreeMap;
  */
 public final class Planner {
   static final String LABEL = "performance-regression";
+
+  private static final String NIGHTLY = "nightly";
+  private static final String M       = "M";
+
+  /** The scales the bench runs at; any other scale of a line is a dataset's own (LDBC). */
+  private static final Set<String> BENCH_SCALES = Arrays.stream(Scale.values()).map(Scale::name).collect(Collectors.toUnmodifiableSet());
 
   /** Improvements listed in one comment. */
   static final int MAX_IMPROVEMENTS = 20;
@@ -80,7 +89,7 @@ public final class Planner {
         // that was not reopened keeps its streaks, so a close that failed is planned again
         if (issue.reopened() && PlanEntries.allRecovered(copy))
           PlanEntries.restartStreaks(copy);
-        openByRun.putIfAbsent(runKey(copy.getTrigger(), copy.getRef()), issue.number());
+        openByRun.putIfAbsent(runKey(copy.getTrigger(), copy.getRef(), copy.getScale()), issue.number());
         for (final String id : copy.lineIds())
           openByLine.putIfAbsent(lineKey(copy.getTrigger(), id), issue.number());
       } else if (issue.closedByMaintainer())
@@ -130,7 +139,7 @@ public final class Planner {
       final Set<String> botRuns = reportedByBot.get(tracked);
       if (botRuns != null && botRuns.contains(v.newest().ref()))
         continue;
-      events.computeIfAbsent(runKey(v.trigger(), v.newest().ref()), k -> new ArrayList<>()).add(v);
+      events.computeIfAbsent(runKey(v.trigger(), v.newest().ref(), eventScale(v.key())), k -> new ArrayList<>()).add(v);
     }
 
     final JSONArray actions = new JSONArray();
@@ -145,7 +154,8 @@ public final class Planner {
         continue;
       }
       final Point newest = worse.getFirst().newest();
-      final Marker marker = Marker.create(newest.trigger(), newest.ref(), PlanEntries.eventBaseRef(worse));
+      final String scale = NIGHTLY.equals(newest.trigger()) ? eventScale(worse.getFirst().key()) : null;
+      final Marker marker = Marker.create(newest.trigger(), newest.ref(), scale, PlanEntries.eventBaseRef(worse));
       for (final Verdict v : worse)
         marker.putLine(v.key().id(), PlanEntries.reported(v, false));
       actions.put(new JSONObject().put("op", "create").put("key", event.getKey()).put("title", IssueText.title(marker))
@@ -170,8 +180,8 @@ public final class Planner {
           if (close && i == ordered.size() - 1)
             closing = close(number, marker, ref, verdicts, openByLine.keySet());
           else if (!rows.isEmpty())
-            actions.put(new JSONObject().put("op", "comment").put("issue", number).put("runKey", runKey(marker.getTrigger(), ref))
-                .put("body", IssueText.runComment(runKey(marker.getTrigger(), ref), rows, improvements(verdicts, marker, ref, openByLine.keySet()),
+            actions.put(new JSONObject().put("op", "comment").put("issue", number).put("runKey", runKey(marker, ref))
+                .put("body", IssueText.runComment(runKey(marker, ref), rows, improvements(verdicts, marker, ref, openByLine.keySet()),
                     null)));
         }
       } else if (close)
@@ -227,7 +237,7 @@ public final class Planner {
 
   private static JSONObject close(final int number, final Marker marker, final String ref, final List<Verdict> verdicts,
       final Set<String> tracked) {
-    final String key = runKey(marker.getTrigger(), ref);
+    final String key = runKey(marker, ref);
     return new JSONObject().put("op", "close").put("issue", number).put("body",
         IssueText.runComment(key, IssueText.runRows(marker, ref), improvements(verdicts, marker, ref, tracked),
             IssueText.closing(marker.getTrigger())));
@@ -250,8 +260,8 @@ public final class Planner {
   }
 
   /**
-   * Lines of the run that improved on their own baseline, in a workload of the issue, that no open issue tracks: at most
-   * {@link #MAX_IMPROVEMENTS}, the largest change first.
+   * Lines of the run that improved on their own baseline, in a workload of the issue and, for a nightly, at its scale, that no
+   * open issue tracks: at most {@link #MAX_IMPROVEMENTS}, the largest change first.
    */
   private static List<String> improvements(final List<Verdict> verdicts, final Marker marker, final String ref, final Set<String> tracked) {
     final String trigger = marker.getTrigger();
@@ -264,7 +274,8 @@ public final class Planner {
     final List<Verdict> better = new ArrayList<>();
     for (final Verdict v : verdicts)
       if (v.kind() == Verdict.Kind.BETTER && v.trigger().equals(trigger) && v.newest().ref().equals(ref) && workloads.contains(
-          v.key().workload()) && !tracked.contains(lineKey(trigger, v.key().id())))
+          v.key().workload()) && (!NIGHTLY.equals(trigger) || eventScale(v.key()).equals(marker.getScale())) && !tracked.contains(lineKey(trigger,
+          v.key().id())))
         better.add(v);
     better.sort(Comparator.comparingDouble((Verdict v) -> Math.abs(v.change())).reversed().thenComparing(v -> v.key().id()));
     final List<String> rows = new ArrayList<>(Math.min(better.size(), MAX_IMPROVEMENTS));
@@ -278,8 +289,25 @@ public final class Planner {
         (a, b) -> a.runAt().compareTo(b.runAt()) >= 0 ? a : b);
   }
 
-  static String runKey(final String trigger, final String ref) {
-    return trigger + ":" + ref;
+  /**
+   * The key of a run: {@code nightly:<ref>:<scale>} for a nightly, so the S run of a weeknight and the M run of a Saturday at the same
+   * commit are two events with their own issues and comments; {@code release:<tag>} for a release, whose scales are one run.
+   */
+  static String runKey(final String trigger, final String ref, final String scale) {
+    return NIGHTLY.equals(trigger) ? trigger + ":" + ref + ":" + scale : trigger + ":" + ref;
+  }
+
+  /**
+   * The scale of the nightly event a line belongs to: its bench scale, or {@code M} for a line measured at a dataset scale of its own
+   * (LDBC's), which runs only with the Saturday M run and so is reported with it.
+   */
+  static String eventScale(final LineKey key) {
+    return BENCH_SCALES.contains(key.scale()) ? key.scale() : M;
+  }
+
+  /** The key of the run {@code ref} of the issue's marker, at the marker's scale (M for a marker that records none). */
+  private static String runKey(final Marker marker, final String ref) {
+    return runKey(marker.getTrigger(), ref, marker.getScale());
   }
 
   private static String lineKey(final String trigger, final String lineId) {

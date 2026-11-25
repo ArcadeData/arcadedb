@@ -22,6 +22,8 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.TransactionException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
@@ -82,7 +84,10 @@ class RaftForwardedWriteNotReplayedIT extends BaseRaftHATest {
       attempts.incrementAndGet();
       follower.command("sql", "INSERT INTO " + DOCUMENT_TYPE + " SET k = 1").close();
       throw new ConcurrentModificationException("a conflict raised after the write was forwarded (issue #12635 test)");
-    }, false, 3)).isInstanceOf(ConcurrentModificationException.class);
+    }, false, 3))
+        // Issue #13251: and the conflict is raised as a failure no client retries, or the client replays the request instead
+        .isInstanceOf(TransactionException.class).isNotInstanceOf(NeedRetryException.class)
+        .satisfies(failure -> assertThat(failure.getSuppressed()).hasAtLeastOneElementOfType(ConcurrentModificationException.class));
 
     assertThat(attempts.get()).as("the block forwarded a write the leader committed, so it must not run again").isEqualTo(1);
     assertThat(countOnTheLeader("SELECT count(*) AS n FROM " + DOCUMENT_TYPE + " WHERE k = 1"))

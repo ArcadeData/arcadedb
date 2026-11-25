@@ -144,11 +144,17 @@ final class CountStarShapeDetector {
 
     // The edge types of the alternatives, each family once: a type whose super-type is listed too is already counted by it.
     // Only for the plan's sake: the provider and the edge lists count a union of the types, so an edge whose type reaches
-    // two listed families (an edge type may have several super-types) is counted once either way
+    // two listed families (an edge type may have several super-types) is counted once either way. A name may be an alias: the
+    // type and its alias are one family, so one name is kept per type (issue #12968)
     final List<String> declared = new ArrayList<>(rel.getTypes().size());
-    for (final String name : rel.getTypes())
-      if (schema.getTypeOrNull(name) instanceof EdgeType && !declared.contains(name))
+    final List<DocumentType> declaredTypes = new ArrayList<>(rel.getTypes().size());
+    for (final String name : rel.getTypes()) {
+      final DocumentType type = schema.getTypeOrNull(name);
+      if (type instanceof EdgeType && !declaredTypes.contains(type)) {
         declared.add(name);
+        declaredTypes.add(type);
+      }
+    }
     final List<String> types = new ArrayList<>(declared.size());
     for (final String name : declared)
       if (!isSubTypeOfAnother(schema, name, declared))
@@ -159,9 +165,15 @@ final class CountStarShapeDetector {
     return new EdgeCountOp(types.toArray(new String[0]), undirected);
   }
 
+  /**
+   * Whether the type {@code name} resolves to is a sub-type of the type another of the {@code names} resolves to. The types are
+   * compared, not the names: {@code isSubTypeOf} answers for an alias as for the type's name, so a type and its own alias would
+   * each be taken for a sub-type of the other and both dropped (issue #12968).
+   */
   private static boolean isSubTypeOfAnother(final Schema schema, final String name, final List<String> names) {
+    final DocumentType type = schema.getType(name);
     for (final String other : names)
-      if (!other.equals(name) && schema.getType(name).isSubTypeOf(other))
+      if (type != schema.getType(other) && type.isSubTypeOf(other))
         return true;
     return false;
   }
@@ -597,7 +609,7 @@ final class CountStarShapeDetector {
    * Rather than teach the operator to answer 0 for those, they are left to the ordinary pipeline, which is the only
    * thing here that knows what each of them means - and which is what answered them before this existed.
    */
-  private static RID boundVertexRid(final Database db, final Object bound) {
+  static RID boundVertexRid(final Database db, final Object bound) {
     if (!(bound instanceof Identifiable identifiable))
       return null;
 
@@ -608,7 +620,7 @@ final class CountStarShapeDetector {
   }
 
   /** What a bound name holds: a row carries its element inside a {@link Result}. */
-  private static Object boundElement(final Object value) {
+  static Object boundElement(final Object value) {
     return value instanceof Result result ? result.getElement().orElse(null) : value;
   }
 

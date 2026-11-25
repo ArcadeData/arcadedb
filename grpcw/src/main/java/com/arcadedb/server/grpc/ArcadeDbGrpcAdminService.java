@@ -85,8 +85,14 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
    * A table rather than a ladder of {@code instanceof} tests, because a ladder is what produced #10158: #10089 taught ONE
    * arm to look along the chain the engine wraps a failure in, and the other eleven still read the head frame, so one
    * wrapper turned "that name is taken" or "the quorum is momentarily unreachable" into {@code INTERNAL}. An arm added
-   * here is walked the same way as every other, and {@code Issue10158GrpcWrappedRefusalStatusTest} fails until it has a
+   * here is walked the same way as every other, and {@code GrpcRefusalStatusMappingTest} fails until it has a
    * case of its own.
+   * <p>
+   * The table holds only what this service answers DIFFERENTLY from the data plane, or what {@link ErrorCategory} does not
+   * know at all (the control plane's own types). It is not the classification of the engine's exceptions: a failure no arm
+   * names is answered from its {@link ErrorCategory} by {@link GrpcErrorMapper}, as {@code ExecuteCommand} answers it, so a
+   * category of refusals does not need an arm to stop reading as a server fault (issue #12550). Do not add an arm for an
+   * engine type to give it the status its category already has.
    */
   static final RefusalArm[] REFUSAL_ARMS = {
       // Raised by this class itself; the authorization refusal is checked before the authentication one because it is
@@ -97,7 +103,7 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
       // re-sending credentials will not make the URL acceptable. PERMISSION_DENIED says that; UNAUTHENTICATED would send
       // the caller to fix the wrong thing (issue #7308)
       RefusalArm.own(ServerControlPlane.RestoreImportUrlNotAllowedException.class, Status.Code.PERMISSION_DENIED),
-      RefusalArm.generic(SecurityException.class, Status.Code.UNAUTHENTICATED),
+      RefusalArm.generic(SecurityException.class, Status.Code.UNAUTHENTICATED, ErrorCategory.SECURITY),
       // ServerSecurityException does NOT extend java.lang.SecurityException, so it reaches here rather than the arm
       // above. Authentication failures never do - authenticate() converts those to a plain SecurityException - so what
       // is left is a security policy refusing the operation's arguments, such as the shared credentials validator
@@ -132,7 +138,7 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
       RefusalArm.own(DatabaseOperationInProgressException.class, Status.Code.ABORTED),
       // A rejected argument must not read as a server fault: an empty database name, an unparseable setting value or a
       // backup file name outside the backup directory are all the caller's to fix
-      RefusalArm.generic(IllegalArgumentException.class, Status.Code.INVALID_ARGUMENT),
+      RefusalArm.generic(IllegalArgumentException.class, Status.Code.INVALID_ARGUMENT, ErrorCategory.VALIDATION),
       // The statement an admin RPC runs on the caller's behalf, refused by the database: today the ALIGN DATABASE refusal of
       // #11796 (a CommandSemanticException), out of AlignDatabase. HTTP answers every CommandParsingException 400, and the data
       // plane answers the same statement sent through ExecuteCommand INVALID_ARGUMENT (ErrorCategory.PARSING); without this arm
@@ -153,7 +159,8 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
       // trailers it needs. Named in the class-name trailer (issue #10143): a status-only UNAVAILABLE is what a lost
       // connection looks like, so the client reads it on a write as an outcome that may already have been applied and
       // must not be retried - the opposite of this answer, which is that nothing was applied and sending it again is the fix
-      RefusalArm.generic(NeedRetryException.class, Status.Code.UNAVAILABLE).naming(GrpcErrorMapper.EXCEPTION_CLASS_KEY) };
+      RefusalArm.generic(NeedRetryException.class, Status.Code.UNAVAILABLE, ErrorCategory.RETRY)
+          .naming(GrpcErrorMapper.EXCEPTION_CLASS_KEY) };
 
   /**
    * One classified refusal of {@link #toStatus}: a failure of {@code type}, found anywhere along the cause chain, is
@@ -169,21 +176,43 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
    * {@code trailer}, when not {@code null}, is the trailer the class name of the classified frame is sent in: the arms whose
    * TYPE the client has to act on, and not only their status (issue #10143). {@code null} sends no trailer, and the client
    * maps the status code alone.
+   * <p>
+   * {@code category}, of a {@code broad} arm only, is the {@link ErrorCategory} of the arm's own type. A {@code broad} type
+   * is a supertype the engine also derives its own exceptions from, and {@link ErrorCategory} ranks some of them above it
+   * with another verdict: an {@code EquivalentIndexException} is an {@link IllegalArgumentException} by inheritance and a
+   * name already taken by classification. Such a frame is not this arm's, see {@link #leavesToCategory} (issue #12550).
    */
-  record RefusalArm(Class<? extends Throwable> type, Status.Code code, boolean broad, Metadata.Key<String> trailer) {
+  record RefusalArm(Class<? extends Throwable> type, Status.Code code, boolean broad, Metadata.Key<String> trailer,
+                    ErrorCategory category) {
     /** An ArcadeDB-authored refusal: its sentence is about the request at any depth. */
     static RefusalArm own(final Class<? extends Throwable> type, final Status.Code code) {
-      return new RefusalArm(type, code, false, null);
+      return new RefusalArm(type, code, false, null, null);
     }
 
-    /** A JDK or replication-layer type, whose text is concealed in production when it is found under a wrapper. */
-    static RefusalArm generic(final Class<? extends Throwable> type, final Status.Code code) {
-      return new RefusalArm(type, code, true, null);
+    /**
+     * A JDK or replication-layer type, whose text is concealed in production when it is found under a wrapper.
+     *
+     * @param category the category {@link ErrorCategory} classifies {@code type} itself in
+     */
+    static RefusalArm generic(final Class<? extends Throwable> type, final Status.Code code, final ErrorCategory category) {
+      return new RefusalArm(type, code, true, null, category);
     }
 
     /** This arm, sending the class name of the frame it classified in {@code key}. */
     RefusalArm naming(final Metadata.Key<String> key) {
-      return new RefusalArm(type, code, broad, key);
+      return new RefusalArm(type, code, broad, key, category);
+    }
+
+    /**
+     * Whether {@code frame}, an instance of this arm's type, is one the engine classifies apart from that type, so that its
+     * {@link ErrorCategory} answers it and not this arm: a subtype of a {@code broad} type that {@link ErrorCategory} decides
+     * on the frame itself, in another category than the arm's own type. A plain instance of the type, a subtype the engine
+     * does not single out (a {@code NumberFormatException}, a {@code QuorumNotReachedException}) and a frame that only
+     * CARRIES another verdict in its cause all stay with the arm: a failure raised as itself keeps the answer of its own
+     * type whatever its cause carries (issue #10158).
+     */
+    boolean leavesToCategory(final Throwable frame) {
+      return broad && frame.getClass() != type && ErrorCategory.classifiedCause(frame) == frame && ErrorCategory.of(frame) != category;
     }
 
     /**
@@ -1311,25 +1340,25 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
     // server fault, for an 'open database' or a backup of a mistyped name
     final ErrorCategory category = ErrorCategory.of(e);
     if (ServerIsNotTheLeaderException.refusalIn(e) != null || category == ErrorCategory.TERMINATED
-        || category == ErrorCategory.DATABASE_NOT_FOUND || category == ErrorCategory.UNAVAILABLE) {
-      final StatusRuntimeException mapped = GrpcErrorMapper.toStatusRuntimeException(e, operation, ha(), concealErrors());
-      return new StatusException(mapped.getStatus(), mapped.getTrailers());
-    }
-    // The chain is walked one frame at a time from the head, and the FIRST frame an arm classifies decides. So a wrapper -
-    // a frame no arm classifies, put on by the engine or the control plane - never changes the answer (issue #10158), and a
-    // failure raised as itself keeps the answer it always had whatever its cause carries, as the HTTP control plane
-    // answers a typed exception: a "Cannot create database" IllegalArgumentException stays INVALID_ARGUMENT even when its
-    // cause is a QuorumNotReachedException. A broad type found under a wrapper carries text nobody here wrote, which
-    // production mode conceals like the catch-all's, while the status still says what the client is to do
-    Throwable frame = e;
-    for (int depth = 0; frame != null && depth < CauseChain.MAX_DEPTH; frame = frame.getCause(), depth++)
-      for (final RefusalArm arm : REFUSAL_ARMS)
-        if (arm.type().isInstance(frame)) {
-          final boolean conceal = arm.broad() && depth > 0 && concealErrors();
-          return Status.fromCode(arm.code())
-              .withDescription(conceal ? GrpcErrorMapper.concealableDescription(this, operation, frame, conceal) : frame.getMessage())
-              .asException(arm.trailersFor(frame));
-        }
+        || category == ErrorCategory.DATABASE_NOT_FOUND || category == ErrorCategory.UNAVAILABLE)
+      return answeredByCategory(operation, e);
+
+    final StatusException refused = answeredByAnArm(operation, e);
+    if (refused != null)
+      return refused;
+
+    // No arm names it, and ErrorCategory - the one authority over the engine's exception hierarchy - says it is not a server
+    // fault: a duplicated key, a missing type, a refused value, an arithmetic error, a timeout, raised by what the operation
+    // ran on the caller's data (an import or a restore wraps whatever the importer raises). The data plane answers each of
+    // them a status the caller can act on, and this is the same answer, built by the same mapper: the status of the
+    // category, the class-name trailer the client rebuilds the type from (without it an ALREADY_EXISTS would read as a taken
+    // user, token or database name, and a NOT_FOUND as a missing record), and the mapper's own concealment of ENGINE text,
+    // which these messages are. The table above used to be the whole classification, so every category it did not name
+    // answered INTERNAL here, was logged as a server fault and lost its sentence in production mode, one exception type at a
+    // time (issues #12464, #12550)
+    if (category != ErrorCategory.SERVER)
+      return answeredByCategory(operation, e);
+
     // THE CATCH-ALL: AN UNEXPECTED FAULT, WHOSE MESSAGE IS FREE-FORM ENGINE TEXT AND CAN CARRY FILE PATHS, SCHEMA
     // NAMES AND INTERNALS. THAT IS PRECISELY WHAT PRODUCTION MODE CONCEALS IN THE HTTP BODY'S 'detail' FIELD, AND
     // THIS SURFACE USED TO EMIT IT WHATEVER THE MODE SAID (ISSUE #7472). THE ARMS ABOVE ARE NOT CONCEALED: EACH IS
@@ -1349,6 +1378,44 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
     return Status.INTERNAL
         .withDescription(GrpcErrorMapper.concealableDescription(this, operation, e, concealErrors()))
         .asException();
+  }
+
+  /**
+   * The answer the data plane gives {@code e}: status, trailers and description built by {@link GrpcErrorMapper} from the
+   * {@link ErrorCategory} of the whole chain, concealed as the mapper conceals it.
+   */
+  private StatusException answeredByCategory(final String operation, final Exception e) {
+    final StatusRuntimeException mapped = GrpcErrorMapper.toStatusRuntimeException(e, operation, ha(), concealErrors());
+    return new StatusException(mapped.getStatus(), mapped.getTrailers());
+  }
+
+  /**
+   * The answer of the first frame of {@code e}'s cause chain an arm of {@link #REFUSAL_ARMS} classifies, or {@code null}
+   * when the table has no answer and {@link ErrorCategory} is to give it.
+   * <p>
+   * The chain is walked one frame at a time from the head, and the FIRST frame an arm classifies decides. So a wrapper - a
+   * frame no arm classifies, put on by the engine or the control plane - never changes the answer (issue #10158), and a
+   * failure raised as itself keeps the answer it always had whatever its cause carries, as the HTTP control plane answers a
+   * typed exception: a "Cannot create database" IllegalArgumentException stays INVALID_ARGUMENT even when its cause is a
+   * QuorumNotReachedException. A broad type found under a wrapper carries text nobody here wrote, which production mode
+   * conceals like the catch-all's, while the status still says what the client is to do.
+   * <p>
+   * A frame a broad arm matches by inheritance alone, which the engine classifies apart from the arm's type, ends the walk
+   * with no answer ({@link RefusalArm#leavesToCategory}): it is that frame's verdict, so nothing below it is asked either.
+   */
+  private StatusException answeredByAnArm(final String operation, final Exception e) {
+    Throwable frame = e;
+    for (int depth = 0; frame != null && depth < CauseChain.MAX_DEPTH; frame = frame.getCause(), depth++)
+      for (final RefusalArm arm : REFUSAL_ARMS)
+        if (arm.type().isInstance(frame)) {
+          if (arm.leavesToCategory(frame))
+            return null;
+          final boolean conceal = arm.broad() && depth > 0 && concealErrors();
+          return Status.fromCode(arm.code())
+              .withDescription(conceal ? GrpcErrorMapper.concealableDescription(this, operation, frame, conceal) : frame.getMessage())
+              .asException(arm.trailersFor(frame));
+        }
+    return null;
   }
 
   /**

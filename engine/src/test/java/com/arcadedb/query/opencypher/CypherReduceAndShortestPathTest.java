@@ -255,11 +255,20 @@ class CypherReduceAndShortestPathTest extends TestHelper {
 
   @Test
   void shortestPathSameNode() {
-    // Path from a node to itself
-    final ResultSet resultSet = database.query("opencypher",
+    // Path from a node to itself: the zero-length path is the only shortest one, and it answers only a pattern whose
+    // minimum is zero. [*] declares at least one hop, so it has no row (issues #7017, #11913).
+    try (final ResultSet resultSet = database.query("opencypher",
         """
         MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Alice'}), \
         p = shortestPath((a)-[:KNOWS*]-(b)) \
+        RETURN p""")) {
+      assertThat(resultSet.hasNext()).isFalse();
+    }
+
+    final ResultSet resultSet = database.query("opencypher",
+        """
+        MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Alice'}), \
+        p = shortestPath((a)-[:KNOWS*0..]-(b)) \
         RETURN p""");
 
     assertThat(resultSet.hasNext()).isTrue();

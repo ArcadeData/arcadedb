@@ -24,6 +24,8 @@ import com.arcadedb.bench.model.RunResult;
 import com.arcadedb.bench.runner.Measurement;
 import com.arcadedb.bench.runner.Workload;
 import com.arcadedb.bench.runner.WorkloadContext;
+import com.arcadedb.bench.server.ServerUnderTest;
+import com.arcadedb.bench.workload.Scale;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
@@ -35,8 +37,11 @@ import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Stream;
 
@@ -86,6 +91,82 @@ class BenchMainTest {
       assertThat(result.info().source()).isEqualTo("bench");
       assertThat(result.results()).hasSize(3);
       assertThat(result.info().config().getString("benchCommit")).isEqualTo("unknown");
+    }
+  }
+
+  @Test
+  void runFileIsRewrittenAfterEachCase() throws Exception {
+    final List<RunResult> seen = new ArrayList<>();
+    final Workload spy = new Workload() {
+      @Override
+      public String name() {
+        return "spy";
+      }
+
+      @Override
+      public List<String> cases() {
+        return List.of("s1", "s2");
+      }
+
+      @Override
+      public void prepare(final WorkloadContext ctx, final String caseName) {
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) throws Exception {
+        if (caseName.equals("s2"))
+          try (final Stream<Path> files = Files.list(tmp)) {
+            seen.add(RunResult.read(files.filter(p -> p.toString().endsWith(".json")).toList().getFirst()));
+          }
+        return new Measurement(List.of());
+      }
+    };
+    final ByteArrayOutputStream buf = new ByteArrayOutputStream();
+    final int code = BenchMain.run(new String[] { "run", "--workload", "spy", "--scale", "XS", "--image", "img:1", "--variant", "jvm",
+        "--reps", "1", "--warmup", "0", "--skip-idle-check", "--server-cpus", "none", "--client-cpus", "none", "--commit",
+        "abc1234567", "--out", tmp.toString() }, List.of(spy), (image, cpuset, mem, heap) -> null, new PrintStream(buf, true, StandardCharsets.UTF_8));
+    assertThat(code).isZero();
+    assertThat(seen).hasSize(1);
+    assertThat(seen.getFirst().complete()).isFalse();
+    assertThat(seen.getFirst().results()).hasSize(1);
+    try (final Stream<Path> files = Files.list(tmp)) {
+      final List<Path> json = files.toList();
+      assertThat(json).hasSize(1);
+      final RunResult last = RunResult.read(json.getFirst());
+      assertThat(last.complete()).isTrue();
+      assertThat(last.results()).hasSize(2);
+      assertThat(last.info().runId()).isEqualTo(seen.getFirst().info().runId());
+    }
+  }
+
+  @Test
+  void runIdWaitsForTheFirstServerThatReportsAnImage() throws Exception {
+    final Map<String, String> options = Map.of();
+    final BenchMain.RunFile file = new BenchMain.RunFile(tmp, Instant.parse("2026-11-23T03:00:00Z"), options, "jvm", "img:1",
+        null, null, "manual", "local", 1, 0, 30, 30, 120, 42L, "none", "none");
+    final CaseResult failed = new CaseResult("alpha", "a1", "XS", new JSONObject(), 1, 0, List.of(), CaseResult.Status.FAILED,
+        "server start failed");
+    final List<CaseResult> results = new ArrayList<>(List.of(failed));
+
+    // the first workload's server failed to start: nothing is written and no id is frozen on "unknown"
+    file.write(results, false);
+    assertThat(file.runId).isNull();
+    try (final Stream<Path> files = Files.list(tmp)) {
+      assertThat(files.toList()).isEmpty();
+    }
+
+    // a later server reports its image: the next write carries its revision and everything gathered so far
+    file.imageInfo = new JSONObject().put("revision", "0123456789abcdef");
+    results.add(failed);
+    file.write(results, false);
+    file.write(results, true);
+    try (final Stream<Path> files = Files.list(tmp)) {
+      final List<Path> json = files.toList();
+      assertThat(json).hasSize(1);
+      final RunResult last = RunResult.read(json.getFirst());
+      assertThat(last.info().runId()).contains("0123456789").doesNotContain("unknown");
+      assertThat(last.complete()).isTrue();
+      assertThat(last.results()).hasSize(2);
     }
   }
 
@@ -309,6 +390,243 @@ class BenchMainTest {
       });
       assertThat(result.results().get(2).workload()).isEqualTo("beta");
       assertThat(result.results().get(2).status()).isEqualTo(CaseResult.Status.OK);
+    }
+  }
+
+  /** Counts server starts and answers each liveness check from a script, one entry per call (null = alive). */
+  private static final class DyingServers implements BenchMain.ServerFactory {
+    final List<String>  reasons;
+    final List<Boolean> histogramsAsked = new ArrayList<>();
+    int starts;
+    int checks;
+    int diagnosed;
+
+    DyingServers(final String... reasons) {
+      this.reasons = Arrays.asList(reasons);
+    }
+
+    @Override
+    public ServerUnderTest start(final String image, final String cpuset, final int memLimitGb, final String heap) {
+      starts++;
+      return null;
+    }
+
+    @Override
+    public String deathReason(final ServerUnderTest server) {
+      final int i = checks++;
+      return i < reasons.size() ? reasons.get(i) : null;
+    }
+
+    /** Numbers each server's diagnostics in the order they are taken, and records whether a class histogram was asked for. */
+    @Override
+    public JSONObject diagnostics(final ServerUnderTest server, final boolean classHistogram) {
+      histogramsAsked.add(classHistogram);
+      return new JSONObject().put("server", ++diagnosed);
+    }
+  }
+
+  private int runAll(final List<Workload> registry, final BenchMain.ServerFactory servers, final Path out) {
+    return BenchMain.run(new String[] { "run", "--workload", "all", "--scale", "XS", "--image", "i", "--variant", "jvm", "--reps", "1",
+        "--warmup", "0", "--skip-idle-check", "--server-cpus", "none", "--client-cpus", "none", "--commit", "abc1234567", "--out",
+        out.toString() }, registry, servers, new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8));
+  }
+
+  private static RunResult onlyRunFile(final Path dir) throws Exception {
+    try (final Stream<Path> files = Files.list(dir)) {
+      return RunResult.read(files.filter(p -> p.toString().endsWith(".json")).findFirst().orElseThrow());
+    }
+  }
+
+  @Test
+  void aReplacedServerKeepsItsDiagnosticsUnderANumberedKey() throws Exception {
+    final List<Workload> registry = List.of(new Fake("alpha", List.of("a1", "a2", "a3")), new Fake("beta", List.of("b1")));
+    // alpha's server dies before a2 and is replaced; the replacement serves a2 and a3
+    final DyingServers servers = new DyingServers("OOMKilled");
+    assertThat(runAll(registry, servers, tmp)).isZero();
+    final JSONObject diagnostics = onlyRunFile(tmp).diagnostics();
+    assertThat(diagnostics.keySet()).containsExactlyInAnyOrder("alpha#1", "alpha", "beta");
+    assertThat(diagnostics.getJSONObject("alpha#1").getInt("server", 0)).isEqualTo(1);
+    assertThat(diagnostics.getJSONObject("alpha").getInt("server", 0)).isEqualTo(2);
+    assertThat(diagnostics.getJSONObject("beta").getInt("server", 0)).isEqualTo(3);
+  }
+
+  @Test
+  void aServerNotAnsweringGetsNoClassHistogram() throws Exception {
+    final List<Workload> registry = List.of(new Fake("alpha", List.of("a1", "a2")));
+    // jcmd against a JVM that does not answer HTTP would most likely hang too
+    final DyingServers servers = new DyingServers(ServerUnderTest.NOT_ANSWERING);
+    assertThat(runAll(registry, servers, tmp)).isZero();
+    // the dead server, then its healthy replacement
+    assertThat(servers.histogramsAsked).containsExactly(false, true);
+  }
+
+  @Test
+  void aFailedInterimWriteIsAWarningAndTheRunGoesOn() throws Exception {
+    // the output path is taken by a file until the last case removes it: every interim write fails, the final one succeeds
+    final Path out = tmp.resolve("out");
+    Files.writeString(out, "in the way");
+    final List<String> measured = new ArrayList<>();
+    final Workload clearing = new Workload() {
+      @Override
+      public String name() {
+        return "alpha";
+      }
+
+      @Override
+      public List<String> cases() {
+        return List.of("a1", "a2", "a3");
+      }
+
+      @Override
+      public void prepare(final WorkloadContext ctx, final String caseName) {
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) throws Exception {
+        measured.add(caseName);
+        if (caseName.equals("a3"))
+          Files.delete(out);
+        return new Measurement(List.of());
+      }
+    };
+    assertThat(runAll(List.of(clearing), (image, cpuset, mem, heap) -> null, out)).isZero();
+    assertThat(measured).containsExactly("a1", "a2", "a3");
+    final RunResult result = onlyRunFile(out);
+    assertThat(result.complete()).isTrue();
+    assertThat(result.results()).hasSize(3);
+  }
+
+  @Test
+  void aFailedFinalWriteExitsNonZero() throws Exception {
+    final Path out = tmp.resolve("out");
+    Files.writeString(out, "in the way");
+    final List<String> measured = new ArrayList<>();
+    final Workload w = new Workload() {
+      @Override
+      public String name() {
+        return "alpha";
+      }
+
+      @Override
+      public List<String> cases() {
+        return List.of("a1", "a2");
+      }
+
+      @Override
+      public void prepare(final WorkloadContext ctx, final String caseName) {
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) {
+        measured.add(caseName);
+        return new Measurement(List.of());
+      }
+    };
+    assertThat(runAll(List.of(w), (image, cpuset, mem, heap) -> null, out)).isEqualTo(1);
+    assertThat(measured).containsExactly("a1", "a2");
+  }
+
+  @Test
+  void nextWorkloadGetsAFreshServerAfterTwoDeaths() throws Exception {
+    final List<Workload> registry = List.of(new Fake("alpha", List.of("a1", "a2", "a3")), new Fake("beta", List.of("b1", "b2")));
+    // dead before a2 (restart), dead before a3 (second death: a3 not started); beta alive throughout
+    final DyingServers servers = new DyingServers("OOMKilled", "exit code 137");
+    final int code = BenchMain.run(new String[] { "run", "--workload", "all", "--scale", "XS", "--image", "i", "--variant", "jvm",
+        "--reps", "1", "--warmup", "0", "--skip-idle-check", "--server-cpus", "none", "--client-cpus", "none", "--commit",
+        "abc1234567", "--out", tmp.toString() }, registry, servers, new PrintStream(new ByteArrayOutputStream(), true,
+        StandardCharsets.UTF_8));
+    assertThat(code).isZero();
+    // alpha's first server, its restart, then beta's own
+    assertThat(servers.starts).isEqualTo(3);
+    try (final Stream<Path> files = Files.list(tmp)) {
+      final RunResult result = RunResult.read(files.filter(p -> p.toString().endsWith(".json")).findFirst().orElseThrow());
+      final List<CaseResult> r = result.results();
+      assertThat(r).extracting(CaseResult::caseName).containsExactly("a1", "a2", "a3", "b1", "b2");
+      // the amended results replace the earlier ones in the file
+      assertThat(r.get(0).notes().getString("serverDied", "")).isEqualTo("OOMKilled");
+      assertThat(r.get(1).notes().getString("serverDied", "")).isEqualTo("exit code 137");
+      assertThat(r.get(1).notes().getBoolean("serverRestarted", false)).isTrue();
+      assertThat(r.get(2).status()).isEqualTo(CaseResult.Status.FAILED);
+      assertThat(r.get(2).error()).isEqualTo("not started: server died twice");
+      assertThat(r.subList(3, 5)).allSatisfy(c -> {
+        assertThat(c.status()).isEqualTo(CaseResult.Status.OK);
+        assertThat(c.notes().has("serverDied")).isFalse();
+        assertThat(c.notes().has("serverRestarted")).isFalse();
+      });
+    }
+  }
+
+  @Test
+  void diagnosticsLandUnderTheWorkloadName() throws Exception {
+    final BenchMain.ServerFactory servers = new BenchMain.ServerFactory() {
+      @Override
+      public ServerUnderTest start(final String image, final String cpuset, final int memLimitGb, final String heap) {
+        return null;
+      }
+
+      @Override
+      public JSONObject diagnostics(final ServerUnderTest server, final boolean classHistogram) {
+        return new JSONObject().put("threads", 7);
+      }
+    };
+    final int code = BenchMain.run(new String[] { "run", "--workload", "all", "--scale", "XS", "--image", "i", "--variant", "jvm",
+        "--reps", "1", "--warmup", "0", "--skip-idle-check", "--server-cpus", "none", "--client-cpus", "none", "--commit",
+        "abc1234567", "--out", tmp.toString() }, REGISTRY, servers, new PrintStream(new ByteArrayOutputStream(), true,
+        StandardCharsets.UTF_8));
+    assertThat(code).isZero();
+    try (final Stream<Path> files = Files.list(tmp)) {
+      final RunResult result = RunResult.read(files.filter(p -> p.toString().endsWith(".json")).findFirst().orElseThrow());
+      assertThat(result.diagnostics().keySet()).containsExactlyInAnyOrder("alpha", "beta");
+      assertThat(result.diagnostics().getJSONObject("alpha").getInt("threads", 0)).isEqualTo(7);
+      assertThat(result.diagnostics().getJSONObject("beta").getInt("threads", 0)).isEqualTo(7);
+    }
+  }
+
+  /** A run file and the guard of workload "alpha" over it, whose thread dumps write their file name as their content. */
+  private BenchMain.Guard dumpingGuard(final BenchMain.RunFile file) {
+    final BenchMain.ServerFactory servers = new BenchMain.ServerFactory() {
+      @Override
+      public ServerUnderTest start(final String image, final String cpuset, final int memLimitGb, final String heap) {
+        return null;
+      }
+
+      @Override
+      public boolean threadDump(final ServerUnderTest server, final Path target) {
+        try {
+          Files.writeString(target, target.getFileName().toString());
+        } catch (final Exception e) {
+          throw new IllegalStateException(e);
+        }
+        return true;
+      }
+    };
+    return new BenchMain.Guard(servers, null, "alpha", file, "i", "", 1, "1g", Scale.XS, 1L, new JSONObject());
+  }
+
+  private BenchMain.RunFile runFile(final Map<String, String> options) {
+    return new BenchMain.RunFile(tmp, Instant.parse("2026-11-23T03:00:00Z"), options, "jvm", "i", null, null, "manual", "local", 1, 0,
+        1, 1, 1, 1L, "", "");
+  }
+
+  @Test
+  void threadDumpIsNamedAfterTheRunId() throws Exception {
+    final BenchMain.RunFile file = runFile(Map.of("commit", "abc1234567"));
+    assertThat(dumpingGuard(file).threadDump(2)).isTrue();
+    assertThat(tmp.resolve("dumps").resolve("2026-11-23T03-00-00Z-abc1234567-jvm-2.txt")).exists();
+  }
+
+  @Test
+  void dumpTakenBeforeTheRunIdIsKnownIsRenamedOnceItIs() throws Exception {
+    // no --commit and no image info yet: the run id cannot be formed when the dump is taken
+    final BenchMain.RunFile file = runFile(Map.of());
+    assertThat(dumpingGuard(file).threadDump(1)).isTrue();
+    try (final Stream<Path> dumps = Files.list(tmp.resolve("dumps"))) {
+      assertThat(dumps.map(p -> p.getFileName().toString()).toList()).containsExactly("2026-11-23T03-00-00Z-pending-jvm-1.txt");
+    }
+    file.imageInfo = new JSONObject().put("revision", "fedcba9876");
+    file.write(List.of(), false);
+    try (final Stream<Path> dumps = Files.list(tmp.resolve("dumps"))) {
+      assertThat(dumps.map(p -> p.getFileName().toString()).toList()).containsExactly("2026-11-23T03-00-00Z-fedcba9876-jvm-1.txt");
     }
   }
 

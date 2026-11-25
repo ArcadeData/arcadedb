@@ -115,6 +115,7 @@ import com.arcadedb.schema.LocalVertexType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.serializer.json.JSONArray;
@@ -485,12 +486,29 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   @Override
   public void drop() {
-    closeForDrop();
+    // THE PATH STAYS TAKEN, IN THE FACTORY'S REGISTRY, UNTIL THE FILES ARE GONE (ISSUE #12808): THE CLOSE BELOW USED TO RELEASE IT,
+    // AND A create() OR open() OF THE SAME PATH IN THE WINDOW BEFORE THE DELETE FINISHED BUILT ITS INSTANCE OVER THE FILES BEING
+    // DELETED, WHICH THE DELETE THEN TOOK FROM UNDER IT AND LEFT A TORN DIRECTORY THAT COULD BE NEITHER OPENED NOR CREATED. A CALLER
+    // IN THE WINDOW IS REFUSED AS "ACTIVE INSTANCE" INSTEAD, WHICH IS WHAT IT WOULD BE TOLD BY A DATABASE STILL CLOSING.
+    // THE DEFERRAL IS DECIDED BY THE CALL THAT WINS THE CLOSING CAS AND HANDED BACK AS ITS RESULT, NEVER THROUGH A FIELD: A
+    // close() RACING THIS DROP ON ANOTHER THREAD MUST NOT SEE THIS DROP'S INTENT, OR IT LEFT ITS UNREGISTRATION TO A DROP THAT
+    // WAS REFUSED, AND THE CLOSED INSTANCE STAYED IN THE REGISTRY FOR THE REST OF THE JVM (THE #8316 SYMPTOM)
+    final boolean registrationKept = closeForDrop(true);
+    try {
+      final Consumer<LocalDatabase> afterDropCloseHook = TEST_AFTER_DROP_CLOSE_HOOK;
+      if (afterDropCloseHook != null)
+        afterDropCloseHook.accept(this);
 
-    executeInWriteLock(() -> {
-      FileUtils.deleteRecursively(new File(databasePath));
-      return null;
-    });
+      executeInWriteLock(() -> {
+        FileUtils.deleteRecursively(new File(databasePath));
+        return null;
+      });
+    } finally {
+      // WHATEVER BECAME OF THE DELETE: NOTHING IS LEFT TO KEEP THE PATH FOR. A DROP THAT LOST THE CLOSING CAS TO A CONCURRENT
+      // close() HAS NOTHING TO UNREGISTER, THAT CLOSE DID IT
+      if (registrationKept)
+        unregisterClosedInstance();
+    }
   }
 
   /**
@@ -501,17 +519,26 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    */
   @Override
   public void closeForDrop() {
+    closeForDrop(false);
+  }
+
+  /**
+   * @param keepRegistration true to leave this instance in the factory's registry once closed, for the caller to unregister
+   *
+   * @return true when this call closed the instance and left its registration to the caller (only with keepRegistration)
+   */
+  private boolean closeForDrop(final boolean keepRegistration) {
     checkDatabaseIsOpen(true, "Cannot drop database");
 
     if (isTransactionActive())
       throw new DatabaseOperationException("Cannot drop the database in transaction");
 
-    closeInternal(true);
+    return closeInternal(true, keepRegistration);
   }
 
   @Override
   public void close() {
-    closeInternal(false);
+    closeInternal(false, false);
   }
 
   /**
@@ -523,7 +550,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   @Override
   public void closeForReopen() {
     closedForReopen = true;
-    closeInternal(false);
+    closeInternal(false, false);
+  }
+
+  /**
+   * True once {@link #closeForReopen()} has started: from then on {@code begin()} is refused, so close-time work that needs a
+   * transaction (a vector index's graph build on flush) must be deferred rather than attempted.
+   */
+  public boolean isClosedForReopen() {
+    return closedForReopen;
   }
 
   /**
@@ -1018,9 +1053,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       // TimeSeries types store data in their own engine, not in regular buckets
       if (type instanceof LocalTimeSeriesType tsType) {
-        // Counting samples never loads a record through a bucket, so apply the equivalent per-type read check here.
-        checkPermissionsOnType(typeName, SecurityDatabaseUser.ACCESS.READ_RECORD);
-        return tsType.requireEngine();
+        // Counting samples never loads a record through a bucket, so apply the equivalent per-type read check here. It is
+        // made by the type, on the name it is registered under: typeName can be one of its aliases.
+        return tsType.requireEngine(SecurityDatabaseUser.ACCESS.READ_RECORD);
       }
 
       long total = 0;
@@ -1077,9 +1112,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
             @Override
             public boolean onRecord(final RID rid, final Binary view, final boolean fromOwnImage) {
+              return onRecord(rid, view, fromOwnImage, -1);
+            }
+
+            @Override
+            public boolean onRecord(final RID rid, final Binary view, final boolean fromOwnImage, final long readInTransaction) {
               final Document record = (Document) recordFactory.newImmutableRecord(wrappedDatabaseInstance, recordType, rid,
                   view, null);
-              markReadFromOwnImage(record, fromOwnImage);
+              markScanned(record, fromOwnImage, readInTransaction);
               continueScan.set(callback.onRecord(record));
               return continueScan.get();
             }
@@ -1127,8 +1167,13 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
         @Override
         public boolean onRecord(final RID rid, final Binary view, final boolean fromOwnImage) {
+          return onRecord(rid, view, fromOwnImage, -1);
+        }
+
+        @Override
+        public boolean onRecord(final RID rid, final Binary view, final boolean fromOwnImage, final long readInTransaction) {
           final Record record = recordFactory.newImmutableRecord(wrappedDatabaseInstance, type, rid, view, null);
-          markReadFromOwnImage(record, fromOwnImage);
+          markScanned(record, fromOwnImage, readInTransaction);
           return callback.onRecord(record);
         }
       }, errorRecordCallback);
@@ -1296,10 +1341,21 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     });
   }
 
-  /** #12320: a vertex built from the transaction's own image of its page carries the heads of that image. */
-  private static void markReadFromOwnImage(final Record record, final boolean fromOwnImage) {
-    if (fromOwnImage && record instanceof ImmutableVertex vertex)
-      vertex.markReadFromOwnImage();
+  /**
+   * Marks a record {@code scanType} or {@code scanBucket} built as {@code BucketIterator} and {@code lookupByRID} mark theirs:
+   * as read in the transaction that read its page (#12575), so a delete or a property write that meets a concurrent commit in
+   * between raises the retryable conflict of #8984 and #8610 and not a {@code RecordNotFoundException} or a lost update; and,
+   * for a vertex built from the transaction's own image of its page, as carrying the heads of that image (#12320).
+   *
+   * @param readInTransaction begin sequence of the transaction that read the page, -1 when unknown (the marker stays unset)
+   */
+  private static void markScanned(final Record record, final boolean fromOwnImage, final long readInTransaction) {
+    if (record instanceof ImmutableDocument document) {
+      if (readInTransaction > -1)
+        document.setReadInTransaction(readInTransaction);
+      if (fromOwnImage && document instanceof ImmutableVertex vertex)
+        vertex.markReadFromOwnImage();
+    }
   }
 
   @Override
@@ -1322,7 +1378,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       final DocumentType type = schema.getTypeByBucketId(rid.getBucketId());
 
       final boolean loadRecordContent;
-      if (!loadContent && tx.getIsolationLevel() == TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ)
+      if (!loadContent && tx.isRepeatableRead())
         // FORCE LOAD OF CONTENT TO GUARANTEE THE LOADING OF MULTI-PAGE RECORD INTO THE TX CONTEXT
         loadRecordContent = true;
       else
@@ -1568,6 +1624,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         if (target instanceof LocalBucket local && local.getPurpose() != LocalBucket.Purpose.PRIMARY)
           throw new IllegalArgumentException(
               "Bucket '" + bucketName + "' is internal (purpose=" + local.getPurpose() + ") and cannot be written to directly");
+        // The grant of the bucket asked for is checked before its owner is looked at (the grant of the type is checked below)
+        if (record instanceof Document)
+          checkPermissionsOnFile(target.getFileId(), SecurityDatabaseUser.ACCESS.CREATE_RECORD);
         // A record written into a bucket another type owns is read back as that type, so its own type's indexes and
         // listeners would answer for a record that is not theirs (issue #11206). INSERT INTO BUCKET:x already types the
         // record by the bucket's owner; this is the same rule for the API. A bucket no type owns is read back as no type at
@@ -1588,6 +1647,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         }
       }
     }
+
+    // THE CREATE GRANT IS CHECKED BEFORE THE RECORD IS EVALUATED, the order a delete follows (issue #9305). LocalBucket.createRecord
+    // checks CREATE_RECORD too, but it is the last step of a create: the defaults, the constraints and the before-create
+    // listeners and triggers run before it. Every bucket of a type carries the same access array, so the first one answers for
+    // the type. A named bucket was checked above. Records that are not typed documents (edge segments and other engine-internal
+    // records) stay checked by their bucket
+    if (bucketName == null && security != null && record instanceof Document doc)
+      SecurityHelper.checkAccessOnType(this, doc.getType(), SecurityDatabaseUser.ACCESS.CREATE_RECORD);
 
     setDefaultValues(record);
 
@@ -1960,6 +2027,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     // only the refresh of a materialized view or a continuous aggregate writes its backing type (issue #11020)
     schema.checkBackingTypeWrite(record.getIdentity().getBucketId(), "update a record of");
 
+    // THE UPDATE GRANT IS CHECKED BEFORE THE RECORD IS EVALUATED, the order a delete follows (issue #9305). LocalBucket.updateRecord
+    // checks UPDATE_RECORD too, but an update queued in a transaction reaches it at the commit, after the constraints and the
+    // before-update listeners and triggers. Every bucket of a type carries the same access array, so the bucket of the record
+    // answers for the type. Records that are not typed documents (edge segments and other engine-internal records) stay checked
+    // by their bucket
+    if (record instanceof Document)
+      checkPermissionsOnFile(record.getIdentity().getBucketId(), SecurityDatabaseUser.ACCESS.UPDATE_RECORD);
+
     try {
       if (record instanceof MutableDocument document) {
         // #10955: NEVER SAVE BACK A RECORD THAT LOST A PROPERTY IT COULD NOT DECODE
@@ -2053,6 +2128,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
               // the record overwrites them, so they are harmless.)
               if (!alreadyQueued)
                 tx.removeRecordFromCache(rid);
+              else if (record instanceof MutableDocument mutable)
+                takeRefusedValuesOffQueuedRecord(tx, mutable, indexes, e);
               throw e;
             } finally {
               indexChanges.disarmRecordUndo();
@@ -2061,8 +2138,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         }
         // #11751: the indexes now hold what the record holds. The commit writes the record as it is THEN, so an assignment made after
         // this save is the commit's to index, and this is the point it is counted from
-        if (record instanceof MutableDocument mutable)
+        if (record instanceof MutableDocument mutable) {
           mutable.clearAssignedAfterSave();
+          // #12612: a READONLY value this write completed the record with under a deferral stays allowed, the commit validating again
+          DocumentValidator.rememberReadonlyValuesOfDeferredWrite(tx, mutable);
+        }
         countCompletedUpdate(tx, record, structural);
       } catch (final IOException e) {
         throw new DatabaseOperationException("Error on update the record " + record.getIdentity() + " in " +
@@ -2096,6 +2176,41 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     }
 
     return true;
+  }
+
+  /**
+   * An index refused the save of a record that an earlier save of this transaction had queued for the commit (issue #13130): the values
+   * the caller assigned are on the queued instance, and its queue entry stays, as the earlier save's indexed state is what the indexes
+   * still hold. The commit writes that instance and indexes whatever was assigned to it since its last accepted save (#11751), so it
+   * would fail on the refused value and lose every valid write of the transaction, when the caller handled the refusal and went on. The
+   * indexed properties go back to what the indexes hold, which leaves the commit nothing to index; when one cannot be put back (see
+   * {@link DocumentIndexer#restoreIndexedValues}) the commit is refused with the reason, as for a before-update listener that vetoes the
+   * update of a queued record ({@link #refusedUpdateOfQueuedRecordDoomsCommit}), rather than storing a value no index describes.
+   * <p>
+   * Not for a statement that runs inside the transaction: its savepoint takes the record back to the content it held before the
+   * statement (issue #10346), and refuses the commit itself when it cannot.
+   *
+   * @param cause the refusal, which the caller rethrows: what goes wrong here is added to it, never thrown over it
+   */
+  private void takeRefusedValuesOffQueuedRecord(final TransactionContext tx, final MutableDocument record, final List<IndexInternal> indexes,
+      final Throwable cause) {
+    if (tx.getActiveStatement() != null)
+      return;
+
+    boolean restored;
+    try {
+      restored = indexer.restoreIndexedValues(tx, record, indexes);
+    } catch (final RuntimeException | Error t) {
+      cause.addSuppressed(t);
+      restored = false;
+    }
+
+    if (restored)
+      // the indexes hold what the record holds, the state a save leaves it in
+      record.clearAssignedAfterSave();
+    else
+      tx.setRollbackOnly("an index refused the update of record " + record.getIdentity() + " (" + cause.getClass().getSimpleName()
+          + "), which the transaction had already updated, and the transaction cannot take the value it assigned back off the record");
   }
 
   /**
@@ -2149,7 +2264,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   public Document getOriginalDocument(final Record record) {
-    final Binary originalBuffer = ((RecordInternal) record).getBuffer();
+    // THE STORED IMAGE: THE INDEXES WERE WRITTEN FROM IT, NOT FROM THE CONTENT AN AFTER-READ LISTENER RETURNED FOR THE RECORD (#12579)
+    final Binary originalBuffer =
+        record instanceof BaseRecord base ? base.getStoredBuffer() : ((RecordInternal) record).getBuffer();
     if (originalBuffer == null)
       throw new IllegalStateException("Cannot read original buffer for record " + record.getIdentity()
           + ". In case of tx retry check the record is created inside the transaction");
@@ -2288,6 +2405,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     markModified();
     if (record.getIdentity() == null)
       throw new IllegalArgumentException("Cannot delete a non persistent record");
+
+    // AN EDGE RECORD THIS TRANSACTION ALREADY DELETED IS NOT DELETED A SECOND TIME (issue #12253). GraphEngine.deleteEdge ignores
+    // the not-found of its physical delete, so the -1 folded below would drift the persisted record count behind count(*) and the
+    // listeners and the index cleanup would run again. A vertex and a document already answer a second delete with their
+    // not-found. A lightweight edge owns no record, so there is nothing to check for it
+    if (record instanceof Edge && record.getIdentity().getPosition() >= 0 && getTransactionIfExists() instanceof TransactionContext tx
+        && tx.isDeletedInTransaction(record.getIdentity()))
+      throw new RecordNotFoundException("Record " + record.getIdentity() + " not found", record.getIdentity());
 
     if (mode == ComponentFile.MODE.READ_ONLY)
       throw new DatabaseIsReadOnlyException("Cannot delete record " + record.getIdentity());
@@ -2493,6 +2618,13 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * loading itself, unpinned, when the cleanup asks its properties. Nothing is refused for it either: its caller decided on a RID,
    * not on content, and the RID still names a record.
    * <p>
+   * The image the slot is compared with is the stored one, which is not always the buffer of the record: when an after-read listener
+   * handed back other content than the stored one (a decryption), the record answers that content and its buffer holds it, so the slot
+   * differed from the record with no other transaction involved, and every delete of it was refused (issue #12579). Such a record
+   * keeps the image it was read as ({@link BaseRecord#getStoredBuffer()}), which is what is compared, and what the cleanup reads the
+   * entries to remove from: the listener may have rewritten an indexed property, and the index holds the stored value. A record a
+   * listener filtered away holds no content at all, and is read from the slot like one that was never loaded.
+   * <p>
    * The record that is neither changed in its slot nor pending costs the pin, which its delete takes anyway a few lines later,
    * and one comparison in place: nothing is allocated for it.
    */
@@ -2500,7 +2632,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     final RID rid = document.getIdentity();
     if (rid == null || rid.getPosition() < 0 || !(document instanceof BaseRecord base))
       return document;
-    final Binary readImage = base.getBuffer();
+    // THE STORED IMAGE, NOT THE CONTENT AN AFTER-READ LISTENER RETURNED FOR IT (ISSUE #12579): THE SLOT NEVER HELD THAT, SO THE RECORD
+    // WOULD BE REFUSED AS CHANGED BY A CONCURRENT TRANSACTION ON EVERY ATTEMPT
+    final Binary readImage = base.getStoredBuffer();
 
     // A RECORD WITH NO BUFFER WAS NOT LOADED YET (lookupByRID(rid, false)): LEFT TO LOAD ITSELF WHEN THE CLEANUP ASKS ITS PROPERTIES,
     // IT WOULD BE READ BEFORE ITS PAGE IS PINNED, WITH THE SAME WINDOW FOR A CONCURRENT COMMIT. IT IS READ FROM THE SLOT, PINNED
@@ -2531,7 +2665,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
             + "and its delete. Please retry the operation");
       // THE COPY DETACHES THE IMAGE FROM A PAGE THAT CHANGED UNDER THE CALLER'S; A RECORD READ HERE FIRST IS A VIEW, AS ANY READ IS
       stored = readImage == null ? current : current.copyOfContent();
-    } else if (document instanceof MutableDocument mutable && mutable.isDirty()) {
+    } else if ((document instanceof MutableDocument mutable && mutable.isDirty()) || base.isContentRewrittenByListener()) {
+      // A RECORD A LISTENER REWROTE ANSWERS WHAT THE LISTENER RETURNED, WHICH IS NOT WHAT THE INDEXES AND THE EXTERNAL VALUES WERE
+      // WRITTEN FROM: THE STORED IMAGE IS (ISSUE #12579)
       readImage.rewind();
       stored = readImage;
     } else
@@ -2739,6 +2875,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         if (!createdNewTx) {
           // A level the block opened itself and left open is not the caller's: take it back, keep the caller's (#10135)
           rollbackLevelsAbove(callerLevels);
+          // The caller may be no retry loop of ours, but its own code or a client: a block that committed part of its work
+          // does not reach it as a retryable conflict either (#13251)
+          if (TransactionContext.isPartiallyCommitted(txAtStart, commitCountAtStart))
+            throw TransactionContext.notReplayable(e, "Transaction block");
           throw e;
         }
 
@@ -2748,21 +2888,26 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         // from the same state as this one (#10135)
         rollbackLevelsAbove(callerLevels);
 
+        // Decided before the error callback runs, so the callback is told the failure the caller is (#13251)
+        final boolean partiallyCommitted = TransactionContext.isPartiallyCommitted(txAtStart, commitCountAtStart);
+        final ArcadeDBException failure = partiallyCommitted ? TransactionContext.notReplayable(e, "Transaction block") : e;
+
         if (error != null)
-          error.call(e);
+          error.call(failure);
 
         // #7916: a block that already published part of its work cannot be re-run - the rollback above could not
         // take that part back, and a second pass would apply it twice and then report clean success. The commit
         // came from a statement with an explicit batch boundary (UPDATE/DELETE/MOVE VERTEX ... BATCH n), which
         // re-begins straight after, so isTransactionActive() alone cannot see it. The conflict goes to the
-        // caller, who is the only one who knows how to compensate for the half that stands.
-        if (TransactionContext.isPartiallyCommitted(txAtStart, commitCountAtStart)) {
+        // caller, who is the only one who knows how to compensate for the half that stands. Not as the retryable conflict
+        // it is, which every layer above would retry anyway (#13251)
+        if (partiallyCommitted) {
           LogManager.instance().log(this, Level.WARNING,
               "Transaction block on database '%s' committed part of its work before failing (a statement with a BATCH "
-                  + "boundary, or a write forwarded to the leader): NOT retrying, because replaying it would apply the "
+                  + "boundary, a Cypher CALL IN TRANSACTIONS, or a write forwarded to the leader): NOT retrying, because replaying it would apply the "
                   + "already durable half a second time. Propagating %s to the caller",
               null, name, e.getClass().getSimpleName());
-          throw e;
+          throw failure;
         }
 
         // #9995: a refusal this node repeats until something outside it changes - a follower refusing leader-only work
@@ -2832,6 +2977,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   public Schema getSchema() {
     checkDatabaseIsOpen();
     return schema;
+  }
+
+  @Override
+  public Dictionary getDictionary() {
+    // NO lastUsedOn STAMP, UNLIKE checkDatabaseIsOpen(): READING A PROPERTY OF A RECORD ALREADY LOADED IS NOT A DATABASE ACCESS, AND
+    // THE LOOKUP OR QUERY THAT LOADED THE RECORD HAS STAMPED IT ALREADY
+    checkOpenAndNotFenced();
+    return schema.getDictionary();
   }
 
   @Override
@@ -4397,12 +4550,26 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   static volatile Runnable TEST_AFTER_MARKED_CLOSED_HOOK = null;
 
   /**
+   * Test-only hook (issue #12808): when set, invoked by {@link #drop()} on the dropping thread once the instance is closed and
+   * before its files are deleted, so a test can act in the window in which the path used to be free while the files were still
+   * there.
+   */
+  static volatile Consumer<LocalDatabase> TEST_AFTER_DROP_CLOSE_HOOK = null;
+
+  /**
    * Test-only hook (issue #8626): when set, invoked by {@link #performRecovery()} after every file is marked unsynced and
    * before the WAL is replayed, so a test can break a data file's fsync on the instance being recovered.
    */
   static volatile Consumer<LocalDatabase> TEST_BEFORE_RECOVERY_REPLAY_HOOK = null;
 
-  private void closeInternal(final boolean drop) {
+  /**
+   * @param keepRegistration true to leave the closed instance in the factory's registry for the caller to unregister (issue
+   *                         #12808). Passed down the call, never kept in a field: only the thread that wins the closing CAS runs
+   *                         the teardown, so the decision belongs to that one call and a concurrent close() cannot observe it
+   *
+   * @return true when this call ran the teardown, marked the instance closed, and left its registration to the caller as asked
+   */
+  private boolean closeInternal(final boolean drop, final boolean keepRegistration) {
     if (!closing.compareAndSet(false, true)) {
       // ANOTHER THREAD IS ALREADY CLOSING (OR HAS ALREADY CLOSED) THIS INSTANCE: WAIT FOR IT TO FINISH RATHER
       // THAN RUNNING closeSteps() A SECOND TIME CONCURRENTLY, THEN RETURN - THIS CALL IS A NO-OP.
@@ -4411,7 +4578,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
       }
-      return;
+      return false;
     }
 
     final Runnable testHook = TEST_CLOSE_HOOK;
@@ -4425,14 +4592,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     // set inside the try so that a wait that threw could not leak it either.
     try {
       PageManager.INSTANCE.beginDatabaseClose(this);
-      closeSteps(drop);
+      return closeSteps(drop, keepRegistration);
     } finally {
       PageManager.INSTANCE.endDatabaseClose(this);
       closedSignal.countDown();
     }
   }
 
-  private void closeSteps(final boolean drop) {
+  private boolean closeSteps(final boolean drop, final boolean keepRegistration) {
     // Graceful async drain FIRST, with the caller's interrupt flag INTACT so an interrupted caller bails
     // this wait fast; the warning distinguishes an interrupt from a real timeout.
     if (async != null) {
@@ -4470,14 +4637,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     // flag CLEARED (unconditionally, so async == null is covered too) and restore it for the caller after.
     final boolean callerWasInterrupted = Thread.interrupted();
     try {
-      closeDurableParts(drop);
+      return closeDurableParts(drop, keepRegistration);
     } finally {
       if (callerWasInterrupted)
         Thread.currentThread().interrupt();
     }
   }
 
-  private void closeDurableParts(final boolean drop) {
+  private boolean closeDurableParts(final boolean drop, final boolean keepRegistration) {
     if (async != null) {
       try {
         async.close();
@@ -4551,8 +4718,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       GraphTraversalProviderRegistry.clearAll(this);
     }
 
+    boolean tornDown = false;
     try {
       closeUnderWriteLock(drop);
+      tornDown = true;
     } finally {
       // In a finally, and on the flag rather than on how the teardown ended (issue #8316): a close that marked this
       // instance closed and then threw used to skip everything below, leaving a CLOSED instance in the factory's
@@ -4560,9 +4729,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       // lookup reused the dead instance instead of opening the files. An instance that is still open - the teardown
       // failed before marking it closed - keeps its registration and its PageManager reference, which is what it
       // still holds.
-      if (!open)
+      // A caller that asked to keep the registration (drop(), issue #12808) is handed it only when the teardown completed:
+      // one that threw propagates to that caller, which then deletes nothing, so the path is released here as before.
+      if (!open && !(keepRegistration && tornDown))
         unregisterClosedInstance();
     }
+    return keepRegistration && !open;
   }
 
   private void closeUnderWriteLock(final boolean drop) {
@@ -5049,9 +5221,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         if (security != null)
           security.updateSchema(this);
 
-        // After the WAL replay, so the passes read every committed change of the source types: a per-record materialized view
-        // lost its pending delta with the crashed process (issue #11550). Handed to the scheduler thread, never run here
-        schema.recoverPerRecordMaterializedViewsAfterOpen(recoveryPending);
+        // After the WAL replay, so the passes read every committed change of the source types: a per-record materialized view lost
+        // its pending delta with the crashed process (issue #11550), and a view refreshed as a whole the after-commit refresh not made
+        // yet (issue #12220). Handed to the scheduler thread, never run here
+        schema.recoverIncrementalMaterializedViewsAfterOpen(recoveryPending);
 
         openedOn = lastUsedOn = lastUpdatedOn = System.currentTimeMillis();
 
@@ -5354,16 +5527,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   /** {@link #checkDatabaseIsOpen(boolean, String)}, answering this thread's context of the database it found or created. */
   private DatabaseContext.DatabaseContextTL checkDatabaseIsOpenAndGetContext(final boolean updateIntent,
       final String databaseReadOnlyErrorMessage) {
-    if (!open)
-      throw closedForReopen ? new DatabaseIsReopeningException(name) : DatabaseIsClosedException.of(name);
-    if (fenceReason != null)
-      // #5053: a commit failed AFTER its WAL append - the WAL holds a record whose pages were never
-      // published, so the live in-memory state diverges from what recovery will reconstruct. Every further
-      // operation is fenced until the database is closed (the close-time ack gate preserves the WAL, since
-      // the orphaned record's pages were never flush-acked) and reopened, which replays the record.
-      throw new DatabaseOperationException(
-          "Database '" + name + "' is fenced after a failure past the WAL commit point: close and reopen the database to run recovery ("
-              + fenceReason + ")");
+    checkOpenAndNotFenced();
     DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(databasePath);
     if (context == null)
       context = DatabaseContext.INSTANCE.init(this);
@@ -5384,6 +5548,19 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     if (lastUsedOn != now)
       lastUsedOn = now;
     return context;
+  }
+
+  private void checkOpenAndNotFenced() {
+    if (!open)
+      throw closedForReopen ? new DatabaseIsReopeningException(name) : DatabaseIsClosedException.of(name);
+    if (fenceReason != null)
+      // #5053: a commit failed AFTER its WAL append - the WAL holds a record whose pages were never
+      // published, so the live in-memory state diverges from what recovery will reconstruct. Every further
+      // operation is fenced until the database is closed (the close-time ack gate preserves the WAL, since
+      // the orphaned record's pages were never flush-acked) and reopened, which replays the record.
+      throw new DatabaseOperationException(
+          "Database '" + name + "' is fenced after a failure past the WAL commit point: close and reopen the database to run recovery ("
+              + fenceReason + ")");
   }
 
   private void setDefaultValues(final Record record) {

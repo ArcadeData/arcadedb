@@ -31,6 +31,7 @@ import com.arcadedb.bench.model.CaseResult;
 import com.arcadedb.bench.model.RunInfo;
 import com.arcadedb.bench.model.RunResult;
 import com.arcadedb.bench.runner.BenchRunner;
+import com.arcadedb.bench.runner.ServerGuard;
 import com.arcadedb.bench.runner.Workload;
 import com.arcadedb.bench.runner.WorkloadContext;
 import com.arcadedb.bench.server.ServerUnderTest;
@@ -58,18 +59,38 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
 /**
  * Command line entry point: {@code bench run ...}, {@code bench list}, {@code bench init-store ...},
  * {@code bench upload ...}, {@code bench export ...}, {@code bench ldbc-convert ...}, {@code bench gate ...} and
- * {@code bench gate-pairs ...}. Exit codes: 0 ok (even when cases failed), 1 an upload failed, 2 bad arguments, 3 the idle check failed.
+ * {@code bench gate-pairs ...}. Exit codes: 0 ok (even when cases failed), 1 an upload failed or the run file could not be
+ * written, 2 bad arguments, 3 the idle check failed.
  */
 public final class BenchMain {
   /** Starts the server under test; a seam so tests run without Docker. */
   interface ServerFactory {
     ServerUnderTest start(String image, String cpuset, int memLimitGb, String heap);
+
+    /** Why the server no longer answers, null while it does; a seam so a test can script a death. */
+    default String deathReason(final ServerUnderTest server) {
+      return server == null ? null : server.deathReason();
+    }
+
+    /**
+     * What the run file keeps about the server before it is closed, null for nothing; {@code classHistogram} false leaves the
+     * class histogram out. A seam so a test can script it.
+     */
+    default JSONObject diagnostics(final ServerUnderTest server, final boolean classHistogram) {
+      return server == null ? null : server.diagnostics(classHistogram);
+    }
+
+    /** Writes a thread dump of the server to {@code file}; false when none was taken. A seam so a test runs without Docker. */
+    default boolean threadDump(final ServerUnderTest server, final Path file) {
+      return server != null && server.threadDump(file);
+    }
   }
 
   private BenchMain() {
@@ -437,13 +458,15 @@ public final class BenchMain {
     final String clientCpus = resolveCpus(o.getOrDefault("client-cpus", "auto"), false);
 
     final Instant startedAt = Instant.now();
+    final Path dir = Path.of(outDir);
+    final RunFile file = new RunFile(dir, startedAt, o, variant, image, tag, commitDate, trigger, machineId, reps, warmup, timeoutMin,
+        prepareTimeoutMin, caseTimeoutMin, seed, serverCpus, clientCpus);
+    // the results of the workloads already finished; the one running is added by the runner's callback
     final List<CaseResult> results = new ArrayList<>();
-    JSONObject serverConfig = null;
-    JSONObject imageInfo = null;
     for (final Workload w : selected) {
       if (runner.hasAbandonedWorker()) {
         // the runner records every case as not started; a server started now would only compete with the stuck worker
-        results.addAll(runner.run(w, new WorkloadContext(null, scale, seed, params), null));
+        results.addAll(runner.run(w, new WorkloadContext(null, scale, seed, params), null, file.onCase(results)));
         continue;
       }
       final ServerUnderTest server;
@@ -453,41 +476,276 @@ public final class BenchMain {
         for (final String caseName : w.cases())
           results.add(new CaseResult(w.name(), caseName, scale.name(), params, reps, warmup, List.of(), CaseResult.Status.FAILED,
               "server start failed: " + t.getClass().getName() + ": " + t.getMessage()));
+        file.write(results, false);
         continue;
       }
-      try (server) {
-        if (server != null && serverConfig == null) {
-          serverConfig = orFallback(server::config, new JSONObject(), "server config");
-          imageInfo = orFallback(server::imageInfo, null, "image info");
-        }
-        results.addAll(runner.run(w, new WorkloadContext(server, scale, seed, params), null));
+      if (server != null && file.serverConfig == null) {
+        file.serverConfig = orFallback(server::config, new JSONObject(), "server config");
+        file.imageInfo = orFallback(server::imageInfo, null, "image info");
+      }
+      final Guard guard = new Guard(serverFactory, server, w.name(), file, image, serverCpus, memLimitGb, heap, scale, seed, params);
+      try {
+        results.addAll(runner.run(w, new WorkloadContext(server, scale, seed, params), guard, null, file.onCase(results)));
+      } finally {
+        guard.close();
       }
     }
 
-    final String commit = o.getOrDefault("commit",
-        imageInfo != null ? imageInfo.getString("revision", "unknown") : "unknown");
-    final JSONObject arcadedb = new JSONObject().put("commit", commit).put("version", o.getOrDefault("version", "unknown"))
-        .put("variant", variant).put("image", image)
-        .put("imageDigest", imageInfo != null ? imageInfo.getString("imageDigest", "unknown") : "unknown")
-        .put("revision", imageInfo != null ? imageInfo.getString("revision", "unknown") : "unknown");
-    if (tag != null)
-      arcadedb.put("tag", tag);
-    if (commitDate != null)
-      arcadedb.put("commitDate", commitDate);
-    final JSONObject config = serverConfig != null ? serverConfig : new JSONObject();
-    config.put("benchCommit", o.getOrDefault("bench-commit", "unknown"));
-    config.put("reps", reps).put("warmup", warmup).put("timeoutMin", timeoutMin)
-        .put("prepareTimeoutMin", prepareTimeoutMin).put("caseTimeoutMin", caseTimeoutMin).put("seed", seed)
-        .put("serverCpus", serverCpus.isEmpty() ? "none" : serverCpus)
-        .put("clientCpus", clientCpus.isEmpty() ? "none" : clientCpus);
-
-    final String runId = RunInfo.newRunId(startedAt, commit.substring(0, Math.min(10, commit.length())), variant);
-    final RunInfo info = new RunInfo(runId, startedAt, Instant.now(), trigger, "bench", arcadedb,
-        MachineProbe.probe(machineId), config);
-    final Path dir = Path.of(outDir);
-    new RunResult(info, results).write(dir);
-    out.println(dir.resolve(runId + ".json"));
+    try {
+      file.write(results, true);
+    } catch (final RuntimeException e) {
+      System.err.println("error: cannot write the run file to " + dir + ": " + e);
+      return 1;
+    }
+    out.println(dir.resolve(file.runId + ".json"));
     return 0;
+  }
+
+  /**
+   * The server of one workload as the runner sees it between cases: alive or why not, a fresh one with the same image and
+   * settings in place of a dead one, and thread dumps of it into {@code <out>/dumps}. Holds whichever server is current, so the
+   * workload closes the last one it ran against. The diagnostics of each server are stored before it is closed: those of a server
+   * a restart replaced under {@code <workload>#<n>} (n = 1 for the first one replaced), those of the last one under the workload's
+   * name. A server found {@link ServerUnderTest#NOT_ANSWERING} gets no class histogram: a jcmd against it would most likely hang.
+   */
+  static final class Guard implements ServerGuard {
+    private final ServerFactory   factory;
+    private final String          workload;
+    private final RunFile         file;
+    private final String          image;
+    private final String          cpus;
+    private final int             memLimitGb;
+    private final String          heap;
+    private final Scale           scale;
+    private final long            seed;
+    private final JSONObject      params;
+    private       ServerUnderTest server;
+    // the servers a restart replaced so far, and why the current one was last found dead (null while it is not)
+    private       int             replaced;
+    private       String          death;
+
+    Guard(final ServerFactory factory, final ServerUnderTest server, final String workload, final RunFile file, final String image,
+        final String cpus, final int memLimitGb, final String heap, final Scale scale, final long seed, final JSONObject params) {
+      this.factory = factory;
+      this.server = server;
+      this.workload = workload;
+      this.file = file;
+      this.image = image;
+      this.cpus = cpus;
+      this.memLimitGb = memLimitGb;
+      this.heap = heap;
+      this.scale = scale;
+      this.seed = seed;
+      this.params = params;
+    }
+
+    @Override
+    public String deathReason() {
+      death = factory.deathReason(server);
+      return death;
+    }
+
+    @Override
+    public WorkloadContext restart() {
+      close(workload + "#" + ++replaced);
+      death = null;
+      server = factory.start(image, cpus, memLimitGb, heap);
+      return new WorkloadContext(server, scale, seed, params);
+    }
+
+    /** Writes {@code <out>/dumps/<runId>-<n>.txt}; see {@link RunFile#dumpFile(int)} for a run id not known yet. */
+    @Override
+    public boolean threadDump(final int n) {
+      final Path target = file.dumpFile(n);
+      try {
+        Files.createDirectories(target.getParent());
+      } catch (final IOException e) {
+        System.err.println("warning: cannot create the thread dump directory " + target.getParent() + ": " + e);
+        return false;
+      }
+      return factory.threadDump(server, target);
+    }
+
+    /** Stores the diagnostics of the last server under the workload's name and closes it. */
+    void close() {
+      close(workload);
+    }
+
+    /**
+     * Stores the diagnostics of the current server under {@code key} and closes it; a failure to close a dead one must not stop
+     * the run.
+     */
+    private void close(final String key) {
+      final ServerUnderTest s = server;
+      server = null;
+      final boolean classHistogram = !ServerUnderTest.NOT_ANSWERING.equals(death);
+      final JSONObject diagnostics = orFallback(() -> factory.diagnostics(s, classHistogram), null, "server diagnostics");
+      if (diagnostics != null)
+        file.addDiagnostics(key, diagnostics);
+      if (s == null)
+        return;
+      try {
+        s.close();
+      } catch (final RuntimeException e) {
+        System.err.println("warning: cannot close the server under test: " + e);
+      }
+    }
+  }
+
+  /**
+   * The run file: rewritten after every case with {@code complete=false} and once more at the end with {@code complete=true}, all
+   * under the same run id, so a run cut short keeps what it measured. The run id carries the commit: {@code --commit} when given,
+   * else the revision the first server reports. Until one of them is known the interim writes are skipped (what was measured is
+   * written by the first write after it), so the id is never frozen on "unknown"; the final write always happens.
+   * <p>
+   * The watchdog thread names thread dumps through {@link #dumpFile(int)} while the main thread writes, so every method that
+   * reads or fixes the run id, or touches the pending dumps, is synchronized.
+   */
+  static final class RunFile {
+    private final Path                dir;
+    private final Instant             startedAt;
+    private final Map<String, String> o;
+    private final String              variant;
+    private final String              image;
+    private final String              tag;
+    private final String              commitDate;
+    private final String              trigger;
+    private final String              machineId;
+    private final int                 reps;
+    private final int                 warmup;
+    private final int                 timeoutMin;
+    private final int                 prepareTimeoutMin;
+    private final int                 caseTimeoutMin;
+    private final long                seed;
+    private final String              serverCpus;
+    private final String              clientCpus;
+    volatile JSONObject serverConfig;
+    volatile JSONObject imageInfo;
+    volatile String     runId;
+    JSONObject          machine;
+    /** The diagnostics of each server, by workload name ({@code <workload>#<n>} for a server a restart replaced). */
+    private final JSONObject diagnostics = new JSONObject();
+    // whether a thread dump was written under the pending prefix, to be renamed once the run id is known
+    private boolean pendingDumps;
+
+    RunFile(final Path dir, final Instant startedAt, final Map<String, String> o, final String variant, final String image,
+        final String tag, final String commitDate, final String trigger, final String machineId, final int reps, final int warmup,
+        final int timeoutMin, final int prepareTimeoutMin, final int caseTimeoutMin, final long seed, final String serverCpus,
+        final String clientCpus) {
+      this.dir = dir;
+      this.startedAt = startedAt;
+      this.o = o;
+      this.variant = variant;
+      this.image = image;
+      this.tag = tag;
+      this.commitDate = commitDate;
+      this.trigger = trigger;
+      this.machineId = machineId;
+      this.reps = reps;
+      this.warmup = warmup;
+      this.timeoutMin = timeoutMin;
+      this.prepareTimeoutMin = prepareTimeoutMin;
+      this.caseTimeoutMin = caseTimeoutMin;
+      this.seed = seed;
+      this.serverCpus = serverCpus;
+      this.clientCpus = clientCpus;
+    }
+
+    /**
+     * The callback for one workload: writes the finished workloads' results followed by that workload's results so far. A write
+     * that fails is a warning, never the end of the run: the next case's write, or the final one, tries again.
+     */
+    Consumer<List<CaseResult>> onCase(final List<CaseResult> finished) {
+      return current -> {
+        final List<CaseResult> all = new ArrayList<>(finished);
+        all.addAll(current);
+        try {
+          write(all, false);
+        } catch (final RuntimeException e) {
+          System.err.println("warning: cannot write the run file to " + dir + ", the run goes on: " + e);
+        }
+      };
+    }
+
+    synchronized void addDiagnostics(final String key, final JSONObject value) {
+      diagnostics.put(key, value);
+    }
+
+    private String commit() {
+      return o.getOrDefault("commit", imageInfo != null ? imageInfo.getString("revision", "unknown") : "unknown");
+    }
+
+    /** The run id, fixed by this call once the commit is known ({@code --commit} or the first server's revision); else null. */
+    synchronized String knownRunId() {
+      if (runId == null && (imageInfo != null || o.containsKey("commit"))) {
+        final String commit = commit();
+        runId = RunInfo.newRunId(startedAt, commit.substring(0, Math.min(10, commit.length())), variant);
+      }
+      return runId;
+    }
+
+    /**
+     * Where thread dump {@code n} goes: {@code <out>/dumps/<runId>-<n>.txt}. A dump taken before the run id is known (no
+     * {@code --commit}, and the first server's revision not read yet) is named with the run id's shape and {@code pending} in
+     * place of the commit; the next write of the run file renames it once the id is fixed.
+     */
+    synchronized Path dumpFile(final int n) {
+      String prefix = knownRunId();
+      if (prefix == null) {
+        prefix = pendingPrefix();
+        pendingDumps = true;
+      }
+      return dir.resolve("dumps").resolve(prefix + "-" + n + ".txt");
+    }
+
+    private String pendingPrefix() {
+      return RunInfo.newRunId(startedAt, "pending", variant);
+    }
+
+    private void renamePendingDumps() {
+      if (!pendingDumps)
+        return;
+      pendingDumps = false;
+      final String pending = pendingPrefix() + "-";
+      final Path dumps = dir.resolve("dumps");
+      try (final Stream<Path> files = Files.list(dumps)) {
+        for (final Path f : files.toList()) {
+          final String name = f.getFileName().toString();
+          if (name.startsWith(pending))
+            Files.move(f, dumps.resolve(runId + "-" + name.substring(pending.length())));
+        }
+      } catch (final IOException e) {
+        System.err.println("warning: cannot rename the thread dumps " + pending + "* in " + dumps + ": " + e);
+      }
+    }
+
+    synchronized void write(final List<CaseResult> results, final boolean complete) {
+      if (!complete && knownRunId() == null)
+        return;
+      final String commit = commit();
+      final JSONObject arcadedb = new JSONObject().put("commit", commit).put("version", o.getOrDefault("version", "unknown"))
+          .put("variant", variant).put("image", image)
+          .put("imageDigest", imageInfo != null ? imageInfo.getString("imageDigest", "unknown") : "unknown")
+          .put("revision", imageInfo != null ? imageInfo.getString("revision", "unknown") : "unknown");
+      if (tag != null)
+        arcadedb.put("tag", tag);
+      if (commitDate != null)
+        arcadedb.put("commitDate", commitDate);
+      final JSONObject config = serverConfig != null ? serverConfig : new JSONObject();
+      config.put("benchCommit", o.getOrDefault("bench-commit", "unknown"));
+      config.put("reps", reps).put("warmup", warmup).put("timeoutMin", timeoutMin)
+          .put("prepareTimeoutMin", prepareTimeoutMin).put("caseTimeoutMin", caseTimeoutMin).put("seed", seed)
+          .put("serverCpus", serverCpus.isEmpty() ? "none" : serverCpus)
+          .put("clientCpus", clientCpus.isEmpty() ? "none" : clientCpus);
+
+      if (runId == null)
+        runId = RunInfo.newRunId(startedAt, commit.substring(0, Math.min(10, commit.length())), variant);
+      renamePendingDumps();
+      if (machine == null)
+        machine = MachineProbe.probe(machineId);
+      final RunInfo info = new RunInfo(runId, startedAt, Instant.now(), trigger, "bench", arcadedb, machine, config);
+      new RunResult(info, results, complete, diagnostics).write(dir);
+    }
   }
 
   /**

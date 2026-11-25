@@ -31,6 +31,7 @@ import com.arcadedb.engine.PageVersionReservations;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.engine.TransactionManager;
+import com.arcadedb.engine.TransactionManager.VertexChange;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.ConcurrentModificationException;
@@ -520,6 +521,11 @@ public class TransactionContext implements Transaction {
   // Holds one small entry (indexed values only) per distinct CHANGED-index RID; entries are dropped on
   // delete and the map is released on reset(), so memory scales with updatedRecords, never beyond it.
   private       Map<RID, Document>                   updatedRecordsIndexSnapshot = null;
+  // #12612: the values a save gave to READONLY properties while their check was deferred (DocumentValidator.deferReadonlyChecks, the
+  // second write of a record a restore creates), per record. That write is part of creating the record, so for the rest of the
+  // transaction the property may hold the value it set as well as the stored one: the commit validates a record assigned after its
+  // save, and refused the record a restore completed and put back to that value. Only a restore fills it
+  private       Map<RID, Map<String, Object>>        readonlyValuesOfDeferredWrites = null;
   private       Database.TRANSACTION_ISOLATION_LEVEL isolationLevel              = Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
   private       LocalTransactionExplicitLock         explicitLock;
   // INVARIANT (#4941/#4959): this field is written by exactly two paths. (1) setRequester(), the explicit
@@ -702,7 +708,8 @@ public class TransactionContext implements Transaction {
 
   /**
    * Records on THIS context a {@code BATCH n} boundary that a nested transaction directly under it just published
-   * and was popped for (issue #8188). Called by {@code BatchStep}, and only by it.
+   * and was popped for (issue #8188). Called by {@code BatchStep}, and by the openCypher {@code SubqueryStep} for each batch of a
+   * {@code CALL { ... } IN TRANSACTIONS} that wrote something (issue #13223), and only by them.
    * <p>
    * The witness a retry loop needs is "part of the block I am about to replay is already durable", and for a
    * nested transaction the counter carrying it dies with the context: {@code commit()} pops it and the
@@ -743,7 +750,9 @@ public class TransactionContext implements Transaction {
    * and the SQL {@code COMMIT RETRY} clause's {@code RetryStep}) roll back and start again. A rollback can only take back
    * what is still buffered, and a statement with an EXPLICIT batch boundary - {@code UPDATE}, {@code DELETE} or
    * {@code MOVE VERTEX} with {@code BATCH n} - calls {@code db.commit(); db.begin();} in the MIDDLE of the
-   * caller's transaction, so everything up to the last boundary is already durable. It also leaves a transaction
+   * caller's transaction, so everything up to the last boundary is already durable. An openCypher
+   * {@code CALL { ... } IN TRANSACTIONS} does the same with each batch, and with the statement's writes before the CALL
+   * (issues #13172, #13223). It also leaves a transaction
    * open behind it, so on return the database looks exactly as it did going in and neither loop can tell from
    * {@code isTransactionActive()} that anything happened. Re-running the block then applies that durable half a
    * SECOND time and reports clean success.
@@ -777,6 +786,36 @@ public class TransactionContext implements Transaction {
     return txAtStart != null && txAtStart.getCommitCount() != commitCountAtStart;
   }
 
+  /**
+   * The failure a retry loop raises when it refuses to replay a block that {@link #isPartiallyCommitted} (issue #13251).
+   * <p>
+   * The refusal alone is not enough: the conflict that ended the block is a {@link NeedRetryException}, and every layer above
+   * the loop reads that type as "the same request can succeed as issued". The HTTP API answers it 503 with
+   * {@code Retry-After: 0}, gRPC {@code ABORTED}, Bolt a transient error, and the Java remote client resends the request on
+   * it, so the committed part was applied again by whoever retried next. A {@link TransactionException} is not retryable on
+   * any of them, so the caller learns that the block stopped with part of its work durable and must not be run again as is.
+   * <p>
+   * The conflict is attached as a SUPPRESSED exception, not as the cause: the error mappings look through a
+   * {@link TransactionException} to its cause and would find the retryable conflict again. A {@link DuplicatedKeyException}
+   * is returned unchanged: no layer tells a client to retry it.
+   *
+   * @param conflict the exception the block failed with
+   * @param block    what failed, for the message ("Transaction block", "COMMIT RETRY block", ...)
+   *
+   * @return the exception to raise instead of {@code conflict}
+   */
+  public static ArcadeDBException notReplayable(final ArcadeDBException conflict, final String block) {
+    if (!(conflict instanceof NeedRetryException))
+      return conflict;
+
+    final TransactionException failure = new TransactionException(
+        block + " committed part of its work before failing with " + conflict.getClass().getSimpleName() + " (" + conflict.getMessage()
+            + "). It is not retried, because a replay would apply the already committed part a second time: check what was "
+            + "applied before running it again");
+    failure.addSuppressed(conflict);
+    return failure;
+  }
+
   /** True while the transaction holds the file locks a {@code LOCK TYPE} / {@code LOCK BUCKET} took, until its commit or rollback. */
   public boolean holdsExplicitLocks() {
     return explicitLockedFiles != null;
@@ -790,6 +829,17 @@ public class TransactionContext implements Transaction {
 
   public Database.TRANSACTION_ISOLATION_LEVEL getIsolationLevel() {
     return isolationLevel;
+  }
+
+  /**
+   * Whether reads on this context are {@code REPEATABLE_READ}: the level the transaction began with, and only while that transaction
+   * runs. The context is reused by the next transaction of the thread and by the reads the thread makes outside any transaction, and it
+   * keeps its level after the transaction ended (a session restarts its transaction at it), so a read outside a transaction must not
+   * pin pages or snapshots as a {@code REPEATABLE_READ} transaction does: nothing would ever release them, and every later read of the
+   * thread, the next transaction's included, would answer from them.
+   */
+  public boolean isRepeatableRead() {
+    return isolationLevel == Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ && isActive();
   }
 
   /** #5064: see the {@code remotelyCommitted} field - HA-layer only, call after quorum commit, before phase 2. */
@@ -1579,6 +1629,7 @@ public class TransactionContext implements Transaction {
     newPages = null;
     updatedRecords = null;
     updatedRecordsIndexSnapshot = null;
+    readonlyValuesOfDeferredWrites = null;
 
     // #11498: what the commit locks protect is gone from here on - the pages and the index replay were dropped above - so they
     // are released BEFORE the records are reloaded below. A transaction that lost a conflict used to keep every other writer of
@@ -1695,7 +1746,9 @@ public class TransactionContext implements Transaction {
   /**
    * Whether a server opened this transaction around one request on the client's behalf, as its auto-commit: the HTTP
    * command handler, the gRPC auto-wrap, the MCP tools, the implicit block of a Postgres pipeline. Neo4j calls it an
-   * implicit transaction. Every other transaction belongs to its caller, an embedded {@code begin()} or
+   * implicit transaction. So is the auto-commit transaction the openCypher engine opens around one statement with a
+   * {@code CALL { ... } IN TRANSACTIONS} when the caller has none, which that subquery commits before each of its batches
+   * (issue #13172). Every other transaction belongs to its caller, an embedded {@code begin()} or
    * {@code transaction()} included, and is not one: a {@code CALL { ... } IN TRANSACTIONS} commits its batches on their
    * own and is refused there, since the caller's rollback could not undo them (issue #11588). A transaction the client
    * later declares its own ({@link #isClientManaged()}) stops being implicit. Released by {@link #reset()}.
@@ -2065,10 +2118,11 @@ public class TransactionContext implements Transaction {
    */
   public static void checkRecordIsStillTheOneRead(final LocalBucket bucket, final RID rid, final BasePage recordPage,
       final Record record) {
-    if (recordPage == null || !(record instanceof MutableDocument))
+    if (recordPage == null || !(record instanceof MutableDocument document))
       return;
 
-    final Binary readImage = ((RecordInternal) record).getBuffer();
+    // THE STORED IMAGE, NOT THE CONTENT AN AFTER-READ LISTENER RETURNED FOR THE RECORD: THE SLOT NEVER HELD THAT (#12579)
+    final Binary readImage = document.getStoredBuffer();
     if (readImage != null && bucket.hasRecordChangedSinceRead(rid, recordPage, readImage))
       throw new ConcurrentModificationException("Record " + rid + " was modified by a concurrent transaction between "
           + "its read and its update. Please retry the operation");
@@ -2201,6 +2255,26 @@ public class TransactionContext implements Transaction {
     return updatedRecordsIndexSnapshot == null ? null : updatedRecordsIndexSnapshot.get(rid);
   }
 
+  /**
+   * Remembers the value a write of {@code rid} gave to the READONLY property {@code name} while its check was deferred (issue #12612).
+   */
+  void setReadonlyValueOfDeferredWrite(final RID rid, final String name, final Object value) {
+    if (readonlyValuesOfDeferredWrites == null)
+      readonlyValuesOfDeferredWrites = new HashMap<>();
+    readonlyValuesOfDeferredWrites.computeIfAbsent(rid, k -> new HashMap<>()).put(name, value);
+  }
+
+  /**
+   * Whether {@code value} is the one a write of {@code rid} gave to the READONLY property {@code name} in this transaction while its
+   * check was deferred (issue #12612): that write completed the creation of the record, so holding its value alters nothing.
+   */
+  boolean isReadonlyValueOfDeferredWrite(final RID rid, final String name, final Object value) {
+    if (readonlyValuesOfDeferredWrites == null)
+      return false;
+    final Map<String, Object> values = readonlyValuesOfDeferredWrites.get(rid);
+    return values != null && values.containsKey(name) && DocumentValidator.sameReadonlyValue(value, values.get(name));
+  }
+
   public void setLastIndexedSnapshot(final RID rid, final Document snapshot) {
     if (updatedRecordsIndexSnapshot == null)
       updatedRecordsIndexSnapshot = new HashMap<>();
@@ -2296,8 +2370,8 @@ public class TransactionContext implements Transaction {
    */
   public long getRepeatableCommittedCount(final int bucketId, final long committedNow) {
     // ONLY INSIDE A TRANSACTION: THE CONTEXT OUTLIVES ITS TRANSACTION AND KEEPS ITS LEVEL, AND A COUNT BETWEEN TWO
-    // TRANSACTIONS MUST NOT PIN A VALUE THE NEXT ONE WOULD START FROM
-    if (isolationLevel != Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ || !isActive())
+    // TRANSACTIONS MUST NOT PIN A VALUE THE NEXT ONE WOULD START FROM (#12789: THE SAME PREDICATE AS THE PAGE PINS)
+    if (!isRepeatableRead())
       return committedNow;
     if (snapshotBucketCounts == null)
       snapshotBucketCounts = new LongLongHashMap();
@@ -2337,29 +2411,23 @@ public class TransactionContext implements Transaction {
     // NOT FOUND, DELEGATES TO THE DATABASE
     final BasePage page = database.getPageManager().getImmutablePage(pageId, size, false, true);
 
-    if (page != null) {
-      switch (isolationLevel) {
-      case READ_COMMITTED:
-        break;
-      case REPEATABLE_READ:
-        // #5976: the component's OWN page count (bumped synchronously at commit time, see
-        // PaginatedComponent.updatePageCount()) is the authoritative "does this page exist" answer - unlike
-        // PaginatedComponentFile.getTotalPages() (physical on-disk file size), which lags behind a committed
-        // page until the async flush thread actually writes it. Using the physical size here made a just-
-        // committed, not-yet-flushed page look "new", so it was never cached into immutablePages: a later
-        // Record.modify() on that same record then saw hasPageForRecord() return false, forced an
-        // unnecessary reload(), and re-fired AfterRecordReadListener re-entrantly on the same record.
-        // getFileByIdIfExists(), NOT getFileById(): the latter throws SchemaException on an unregistered id
-        // instead of returning null, which would turn the "not cacheable, don't blow up the read" fallback
-        // below into a hard failure on this read path instead (code review on #6013). The cast is safe
-        // because PaginatedComponent is the only direct subclass of Component in the codebase.
-        final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileByIdIfExists(pageId.getFileId());
-        final boolean isNewPage = component == null || pageId.getPageNumber() >= component.getReadablePageCount();
-        if (!isNewPage)
-          // CACHE THE IMMUTABLE PAGE ONLY IF IT IS NOT NEW
-          immutablePages.put(pageId, (ImmutablePage) page);
-        break;
-      }
+    if (page != null && isRepeatableRead()) {
+      // #5976: the component's OWN page count (bumped synchronously at commit time, see
+      // PaginatedComponent.updatePageCount()) is the authoritative "does this page exist" answer - unlike
+      // PaginatedComponentFile.getTotalPages() (physical on-disk file size), which lags behind a committed
+      // page until the async flush thread actually writes it. Using the physical size here made a just-
+      // committed, not-yet-flushed page look "new", so it was never cached into immutablePages: a later
+      // Record.modify() on that same record then saw hasPageForRecord() return false, forced an
+      // unnecessary reload(), and re-fired AfterRecordReadListener re-entrantly on the same record.
+      // getFileByIdIfExists(), NOT getFileById(): the latter throws SchemaException on an unregistered id
+      // instead of returning null, which would turn the "not cacheable, don't blow up the read" fallback
+      // below into a hard failure on this read path instead (code review on #6013). The cast is safe
+      // because PaginatedComponent is the only direct subclass of Component in the codebase.
+      final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileByIdIfExists(pageId.getFileId());
+      final boolean isNewPage = component == null || pageId.getPageNumber() >= component.getReadablePageCount();
+      if (!isNewPage)
+        // CACHE THE IMMUTABLE PAGE ONLY IF IT IS NOT NEW
+        immutablePages.put(pageId, (ImmutablePage) page);
     }
 
     return page;
@@ -2375,10 +2443,34 @@ public class TransactionContext implements Transaction {
    * {@code getPage}, whose caller may move its buffer position.
    */
   public BasePage getPageForAbsoluteReads(final PageId pageId, final int size) throws IOException {
-    if (isolationLevel != Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED)
+    if (isRepeatableRead())
       return getPage(pageId, size);
 
     final BasePage page = getPageHeldByTransaction(pageId);
+    return page != null ? page : database.getPageManager().getSharedImmutablePage(pageId, size);
+  }
+
+  /**
+   * {@link #getPageForAbsoluteReads} for a page that is NEVER pinned, whatever the isolation level: a page the transaction wrote
+   * is answered as {@code getPageForAbsoluteReads} answers it, any other is the newest committed version of the page, and a
+   * {@code REPEATABLE_READ} transaction keeps nothing of it (issue #13050).
+   * <p>
+   * It is for the one page of a component that is rewritten in place to publish a new state of pages that do not change, as the
+   * header page of a compacted LSM-tree file is by every incremental compaction round: the series it names are written once,
+   * and the page that names them moves on. Pinned, the page ties the transaction to the state of the first read, while the rest
+   * of the index (the mutable file a compaction swaps in as a new file, never pinned) is read as of now, and the two never
+   * coexisted: an entry the round moved from the mutable file into a new series is in neither. The pages the header names stay
+   * pinned like any other.
+   */
+  public BasePage getPageForAbsoluteReadsNeverPinned(final PageId pageId, final int size) throws IOException {
+    BasePage page = null;
+
+    if (modifiedPages != null)
+      page = modifiedPages.get(pageId);
+
+    if (page == null && newPages != null)
+      page = newPages.get(pageId);
+
     return page != null ? page : database.getPageManager().getSharedImmutablePage(pageId, size);
   }
 
@@ -2390,7 +2482,7 @@ public class TransactionContext implements Transaction {
    * {@code REPEATABLE_READ} reads as {@code getPageNotHeld} does, which keeps the page for the rest of the transaction.
    */
   public BasePage getPageNotHeldForAbsoluteReads(final PageId pageId, final int size) throws IOException {
-    if (isolationLevel != Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED)
+    if (isRepeatableRead())
       return getPageNotHeld(pageId, size);
     return database.getPageManager().getSharedImmutablePage(pageId, size);
   }
@@ -2870,7 +2962,7 @@ public class TransactionContext implements Transaction {
       // vertex these relationships
       final RID appendsOwner = entry.getValue().owner;
       if (appendsOwner != null)
-        refuseVertexDeletedSinceBegin(appendsOwner, true);
+        refuseVertexChangedSinceBegin(appendsOwner, true);
 
       final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(segmentRID.getBucketId());
 
@@ -3657,10 +3749,16 @@ public class TransactionContext implements Transaction {
    * Whether {@code slot} holds on {@code committed} the record this transaction read from {@code image} (#11590): the same plain
    * record, or no record on either page. A record that is not plain on one of them is taken as changed. A vertex that changed
    * only in the heads of its edge lists is still the one read when this transaction appended to each list whose head moved: the
-   * edge-append merge and the edge-list head merge (#11498) reconcile a head moved under such appends. A moved head of a list it
-   * did not append to is a stale read of that list (its outgoing appends do not make its read of the incoming list current), and
-   * so is a moved head of a list whose chunk the application read: a walk of that list started from the head it read, and missed
+   * edge-append merge and the edge-list head merge (#11498) reconcile a head moved under such appends. A moved head of a list
+   * whose chunk the application read is a stale read of that list: a walk of that list started from the head it read, and missed
    * the chunk the other transaction put in front of it.
+   * <p>
+   * A moved head of a list it did not append to is a stale read only when a traversal read that head off the vertex, which
+   * {@link #trackEdgeListHeadReadFromOwnImage} records (#12320). A vertex read for what it is - its type, its properties, the
+   * vertex a {@code MATCH (a {uuid: ..})} binds before a relationship is created from it - read neither list: a concurrent
+   * transaction that gave it its first relationship in the other direction, or a new chunk in front of a full one, changed
+   * nothing that read decided on. Refusing it threw away most commits of concurrent relationship loads on shared vertices
+   * (issue #12642).
    */
   private boolean isReadSlotCurrent(final LocalBucket bucket, final MutablePage image, final ImmutablePage committed,
       final int slot) {
@@ -3671,7 +3769,7 @@ public class TransactionContext implements Transaction {
     if (Arrays.equals(read, current))
       return true;
 
-    if (edgeAppendsBySegment == null || read.length != current.length || read.length < VERTEX_HEADS_END
+    if (read.length != current.length || read.length < VERTEX_HEADS_END
         || read[0] != Vertex.RECORD_TYPE || current[0] != Vertex.RECORD_TYPE
         || !Arrays.equals(read, VERTEX_HEADS_END, read.length, current, VERTEX_HEADS_END, current.length))
       return false;
@@ -3681,22 +3779,31 @@ public class TransactionContext implements Transaction {
     final boolean inMoved = !Arrays.equals(read, VERTEX_IN_HEAD_OFFSET, VERTEX_HEADS_END, current, VERTEX_IN_HEAD_OFFSET,
         VERTEX_HEADS_END);
     final RID vertex = recordAt(bucket, image.getPageId(), slot);
-    foldReadsOfAppendedChunks();
     boolean outAppended = false;
     boolean inAppended = false;
     boolean outRead = false;
     boolean inRead = false;
-    for (final EdgeAppendBuffer appends : edgeAppendsBySegment.values())
-      if (vertex.equals(appends.owner)) {
-        if (appends.ownerOut) {
-          outAppended = true;
-          outRead |= appends.readByApplication;
-        } else {
-          inAppended = true;
-          inRead |= appends.readByApplication;
+    if (edgeAppendsBySegment != null) {
+      foldReadsOfAppendedChunks();
+      for (final EdgeAppendBuffer appends : edgeAppendsBySegment.values())
+        if (vertex.equals(appends.owner)) {
+          if (appends.ownerOut) {
+            outAppended = true;
+            outRead |= appends.readByApplication;
+          } else {
+            inAppended = true;
+            inRead |= appends.readByApplication;
+          }
         }
-      }
-    return (!outMoved || outAppended && !outRead) && (!inMoved || inAppended && !inRead);
+    }
+    return (!outMoved || (outAppended ? !outRead : !isHeadReadFromOwnImage(vertex, true)))
+        && (!inMoved || (inAppended ? !inRead : !isHeadReadFromOwnImage(vertex, false)));
+  }
+
+  /** Whether a traversal read the outgoing ({@code out}) or incoming head of {@code vertex} off this transaction's own image. */
+  private boolean isHeadReadFromOwnImage(final RID vertex, final boolean out) {
+    final RidHashSet read = out ? outHeadsReadFromOwnImage : inHeadsReadFromOwnImage;
+    return read != null && read.contains(vertex);
   }
 
   /**
@@ -3754,8 +3861,8 @@ public class TransactionContext implements Transaction {
    * it replaced. A read image that is no plain vertex record answers true, which keeps the conflict.
    */
   private boolean isOwnImageHeadReadStale(final LocalBucket bucket, final RID vertex, final byte[] committedImage) {
-    final boolean outRead = outHeadsReadFromOwnImage != null && outHeadsReadFromOwnImage.contains(vertex);
-    final boolean inRead = inHeadsReadFromOwnImage != null && inHeadsReadFromOwnImage.contains(vertex);
+    final boolean outRead = isHeadReadFromOwnImage(vertex, true);
+    final boolean inRead = isHeadReadFromOwnImage(vertex, false);
     if (!outRead && !inRead)
       return false;
     final MutablePage image = ownPageImageOf(bucket, vertex);
@@ -3768,10 +3875,7 @@ public class TransactionContext implements Transaction {
 
   /** Whether a traversal read a head of {@code vertex} off a vertex loaded from this transaction's own image of its page. */
   private boolean isEdgeListHeadRead(final MutableVertex vertex, final boolean out) {
-    if (vertex.isEdgeListHeadRead(out))
-      return true;
-    final RidHashSet read = out ? outHeadsReadFromOwnImage : inHeadsReadFromOwnImage;
-    return read != null && read.contains(vertex.getIdentity());
+    return vertex.isEdgeListHeadRead(out) || isHeadReadFromOwnImage(vertex.getIdentity(), out);
   }
 
   /** {@link #trackReadFromPage(BasePage, int)} for a read of the page as a whole, as a scan of it is (#11590). */
@@ -4310,6 +4414,7 @@ public class TransactionContext implements Transaction {
     offPageFingerprints = null;
     updatedRecords = null;
     updatedRecordsIndexSnapshot = null;
+    readonlyValuesOfDeferredWrites = null;
     newPageCounters.clear();
     immutablePages.clear();
     snapshotChunkChains = null;
@@ -4533,7 +4638,8 @@ public class TransactionContext implements Transaction {
     reconcileIndexesRegisteredSinceBegin();
 
     // Issue #11751: the same state, for what was assigned to a record after the save() that queued it, since the flush below writes the
-    // record as it is now and does not index. After the reconciliation, which brings the new indexes to the pending values of the records
+    // record as it is now and does not index. After the reconciliation, which brings the new indexes to the pending values of the records.
+    // Issue #12612: such a record is validated first, since the save that validated it saw other values
     indexPropertiesAssignedAfterTheirSave();
 
     // Issue #12483: the values of the relationships this transaction created are final now, the SET that followed a CREATE included
@@ -5616,6 +5722,7 @@ public class TransactionContext implements Transaction {
     offPageFingerprints = null;
     updatedRecords = null;
     updatedRecordsIndexSnapshot = null;
+    readonlyValuesOfDeferredWrites = null;
     newPageCounters.clear();
     modifiedRecordsCache = clearOrReplace(modifiedRecordsCache, RECORDS_CACHE_CAPACITY);
     immutableRecordsCache = clearOrReplace(immutableRecordsCache, RECORDS_CACHE_CAPACITY);
@@ -6247,7 +6354,7 @@ public class TransactionContext implements Transaction {
       // version check: a transaction that pins the page only after the new vertex was committed finds the version it pinned
       // current, and a read of identical bytes is not marked stale. Two volatile reads when no vertex was ever deleted. A vertex
       // this transaction created on a RID freed since it began is its own and keeps its relationships
-      refuseVertexDeletedSinceBegin(rid, isLeader);
+      refuseVertexChangedSinceBegin(rid, isLeader);
 
       final MutablePage pinned = modifiedPages.get(pageId);
       if (!staleRead && (pinned == null || pageManager.getMostRecentVersionOfPage(pageId, bucket.getPageSize()) == pinned.getVersion()))
@@ -6296,13 +6403,28 @@ public class TransactionContext implements Transaction {
    * {@link #refuseVertexPageApplyDuringChecks}: a follower's commit cannot rebase onto a page an apply moved, its version check
    * refuses it.
    */
-  private void refuseVertexDeletedSinceBegin(final RID rid, final boolean isLeader) {
-    if (database.getTransactionManager().wasVertexDeletedSince(rid, vertexDeleteEpoch)) {
+  private void refuseVertexChangedSinceBegin(final RID rid, final boolean isLeader) {
+    final VertexChange change = database.getTransactionManager().vertexChangeSince(rid, vertexDeleteEpoch);
+    if (change != VertexChange.NONE) {
       if (!isCreatedInTransaction(rid))
-        throw new ConcurrentModificationException(
-            "Record " + rid + " was deleted by a concurrent transaction. Please retry the operation");
+        throw new ConcurrentModificationException(vertexChangedSinceBeginMessage(rid, change));
     } else if (isLeader)
       vertexDeleteChecked = true;
+  }
+
+  /**
+   * The refusal of {@link #refuseVertexChangedSinceBegin}, worded for its cause (#12123): a follower whose peers only updated the
+   * vertex is refused because a replicated apply wrote its page, and telling it the vertex "was deleted" points at a delete that
+   * never happened. The exception and its retry are the same for every cause.
+   */
+  static String vertexChangedSinceBeginMessage(final RID rid, final VertexChange change) {
+    return switch (change) {
+      case DELETED -> "Record " + rid + " was deleted by a concurrent transaction. Please retry the operation";
+      case BUCKET_DROPPED -> "The bucket of record " + rid + " was dropped after this transaction began. Please retry the operation";
+      case PAGE_REPLICATED -> "The page of record " + rid
+          + " was written by a replicated transaction after this transaction began. Please retry the operation";
+      case NONE -> throw new IllegalArgumentException("Record " + rid + " did not change since this transaction began");
+    };
   }
 
   /**
@@ -6409,7 +6531,7 @@ public class TransactionContext implements Transaction {
         // #11592: the vertex the transaction appended for can have been deleted since it began, and the vertex at its RID now be
         // a new one, with a chunk of its own at the RID of the one appended to. Written from that image, the new head would give
         // the new vertex these relationships; mergeEdgeListHeads skips an owner queued here, so it is refused here
-        refuseVertexDeletedSinceBegin(owner, isLeader);
+        refuseVertexChangedSinceBegin(owner, isLeader);
         final int ownerMaxRecords = ownerBucket.getMaxRecordsInPage();
         final PageId ownerPageId = new PageId(database, ownerBucket.getFileId(), (int) (owner.getPosition() / ownerMaxRecords));
         final ImmutablePage ownerPage = committedPage(ownerPageId, ownerBucket.getPageSize());
@@ -6794,6 +6916,14 @@ public class TransactionContext implements Transaction {
    * Costs a flag read per updated record: only a record a property was assigned to since its save is diffed (see {@link
    * MutableDocument#isAssignedAfterSave}), so the common update, set and save, pays nothing. A container changed in place and not
    * assigned is not seen, as everywhere else: it has to be saved.
+   * <p>
+   * The same records are validated against their schema first (issue #12612): the save validated the values the record held then, and
+   * the commit writes the ones it holds now, so a value over a MAX, a mandatory property removed or a READONLY one changed after the save
+   * was stored with no check at all. The save's contract is applied again, a record whose content could not be fully decoded included
+   * ({@link MutableDocument#checkContentIsComplete}), and a refusal rolls the whole transaction back with the exception the save would have
+   * thrown. Only a record that is dirty is validated: one that is not, after a {@code reload()}, is written from the buffer it was read
+   * with, so the commit stores nothing the page does not already hold. The before-update listeners are not fired again: they ran at the
+   * save, when the caller could still handle their refusal.
    */
   private void indexPropertiesAssignedAfterTheirSave() {
     if (updatedRecords == null)
@@ -6803,6 +6933,12 @@ public class TransactionContext implements Transaction {
       DocumentIndexer indexer = null;
       for (final Record rec : updatedRecords.values())
         if (rec instanceof MutableDocument document && document.isAssignedAfterSave()) {
+          if (document.isDirty()) {
+            // validate() loads the properties of a record whose content is not decoded yet, which tells whether it is complete
+            document.validate();
+            document.checkContentIsComplete();
+          }
+
           if (indexer == null) {
             // The entries are queued on the transaction on top of the calling thread's stack, through the indexer: from underneath another
             // transaction they would land in the wrong one

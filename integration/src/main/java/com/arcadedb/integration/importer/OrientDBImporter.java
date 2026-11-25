@@ -434,6 +434,9 @@ public class OrientDBImporter {
     reader.beginArray();
 
     final AtomicLong processedItems = new AtomicLong();
+    // THE COUNTER MEANS TWO THINGS: THE RECORD PASS COUNTS THE EDGE RECORDS IT LEAVES FOR THE EDGE PASS (createRecords()), THE
+    // EDGE PASS COUNTS THE EDGES IT DROPS FOR A MISSING VERTEX (createEdges()). THE RESET HERE IS WHAT MAKES THE REPORT CARRY
+    // THE SECOND ONLY (ISSUE #12047)
     context.skippedEdges.set(0);
     // Kept even though Importer.loadFromSource() now zeroes this counter on entry to every phase (issue #7342):
     // this importer is also a standalone CLI of its own (see main()), and that entry point never goes through
@@ -953,6 +956,8 @@ public class OrientDBImporter {
     final RID newOut = compressedRecordsRidMap.get(out);
     if (newOut == null) {
       ++skippedEdgeBecauseMissingVertex;
+      // IN THE REPORT TOO, NOT ONLY IN THE LOG (ISSUE #12047)
+      context.skippedEdges.incrementAndGet();
       ++warnings;
 
       if (settings.verboseLevel < 3 && skippedEdgeBecauseMissingVertex == 100)
@@ -970,6 +975,8 @@ public class OrientDBImporter {
     final RID newIn = compressedRecordsRidMap.get(in);
     if (newIn == null) {
       ++skippedEdgeBecauseMissingVertex;
+      // IN THE REPORT TOO, NOT ONLY IN THE LOG (ISSUE #12047)
+      context.skippedEdges.incrementAndGet();
       ++warnings;
 
       if (settings.verboseLevel < 3 && skippedEdgeBecauseMissingVertex == 100)
@@ -1538,11 +1545,18 @@ public class OrientDBImporter {
             logger.logLine(1, "- Ignoring the REGEXP of '%s.%s': %s", t.getName(), entry.getKey(), e.getMessage());
           }
 
-        if (orientdbProperty.defaultValue != null && setImportedDefaultValue(property, orientdbProperty.defaultValue))
-          logger.logLine(2,
-              "- Imported the default value '%s' of '%s.%s' as a string literal, because OrientDB stores a default as a"
-                  + " plain value while ArcadeDB evaluates it as an SQL expression", orientdbProperty.defaultValue,
-              t.getName(), entry.getKey());
+        // ...and so is a default the property's type cannot hold (#12040): the property stays, without the default that would
+        // have failed every record of the type
+        if (orientdbProperty.defaultValue != null)
+          try {
+            if (setImportedDefaultValue(property, orientdbProperty.defaultValue))
+              logger.logLine(2,
+                  "- Imported the default value '%s' of '%s.%s' as a string literal, because OrientDB stores a default as a"
+                      + " plain value while ArcadeDB evaluates it as an SQL expression", orientdbProperty.defaultValue,
+                  t.getName(), entry.getKey());
+          } catch (final SchemaException e) {
+            logger.logLine(1, "- Ignoring the DEFAULT of '%s.%s': %s", t.getName(), entry.getKey(), e.getMessage());
+          }
 
       } catch (final Exception e) {
         logger.logLine(1, "- Unknown type '%s', ignoring creation of property in the schema for '%s.%s'",

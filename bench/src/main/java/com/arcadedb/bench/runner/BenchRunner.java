@@ -20,6 +20,7 @@ package com.arcadedb.bench.runner;
 
 import com.arcadedb.bench.model.CaseResult;
 import com.arcadedb.bench.model.Metric;
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.time.Duration;
@@ -34,10 +35,13 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
+import java.util.function.LongSupplier;
 import java.util.function.Predicate;
 
 /**
@@ -58,7 +62,33 @@ public final class BenchRunner {
   private final Duration caseTimeout;
   private final Duration interruptGrace;
 
+  /** The wall clock stepping this far ahead of the monotonic one during a case means the host slept or was suspended. */
+  private static final long HOST_NOT_QUIET_MILLIS = 1000;
+
+  /** The two clocks read at the start and end of each case; replaceable so a test can fake a sleeping host. */
+  record ClockPair(LongSupplier wallMillis, LongSupplier monoNanos) {
+    static final ClockPair SYSTEM = new ClockPair(System::currentTimeMillis, System::nanoTime);
+  }
+
+  private final ClockPair clocks;
+
   private static final String WORKER_STILL_RUNNING = "teardown skipped: worker still running";
+
+  /** The name of the thread that watches a case's worker for a stall; it never outlives its case. */
+  static final String WATCHDOG_THREAD = "bench-stall-watchdog";
+  /** A worker whose stack and {@link Progress} have not changed for this long is stalled: the server gets a thread dump. */
+  private static final Duration STALL_THRESHOLD = Duration.ofSeconds(40);
+  private static final Duration STALL_PERIOD    = Duration.ofSeconds(5);
+  /** The most thread dumps of one run: the watchdog lives as long as the runner, which serves the whole run. */
+  private static final int      MAX_DUMPS       = 3;
+  /** How long the end of a case waits for a thread dump the watchdog is taking. */
+  private static final Duration DUMP_GRACE      = Duration.ofSeconds(30);
+
+  private Duration                stallPeriod = STALL_PERIOD;
+  private StallWatchdog           watchdog;
+  // the worker of the running case and the guard dumps go through; read by the watchdog thread
+  private volatile Thread         worker;
+  private volatile ServerGuard    dumpGuard;
 
   // set by runCase for run(), on the caller's thread
   private boolean lastWorkerStopped = true;
@@ -86,6 +116,11 @@ public final class BenchRunner {
 
   BenchRunner(final int reps, final int warmup, final Duration stepTimeout, final Duration prepareTimeout,
       final Duration caseTimeout, final Duration interruptGrace) {
+    this(reps, warmup, stepTimeout, prepareTimeout, caseTimeout, interruptGrace, ClockPair.SYSTEM);
+  }
+
+  BenchRunner(final int reps, final int warmup, final Duration stepTimeout, final Duration prepareTimeout,
+      final Duration caseTimeout, final Duration interruptGrace, final ClockPair clocks) {
     if (reps < 1)
       throw new IllegalArgumentException("reps must be at least 1, got " + reps);
     if (warmup < 0)
@@ -102,6 +137,29 @@ public final class BenchRunner {
     this.prepareTimeout = prepareTimeout;
     this.caseTimeout = caseTimeout;
     this.interruptGrace = interruptGrace;
+    this.clocks = clocks;
+    this.watchdog = newWatchdog(STALL_THRESHOLD);
+  }
+
+  /** Shorter stall timing for a test; the dump budget starts afresh. */
+  void stallTiming(final Duration period, final Duration threshold) {
+    this.stallPeriod = period;
+    this.watchdog = newWatchdog(threshold);
+  }
+
+  private StallWatchdog newWatchdog(final Duration threshold) {
+    return new StallWatchdog(() -> {
+      final Thread t = worker;
+      return t == null ? new StackTraceElement[0] : t.getStackTrace();
+    }, Progress::count, System::nanoTime, threshold, MAX_DUMPS, n -> {
+      final ServerGuard g = dumpGuard;
+      try {
+        return g != null && g.threadDump(n);
+      } catch (final RuntimeException e) {
+        System.err.println("warning: thread dump " + n + " of the server under test failed: " + describe(e));
+        return false;
+      }
+    });
   }
 
   /** The step the worker is in, when it started and how long it may take; replaced by the worker as it moves on. */
@@ -112,24 +170,106 @@ public final class BenchRunner {
   }
 
   public List<CaseResult> run(final Workload w, final WorkloadContext ctx, final Predicate<String> caseFilter) {
+    return run(w, ctx, caseFilter, done -> {
+    });
+  }
+
+  /**
+   * As {@link #run(Workload, WorkloadContext, Predicate)}, and after every case (once its teardown is done) hands {@code onCase}
+   * an immutable copy of this workload's results so far, so a caller can persist them while the run goes on.
+   */
+  public List<CaseResult> run(final Workload w, final WorkloadContext ctx, final Predicate<String> caseFilter,
+      final Consumer<List<CaseResult>> onCase) {
+    return run(w, ctx, null, caseFilter, onCase);
+  }
+
+  /**
+   * As {@link #run(Workload, WorkloadContext, Predicate, Consumer)}, and before every case after the first asks {@code guard}
+   * (null = no check) whether the server is still alive. A dead server amends the case it died in (a failed or timed-out case
+   * gets {@code "server died: <reason>; "} before its error, an ok one a {@code serverDied} note), hands {@code onCase} the
+   * amended list and is restarted; the next case gets a {@code serverRestarted} note. A second death, or a restart that fails,
+   * records every remaining case of the workload as not run.
+   * <p>
+   * With a guard, a watchdog samples the stack of each case's worker every 5 s; a stack unchanged for 40 s while no
+   * {@link Progress} is made (no latency sample recorded, no new step) asks the guard for a thread dump of the server (at most 3
+   * per run), and the case gets a {@code stallDumps} note with the number taken during it.
+   * A stall that gets no dump (a native image, a failed dump, the budget spent) is counted in a {@code stallsWithoutDump} note.
+   */
+  public List<CaseResult> run(final Workload w, final WorkloadContext ctx, final ServerGuard guard,
+      final Predicate<String> caseFilter, final Consumer<List<CaseResult>> onCase) {
     final List<CaseResult> results = new ArrayList<>();
+    dumpGuard = guard;
+    WorkloadContext current = ctx;
+    int deaths = 0;
+    // why the remaining cases are not run; null while the workload goes on
+    String stopped = null;
     for (final String caseName : w.cases()) {
       if (caseFilter != null && !caseFilter.test(caseName))
         continue;
-      final CaseResult result;
+      boolean restarted = false;
+      if (guard != null && stopped == null && !results.isEmpty() && abandoned == null
+          && !Thread.currentThread().isInterrupted()) {
+        final String reason = deathReason(guard);
+        // a check cut short by an interrupt of the run says nothing about the server: the cases below are not started
+        if (reason != null && !Thread.currentThread().isInterrupted()) {
+          final int last = results.size() - 1;
+          results.set(last, diedIn(results.get(last), reason));
+          onCase.accept(List.copyOf(results));
+          if (++deaths > 1)
+            stopped = "not started: server died twice";
+          else {
+            try {
+              current = guard.restart();
+              restarted = true;
+            } catch (final Throwable t) {
+              stopped = "server restart failed: " + describe(t);
+            }
+          }
+        }
+      }
+      CaseResult result;
       if (Thread.currentThread().isInterrupted())
-        result = result(w, ctx, caseName, List.of(), CaseResult.Status.FAILED, "not started: the run was interrupted");
+        result = result(w, current, caseName, List.of(), CaseResult.Status.FAILED, "not started: the run was interrupted");
       else if (abandoned != null)
-        result = result(w, ctx, caseName, List.of(), CaseResult.Status.FAILED,
+        result = result(w, current, caseName, List.of(), CaseResult.Status.FAILED,
             "not started: the worker of case '" + abandoned + "' is still running");
+      else if (stopped != null)
+        result = result(w, current, caseName, List.of(), CaseResult.Status.FAILED, stopped);
       else {
-        result = runCase(w, ctx, caseName);
+        final long wallStart = clocks.wallMillis().getAsLong();
+        final long monoStart = clocks.monoNanos().getAsLong();
+        final CaseResult ran = runCase(w, current, caseName);
+        final long wallDelta = clocks.wallMillis().getAsLong() - wallStart;
+        final long monoDeltaMillis = TimeUnit.NANOSECONDS.toMillis(clocks.monoNanos().getAsLong() - monoStart);
+        final long ahead = wallDelta - monoDeltaMillis;
+        result = ahead > HOST_NOT_QUIET_MILLIS ?
+            ran.withNote("hostNotQuiet", "wall clock ran " + ahead + " ms ahead of the monotonic clock") :
+            ran;
         if (!lastWorkerStopped)
           abandoned = caseName;
       }
+      if (restarted)
+        result = result.withNote("serverRestarted", true);
       results.add(result);
+      onCase.accept(List.copyOf(results));
     }
     return results;
+  }
+
+  /** A liveness check that throws cannot tell the server is alive: it counts as a death, so a fresh server takes over. */
+  private static String deathReason(final ServerGuard guard) {
+    try {
+      return guard.deathReason();
+    } catch (final Throwable t) {
+      return "liveness check failed: " + describe(t);
+    }
+  }
+
+  /** The case the server died in: a failed or timed-out one says so in its error, an ok one keeps its status and gets a note. */
+  private static CaseResult diedIn(final CaseResult r, final String reason) {
+    if (r.status() == CaseResult.Status.OK)
+      return r.withNote("serverDied", reason);
+    return r.withStatus(r.status(), "server died: " + reason + "; " + r.error());
   }
 
   /** Whether a timed-out worker could not be stopped: every later case is then recorded as not started. */
@@ -142,6 +282,7 @@ public final class BenchRunner {
     final ExecutorService executor = Executors.newSingleThreadExecutor(r -> {
       final Thread t = new Thread(r, "bench-runner");
       t.setDaemon(true);
+      worker = t;
       return t;
     });
     final long caseStart = System.nanoTime();
@@ -158,6 +299,9 @@ public final class BenchRunner {
         return result(w, ctx, caseName, List.of(), CaseResult.Status.FAILED, describe(t));
       }
     });
+    final int dumpsBefore = watchdog.dumpsTaken();
+    final int undumpedBefore = watchdog.stallsWithoutDump();
+    final ScheduledExecutorService stallWatch = dumpGuard != null ? startWatchdog() : null;
     CaseResult result;
     boolean workerStopped = true;
     try {
@@ -180,18 +324,61 @@ public final class BenchRunner {
       result = result(w, ctx, caseName, List.of(), CaseResult.Status.FAILED, describe(e));
     } finally {
       executor.shutdown();
+      stopWatchdog(stallWatch);
     }
     lastWorkerStopped = workerStopped;
     if (workerStopped) {
       try {
         w.teardown(ctx);
       } catch (final Throwable t) {
+        // the metrics, histograms and notes measured stay: only the status says the case did not end cleanly
         if (result.status() == CaseResult.Status.OK)
-          result = result(w, ctx, caseName, result.metrics(), CaseResult.Status.FAILED,
-              "teardown: " + describe(t));
+          result = result.withStatus(CaseResult.Status.FAILED, "teardown: " + describe(t));
       }
     }
+    final int dumps = watchdog.dumpsTaken() - dumpsBefore;
+    if (dumps > 0)
+      result = result.withNote("stallDumps", dumps);
+    final int undumped = watchdog.stallsWithoutDump() - undumpedBefore;
+    if (undumped > 0)
+      result = result.withNote("stallsWithoutDump", undumped);
     return result;
+  }
+
+  private ScheduledExecutorService startWatchdog() {
+    watchdog.reset();
+    final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
+      final Thread t = new Thread(r, WATCHDOG_THREAD);
+      t.setDaemon(true);
+      return t;
+    });
+    final long period = stallPeriod.toNanos();
+    scheduler.scheduleAtFixedRate(() -> {
+      // a throwing task would never run again
+      try {
+        watchdog.sample();
+      } catch (final Throwable t) {
+        // the next sample tries again
+        System.err.println("warning: the stall watchdog failed to sample the case worker: " + describe(t));
+      }
+    }, period, period, TimeUnit.NANOSECONDS);
+    return scheduler;
+  }
+
+  /** Stops the case's watchdog, letting a dump in progress finish first, so its thread never outlives the case. */
+  private void stopWatchdog(final ScheduledExecutorService scheduler) {
+    if (scheduler == null)
+      return;
+    scheduler.shutdown();
+    try {
+      if (!scheduler.awaitTermination(DUMP_GRACE.toNanos(), TimeUnit.NANOSECONDS)) {
+        scheduler.shutdownNow();
+        scheduler.awaitTermination(interruptGrace.toNanos(), TimeUnit.NANOSECONDS);
+      }
+    } catch (final InterruptedException e) {
+      scheduler.shutdownNow();
+      Thread.currentThread().interrupt();
+    }
   }
 
   /**
@@ -244,16 +431,22 @@ public final class BenchRunner {
     for (int i = 0; i < warmup; i++) {
       stopIfCancelled(cancelled);
       step.set(new Step("warm-up " + (i + 1) + "/" + warmup, System.nanoTime(), stepNanos));
+      Progress.advance();
       w.measure(ctx, caseName);
     }
 
     // metric name -> per-rep medians, in first-seen order
     final Map<String, List<Double>> values = new LinkedHashMap<>();
     final Map<String, Metric> first = new LinkedHashMap<>();
+    final JSONArray histograms = new JSONArray();
     for (int i = 0; i < reps; i++) {
       stopIfCancelled(cancelled);
       step.set(new Step("rep " + (i + 1) + "/" + reps, System.nanoTime(), stepNanos));
-      for (final Metric m : w.measure(ctx, caseName).perRep()) {
+      Progress.advance();
+      final Measurement measurement = w.measure(ctx, caseName);
+      if (measurement.histogram() != null)
+        histograms.put(measurement.histogram());
+      for (final Metric m : measurement.perRep()) {
         first.putIfAbsent(m.name(), m);
         values.computeIfAbsent(m.name(), k -> new ArrayList<>()).add(m.median());
       }
@@ -267,7 +460,9 @@ public final class BenchRunner {
       final Metric f = e.getValue();
       metrics.add(new Metric(f.name(), f.unit(), f.better(), Stats.median(v), v));
     }
-    return result(w, ctx, caseName, metrics, CaseResult.Status.OK, null);
+    final CaseResult r = result(w, ctx, caseName, metrics, CaseResult.Status.OK, null);
+    return new CaseResult(r.workload(), r.caseName(), r.scale(), r.params(), r.reps(), r.warmup(), r.metrics(), r.status(), r.error(),
+        r.notes(), histograms);
   }
 
   /**

@@ -69,7 +69,7 @@ class RestoreTargetIT {
    * It surfaced when restore moved into the shared {@code ServerControlPlane} for the gRPC RPCs: the
    * new transport would have inherited the gap, so the check went into the shared implementation and
    * both transports now enforce it. This test asserts the HTTP side; the gRPC side is asserted by
-   * {@code Issue7308GrpcRestoreImportIT.restoreBackupRefusesATargetNameThatLeavesTheDatabaseDirectory}.
+   * {@code GrpcRestoreImportIT.restoreBackupRefusesATargetNameThatLeavesTheDatabaseDirectory}.
    * <p>
    * The archive file name is deliberately one that does not exist. The name check has to run
    * <b>before</b> the archive is resolved, or a traversal target would be rejected only by luck -
@@ -246,7 +246,7 @@ class RestoreTargetIT {
    * predicate.
    * <p>
    * The gRPC transports of the same two commands are asserted by
-   * {@code Issue7395GrpcRestoreTargetExistsIT} in the {@code grpcw} module. Both transports reach the
+   * {@code GrpcRestoreTargetExistsIT} in the {@code grpcw} module. Both transports reach the
    * same {@code ServerControlPlane} methods, but a test that called those methods directly would pass
    * against a transport that never wired them up.
    */
