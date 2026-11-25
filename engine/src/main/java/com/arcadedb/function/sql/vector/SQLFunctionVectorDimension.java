@@ -58,6 +58,12 @@ public class SQLFunctionVectorDimension extends SQLFunctionVectorAbstract {
       // instead of throwing.
       case null -> 0;
       case float[] floatArray -> floatArray.length;
+      // The shapes the HTTP handler gives a JSON array (double[] for [0.1, 0.2], long[] for [1, 2]) and the other primitive arrays that
+      // VectorUtils.toFloatArray reads, so every vector.* function takes the same arguments
+      case double[] doubleArray -> doubleArray.length;
+      case long[] longArray -> longArray.length;
+      case int[] intArray -> intArray.length;
+      case short[] shortArray -> shortArray.length;
       case Object[] objArray -> objArray.length;
       case List<?> list -> list.size();
       default ->
