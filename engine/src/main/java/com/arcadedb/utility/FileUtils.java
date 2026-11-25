@@ -230,10 +230,22 @@ public class FileUtils {
    * #12991).
    */
   private static long scaled(final String mantissa, final long unit) {
-    final Number number = string2number(mantissa);
-    if (number instanceof Double value && !Double.isFinite(value))
-      return (long) (value * unit);
-    final BigDecimal exact = number instanceof Double value ? BigDecimal.valueOf(value) : BigDecimal.valueOf(number.longValue());
+    final BigDecimal exact;
+    if (mantissa.indexOf('.') > -1) {
+      BigDecimal decimal;
+      try {
+        // THE DECIMAL TEXT IS PARSED DIRECTLY: GOING THROUGH A DOUBLE WOULD ROUND "9007199254740993.0" AND "0.99999999999999999"
+        decimal = new BigDecimal(mantissa.trim());
+      } catch (final NumberFormatException e) {
+        // NOT PLAIN DECIMAL TEXT (E.G. "NaN", "Infinity", "1.5f", HEX FLOAT): LET THE DOUBLE PARSER DECIDE
+        final double value = Double.parseDouble(mantissa);
+        if (!Double.isFinite(value))
+          return (long) (value * unit);
+        decimal = BigDecimal.valueOf(value);
+      }
+      exact = decimal;
+    } else
+      exact = BigDecimal.valueOf(Long.parseLong(mantissa));
     return exact.multiply(BigDecimal.valueOf(unit)).min(LONG_MAX).max(LONG_MIN).longValue();
   }
 

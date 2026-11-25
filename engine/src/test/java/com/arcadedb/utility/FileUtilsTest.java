@@ -277,6 +277,15 @@ class FileUtilsTest {
     assertThat(FileUtils.getSizeAsNumber("0.5B")).isZero();
   }
 
+  /** The decimal mantissa is parsed as text, not rounded to a double first. */
+  @Test
+  void getSizeAsNumberParsesADecimalMantissaWithoutRoundingItToADouble() {
+    assertThat(FileUtils.getSizeAsNumber("9007199254740993.0B")).isEqualTo(9007199254740993L);
+    assertThat(FileUtils.getSizeAsNumber("0.99999999999999999B")).isZero();
+    assertThat(FileUtils.getSizeAsNumber("1.5e3B")).isEqualTo(1500L);
+    assertThat(FileUtils.getSizeAsNumber("1.5fB")).isEqualTo(1L);
+  }
+
   /** A percentage is a negative number: "50%" is -50. */
   @Test
   void getSizeAsNumberReadsAPercentageAsANegativeNumber() {
