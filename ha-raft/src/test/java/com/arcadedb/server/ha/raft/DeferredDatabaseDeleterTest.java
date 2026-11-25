@@ -25,8 +25,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermission;
+import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -35,6 +39,9 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Covers {@link DeferredDatabaseDeleter}: the directory rename must complete on the calling thread while the
@@ -160,6 +167,39 @@ class DeferredDatabaseDeleterTest {
 
     assertThat(unrenamable.stageForDeletion(databaseDirectory)).isNull();
     assertThat(databaseDirectory).as("the inline fallback must still remove the directory").doesNotExist();
+  }
+
+  /**
+   * Issue #12611: the inline fallback only logs what it could not delete, and the call returned {@code null} exactly as
+   * after a deletion that worked, so its caller reported as dropped a database whose directory was still there under the
+   * name the server loads it from.
+   */
+  // Regression for #12611
+  @Test
+  void aDirectoryThatCanBeNeitherRenamedNorDeletedIsReportedNotReturnedAsDeleted() throws Exception {
+    assumeTrue(FileSystems.getDefault().supportedFileAttributeViews().contains("posix"), "needs POSIX permissions");
+    assumeFalse("root".equals(System.getProperty("user.name")), "root ignores directory permissions");
+
+    final DeferredDatabaseDeleter unrenamable = new DeferredDatabaseDeleter(executor) {
+      @Override
+      Path rename(final Path databaseDirectory) {
+        return null;
+      }
+    };
+    final Path databaseDirectory = createDatabaseDirectory("mydb");
+    final Set<PosixFilePermission> original = Files.getPosixFilePermissions(databaseDirectory);
+    // its entries cannot be unlinked, so the directory cannot be removed either
+    Files.setPosixFilePermissions(databaseDirectory, Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_EXECUTE));
+    try {
+      assertThatThrownBy(() -> unrenamable.stageForDeletion(databaseDirectory)).isInstanceOf(UncheckedIOException.class)
+          .hasMessageContaining(databaseDirectory.toString());
+      assertThat(databaseDirectory.resolve("schema.json")).as("precondition: the deletion was refused").exists();
+    } finally {
+      Files.setPosixFilePermissions(databaseDirectory, original);
+    }
+
+    assertThat(unrenamable.stageForDeletion(databaseDirectory)).as("the filesystem takes the deletion again").isNull();
+    assertThat(databaseDirectory).doesNotExist();
   }
 
   /**

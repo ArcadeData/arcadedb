@@ -97,8 +97,9 @@ public class TimeSeriesApiSpec implements OpenApiContributor {
     final ApiResponses responses = new ApiResponses();
     responses.addApiResponse("204", SpecBuilders.emptyResponse("All samples ingested"));
     responses.addApiResponse("400",
-        SpecBuilders.jsonResponse("Samples rejected, with the counts written and dropped",
-            "TimeSeriesWriteError"));
+        SpecBuilders.jsonResponse("Samples rejected, with the counts written and dropped. A request refused before any "
+            + "sample is read carries only 'error': an empty body, or a 'precision' that is none of ns, us (or u), ms and s "
+            + "in any case, where 'error' names the accepted values", "TimeSeriesWriteError"));
     responses.addApiResponse("401", SpecBuilders.errorResponse("Unauthorized"));
     responses.addApiResponse("403", SpecBuilders.errorResponse("Forbidden"));
     responses.addApiResponse("404", SpecBuilders.errorResponse(WRITE_STALE_SESSION_DESCRIPTION));

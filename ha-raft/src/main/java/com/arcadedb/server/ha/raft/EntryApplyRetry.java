@@ -48,6 +48,8 @@ final class EntryApplyRetry {
   // persists supersedes the held one, so the hold is released then (releaseHeldEntry) instead of keeping the log from being
   // purged until the process ends. The two retry keys do NOT heal: nothing supersedes an entry that could not be applied, so
   // they hold until a restart replays it or a Raft install covers it, and takeSnapshot() says so while they do.
+  // A drop whose files could not be removed ("drop:<database>", issue #12611) heals like a document: the deletion is tried
+  // again by DropDatabaseApplier.retryUndeletedDropsIfDue, and a drop of the name that completes releases the hold.
   // In memory only: after a restart the replay itself is the cure.
   final ConcurrentHashMap<String, Long> heldEntryFloors = new ConcurrentHashMap<>();
 

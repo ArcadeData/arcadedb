@@ -441,6 +441,37 @@ public class CSVImporterFormat extends AbstractImporterFormat {
   }
 
   /**
+   * Refuses a header that has no name for one of its columns, which the parser reads as {@code null} (an empty or blank cell: a
+   * trailing comma, a spreadsheet column with no title, the unnamed index column of a pandas export). It used to reach the schema
+   * as a null property name and die with a bare {@code NullPointerException} out of {@code existsProperty} (issue #12781). The column
+   * cannot be dropped or named on the user's behalf without changing what the data means, so the message names it and the way out.
+   * <p>
+   * The way out depends on where the header came from, so the message does too: a header read from the file can be fixed in the
+   * file or replaced with the one setting this route reads, while a header that already came from that setting can only be fixed
+   * there - telling its author to "supply the column names" would describe what they just did.
+   *
+   * @param names          the header's column names, in order
+   * @param headerSetting  the route's own header setting ({@code documentsHeader}, {@code verticesHeader} or
+   *                       {@code edgesHeader})
+   * @param fromTheSetting true when the names came from that setting, false when they are the first line of the file
+   */
+  private static void checkHeaderNames(final List<String> names, final String headerSetting, final boolean fromTheSetting) {
+    for (int i = 0; i < names.size(); i++) {
+      final String name = names.get(i);
+      if (name == null || name.isBlank()) {
+        final String column = "column " + (i + 1) + " of " + names.size();
+        throw new ImportException(fromTheSetting ?
+            "The header supplied with the -" + headerSetting + " setting has no name for " + column + ": give every column a name" :
+            "The header on the first line of the file has no name for " + column
+                + ": name it in the file, or supply the column names with the -" + headerSetting + " setting together with -"
+                // A SUPPLIED HEADER TURNS THE DEFAULT ONE-ROW SKIP OFF (ISSUE #7499), SO WITHOUT THIS THE FILE'S OWN HEADER
+                // LINE WOULD BE IMPORTED AS THE FIRST RECORD
+                + headerSetting.replace("Header", "SkipEntries") + " 1, so that the header line of the file is not read as data");
+      }
+    }
+  }
+
+  /**
    * Records a row that carries FEWER columns than the header declares. Not an error: the missing trailing columns are
    * absent values, and a property past the row's end is simply not set - which is what the callers of this method do,
    * instead of letting {@code row[prop.getIndex()]} throw {@code ArrayIndexOutOfBoundsException} the way they used to
@@ -1337,13 +1368,23 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       case DOCUMENT, DATABASE -> settings.documentsHeader;
     };
 
+    // THE ONE HEADER SETTING THIS ROUTE READS, WHICH IS THE ONE A MESSAGE ABOUT ITS HEADER HAS TO NAME
+    final String headerSetting = switch (entityType) {
+      case VERTEX -> "verticesHeader";
+      case EDGE -> "edgesHeader";
+      case DOCUMENT, DATABASE -> "documentsHeader";
+    };
+
     if (header != null) {
       if (delimiter == null)
         fieldNames.add(header);
-      else {
-        final String[] headerColumns = header.split(Pattern.quote(headerSeparator(delimiter)));
-        fieldNames.addAll(Arrays.asList(headerColumns));
-      }
+      else
+        // LIMIT -1 KEEPS THE TRAILING EMPTY NAMES split() WOULD OTHERWISE DROP, SO "a,b," IS THE THREE COLUMNS THE SAME
+        // LINE IS WHEN IT IS READ FROM THE FILE, AND IS REFUSED BELOW THE SAME WAY (ISSUE #12781)
+        fieldNames.addAll(Arrays.asList(header.split(Pattern.quote(headerSeparator(delimiter)), -1)));
+
+      // AFTER BOTH BRANCHES: A BLANK HEADER TAKEN WHOLE AS THE ONE COLUMN NAME IS AS NAMELESS AS A BLANK CELL
+      checkHeaderNames(fieldNames, headerSetting, true);
       LogManager.instance().log(this, Level.INFO, "Parsing with custom header: %s", null, fieldNames);
     }
 
@@ -1377,6 +1418,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         if (line == 0 && header == null) {
           // READ THE HEADER FROM FILE
           fieldNames.addAll(Arrays.asList(row));
+          checkHeaderNames(fieldNames, headerSetting, false);
           LogManager.instance().log(this, Level.INFO, "Reading header from 1st line in data file: %s", null, Arrays.toString(row));
         } else {
           // DATA LINE

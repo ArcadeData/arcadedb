@@ -253,11 +253,11 @@ class WholeNumberArgumentsTest {
       database.transaction(() -> database.command("opencypher", "CREATE (:N10850 {k: 0})-[:R]->(:N10850 {k: 1})-[:R]->(:N10850 {k: 2})"));
       final String match = "MATCH p = (a:N10850 {k: 0})-[:R*2]->(b:N10850) ";
 
-      // to 4294967297 used to wrap to 1 and answer one relationship
+      // a length of 4294967297 used to wrap to 1 and answer one relationship
       assertThat(cypher(match + "RETURN length(path.slice(p, 0, " + WRAPS_TO_ONE + ")) AS v")).isEqualTo(2L);
       assertThat(cypher(match + "RETURN length(path.slice(p, 1.0)) AS v")).isEqualTo(1L);
 
-      assertThatThrownBy(() -> cypher(match + "RETURN path.slice(p, 0.5) AS v")).hasStackTraceContaining("path.slice() requires a whole number <index>");
+      assertThatThrownBy(() -> cypher(match + "RETURN path.slice(p, 0.5) AS v")).hasStackTraceContaining("path.slice() requires a whole number <offset>");
     }
 
     // ---------------------------------------------------------------- text.* helpers
@@ -553,6 +553,8 @@ class WholeNumberArgumentsTest {
         // round(value) IS the rounding the function is asked for, and it is only reached below 2^52, where Math.round cannot
         // saturate (issue #11627); round(value) and round(value, 0) share it since issue #12398
         Map.entry("function/math/RoundFunction#roundToNearestInteger: java/lang/Math.round", 1),
+        // APOC's flag reading (issue #12105): a number is true when its whole part is not 0, so {recursive: 0.5} is false as in APOC
+        Map.entry("function/map/MapRemoveKeys#recursive: java/lang/Number.longValue", 1),
         // a list index computed from the size of the collected values, never from an argument
         Map.entry("function/sql/math/SQLFunctionPercentile#evaluate: d2i", 2),
         Map.entry("function/sql/time/SQLFunctionTsPercentile#getResult: d2i", 2),

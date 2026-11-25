@@ -609,7 +609,7 @@ final class CountStarShapeDetector {
    * Rather than teach the operator to answer 0 for those, they are left to the ordinary pipeline, which is the only
    * thing here that knows what each of them means - and which is what answered them before this existed.
    */
-  private static RID boundVertexRid(final Database db, final Object bound) {
+  static RID boundVertexRid(final Database db, final Object bound) {
     if (!(bound instanceof Identifiable identifiable))
       return null;
 
@@ -620,7 +620,7 @@ final class CountStarShapeDetector {
   }
 
   /** What a bound name holds: a row carries its element inside a {@link Result}. */
-  private static Object boundElement(final Object value) {
+  static Object boundElement(final Object value) {
     return value instanceof Result result ? result.getElement().orElse(null) : value;
   }
 

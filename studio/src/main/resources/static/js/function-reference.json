@@ -1638,7 +1638,7 @@
         {
           "name": "create.vRelationship",
           "syntax": "create.vRelationship(...)",
-          "description": "Create a virtual relationship (not persisted) between two nodes",
+          "description": "Create a virtual relationship (not persisted) between two nodes: (from, type, properties, to)",
           "since": "cypher"
         }
       ],
@@ -1708,7 +1708,7 @@
         {
           "name": "map.values",
           "syntax": "map.values(...)",
-          "description": "Get values for the specified keys in order",
+          "description": "Get the values for the specified keys in order, skipping missing keys unless the third argument is true",
           "since": "cypher"
         },
         {
@@ -1738,7 +1738,7 @@
         {
           "name": "map.clean",
           "syntax": "map.clean(...)",
-          "description": "Return a new map with specified keys removed and entries with specified values removed",
+          "description": "Return a new map without the specified keys, the null values and the entries with specified values",
           "since": "cypher"
         },
         {
@@ -1750,7 +1750,13 @@
         {
           "name": "map.groupBy",
           "syntax": "map.groupBy(...)",
-          "description": "Group a list of maps by a key property into a map of lists",
+          "description": "Group a list of maps, nodes or relationships by a key property into a map of the last element per key value",
+          "since": "cypher"
+        },
+        {
+          "name": "map.groupByMulti",
+          "syntax": "map.groupByMulti(...)",
+          "description": "Group a list of maps, nodes or relationships by a key property into a map of lists",
           "since": "cypher"
         },
         {
@@ -1780,7 +1786,7 @@
         {
           "name": "map.sortedProperties",
           "syntax": "map.sortedProperties(...)",
-          "description": "Get a list of [key, value] pairs sorted by key",
+          "description": "Get a list of [key, value] pairs sorted by key, case-insensitively unless the second argument is false",
           "since": "cypher"
         },
         {
@@ -1888,7 +1894,7 @@
         {
           "name": "path.slice",
           "syntax": "path.slice(...)",
-          "description": "Extract a subpath from index 'from' to 'to' (based on relationship count)",
+          "description": "Extract the subpath of 'length' relationships starting at relationship 'offset' (length -1 = to the end)",
           "since": "cypher"
         },
         {
@@ -2586,6 +2592,7 @@
     "map.fromLists",
     "map.fromPairs",
     "map.groupBy",
+    "map.groupByMulti",
     "map.merge",
     "map.mergeList",
     "map.removeKey",

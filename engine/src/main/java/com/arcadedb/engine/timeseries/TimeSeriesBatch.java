@@ -242,7 +242,8 @@ public class TimeSeriesBatch implements TimeSeriesRowSource {
     markPresent(row, columnIndex);
     rawColumn(columnIndex)[row] = switch (kinds[columnIndex]) {
       case KIND_DOUBLE -> Double.doubleToRawLongBits(value);
-      case KIND_FLOAT -> Float.floatToRawIntBits((float) value);
+      // the staleness marker stays one in a FLOAT column (issue #12580)
+      case KIND_FLOAT -> Float.floatToRawIntBits(TimeSeriesNaN.toFloat(value));
       case KIND_BOOLEAN -> value != 0 ? 1L : 0L;
       default -> (long) value;
     };
@@ -252,7 +253,7 @@ public class TimeSeriesBatch implements TimeSeriesRowSource {
     markPresent(row, columnIndex);
     rawColumn(columnIndex)[row] = switch (kinds[columnIndex]) {
       case KIND_FLOAT -> Float.floatToRawIntBits(value);
-      case KIND_DOUBLE -> Double.doubleToRawLongBits(value);
+      case KIND_DOUBLE -> Double.doubleToRawLongBits(TimeSeriesNaN.toDouble(value));
       case KIND_BOOLEAN -> value != 0 ? 1L : 0L;
       default -> (long) value;
     };
@@ -338,7 +339,7 @@ public class TimeSeriesBatch implements TimeSeriesRowSource {
     final Number number = (Number) stored;
     rawValues[columnIndex][row] = switch (kind) {
       case KIND_DOUBLE -> Double.doubleToRawLongBits(number.doubleValue());
-      case KIND_FLOAT -> Float.floatToRawIntBits(number.floatValue());
+      case KIND_FLOAT -> Float.floatToRawIntBits(TimeSeriesNaN.floatOf(number));
       case KIND_INTEGER -> number.intValue();
       case KIND_SHORT -> number.shortValue();
       case KIND_BYTE -> number.byteValue();

@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.StallAwareStopwatch;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -38,6 +39,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -187,6 +189,7 @@ class PostBatchIdempotencyAndWriteBoundIT extends BaseGraphServerTest {
     }
 
     // The worker thread that served the abandoned load is back: an ordinary request is answered as usual.
+    awaitTheAbandonedLoadHasUnwound();
     assertThat(terminal(postStreamed(vertices(630_000, 2), null), "summary").getLong("verticesCreated"))
         .isEqualTo(2);
   }
@@ -199,6 +202,25 @@ class PostBatchIdempotencyAndWriteBoundIT extends BaseGraphServerTest {
    */
   private int httpPort() {
     return getServer(0).getHttpServer().getPort();
+  }
+
+  /**
+   * The client learns of the cut at once, but the abandoned load goes on unwinding on the worker thread that served it, and its
+   * batch gives the database's one batch slot back only when its close() ends: a load that arrives meanwhile is refused with 409
+   * "a GraphBatch load is already in progress", and nothing of it runs. Asked, with no records, until that is no longer the answer.
+   */
+  private void awaitTheAbandonedLoadHasUnwound() {
+    Awaitility.await("the abandoned load gives the database's batch slot back").atMost(60, TimeUnit.SECONDS)
+        .pollInterval(25, TimeUnit.MILLISECONDS).until(() -> {
+          final HttpURLConnection conn = open("?vertexBatchSize=2", null, NDJSON);
+          conn.setFixedLengthStreamingMode(0);
+          try {
+            conn.getOutputStream().close();
+            return conn.getResponseCode() != 409;
+          } finally {
+            conn.disconnect();
+          }
+        });
   }
 
   private byte[] vertices(final int firstId, final int count) {

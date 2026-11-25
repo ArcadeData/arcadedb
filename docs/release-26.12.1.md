@@ -118,6 +118,30 @@ only by the scan truncation and now reads every record: `resultSetLimit` does no
 record of the type, where the scan cap used to stop it early. Only the group's `readTimeout` bounds that work: a group with a
 `resultSetLimit` and no `readTimeout` has no protection against a long scan, so set both.
 
+### openCypher: `map.groupBy` answers one element per key, as APOC does (#12107)
+
+`map.groupBy(list, key)` (and `apoc.map.groupBy`) maps each value of the key to the LAST element that holds it, as APOC does.
+It used to map each value to the list of every element holding it, and grouped the elements without the key under `"null"`.
+Those elements are now skipped, a null key answers `{}` instead of failing, and a node or a relationship is grouped by its
+property (it used to be ignored). The list-per-key form is the new `map.groupByMulti(list, key)` (and
+`apoc.map.groupByMulti`), APOC's function for it.
+
+Four more `map.*` functions answer as APOC does:
+
+- `map.sortedProperties(map, ignoreCase = true)` sorts the keys case-insensitively unless the new second argument is
+  `false`, and a null value stays null instead of becoming the string `"null"`;
+- `map.values(map, keys = [], addNullsForMissing = false)` skips a key the map does not hold unless the new third argument
+  is `true` (it used to answer null for it), and a null map holds no key;
+- `map.clean(map, keys, values)` also drops the null values and the values whose string form is listed
+  (`map.clean({a: 2, b: true}, [], ['2', 'true'])` is `{}`);
+- `map.fromPairs(pairs)` maps a pair holding only a key to null instead of skipping it.
+
+Every `map.*` function that takes a map also takes a node or a relationship, as the map of its properties.
+
+**Who sees a different answer.** A query that reads lists out of `map.groupBy`: call `map.groupByMulti` instead, which answers
+the same lists without the `"null"` group. A query that expects `map.values` to keep one slot per key: pass `true` as the third
+argument. A query that relied on the case-sensitive order of `map.sortedProperties`: pass `false` as the second argument.
+
 ## Fixes
 
 - **#11956** A DATE parameter reaches the engine as the `LocalDate` it names, as a Bolt date does, over gRPC (a
@@ -154,3 +178,14 @@ record of the type, where the scan cap used to stop it early. Only the group's `
   unique STRING key that reads as a number or a list (`12345`, `2.5`, `[1.5, 2]`) loads one record at commit; a version, an
   address, a date or any other text pays nothing. Run `REBUILD INDEX <name>` (or `REBUILD INDEX *`) once after upgrading to
   write every entry under its canonical key and drop that cost: an index this build creates or rebuilds pays nothing.
+- **#12162** A multi-property `FULL_TEXT` index no longer mixes its field-qualified keys (`title:java`) with its unqualified
+  ones. An unqualified prefix, wildcard, fuzzy or regexp clause (`ti*`) also matched the `title:...` and `body:...` keys of
+  every field whose name starts with the prefix, so it returned every record with a non-empty `title` and scored each such key
+  as an extra term. A token that itself reads `<property>:...` (the StandardTokenizer keeps `title:java` as one token) was
+  stored under the very key of the `title` posting of `java`, so `title:java` also matched a record holding that text in
+  `body`. Such a token is now stored behind one `:` escape, and a qualified clause reads only its own `field:` keys. A
+  one-property index, which has no qualified keys, keeps every key and now also matches its tokens that hold a colon
+  (`note:this`) by wildcard, regexp and fuzzy clauses, which it used to skip. **Upgrade note:** an index written before this
+  release keeps those few tokens (a token that reads `<property>:...`) unescaped until `REBUILD INDEX <name>`: until then
+  `title:java` can still match a record that holds that text in another field, and an unqualified search for that literal
+  token misses it. The wrong prefix, wildcard, fuzzy and regexp answers are fixed at once, with no rebuild.

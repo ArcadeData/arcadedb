@@ -32,6 +32,9 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
+import static com.arcadedb.postgres.PostgresStatementText.isBlank;
+import static com.arcadedb.postgres.PostgresStatementText.skipBlanks;
+
 /**
  * Answers the {@code pg_type} queries a PostgreSQL client makes to find out what the OIDs it was handed in
  * RowDescription actually mean.
@@ -87,11 +90,14 @@ public class PostgresTypeCatalog {
   /** The OID PostgreSQL fixes for the {@code pg_catalog} schema, which is the namespace of every type this protocol produces. */
   static final int PG_CATALOG_OID = 11;
 
-  /** {@code SELECT <projection> FROM [pg_catalog.]pg_type [alias] [WHERE <filter>]} and nothing more. */
-  private static final Pattern QUERY = Pattern.compile(
-      "^SELECT\\s+(.+?)\\s+FROM\\s+(?:PG_CATALOG\\s*\\.\\s*)?PG_TYPE(?:\\s+(?:AS\\s+)?[A-Za-z_][A-Za-z0-9_$]*)?"
-          + "(?:\\s+WHERE\\s+(.+?))?\\s*$",
-      Pattern.CASE_INSENSITIVE);
+  /** What {@link #parseQuery} read out of {@code SELECT <projection> FROM [pg_catalog.]pg_type [alias] [WHERE <filter>]}. */
+  private record PgTypeQuery(String projection, String filter) {
+  }
+
+  /** {@link #filterStart}: the text after the table is neither blank nor a WHERE clause. */
+  private static final int NO_MATCH  = -2;
+  /** {@link #filterStart}: nothing but blanks follows the table. */
+  private static final int NO_FILTER = -1;
 
   /** One projection item: an optionally table-qualified column, or {@code *}, with an optional alias. */
   private static final Pattern PROJECTION_ITEM = Pattern.compile(
@@ -265,16 +271,16 @@ public class PostgresTypeCatalog {
    * the same way round.
    */
   private static PostgresCatalog.Answer resolveProjection(final String query, final Supplier<List<Map<String, Object>>> rowTypes) {
-    final Matcher matcher = QUERY.matcher(query.trim());
-    if (!matcher.matches())
+    final PgTypeQuery parsed = parseQuery(query.trim());
+    if (parsed == null)
       return null;
 
     final List<String> requested = new ArrayList<>();
     final List<String> aliases = new ArrayList<>();
-    if (!parseProjection(matcher.group(1), requested, aliases))
+    if (!parseProjection(parsed.projection(), requested, aliases))
       return null;
 
-    final List<Function<String, Object>> selected = select(matcher.group(2), rowTypes);
+    final List<Function<String, Object>> selected = select(parsed.filter(), rowTypes);
     if (selected == null)
       return null;
 
@@ -286,6 +292,144 @@ public class PostgresTypeCatalog {
       rows.add(row);
     }
     return answer(requested, aliases, rows);
+  }
+
+  /**
+   * Reads {@code SELECT <projection> FROM [pg_catalog.]pg_type [[AS] alias] [WHERE <filter>]} and nothing more, and returns null
+   * for any other text. {@code text} is trimmed. Keywords are read in either case, a blank is what {@code \s} reads (space, tab,
+   * line feed, vertical tab, form feed, carriage return), and neither the projection nor the filter holds a line terminator: a
+   * statement spread over several lines is left to {@link PostgresCatalog}.
+   * <p>
+   * The text is the client's, so it can be long and made of little else than blanks. It is read once, front to back: a pattern
+   * whose consecutive quantifiers all read blanks tries every split of a run between them, and that grows with the cube of the
+   * run.
+   */
+  private static PgTypeQuery parseQuery(final String text) {
+    final int length = text.length();
+    if (!matchesKeyword(text, 0, "SELECT"))
+      return null;
+
+    // The projection runs from the first character after SELECT's blanks to the blanks before the first FROM that the table follows:
+    // a FROM that nothing follows it as the table is part of the projection, as in "oid AS from"
+    final int start = skipBlanks(text, 6);
+    if (start == 6)
+      return null;
+    int from = -1;
+    int position = -1;
+    for (int i = start + 1; i + 4 < length && position < 0; i++)
+      if (isBlank(text.charAt(i - 1)) && isBlank(text.charAt(i + 4)) && matchesKeyword(text, i, "FROM")) {
+        from = i;
+        position = endOfTableName(text, skipBlanks(text, i + 4));
+      }
+    if (position < 0)
+      return null;
+
+    int projectionEnd = from;
+    while (isBlank(text.charAt(projectionEnd - 1)))
+      projectionEnd--;
+    for (int i = start; i < projectionEnd; i++)
+      if (isLineTerminator(text.charAt(i)))
+        return null;
+
+    final String projection = text.substring(start, projectionEnd);
+
+    // The words after the table are its alias when the rest of the text agrees, and the WHERE clause when it does not: an alias
+    // is tried first, with its AS, then as the word AS itself, and then there is none.
+    if (position < length && isBlank(text.charAt(position))) {
+      final int word = skipBlanks(text, position);
+      final int wordEnd = identifierEnd(text, word);
+      if (wordEnd > word) {
+        if (wordEnd - word == 2 && matchesKeyword(text, word, "AS") && wordEnd < length && isBlank(text.charAt(wordEnd))) {
+          final int name = skipBlanks(text, wordEnd);
+          final int nameEnd = identifierEnd(text, name);
+          if (nameEnd > name) {
+            final int namedFilter = filterStart(text, nameEnd);
+            if (namedFilter != NO_MATCH)
+              return pgTypeQuery(text, projection, namedFilter);
+          }
+        }
+        final int aliasedFilter = filterStart(text, wordEnd);
+        if (aliasedFilter != NO_MATCH)
+          return pgTypeQuery(text, projection, aliasedFilter);
+      }
+    }
+
+    final int filter = filterStart(text, position);
+    return filter == NO_MATCH ? null : pgTypeQuery(text, projection, filter);
+  }
+
+  /** The end of {@code [pg_catalog.]pg_type} when the text has it at {@code from}, -1 when it does not. */
+  private static int endOfTableName(final String text, final int from) {
+    int position = from;
+    if (matchesKeyword(text, position, "PG_CATALOG")) {
+      position = skipBlanks(text, position + 10);
+      if (position >= text.length() || text.charAt(position) != '.')
+        return -1;
+      position = skipBlanks(text, position + 1);
+    }
+    return matchesKeyword(text, position, "PG_TYPE") ? position + 7 : -1;
+  }
+
+  private static PgTypeQuery pgTypeQuery(final String text, final String projection, final int filterStart) {
+    return new PgTypeQuery(projection, filterStart == NO_FILTER ? null : text.substring(filterStart));
+  }
+
+  /**
+   * Where the filter of {@code [<blanks> WHERE <blanks> <filter>]} starts when the text from {@code from} is that and nothing
+   * else, {@link #NO_FILTER} when it is only blanks, and {@link #NO_MATCH} when it is neither.
+   */
+  private static int filterStart(final String text, final int from) {
+    final int length = text.length();
+    final int where = skipBlanks(text, from);
+    if (where == length)
+      return NO_FILTER;
+    if (where == from || !matchesKeyword(text, where, "WHERE"))
+      return NO_MATCH;
+
+    final int filter = skipBlanks(text, where + 5);
+    if (filter == where + 5 || filter == length)
+      return NO_MATCH;
+    for (int i = filter; i < length; i++)
+      if (isLineTerminator(text.charAt(i)))
+        return NO_MATCH;
+    return filter;
+  }
+
+  /** The end of the identifier {@code [A-Za-z_][A-Za-z0-9_$]*} that starts at {@code from}, which is {@code from} when none does. */
+  private static int identifierEnd(final String text, final int from) {
+    final int length = text.length();
+    if (from >= length)
+      return from;
+    final char first = text.charAt(from);
+    if (!(first >= 'A' && first <= 'Z' || first >= 'a' && first <= 'z' || first == '_'))
+      return from;
+
+    int end = from + 1;
+    while (end < length) {
+      final char c = text.charAt(end);
+      if (!(c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '_' || c == '$'))
+        break;
+      end++;
+    }
+    return end;
+  }
+
+  /** The characters {@code .} does not read. */
+  private static boolean isLineTerminator(final char c) {
+    return c == '\n' || c == '\r' || c == '\u0085' || c == '\u2028' || c == '\u2029';
+  }
+
+  /** Whether {@code text} has the upper-case, ASCII {@code keyword} at {@code offset} in either case. */
+  private static boolean matchesKeyword(final String text, final int offset, final String keyword) {
+    if (offset + keyword.length() > text.length())
+      return false;
+    for (int i = 0; i < keyword.length(); i++) {
+      final char expected = keyword.charAt(i);
+      final char actual = text.charAt(offset + i);
+      if (actual != expected && !(expected >= 'A' && expected <= 'Z' && actual == expected + ('a' - 'A')))
+        return false;
+    }
+    return true;
   }
 
   /** The rows under the columns the client projected, each typed as pg_type declares it, whether there is a row or not. */

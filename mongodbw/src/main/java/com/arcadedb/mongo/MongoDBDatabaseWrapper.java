@@ -218,6 +218,46 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     purgeIdleCursorsOnce(System.nanoTime());
   }
 
+  /** What runs a command of the database. */
+  @FunctionalInterface
+  private interface CommandHandler {
+    Document run(MongoDBDatabaseWrapper wrapper, Channel channel, Document document, Oplog opLog, long quota) throws MongoServerException;
+  }
+
+  /** A command and its handler: the name is the one {@code mongod} spells, which is also the key of its {@link MongoCommandFields} table. */
+  private record Route(String name, CommandHandler handler) {
+  }
+
+  /**
+   * The commands this database runs itself, by name whatever its case. {@link #handleCommand} checks the fields of each against
+   * its {@link MongoCommandFields} table before the handler runs, so a command cannot be added here and acknowledge the fields it
+   * does not read (issue #12625: {@code insert} and {@code createIndexes} were dispatched and never checked).
+   */
+  private static final Map<String, Route> ROUTES = routes(
+      new Route("find", (wrapper, channel, document, opLog, quota) -> wrapper.find(document, quota)),
+      new Route("create", (wrapper, channel, document, opLog, quota) -> wrapper.createCollection(document)),
+      new Route("count", (wrapper, channel, document, opLog, quota) -> wrapper.countCollection(document)),
+      new Route("insert", (wrapper, channel, document, opLog, quota) -> wrapper.insertDocument(channel, document)),
+      new Route("delete", (wrapper, channel, document, opLog, quota) -> wrapper.deleteDocuments(document)),
+      new Route("update", (wrapper, channel, document, opLog, quota) -> wrapper.updateDocuments(document)),
+      new Route("aggregate", (wrapper, channel, document, opLog, quota) -> wrapper.aggregateCollection(document, opLog, quota)),
+      new Route("createIndexes", (wrapper, channel, document, opLog, quota) -> wrapper.createIndexes(document)));
+
+  private static Map<String, Route> routes(final Route... routes) {
+    final Map<String, Route> byName = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+    for (final Route route : routes)
+      byName.put(route.name, route);
+    return Collections.unmodifiableMap(byName);
+  }
+
+  /** The commands {@link #handleCommand} dispatches: read by the census of their field tables (issue #12625). */
+  static Set<String> commands() {
+    final Set<String> names = new HashSet<>();
+    for (final Route route : ROUTES.values())
+      names.add(route.name);
+    return names;
+  }
+
   @Override
   public Document handleCommand(final Channel channel, final String command, final Document document,
       final DatabaseResolver databaseResolver,
@@ -231,31 +271,21 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     // THE SQL STATEMENTS THE COMMAND READS THROUGH ARE A PART OF IT: NONE TAKES THE QUOTA AS ITS LIMIT (ISSUE #13087)
     ProfiledLimitScope.enter();
     try {
-      if ("find".equalsIgnoreCase(command))
-        return find(document, quota);
-      else if ("create".equalsIgnoreCase(command))
-        return createCollection(document);
-      else if ("count".equalsIgnoreCase(command))
-        return countCollection(document);
-      else if ("insert".equalsIgnoreCase(command))
-        return insertDocument(channel, document);
-      else if ("delete".equalsIgnoreCase(command))
-        return deleteDocuments(document);
-      else if ("update".equalsIgnoreCase(command))
-        return updateDocuments(document);
-      else if ("aggregate".equalsIgnoreCase(command))
-        return aggregateCollection(command, document, opLog, quota);
-      else if ("createIndexes".equalsIgnoreCase(command))
-        return createIndexes(document);
-      else {
+      final Route route = ROUTES.get(command);
+      if (route == null) {
         // a client's request, not a server fault: the operator learns which commands clients ask for, without the document, which can
-        // carry stored data
-        LogManager.instance().log(this, Level.INFO, "Received unsupported command '%s' from MongoDB client", null, command);
+        // carry stored data. The name is the client's own, shown with printable characters only
+        final String shown = MongoWireText.clean(command);
+        LogManager.instance().log(this, Level.INFO, "Received unsupported command '%s' from MongoDB client", null, shown);
         // what mongod answers a command it does not have, and what drivers detect a command missing from a server by (issue #11449)
-        throw new MongoServerError(COMMAND_NOT_FOUND, "CommandNotFound", "no such command: '" + command + "'");
+        throw new MongoServerError(COMMAND_NOT_FOUND, "CommandNotFound", "no such command: '" + shown + "'");
       }
+      // a field the command would not read is refused, not ignored: the answer would be the one of another command (issue #11778).
+      // Refused here, before any handler runs, so that no command can be routed without its fields being checked (issue #12625)
+      MongoCommandFields.check(route.name, document);
+      return route.handler.run(this, channel, document, opLog, quota);
     } catch (final Exception e) {
-      throw wireException("Error on executing MongoDB '" + command + "' command", e);
+      throw wireException("Error on executing MongoDB '" + MongoWireText.clean(command) + "' command", e);
     } finally {
       ProfiledLimitScope.exit();
     }
@@ -447,9 +477,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     };
   }
 
-  private Document aggregateCollection(final String command, final Document document, final Oplog oplog, final long quota)
-      throws MongoServerException {
-    MongoCommandFields.check("aggregate", document);
+  private Document aggregateCollection(final Document document, final Oplog oplog, final long quota) throws MongoServerException {
     final String collectionName = document.get("aggregate").toString();
     // like MongoDB, a pipeline over a collection that does not exist is answered with no documents (countDocuments is one). A
     // pipeline that writes ($out, $merge) is not read-only: it keeps failing on the missing collection, as it always did
@@ -623,8 +651,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   }
 
   private Document createCollection(final Document document) {
-    // refused before anything is created: a capped, validated or collated collection would be an ordinary one (issue #11778)
-    MongoCommandFields.check("create", document);
+    // the options of the collection were refused before this ran: a capped, validated or collated one would be an ordinary one
+    // (issue #11778)
     database.getSchema().buildDocumentType().withName((String) document.get("create")).withTotalBuckets(1).create();
     return responseOk();
   }
@@ -710,6 +738,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     }
 
     for (final String field : key.keySet()) {
+      // the property the plugin keeps the key of a unique index in is not a field a client indexes (issue #12073)
+      MongoKeys.checkNotKey(field);
       final Object direction = key.get(field);
       if (!(direction instanceof Number number) || number.doubleValue() == 0D || Double.isNaN(number.doubleValue()))
         throw new MongoServerError(67, "CannotCreateIndex",
@@ -724,6 +754,27 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     final DocumentType type = database.getSchema().getType(collectionName);
     final String[] propertyNames = key.keySet().toArray(new String[0]);
 
+    if (Utils.isTrue(index.get("unique"))) {
+      // a unique index is built on the derived key of its fields (issue #12073): an index on the fields themselves converts every
+      // value to one key type, so 1 and "1" would be one key. The documents already stored get their keys first, under the
+      // collection's exclusive lock so no write of the plugin goes in between
+      final String property = MongoKeys.propertyOf(propertyNames);
+      // before the exclusive lock is asked for: building an index is a schema change, as it is for the other indexes
+      ((DatabaseInternal) database).checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+      final Lock lock = MongoDBCollectionWrapper.idIndexLock(database, collectionName).writeLock();
+      lock.lock();
+      try {
+        // the unique index of the _id is the one every collection has, built on its own key
+        if (MongoKeys.ID_KEY.equals(property))
+          MongoDBCollectionWrapper.ensureIdIndex(database, collectionName);
+        else
+          MongoDBCollectionWrapper.ensureUniqueKeyIndex(database, collectionName, property, propertyNames);
+      } finally {
+        lock.unlock();
+      }
+      return;
+    }
+
     // Schemaless collections: keep undeclared properties free-form and let the index serialise
     // their keys as STRING. Declared properties (null entry) keep their own type.
     final Type[] defaultKeyTypes = new Type[propertyNames.length];
@@ -735,11 +786,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       anyUndeclared = true;
     }
 
-    final boolean unique = Utils.isTrue(index.get("unique"));
-
     final TypeIndexBuilder builder = database.getSchema().buildTypeIndex(collectionName, propertyNames);
     builder.withType(Schema.INDEX_TYPE.LSM_TREE);
-    builder.withUnique(unique);
     builder.withIgnoreIfExists(true);
     if (anyUndeclared)
       builder.withDefaultKeyTypesForUndeclaredProperties(defaultKeyTypes);
@@ -752,7 +800,6 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * documents than an int counts, and the reply carries it as {@code mongod} does, an int32 while it fits and an int64 past it.
    */
   private Document countCollection(final Document document) throws MongoServerException {
-    MongoCommandFields.check("count", document);
     final String collectionName = document.get("count").toString();
     final Document queryObject = documentField(document, "query");
     // read first: an invalid option is an error whether or not the collection exists
@@ -776,8 +823,6 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   }
 
   private Document find(final Document document, final long quota) throws MongoServerException {
-    // a field this would not read is refused, not ignored: the answer would be the one of another command (issue #11778)
-    MongoCommandFields.check("find", document);
     final Document filter = documentField(document, "filter");
     final Document sort = documentField(document, "sort");
     // A missing/0 limit means "no limit" (a -1 sentinel here would be interpreted as a legacy single-batch limit of 1)
@@ -1178,7 +1223,6 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * the whole command with nothing deleted.
    */
   private Document deleteDocuments(final Document document) {
-    MongoCommandFields.check("delete", document);
     final String collectionName = document.get("delete").toString();
     final List<Document> deletes = (List<Document>) document.get("deletes");
     if (deletes != null)
@@ -1190,6 +1234,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
     int n = 0;
     if (database.getSchema().existsType(collectionName) && deletes != null) {
+      // before the lock of the unique indexes is taken and before any record is read
+      MongoDBCollectionWrapper.checkAccess(database, collectionName, SecurityDatabaseUser.ACCESS.DELETE_RECORD);
       final Lock indexLock = MongoDBCollectionWrapper.idIndexLock(database, collectionName).readLock();
       indexLock.lock();
       // the command's OWN transaction: a failure rolls back this one, never one the caller holds (issue #9977)
@@ -1304,7 +1350,6 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * nothing matched, a new document seeded from the filter's equalities and the update is inserted.
    */
   private Document updateDocuments(final Document document) {
-    MongoCommandFields.check("update", document);
     final String collectionName = document.get("update").toString();
     final List<Document> updates = (List<Document>) document.get("updates");
     // every statement is checked before any runs, as mongod parses the command before it executes it: a field the plugin would
@@ -1331,12 +1376,17 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
           new MongoFilter(database, (Document) upd.get("q"), budget);
         throw MongoTimeSeriesWrites.updateRefusal(timeSeries);
       }
+      // before the lock of the unique indexes is taken and before any record is read
+      MongoDBCollectionWrapper.checkAccess(database, collectionName, SecurityDatabaseUser.ACCESS.UPDATE_RECORD);
       // a schema change cannot happen inside the transaction: an upsert creates the collection with its _id index up front
-      prepareUpsertIdIndex(collectionName, updates, budget);
+      final boolean upserts = prepareUpsertIdIndex(collectionName, updates);
 
-      // the transaction maintains the unique _id index, which must not be dropped and rebuilt under it
-      final Lock indexLock = MongoDBCollectionWrapper.idIndexLock(database, collectionName).readLock();
-      indexLock.lock();
+      // the transaction maintains the unique _id index, which must not be dropped and rebuilt under it. A collection that does not
+      // exist has none: its name is the client's, so it gets no lock, and its statements are only validated and answer nothing matched
+      final boolean locked = upserts || database.getSchema().existsType(collectionName);
+      final Lock indexLock = locked ? MongoDBCollectionWrapper.idIndexLock(database, collectionName).readLock() : null;
+      if (locked)
+        indexLock.lock();
       try {
         // FAST PATH: every statement in the command's OWN transaction, so a failure rolls back this one, never one the caller holds
         // (issue #9977)
@@ -1344,7 +1394,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         final OwnTransaction tx = OwnTransaction.begin((DatabaseInternal) database);
         try {
           for (int i = 0; i < updates.size(); i++) {
-            final UpdateCount updated = executeUpdateStatement(collectionName, updates.get(i), i, budget, upserted);
+            final UpdateCount updated = executeUpdateStatement(collectionName, updates.get(i), i, budget, upserted, locked);
             n += updated.matched();
             nModified += updated.modified();
           }
@@ -1372,7 +1422,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
             final int upsertedBefore = upserted.size();
             final OwnTransaction statementTx = OwnTransaction.begin((DatabaseInternal) database);
             try {
-              final UpdateCount updated = executeUpdateStatement(collectionName, updates.get(i), i, budget, upserted);
+              final UpdateCount updated = executeUpdateStatement(collectionName, updates.get(i), i, budget, upserted, locked);
               statementTx.commit();
               n += updated.matched();
               nModified += updated.modified();
@@ -1392,7 +1442,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
           }
         }
       } finally {
-        indexLock.unlock();
+        if (locked)
+          indexLock.unlock();
       }
     }
 
@@ -1409,16 +1460,17 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
   /**
    * Runs one statement of an {@code update} command in the transaction the caller holds: the update of the documents its filter
-   * selects or, when it matched none and asks for it, the upsert, added to {@code upserted}.
+   * selects or, when it matched none and asks for it, the upsert, added to {@code upserted}. {@code locked} tells whether the caller
+   * holds the collection's lock: without it nothing is read or written, the statement is only validated.
    */
   private UpdateCount executeUpdateStatement(final String collectionName, final Document statement, final int index,
-      final MongoFilter.RegexBudget budget, final List<Document> upserted) {
+      final MongoFilter.RegexBudget budget, final List<Document> upserted, final boolean locked) {
     final Document q = (Document) statement.get("q");
     final Document u = updateOf(statement.get("u"));
     final boolean multi = Utils.isTrue(statement.get("multi"));
     final boolean upsert = Utils.isTrue(statement.get("upsert"));
 
-    final UpdateCount updated = executeUpdate(collectionName, q, u, multi, budget);
+    final UpdateCount updated = executeUpdate(collectionName, q, u, multi, budget, locked);
 
     // only a filter that matched nothing upserts: a match whose update a listener vetoed is not "no match", or the upsert would insert
     // a second document for it (issue #9974)
@@ -1502,68 +1554,21 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   }
 
   /**
-   * A schema change cannot happen inside the transaction, so an upsert creates the collection and makes the {@code _id} index
-   * able to hold the key the upsert is about to store, up front: the {@code _id} the filter seeds (see {@link #upsertSeed}), or the
-   * generated ObjectId (a string kind) of an upsert without one. Only an upsert that matches nothing inserts, so the others leave
-   * the index alone (a rebuild is a full copy of it).
+   * A schema change cannot happen inside the transaction, so an upsert creates the collection and its {@code _id} index up front.
+   *
+   * @return whether a statement asks for an upsert, in which case the collection exists now
    */
-  private void prepareUpsertIdIndex(final String collectionName, final List<Document> updates, final MongoFilter.RegexBudget budget) {
-    List<Object> samples = null;
-    for (final Document upd : updates) {
-      if (!Utils.isTrue(upd.get("upsert")))
-        continue;
-
-      final Document q = upd.get("q") instanceof Document filter ? filter : new Document();
-      final Document seed;
-      try {
-        seed = upsertSeed(q);
-      } catch (final MongoServerError e) {
-        // a filter mongod cannot infer a document from is the refusal of an insert only: a document that matches is updated, and one
-        // that does not is refused when the statement runs, reported there at its index with the statements before it kept. Nothing
-        // is inserted, so the collection and its index are left alone
-        continue;
+  private boolean prepareUpsertIdIndex(final String collectionName, final List<Document> updates) {
+    for (final Document upd : updates)
+      if (Utils.isTrue(upd.get("upsert"))) {
+        database.getSchema().getOrCreateDocumentType(collectionName);
+        // an upsert inserts: asked before the _id index is built under the exclusive lock
+        MongoDBCollectionWrapper.checkAccess(database, collectionName, SecurityDatabaseUser.ACCESS.CREATE_RECORD);
+        if (!MongoDBCollectionWrapper.idIndexReady(database, collectionName))
+          MongoDBCollectionWrapper.ensureIdIndexLocked(database, collectionName);
+        return true;
       }
-      Object id = seed.get("_id");
-      boolean hasId = seed.containsKey("_id");
-      // the stored _id can also come from the update itself: a replacement's, or $set's
-      final Document u = upd.get("u") instanceof Document update ? update : new Document();
-      final Document setter = isReplacement(u) ? u : u.get("$set") instanceof Document set ? set : null;
-      if (setter != null && setter.containsKey("_id")) {
-        id = setter.get("_id");
-        hasId = true;
-      }
-
-      database.getSchema().getOrCreateDocumentType(collectionName);
-      final Object sample = hasId && id != null ? id : new ObjectId();
-      // nothing to do when the index already holds this kind of key: no need to look for a match either
-      // a key other than the _id is looked up through its index when it is a declared scalar field (see MongoFilter), else it is a scan
-      if (MongoDBCollectionWrapper.idIndexSatisfies(database, collectionName, List.of(sample)))
-        continue;
-      try {
-        if (matchesAny(collectionName, q, budget))
-          continue;
-      } catch (final RuntimeException e) {
-        // a filter refused on its own (an unknown operator) is the statement's error: it is refused again when the statement runs, and
-        // reported there at its index with the statements before it kept, instead of failing the whole command here (issue #11444)
-        if (statementErrorCode(e) == null)
-          throw e;
-        continue;
-      }
-
-      if (samples == null)
-        samples = new ArrayList<>();
-      samples.add(sample);
-    }
-
-    if (samples != null)
-      MongoDBCollectionWrapper.ensureIdIndexLocked(database, collectionName, samples);
-  }
-
-  /**
-   * Advisory: it only decides whether to touch the index ahead of the transaction, the match can change before it starts.
-   */
-  private boolean matchesAny(final String collectionName, final Document q, final MongoFilter.RegexBudget budget) {
-    return !new MongoFilter(database, q, budget).select(database, collectionName, 1).isEmpty();
+    return false;
   }
 
   /**
@@ -1576,13 +1581,14 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   }
 
   private UpdateCount executeUpdate(final String collectionName, final Document q, final Document u, final boolean multi,
-      final MongoFilter.RegexBudget budget) {
+      final MongoFilter.RegexBudget budget, final boolean locked) {
     // built first: an invalid filter is an error whether or not the collection exists
     final MongoFilter filter = new MongoFilter(database, q, budget);
     // so is an invalid update, whether or not a document would be updated (issue #12070)
     if (u != null)
       checkUpdate(u);
-    if (!database.getSchema().existsType(collectionName) || u == null)
+    // no lock means the collection did not exist when the command started: one created meanwhile is not touched either
+    if (!locked || !database.getSchema().existsType(collectionName) || u == null)
       return UpdateCount.NONE;
 
     // Every update, with or without a filter, is applied to each record the filter selects (the matcher verifies the candidates, so
@@ -1596,14 +1602,14 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * Refuses an operator update {@code mongod} refuses when it parses it, before any document is touched (issue #12070): an operand
    * that is not a document, an {@code $inc} by an amount that is not a number, and two paths of which one is the other or lies below
    * it ({@code {$set: {a: 1}, $unset: {a: ''}}}, {@code {$set: {a: 1}, $inc: {'a.b': 1}}}), which would otherwise be applied one after
-   * the other, the last one winning.
+   * the other, the last one winning. A path names at most {@link MongoUpdatePaths#MAX_DEPTH} fields.
    */
   private static void checkUpdate(final Document u) {
     if (isReplacement(u))
       return;
-    // every path named so far, and every proper prefix of them: a conflict is a path met in either set
-    final Set<String> paths = new HashSet<>();
-    final Set<String> prefixes = new HashSet<>();
+    // every path named: the conflicts are looked for once all are known, by comparing neighbours in order, so that no prefix of a path
+    // is copied
+    final List<String> paths = new ArrayList<>();
     for (final Map.Entry<String, Object> entry : u.entrySet()) {
       final String op = entry.getKey();
       if (!(entry.getValue() instanceof Document operand))
@@ -1612,20 +1618,19 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
                 + op + ": " + entry.getValue() + "}");
       for (final Map.Entry<String, Object> field : operand.entrySet()) {
         final String path = field.getKey();
+        // first: nothing else reads a path that is deeper than the limit
+        MongoUpdatePaths.checkDepth(path);
+        // a key property is the plugin's, not the client's (issue #12073)
+        MongoKeys.checkNotKey(path);
         if ("$inc".equals(op) && !(field.getValue() instanceof Number))
           throw new MongoServerError(TYPE_MISMATCH, "TypeMismatch", "Cannot increment with non-numeric argument: {" + path + ": " + field.getValue() + "}");
-
-        if (paths.contains(path) || prefixes.contains(path))
-          throw conflict(path, path);
-        for (int dot = path.indexOf('.'); dot > 0; dot = path.indexOf('.', dot + 1)) {
-          final String prefix = path.substring(0, dot);
-          if (paths.contains(prefix))
-            throw conflict(path, prefix);
-          prefixes.add(prefix);
-        }
         paths.add(path);
       }
     }
+
+    final String[] conflict = MongoUpdatePaths.findConflict(paths);
+    if (conflict != null)
+      throw conflict(conflict[0], conflict[1]);
   }
 
   private static MongoServerError conflict(final String path, final String at) {
@@ -1666,20 +1671,24 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     // in turn: only identities are held on the heap, not every matching document. An update of one record selects again, a few times,
     // when its candidate stopped matching since the selection while another record still matches. A candidate that still matched
     // but whose update a listener vetoed is not retried: selecting again would find it again and ask the listener again
+    final List<String[]> unique = MongoKeys.uniquePaths(database.getSchema().getType(collectionName));
     UpdateCount count = UpdateCount.NONE;
     for (int attempt = 0; attempt < (multi ? 1 : SINGLE_RECORD_ATTEMPTS); attempt++) {
       final List<RID> rids = filter.select(database, collectionName, multi ? 0 : 1);
-      count = updateRecords(rids, filter, u);
+      count = updateRecords(rids, filter, u, unique);
       if (count.matched() > 0 || rids.isEmpty())
         break;
     }
     return count;
   }
 
-  private UpdateCount updateRecords(final List<RID> rids, final MongoFilter filter, final Document u) {
+  private UpdateCount updateRecords(final List<RID> rids, final MongoFilter filter, final Document u, final List<String[]> unique) {
     final boolean replacement = isReplacement(u);
     // the top-level properties the operators touch: only their values can change
     final String[] touched = replacement ? null : touchedProperties(u);
+    // an operator never changes the _id, so only the keys of the createIndexes unique indexes can change, and only when the update
+    // writes a field they are made of (issue #12073): any other update skips converting the document
+    final boolean keysAffected = !replacement && !unique.isEmpty() && MongoKeys.affects(unique, touched);
     int vanished = 0;
     int modified = 0;
     for (final RID rid : rids) {
@@ -1700,6 +1709,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       if (replacement) {
         final Map<String, Object> before = record.toMap(false);
         replaceContent(record, u);
+        // the replacement removed the derived keys with every other property: they follow the new fields (issue #12073)
+        MongoKeys.setKeys(record, MongoDBToSqlTranslator.convertDocumentToMongoDB(record), unique);
         changed = !sameValue(before, record.propertiesAsMap());
       } else {
         checkIdUntouched(record, u);
@@ -1714,8 +1725,13 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       }
       // matched, but modified only when the update changed the document, as on mongod (issue #11445): a document left as it was is not
       // written at all. And only if the engine applied it: an update a BeforeRecordUpdateListener vetoed is not (issue #9974)
-      if (changed && record.saveReportingVeto())
-        ++modified;
+      if (changed) {
+        // the derived keys follow the fields they are made of
+        if (keysAffected)
+          MongoKeys.setKeys(record, MongoDBToSqlTranslator.convertDocumentToMongoDB(record), unique);
+        if (record.saveReportingVeto())
+          ++modified;
+      }
     }
     return new UpdateCount(rids.size() - vanished, modified);
   }
@@ -1787,8 +1803,10 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     if (newId != null)
       record.set("_id", newId);
     for (final Map.Entry<String, Object> entry : replacement.entrySet())
-      if (!"_id".equals(entry.getKey()))
+      if (!"_id".equals(entry.getKey())) {
+        MongoKeys.checkNotKey(entry.getKey());
         record.set(entry.getKey(), toMapValue(entry.getValue()));
+      }
   }
 
   /**
@@ -1813,8 +1831,10 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
     if (replacement) {
       // last write wins, matching record.set() itself: a replacement re-specifying "_id" overrides what the filter seeded
-      for (final Map.Entry<String, Object> entry : u.entrySet())
+      for (final Map.Entry<String, Object> entry : u.entrySet()) {
+        MongoKeys.checkNotKey(entry.getKey());
         record.set(entry.getKey(), MongoBsonValues.toStored(entry.getKey(), entry.getValue()));
+      }
     } else
       applyOperatorsToDocument(record, u);
 
@@ -1823,6 +1843,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     if (!record.has("_id"))
       record.set("_id", MongoBsonValues.toStored("_id", new ObjectId()));
     moveIdFirst(record);
+    MongoKeys.setKeys(record, MongoDBToSqlTranslator.convertDocumentToMongoDB(record), MongoKeys.uniquePaths(record.getType()));
 
     if (!record.saveReportingVeto())
       return UPSERT_VETOED;
@@ -1853,9 +1874,9 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   /**
    * The fields an upsert that matches nothing copies from its filter, by path, as mongod infers them (issue #12071): the equality of
    * each path, dotted or not, at the top level, under {@code $and} and under an {@code $or} of a single branch. An equality is a plain
-   * value (an embedded document and a list included, a regular expression not), {@code $eq}, or an {@code $in} of a single value, or
-   * a value of an {@code $all} (see {@link #equalityOf}). A path matched twice, or a path and one below it, is refused with mongod's
-   * error 54, as is an {@code $all} of several values.
+   * value (an embedded document and a list included, a regular expression not), {@code $eq} (a regular expression included), or an
+   * {@code $in} of a single value, or a value of an {@code $all} (see {@link #equalityOf}). A path matched twice, or a path and one
+   * below it, is refused with mongod's error 54, as is an {@code $all} of several values.
    * <p>
    * mongod infers these fields only for a statement that inserts, so the refusal is the insert's: it is raised here and reaches the
    * client from {@link #executeUpsert} as an entry of {@code writeErrors}, while a filter that matches a document updates it.
@@ -1888,8 +1909,9 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   /**
    * The value the conditions of one path infer, {@link #NO_EQUALITY} when none of them is an equality. {@code $eq}, an {@code $in} of
    * one value and each value of an {@code $all} are equalities of their own, and mongod refuses two of them on a path. A regular
-   * expression is a pattern to match, never a value (this plugin's matcher does not match a stored one back, so the next run of the
-   * upsert would insert again), and an {@code $elemMatch} document of an {@code $all} says nothing about a value either.
+   * expression is a pattern to match as the value of the path, in an {@code $in} or in an {@code $all}, and infers nothing there; the
+   * operand of {@code $eq} is a value even when it is a regular expression, which the matcher compares with the stored one (issue
+   * #12594), so it is seeded as mongod seeds it. An {@code $elemMatch} document of an {@code $all} says nothing about a value either.
    */
   private static Object equalityOf(final String path, final Object value) {
     if (value instanceof BsonRegularExpression)
@@ -1901,15 +1923,15 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     for (final Map.Entry<String, Object> operator : operators.entrySet()) {
       final Object operand = operator.getValue();
       switch (operator.getKey()) {
-      case "$eq" -> equality = addEquality(path, equality, operand);
+      case "$eq" -> equality = addEquality(path, equality, operand, true);
       case "$in" -> {
         if (operand instanceof List<?> in && in.size() == 1)
-          equality = addEquality(path, equality, in.getFirst());
+          equality = addEquality(path, equality, in.getFirst(), false);
       }
       case "$all" -> {
         if (operand instanceof List<?> all)
           for (final Object item : all)
-            equality = addEquality(path, equality, item);
+            equality = addEquality(path, equality, item, false);
       }
       default -> {
         // any other operator is no equality
@@ -1919,9 +1941,14 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     return equality;
   }
 
-  /** {@code found} with the equality {@code candidate} added: it is refused when the path has one already, ignored when it is a pattern. */
-  private static Object addEquality(final String path, final Object found, final Object candidate) {
-    if (candidate instanceof BsonRegularExpression || candidate instanceof Document operators && MongoFilter.isOperatorDocument(operators))
+  /**
+   * {@code found} with the equality {@code candidate} added: it is refused when the path has one already, ignored when it is a pattern.
+   *
+   * @param regexIsValue true for the operand of {@code $eq}, where a regular expression is a value to compare and not a pattern
+   */
+  private static Object addEquality(final String path, final Object found, final Object candidate, final boolean regexIsValue) {
+    if (candidate instanceof BsonRegularExpression && !regexIsValue
+        || candidate instanceof Document operators && MongoFilter.isOperatorDocument(operators))
       return found;
     if (found != NO_EQUALITY)
       throw notSingleValue("path '" + path + "' is matched twice");
@@ -1929,6 +1956,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   }
 
   private static void addSeed(final Document seed, final String path, final Object value) {
+    // the path becomes embedded documents of the inserted one, like the path of a $set
+    MongoUpdatePaths.checkDepth(path);
     for (final String other : seed.keySet()) {
       if (other.equals(path))
         throw notSingleValue("path '" + path + "' is matched twice");
@@ -1985,14 +2014,18 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       record.set(path, value);
     else {
       final String head = path.substring(0, dot);
-      record.set(head, setNested(record.get(head), path.substring(dot + 1), value));
+      record.set(head, setNested(record.get(head), path, dot + 1, value));
     }
   }
 
+  /**
+   * Sets {@code value} at the fields of {@code path} from offset {@code from}: the path is read in place, never copied from field to
+   * field.
+   */
   @SuppressWarnings("unchecked")
-  private static Object setNested(final Object container, final String path, final Object value) {
-    final int dot = path.indexOf('.');
-    final String head = dot < 0 ? path : path.substring(0, dot);
+  private static Object setNested(final Object container, final String path, final int from, final Object value) {
+    final int dot = path.indexOf('.', from);
+    final String head = dot < 0 ? path.substring(from) : path.substring(from, dot);
 
     if (container instanceof List<?> list && isArrayIndex(head)) {
       final int index = Integer.parseInt(head);
@@ -2002,14 +2035,14 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       final List<Object> copy = new ArrayList<>(list);
       while (copy.size() <= index)
         copy.add(null);
-      copy.set(index, dot < 0 ? value : setNested(copy.get(index), path.substring(dot + 1), value));
+      copy.set(index, dot < 0 ? value : setNested(copy.get(index), path, dot + 1, value));
       return copy;
     }
 
     requireEmbedded(container, head);
     final Map<Object, Object> copy = copyOfEmbedded(container);
     final Object key = keyNamed(copy, head);
-    copy.put(key, dot < 0 ? value : setNested(copy.get(key), path.substring(dot + 1), value));
+    copy.put(key, dot < 0 ? value : setNested(copy.get(key), path, dot + 1, value));
     return copy;
   }
 
@@ -2021,14 +2054,15 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       final String head = path.substring(0, dot);
       final Object container = record.get(head);
       if (container != null)
-        record.set(head, unsetNested(container, path.substring(dot + 1)));
+        record.set(head, unsetNested(container, path, dot + 1));
     }
   }
 
+  /** Removes what is at the fields of {@code path} from offset {@code from}, read in place like {@link #setNested}. */
   @SuppressWarnings("unchecked")
-  private static Object unsetNested(final Object container, final String path) {
-    final int dot = path.indexOf('.');
-    final String head = dot < 0 ? path : path.substring(0, dot);
+  private static Object unsetNested(final Object container, final String path, final int from) {
+    final int dot = path.indexOf('.', from);
+    final String head = dot < 0 ? path.substring(from) : path.substring(from, dot);
 
     if (container instanceof List<?> list) {
       if (!isArrayIndex(head) || Integer.parseInt(head) >= list.size())
@@ -2036,7 +2070,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       // MongoDB sets an unset array element to null instead of shifting the others
       final List<Object> copy = new ArrayList<>(list);
       final int index = Integer.parseInt(head);
-      copy.set(index, dot < 0 ? null : unsetNested(copy.get(index), path.substring(dot + 1)));
+      copy.set(index, dot < 0 ? null : unsetNested(copy.get(index), path, dot + 1));
       return copy;
     }
 
@@ -2049,7 +2083,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     if (dot < 0)
       copy.remove(key);
     else if (copy.get(key) != null)
-      copy.put(key, unsetNested(copy.get(key), path.substring(dot + 1)));
+      copy.put(key, unsetNested(copy.get(key), path, dot + 1));
     return copy;
   }
 
@@ -2067,7 +2101,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       return MISSING;
     Object current = record.get(head);
     for (final String segment : path.substring(dot + 1).split("\\.")) {
-      if (current instanceof Map<?, ?> map) {
+      if (current instanceof Map<?, ?> map && !MongoBsonValues.isTagged(map)) {
         final Object key = keyNamed(map, segment);
         if (!map.containsKey(key))
           return MISSING;
@@ -2117,9 +2151,11 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * the client in production mode too, and the value is stored data.
    */
   private static void requireEmbedded(final Object container, final String field) {
-    if (container != null && !isEmbedded(container))
+    if (container != null && !isEmbedded(container)) {
+      final Object value = MongoBsonValues.isTagged(container) ? MongoBsonValues.toBson(container) : container;
       throw new MongoServerError(PATH_NOT_VIABLE, "PathNotViable",
-          "Cannot create field '" + field + "' in an element of type " + (container instanceof List ? "array" : container.getClass().getSimpleName()));
+          "Cannot create field '" + field + "' in an element of type " + (value instanceof List ? "array" : value.getClass().getSimpleName()));
+    }
   }
 
   /**
@@ -2144,8 +2180,13 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     return add(current, delta, record);
   }
 
+  /**
+   * Whether a stored value is an embedded document a path can enter. A value stored tagged (a regular expression, a binary, a
+   * timestamp...) is a map in the record but a scalar to MongoDB: a path below it reaches nothing, and a field created in it would be
+   * lost when the value is read back (issue #12594).
+   */
   private static boolean isEmbedded(final Object value) {
-    return value instanceof Map || value instanceof com.arcadedb.database.Document;
+    return value instanceof Map && !MongoBsonValues.isTagged(value) || value instanceof com.arcadedb.database.Document;
   }
 
   private static boolean isArrayIndex(final String segment) {
