@@ -21,7 +21,9 @@ package com.arcadedb.function.map;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
+import java.lang.reflect.Array;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -34,7 +36,8 @@ import java.util.Set;
 /**
  * map.removeKeys(map, keys, [config]) - Remove multiple keys from the map. With {@code {recursive: true}} in the config,
  * as in APOC's {@code apoc.map.removeKeys}, the keys are removed from the nested maps too, including the maps directly
- * inside a list, and a nested map or list left empty is removed with them (issue #12105).
+ * inside a list (or an array, which is the same LIST, issue #11582), and a nested map or list left empty is removed with
+ * them (issue #12105).
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -124,7 +127,10 @@ public class MapRemoveKeys extends AbstractMapFunction {
           it.remove();
         else
           entry.setValue(cleaned);
-      } else if (value instanceof Collection<?> collection) {
+      } else {
+        final Collection<?> collection = asCollectionOrNull(value);
+        if (collection == null)
+          continue;
         final List<Object> cleaned = new ArrayList<>(collection.size());
         for (final Object element : collection) {
           if (element instanceof Map<?, ?> nested) {
@@ -141,5 +147,20 @@ public class MapRemoveKeys extends AbstractMapFunction {
       }
     }
     return result;
+  }
+
+  /**
+   * The value as the list the recursive removal walks, or null when it holds nothing to clean. A list stored as
+   * ARRAY_OF_* or bound as an array parameter is the same LIST as a Collection (issue #11582). A primitive array cannot
+   * hold a map, so it is walked only when empty, where it is dropped as an empty list is: the others are not boxed.
+   */
+  private static Collection<?> asCollectionOrNull(final Object value) {
+    if (value instanceof Collection<?> collection)
+      return collection;
+    if (value == null || !value.getClass().isArray())
+      return null;
+    if (value instanceof Object[] array)
+      return Arrays.asList(array);
+    return Array.getLength(value) == 0 ? List.of() : null;
   }
 }

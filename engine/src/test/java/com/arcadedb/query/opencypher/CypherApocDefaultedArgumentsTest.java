@@ -19,8 +19,10 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import org.assertj.core.api.InstanceOfAssertFactories;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
@@ -99,6 +101,26 @@ class CypherApocDefaultedArgumentsTest {
       assertThat(value("RETURN apoc.map.removeKeys({a:[], b:{}, c:[1, 2]}, ['x'], {recursive:true}) AS r")).isEqualTo(
           map("c", List.of(1L, 2L)));
       assertThat(value("RETURN apoc.map.removeKeys({a:{b:{x:1}}, x:1}, ['x'], {recursive:true}) AS r")).isEqualTo(map());
+    }
+
+    /**
+     * A list that reaches the engine as an array (a parameter, or an ARRAY_OF_* property) is the same LIST to the
+     * recursive removal as to every other list function (issue #11582): its maps are cleaned and it is dropped once empty.
+     */
+    @Test
+    void removeKeysRecursiveReadsAnArrayAsAList() {
+      final String query = "RETURN apoc.map.removeKeys({a: $l, b: 1}, ['x'], {recursive:true}) AS r";
+      assertThat(value(query, Map.of("l", new Object[] { map("x", 1L, "y", 2L), map("x", 1L), 5L }))).isEqualTo(
+          map("a", List.of(map("y", 2L), 5L), "b", 1L));
+      assertThat(value(query, Map.of("l", new Object[] { map("x", 1L) }))).isEqualTo(map("b", 1L));
+      assertThat(value(query, Map.of("l", new Object[0]))).isEqualTo(map("b", 1L));
+      assertThat(value(query, Map.of("l", new long[0]))).isEqualTo(map("b", 1L));
+      // An array holding no map is left as it is
+      final Object kept = ((Map<?, ?>) value(query, Map.of("l", new long[] { 1L, 2L }))).get("a");
+      assertThat(CypherFunctionHelper.asListOrNull(kept)).containsExactly(1L, 2L);
+      // Without recursive nothing below the top level is touched
+      assertThat(value("RETURN apoc.map.removeKeys({a: $l, b: 1}, ['x']) AS r", Map.of("l", new Object[0]))).asInstanceOf(
+          InstanceOfAssertFactories.MAP).containsOnlyKeys("a", "b");
     }
 
     @Test
@@ -191,6 +213,12 @@ class CypherApocDefaultedArgumentsTest {
     private Result row(final String query) {
       try (final ResultSet rs = database.query("opencypher", query)) {
         return rs.next();
+      }
+    }
+
+    private Object value(final String query, final Map<String, Object> parameters) {
+      try (final ResultSet rs = database.query("opencypher", query, parameters)) {
+        return rs.next().getProperty("r");
       }
     }
 
