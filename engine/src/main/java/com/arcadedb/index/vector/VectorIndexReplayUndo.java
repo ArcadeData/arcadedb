@@ -44,6 +44,9 @@ import java.util.Arrays;
  * retired the committed vector of; and the rollback had to take each of those back from under whatever a rebuild had
  * republished meanwhile (issue #7931). The sparse index holds its postings back the same way (issue #7933).
  * <p>
+ * The records the replay puts are also marked in flight in the index until the transaction concludes (issue #13323), so a
+ * search that hands its rows on without reading the records reads those of a commit in flight.
+ * <p>
  * <b>Why it is recorded rather than derived.</b> A queued REMOVE carries only a RID, and the vector ids it retires are
  * resolved from the location index AT REPLAY TIME, which the queued operations cannot say afterwards; nor do they say
  * which ids the replay allocated or where it wrote them. Recording as we go is the only way the set is exact.
@@ -84,6 +87,22 @@ class VectorIndexReplayUndo implements IndexReplayConclusion {
    * same-transaction rewrite collapses into one queued key, and the location still calls the id live until the publication.
    */
   IntHashSet retiredSet  = null;
+
+  /**
+   * How many records one replay marks in flight one by one. Past it the replay marks the whole index instead, so a bulk load does
+   * not hold a map entry per record for the length of its commit: searches then read every record until it concludes, as they did
+   * before issue #10973.
+   */
+  static final int MAX_TRACKED_PUTS = 4096;
+
+  /**
+   * The records whose vector this replay put, marked in flight in the index until the transaction concludes (issue #13323), at
+   * most {@link #MAX_TRACKED_PUTS}. Held here so the conclusion ends exactly the marks this replay raised.
+   */
+  private RID[]   putRids = null;
+  private int     putCount;
+  /** Whether this replay put more records than it tracks, and marked the whole index in flight instead. */
+  private boolean bulkPut;
 
   /** What this replay added to {@code mutationsSinceSerialize}. */
   int mutationsCharged;
@@ -128,6 +147,26 @@ class VectorIndexReplayUndo implements IndexReplayConclusion {
     ++addedCount;
   }
 
+  /**
+   * A record whose vector this replay is about to put: marked in flight in the index before the replay goes on, so a search that
+   * answers a vector of the record before its page is published reads the record instead of handing it on unread (issue #13323).
+   */
+  void recordPut(final RID rid) {
+    if (bulkPut)
+      return;
+    if (putCount == MAX_TRACKED_PUTS) {
+      bulkPut = true;
+      index.bulkPutInFlight();
+      return;
+    }
+    if (putRids == null)
+      putRids = new RID[8];
+    else if (putCount == putRids.length)
+      putRids = Arrays.copyOf(putRids, putCount * 2);
+    putRids[putCount++] = rid;
+    index.putInFlight(rid);
+  }
+
   /** Whether a REMOVE of this replay already retired {@code id}. */
   boolean retires(final int id) {
     return retiredSet != null && retiredSet.contains(id);
@@ -159,14 +198,24 @@ class VectorIndexReplayUndo implements IndexReplayConclusion {
   @Override
   public void publishIndexReplay() {
     conclude("published");
-    index.publishReplay(this);
+    try {
+      index.publishReplay(this);
+    } finally {
+      // After the vectors are published, and the pages before them: the records this replay put are no longer in flight (issue #13323)
+      index.putsConcluded(putRids, putCount, bulkPut);
+    }
   }
 
   /** The transaction rolled back: what it held back is dropped, and what the replay charged the index is refunded. */
   @Override
   public void undoIndexReplay() {
     conclude("undone");
-    index.undoReplay(this);
+    try {
+      index.undoReplay(this);
+    } finally {
+      // After the vectors are taken back: a search that no longer finds a record marked finds its vector gone
+      index.putsConcluded(putRids, putCount, bulkPut);
+    }
   }
 
   private void conclude(final String how) {

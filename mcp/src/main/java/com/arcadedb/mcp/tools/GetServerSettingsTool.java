@@ -21,6 +21,7 @@ package com.arcadedb.mcp.tools;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.mcp.MCPConfiguration;
+import com.arcadedb.mcp.MCPRefusalException;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
@@ -51,7 +52,7 @@ public class GetServerSettingsTool {
   public static JSONObject execute(final ArcadeDBServer server, final ServerSecurityUser user, final JSONObject args,
       final MCPConfiguration config) {
     if (!config.isAllowReads())
-      throw new SecurityException("Read operations are not allowed by MCP configuration");
+      throw new MCPRefusalException("Read operations are not allowed by MCP configuration");
 
     final ContextConfiguration srvCfg = server.getConfiguration();
     final Set<String> contextKeys = srvCfg.getContextKeys();
