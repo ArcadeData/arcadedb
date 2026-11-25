@@ -51,6 +51,10 @@ class Issue12358FollowerReadsDuringReplicatedCompactionIT extends BaseRaftHATest
   private static final int OTHER_TYPES = 120;
   private static final int ROUNDS      = 6;
   private static final int PER_ROUND   = 4_000;
+  private static final int NAMES       = 500;
+  // Documents named name-17 each round adds, and after the last one (round 0 is the initial load)
+  private static final int PER_ROUND_MATCHES = PER_ROUND / NAMES;
+  private static final int TOTAL_MATCHES     = PER_ROUND_MATCHES * (ROUNDS + 1);
 
   @Override
   protected int getServerCount() {
@@ -97,7 +101,10 @@ class Issue12358FollowerReadsDuringReplicatedCompactionIT extends BaseRaftHATest
     final Thread reader = new Thread(() -> {
       while (!stop.get())
         try (final ResultSet rs = followerDb.query("sql", "SELECT count(*) AS c FROM Doc WHERE name = ?", "name-17")) {
-          rs.next();
+          // Each round commits PER_ROUND_MATCHES more in one transaction: a read sees whole rounds, never a short count
+          final long count = rs.next().<Number>getProperty("c").longValue();
+          if (count < PER_ROUND_MATCHES || count > TOTAL_MATCHES || count % PER_ROUND_MATCHES != 0)
+            failures.add("wrong count of name-17: " + count);
           reads.incrementAndGet();
         } catch (final RuntimeException e) {
           failures.add(e.getClass().getSimpleName() + ": " + e.getMessage());
@@ -126,6 +133,9 @@ class Issue12358FollowerReadsDuringReplicatedCompactionIT extends BaseRaftHATest
     assertThat(replaced).as("every compaction must have replaced the follower's index files").isEqualTo(ROUNDS);
     assertThat(reads.get()).as("the follower must have been read throughout").isPositive();
     assertThat(failures).as("index reads on the follower while it applied %d compactions", ROUNDS).isEmpty();
+    try (final ResultSet rs = followerDb.query("sql", "SELECT count(*) AS c FROM Doc WHERE name = ?", "name-17")) {
+      assertThat(rs.next().<Number>getProperty("c").longValue()).as("the follower's index answers every round").isEqualTo(TOTAL_MATCHES);
+    }
   }
 
   private static Set<Integer> fileIdsOf(final Database db) {
@@ -138,7 +148,7 @@ class Issue12358FollowerReadsDuringReplicatedCompactionIT extends BaseRaftHATest
   private static void insert(final Database db, final int round) {
     db.transaction(() -> {
       for (int i = 0; i < PER_ROUND; i++)
-        db.newDocument("Doc").set("name", "name-" + (i % 500), "round", round).save();
+        db.newDocument("Doc").set("name", "name-" + (i % NAMES), "round", round).save();
     });
   }
 }

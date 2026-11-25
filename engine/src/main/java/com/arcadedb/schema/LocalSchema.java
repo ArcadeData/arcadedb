@@ -653,6 +653,7 @@ public class LocalSchema implements Schema {
    */
   public void load(final ComponentFile.MODE mode, final boolean initialize, final boolean deferTimeSeriesEngines,
       final Set<Integer> retiringFileIds) throws IOException {
+    Objects.requireNonNull(retiringFileIds, "retiringFileIds");
     // Claim the staging window FIRST. beginStagedPublication() refuses a load that overlaps another, and a refusal
     // has to leave the schema exactly as it found it.
     // stageFileIds=true: the previous generation keeps its file-id slots until the barrier, which is what keeps the

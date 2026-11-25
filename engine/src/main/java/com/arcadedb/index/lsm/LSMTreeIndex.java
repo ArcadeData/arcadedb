@@ -629,17 +629,28 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     try {
       return lock.executeInReadLock(read);
     } catch (final IllegalArgumentException e) {
-      final LSMTreeIndexMutable current = mutable;
-      final LSMTreeIndexCompacted subIndex = current.getSubIndex();
-      if (!isRetired(current.getFileId()) && (subIndex == null || !isRetired(subIndex.getFileId())))
-        throw e;
-      throw new IndexReplacedException("Index '" + getName() + "' was replaced while it was read: its file is retired", e);
+      throw replacedOrSelf(mutable, getName(), e);
     }
   }
 
+  /**
+   * The failure a read of {@code read} raised, as the caller should see it: an {@link IndexReplacedException} when {@code read}
+   * or its compacted sub-index lives in a file that has been retired, {@code e} itself otherwise. Shared by the cursor
+   * creation above and by {@link LSMTreeIndexCursor}, which loads its pages lazily and so can meet a file retired after it was
+   * created: on an HA replica the files a replicated compaction supersedes are deleted as soon as the generation that no
+   * longer reads them is published, while a query of the previous generation may still be iterating (issue #12358).
+   */
+  static RuntimeException replacedOrSelf(final LSMTreeIndexMutable read, final String indexName,
+      final IllegalArgumentException e) {
+    final LSMTreeIndexCompacted subIndex = read.getSubIndex();
+    if (!isRetired(read, read.getFileId()) && (subIndex == null || !isRetired(read, subIndex.getFileId())))
+      return e;
+    return new IndexReplacedException("Index '" + indexName + "' was replaced while it was read: its file is retired", e);
+  }
+
   /** Whether file {@code fileId} has left the database, or is on its way out: a drop closes it before it unlists it. */
-  private boolean isRetired(final int fileId) {
-    final ComponentFile file = getDatabase().getFileManager().getFileIfExists(fileId);
+  private static boolean isRetired(final LSMTreeIndexMutable read, final int fileId) {
+    final ComponentFile file = read.getDatabase().getFileManager().getFileIfExists(fileId);
     return file == null || file.isDropped();
   }
 

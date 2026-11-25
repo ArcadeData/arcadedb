@@ -329,6 +329,10 @@ final class SchemaEntryApplier {
         sm.quarantine.quarantineIfLocalCopyDamaged(decoded.databaseName(), db);
       }
 
+      // Whichever path published above: the incremental refresh refuses every entry that retires a file (FILE_RETIRED), so a
+      // non-empty set here always follows a full load that left these ids out. A load that throws leaves them in place: the
+      // entry is not applied, so its retry or replay (appliedBefore false) retires them after its own load. Scans of the previous generation
+      // that still read them end with a retryable IndexReplacedException rather than a bad request.
       for (final Integer fileId : retiring) {
         db.getPageManager().deleteFile(db, fileId);
         db.getFileManager().dropFile(fileId);

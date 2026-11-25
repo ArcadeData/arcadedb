@@ -18,9 +18,11 @@
  */
 package com.arcadedb.index.lsm;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.ErrorCategory;
+import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.Schema;
@@ -64,6 +66,54 @@ class RetiredIndexFileReadTest extends TestHelper {
       assertThatThrownBy(() -> index.iterator(true)).isInstanceOf(IndexException.class);
       assertThatThrownBy(() -> index.range(true, new Object[] { "name-1" }, true, new Object[] { "name-3" }, true))
           .isInstanceOf(IndexException.class);
+    } finally {
+      database.getSchema().getEmbedded().removeFile(fileId);
+    }
+  }
+
+  /**
+   * A scan created before the file was retired loads its pages lazily, so it meets the retired file while it is consumed, not
+   * when it is created: the same {@link IndexException}, not the {@code IllegalArgumentException} of the missing file.
+   */
+  @Test
+  void aScanThatOutlivesTheFileOfItsIndexEndsWithAnIndexException() throws IOException, InterruptedException {
+    // No automatic compaction: the test compacts once, by itself, before it retires the compacted file
+    database.getConfiguration().setValue(GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE, 0);
+    database.transaction(() -> {
+      database.getSchema().buildDocumentType().withName("Doc").withTotalBuckets(1).create().createProperty("name", Type.STRING);
+      // Small pages, so the compacted file the scan walks has pages left to load after the scan was created
+      database.getSchema().buildTypeIndex("Doc", new String[] { "name" }).withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(false)
+          .withPageSize(4096).create();
+    });
+    database.transaction(() -> {
+      for (int i = 0; i < 5_000; i++)
+        database.newDocument("Doc").set("name", "name-" + i).save();
+    });
+
+    final LSMTreeIndex index = (LSMTreeIndex) ((TypeIndex) database.getSchema().getIndexByName("Doc[name]")).getIndexesOnBuckets()[0];
+    // The pages of a mutable file are all loaded when a scan is created; those of a compacted one, one at a time as it goes
+    assertThat(index.scheduleCompaction()).isTrue();
+    assertThat(index.compact()).isTrue();
+    final LSMTreeIndexCompacted compacted = index.mutable.getSubIndex();
+    assertThat(compacted).as("the compaction must have produced a compacted file").isNotNull();
+    assertThat(compacted.getTotalPages()).as("the scan must have pages to load after its creation").isGreaterThan(2);
+    final int fileId = compacted.getFileId();
+
+    final IndexCursor ascending = index.iterator(true);
+    final IndexCursor range = index.range(true, new Object[] { "name-0" }, true, new Object[] { "name-9999" }, true);
+    assertThat(ascending.hasNext()).isTrue();
+    assertThat(range.hasNext()).isTrue();
+
+    final DatabaseInternal db = (DatabaseInternal) database;
+    db.getPageManager().deleteFile(db, fileId);
+    db.getFileManager().dropFile(fileId);
+    try {
+      for (final IndexCursor cursor : new IndexCursor[] { ascending, range })
+        assertThatThrownBy(() -> {
+          while (cursor.hasNext())
+            cursor.next();
+        }).isInstanceOf(IndexException.class).hasMessageContaining("retired")
+            .satisfies(e -> assertThat(ErrorCategory.of(e)).isEqualTo(ErrorCategory.RETRY));
     } finally {
       database.getSchema().getEmbedded().removeFile(fileId);
     }
