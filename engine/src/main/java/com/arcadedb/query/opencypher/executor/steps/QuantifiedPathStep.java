@@ -247,7 +247,7 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
    * Prepares the depth-first search of every legal repetition count from the row's left boundary vertex, which answers one output
    * row per accepted end vertex as it is advanced.
    *
-   * @return the search, or null when the row binds no vertex to the left boundary
+   * @return the search, or null when the row binds no vertex to the left boundary or binds the right boundary to null
    */
   private RowSearch openSearch(final Result input, final WorkGuard guard) {
     if (!(input.getProperty(sourceVariable) instanceof Vertex start))
@@ -256,7 +256,7 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
     final Object targetValue = input.getProperty(targetVariable);
     // A target an earlier OPTIONAL MATCH left null is bound, and a null vertex cannot be reached (#12728)
     if (targetValue == null && input.hasProperty(targetVariable))
-      return;
+      return null;
     final Vertex boundTarget = targetValue instanceof Vertex vertex ? vertex : null;
 
     return new RowSearch(input, boundTarget, start, guard);
