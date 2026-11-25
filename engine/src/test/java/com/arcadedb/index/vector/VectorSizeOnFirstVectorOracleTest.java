@@ -194,6 +194,8 @@ class VectorSizeOnFirstVectorOracleTest extends TestHelper {
           .map(Map.Entry::getKey).toList();
       final List<RID> actual = first.findNeighborsFromVector(query, 3, 100).stream()
           .sorted(Comparator.comparingDouble((Pair<RID, Float> p) -> p.getSecond())).map(Pair::getFirst).toList();
+      assertThat(expected).as("precondition: the bucket held records of the type").isNotEmpty();
+      assertThat(actual).as("round %d: the entries answer although every record is gone, as they hold their vectors", round).isNotEmpty();
       assertThat(actual).as("round %d: the exact ranking of the entries of the bucket", round).containsExactlyElementsOf(expected);
       assertThat(first.getMetadata().dimensions).isZero();
       assertThat(first.getMetadata().sizeOnFirstVector).isTrue();
