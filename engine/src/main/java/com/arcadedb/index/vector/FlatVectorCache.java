@@ -187,8 +187,7 @@ final class FlatVectorCache {
           final float score;
           if (SIMD_COSINE && function == VectorSimilarityFunction.COSINE && query.array != null
               && chunk instanceof final ArrayVectorFloat resident)
-            score = cosine(query, SimdCosineKernels.dot(query.array, resident.get(), offset, dimensions),
-                Float.intBitsToFloat((int) (long) STAMPS.getOpaque(slots, at + 1)));
+            score = residentCosine(query, resident, offset, Float.intBitsToFloat((int) (long) STAMPS.getOpaque(slots, at + 1)));
           else
             score = jvectorSimilarity(function, query.vector, chunk, offset, dimensions);
           // The components and the norm must have been read before the stamp is read again: a writer that started in
@@ -203,6 +202,13 @@ final class FlatVectorCache {
     }
     count(MISSES);
     return Float.NaN;
+  }
+
+  /** The cosine of a resident vector from its kept squared norm; a vector whose squared norm overflows is jvector's to score, as in {@link Query#of}. */
+  private float residentCosine(final Query query, final ArrayVectorFloat resident, final int offset, final float dataSquaredNorm) {
+    if (Float.isInfinite(dataSquaredNorm))
+      return jvectorSimilarity(VectorSimilarityFunction.COSINE, query.vector, resident, offset, dimensions);
+    return cosine(query, SimdCosineKernels.dot(query.array, resident.get(), offset, dimensions), dataSquaredNorm);
   }
 
   /**
@@ -356,7 +362,10 @@ final class FlatVectorCache {
     if (SIMD_COSINE && function == VectorSimilarityFunction.COSINE && query.array != null
         && data instanceof final ArrayVectorFloat array) {
       final long sums = SimdCosineKernels.dotAndSquaredNorm(query.array, array.get(), offset, dimensions);
-      return cosine(query, Float.intBitsToFloat((int) (sums >>> 32)), Float.intBitsToFloat((int) sums));
+      final float dataSquaredNorm = Float.intBitsToFloat((int) sums);
+      // An overflowing norm is jvector's to score, as in Query.of
+      if (!Float.isInfinite(dataSquaredNorm))
+        return cosine(query, Float.intBitsToFloat((int) (sums >>> 32)), dataSquaredNorm);
     }
     return jvectorSimilarity(function, query.vector, data, offset, dimensions);
   }
@@ -392,9 +401,17 @@ final class FlatVectorCache {
       this.squaredNorm = squaredNorm;
     }
 
+    /**
+     * A query whose squared norm overflows is left to jvector's kernel, which the kernels' four accumulators cannot match there:
+     * jvector's one accumulator per lane may cancel terms that four of them each overflow on (+inf and -inf add up to NaN,
+     * where jvector's score is a finite one), so a score must not be taken from the sums of a vector that overflows.
+     */
     static Query of(final VectorFloat<?> vector) {
-      if (SIMD_COSINE && vector instanceof final ArrayVectorFloat array)
-        return new Query(vector, array.get(), SimdCosineKernels.squaredNorm(array.get(), 0, array.length()));
+      if (SIMD_COSINE && vector instanceof final ArrayVectorFloat array) {
+        final float squaredNorm = SimdCosineKernels.squaredNorm(array.get(), 0, array.length());
+        if (!Float.isInfinite(squaredNorm))
+          return new Query(vector, array.get(), squaredNorm);
+      }
       return new Query(vector, null, Float.NaN);
     }
   }

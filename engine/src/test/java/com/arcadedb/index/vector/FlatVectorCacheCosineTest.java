@@ -138,6 +138,58 @@ class FlatVectorCacheCosineTest {
     }
   }
 
+  /**
+   * Terms that cancel in one accumulator overflow in four. With 8 blocks of {@code L} (the lanes) components and the signs
+   * +,+,-,-,+,+,-,-, jvector's single accumulator per lane stays finite and the dot product is 0 (the score 0.5, the squared
+   * norms being infinite), whereas the four accumulators of the kernels reach +inf and -inf and add up to NaN. The lane count of the
+   * JVM is one of those tried, the others make an ordinary vector.
+   */
+  @Test
+  void termsThatCancelInOneAccumulatorButOverflowInFourScoreAsJvectorScoresThem() {
+    int cancelledQueryNorm = 0;
+    int cancelledDataNorm = 0;
+    for (final int lanes : new int[] { 2, 4, 8, 16, 32 }) {
+      final int dimensions = 8 * lanes;
+      final float[] signs = new float[dimensions];
+      for (int i = 0; i < dimensions; i++)
+        signs[i] = switch ((i / lanes) % 4) {
+          case 0, 1 -> 1f;
+          default -> -1f;
+        };
+      // The squared norm of the query overflows too
+      if (assertCancellationScoresAsJvector(dimensions, scaledArray(filled(dimensions, 1f), 1e19f), scaledArray(signs, 1e19f),
+          "query norm overflows, " + lanes))
+        cancelledQueryNorm++;
+      // The query is finite and only the stored vector's squared norm overflows: the terms are 1e18 * 1e20
+      if (assertCancellationScoresAsJvector(dimensions, scaledArray(filled(dimensions, 1f), 1e18f), scaledArray(signs, 1e20f),
+          "data norm overflows, " + lanes))
+        cancelledDataNorm++;
+    }
+    assertThat(cancelledQueryNorm).as("the lane count of the JVM is one of those tried: jvector scores that pair finite").isPositive();
+    assertThat(cancelledDataNorm).as("and that one with a finite query").isPositive();
+  }
+
+  /** @return whether jvector scored the pair with a finite number: only for the lane count of the JVM does the pair cancel there */
+  private static boolean assertCancellationScoresAsJvector(final int dimensions, final float[] query, final float[] data, final String what) {
+    final VectorFloat<?> queryVector = VTS.createFloatVector(query);
+    final VectorFloat<?> dataVector = VTS.createFloatVector(data);
+    final FlatVectorCache.Query prepared = FlatVectorCache.Query.of(queryVector);
+    final FlatVectorCache cache = new FlatVectorCache(dimensions, 4);
+    cache.put(0, dataVector);
+    final float expected = reference(queryVector, dataVector, dimensions);
+    assertSameScore(cache.similarity(0, prepared, VectorSimilarityFunction.COSINE), expected, "resident, " + what);
+    assertSameScore(FlatVectorCache.similarity(VectorSimilarityFunction.COSINE, prepared, dataVector, 0, dimensions), expected,
+        "page, " + what);
+    return Float.isFinite(expected);
+  }
+
+  private static float[] scaledArray(final float[] components, final float factor) {
+    final float[] scaled = new float[components.length];
+    for (int i = 0; i < components.length; i++)
+      scaled[i] = components[i] * factor;
+    return scaled;
+  }
+
   @Test
   void aSlotTakenByAnotherVectorScoresWithTheNormOfTheNewOne() {
     final int dimensions = 37;
