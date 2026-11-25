@@ -27,7 +27,6 @@ import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.ExecutionStep;
 import com.arcadedb.query.sql.executor.FetchFromIndexStep;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.query.sql.parser.SelectStatement;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -51,7 +50,8 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  */
 class FullTextLookupDeadlineTest extends TestHelper {
   /** Well past the 1024 postings between two checks of a guard. */
-  private static final int DOCUMENTS = 3_000;
+  private static final int    DOCUMENTS     = 3_000;
+  private static final String INDEX_PACKAGE = "com.arcadedb.index.";
 
   @ParameterizedTest
   @CsvSource({ "BM25,1,1", "BM25,4,1", "CLASSIC,1,1", "CLASSIC,4,1", "BM25,1,2", "BM25,4,2", "CLASSIC,1,2", "CLASSIC,4,2" })
@@ -92,7 +92,7 @@ class FullTextLookupDeadlineTest extends TestHelper {
       }
     });
     assertThat(failure).as(variant).isInstanceOf(TimeoutException.class);
-    assertThat(raisedByTheIndexLookup(failure)).as(variant + " must stop inside the lookup, not after it: " + failure).isTrue();
+    assertThat(raisedInsideTheIndexLookup(failure)).as(variant + " must stop inside the lookup, not after it: " + failure).isTrue();
   }
 
   /**
@@ -162,13 +162,16 @@ class FullTextLookupDeadlineTest extends TestHelper {
     return null;
   }
 
-  /** Whether the check that failed the statement ran in the index code, not in the executor that consumes what it returned. */
-  private static boolean raisedByTheIndexLookup(final Throwable failure) {
-    for (final StackTraceElement frame : failure.getStackTrace()) {
-      if (frame.getClassName().equals(WorkGuard.class.getName()))
-        continue;
-      return frame.getClassName().startsWith("com.arcadedb.index.");
-    }
+  /**
+   * Whether the check that failed the statement ran inside the lookup of the index, that is with a frame of the index code under it,
+   * and not in the executor that consumes what the lookup returned: the check of the step per row has no index frame on its stack.
+   * The direct call of the lookup with a guard is pinned by {@link FullTextGuardedLookupTest}; what this proves is that the step
+   * hands the deadline of its statement to it.
+   */
+  private static boolean raisedInsideTheIndexLookup(final Throwable failure) {
+    for (final StackTraceElement frame : failure.getStackTrace())
+      if (frame.getClassName().startsWith(INDEX_PACKAGE))
+        return true;
     return false;
   }
 
