@@ -633,7 +633,9 @@ public final class VectorUtils {
       final VectorizationProvider vp = VectorApiSupport.jvectorProvider();
       final VectorFloat<?> jv1 = vp.getVectorTypeSupport().createFloatVector(v1);
       final VectorFloat<?> jv2 = vp.getVectorTypeSupport().createFloatVector(v2);
-      return cosine(jv1, jv2);
+      // JVector forms the dot product and the two norms in float, so two vectors of the same (or the opposite) direction can come
+      // out a rounding step beyond 1 (or -1): the documented range is [-1, 1], and 1 - cosine is a distance that must not go negative
+      return Math.max(-1.0f, Math.min(1.0f, cosine(jv1, jv2)));
     } catch (final Exception e) {
       // Fallback to scalar implementation
       return scalarCosineSimilarity(v1, v2);
