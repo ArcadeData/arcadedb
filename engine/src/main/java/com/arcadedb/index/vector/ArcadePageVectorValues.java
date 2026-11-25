@@ -24,6 +24,8 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.TransactionContext;
+import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.engine.PageId;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
 import io.github.jbellis.jvector.graph.ImmutableGraphIndex;
@@ -347,6 +349,16 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
     if (rid == null)
       return deletedSentinelVector;
 
+    // Decided BEFORE the record is read (issue #13396): the vector read below is remembered under the vector id for every search of
+    // the index, so it must be the one the record holds as committed. Two reads are not:
+    //  - a record put by a commit that has not concluded: the commit replays its index operations in its first phase (the new id
+    //    exists from then on) and publishes its pages one by one in its second, so the record page can still be the previous
+    //    version. The mark is raised before the id is visible and ended after the pages are published, so a "no" asked before the
+    //    read means the record read below is the committed one;
+    //  - a record on a page the calling transaction holds: its private copy of the page, or one pinned by REPEATABLE_READ, is the
+    //    page as that transaction first saw it, with the previous version of every record another commit has rewritten since.
+    final boolean cacheable = !(lsmIndex != null && lsmIndex.isPutByCommitInFlight(rid)) && !isPageHeldByCallingTransaction(rid);
+
     try {
       // Where the record lies on its page first (issue #11298): two lookups, a copy of the record and a copy of the
       // property per vector otherwise. Only a usable vector is taken from there, and never the calling transaction's own
@@ -361,7 +373,7 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
         if (inPlace != null) {
           final VectorFloat<?> result = vts.createFloatVector(inPlace);
           lsmIndex.metrics.incrementVectorFetchFromDocuments();
-          if (vectorCache != null || searchCache != null)
+          if (cacheable && (vectorCache != null || searchCache != null))
             cache(vectorId, result);
           return result;
         }
@@ -416,7 +428,7 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
       // hold, until the database is closed. The search that read it still gets the value it read - the
       // transaction's own view of its own write is not this method's business to withhold - it simply does not
       // become everybody else's.
-      if ((vectorCache != null || searchCache != null) && !isWrittenByCallingTransaction(rid))
+      if (cacheable && (vectorCache != null || searchCache != null) && !isWrittenByCallingTransaction(rid))
         cache(vectorId, result);
 
       return result;
@@ -455,6 +467,19 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
       vectorCache.clear();
     if (byOrdinal != null)
       Arrays.fill(byOrdinal, null);
+  }
+
+  /**
+   * Whether the calling transaction holds the page the record at {@code rid} lies on: its own modified or new copy, or the one
+   * REPEATABLE_READ pinned (issue #13396). A held page is not the committed state: a record another transaction has rewritten since
+   * reads as its previous version through it. A thread with no transaction holds none.
+   */
+  private boolean isPageHeldByCallingTransaction(final RID rid) {
+    final TransactionContext tx = database.getTransactionIfExists();
+    if (tx == null || !tx.isActive())
+      return false;
+    return database.getSchema().getBucketByIdIfExists(rid.getBucketId()) instanceof LocalBucket bucket
+        && tx.hasPageForRecord(new PageId(database, bucket.getFileId(), (int) (rid.getPosition() / bucket.getMaxRecordsInPage())));
   }
 
   /**
