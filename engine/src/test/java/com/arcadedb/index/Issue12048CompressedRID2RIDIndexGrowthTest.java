@@ -68,6 +68,10 @@ class Issue12048CompressedRID2RIDIndexGrowthTest extends TestHelper {
     final CompressedRID2RIDIndex index = new CompressedRID2RIDIndex(database, 1, 64);
 
     for (int bucket = 0; bucket < 50; bucket++)
+      assertThat(collidingKey(bucket).hashCode()).as("the keys must share one hash value, or no chain collides and this proves nothing")
+          .isEqualTo(collidingKey(0).hashCode());
+
+    for (int bucket = 0; bucket < 50; bucket++)
       index.put(collidingKey(bucket), new RID(7, bucket));
 
     for (int bucket = 0; bucket < 50; bucket++)
@@ -126,8 +130,25 @@ class Issue12048CompressedRID2RIDIndexGrowthTest extends TestHelper {
       assertThat(index.get(new RID(3, i))).isEqualTo(new RID(4, i));
   }
 
-  /** RID.hashCode() is bucketId * 31 + position for a small position: every key built here hashes to 1,550. */
-  static RID collidingKey(final int bucket) {
-    return new RID(bucket, 1550 - 31L * bucket);
+  /**
+   * {@link RID#hashCode()} is the high half of {@code (position + (bucketId << 40)) * GOLDEN} (Fibonacci hashing, #12481). GOLDEN is
+   * odd, so the product is a bijection of the 64-bit key: the key whose product is {@code COLLIDING_HASH << 32 | i} is that value
+   * times the inverse of GOLDEN, and every {@code i} gives a distinct RID whose hash is {@code COLLIDING_HASH}.
+   */
+  static RID collidingKey(final int i) {
+    final long key = ((COLLIDING_HASH << 32) | i) * GOLDEN_INVERSE;
+    return new RID((int) (key >>> 40), key & ((1L << 40) - 1));
+  }
+
+  private static final long COLLIDING_HASH = 1550L;
+  private static final long GOLDEN         = 0x9E3779B97F4A7C15L;
+  private static final long GOLDEN_INVERSE = inverseOf(GOLDEN);
+
+  /** The inverse of an odd number modulo 2^64, by Newton's iteration: each step doubles the number of correct low bits. */
+  private static long inverseOf(final long odd) {
+    long inverse = odd;
+    for (int i = 0; i < 6; i++)
+      inverse *= 2 - odd * inverse;
+    return inverse;
   }
 }

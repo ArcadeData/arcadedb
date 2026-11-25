@@ -30,6 +30,7 @@ import com.arcadedb.query.sql.executor.SelectExecutionPlanner;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.TypeHierarchy;
 import com.arcadedb.schema.VertexType;
 
 import java.util.ArrayList;
@@ -277,11 +278,8 @@ public class StatisticsProvider {
    * Whether any of {@code type}'s supertypes, at any depth, is itself in {@code set}.
    */
   private static boolean hasAncestorIn(final DocumentType type, final Set<DocumentType> set) {
-    for (final DocumentType superType : type.getSuperTypes()) {
-      if (set.contains(superType) || hasAncestorIn(superType, set))
-        return true;
-    }
-    return false;
+    // each type above once, whatever the number of paths that lead up to it, up to the first that is in the set
+    return TypeHierarchy.anySuperType(type, set::contains);
   }
 
   /**

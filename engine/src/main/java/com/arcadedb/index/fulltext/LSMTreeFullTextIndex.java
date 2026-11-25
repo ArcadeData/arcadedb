@@ -366,14 +366,19 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    *
    * @param perProperty one single-element key per constrained property, as {@link #splitPositionalKey} returns
    * @param lookup      answers one property's key; the caller decides whether that is bucket-local or type-wide
+   * @param guard       checked between two lookups and while their answers are combined, so a statement past its deadline stops
+   *                    here rather than after the last property
    */
   static Map<RID, Float> intersectPerProperty(final List<Object[]> perProperty,
-      final Function<Object[], IndexCursor> lookup) {
+      final Function<Object[], IndexCursor> lookup, final WorkGuard guard) {
     Map<RID, Float> intersection = null;
     for (final Object[] key : perProperty) {
+      guard.check();
       final Map<RID, Float> matches = new HashMap<>();
       try (final IndexCursor cursor = lookup.apply(key)) {
+        int ticks = 0;
         while (cursor.hasNext()) {
+          guard.checkPeriodically(++ticks);
           // merge, not put: a cursor answers one entry per document today, and summing is the answer that stays right if
           // one ever answers the same document twice.
           matches.merge(canonicalRID(cursor.next().getIdentity()), cursor.getFloatScore(), Float::sum);
@@ -383,9 +388,13 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
       if (intersection == null)
         intersection = matches;
       else {
+        guard.check();
         intersection.keySet().retainAll(matches.keySet());
-        for (final Map.Entry<RID, Float> e : intersection.entrySet())
+        int ticks = 0;
+        for (final Map.Entry<RID, Float> e : intersection.entrySet()) {
+          guard.checkPeriodically(++ticks);
           e.setValue(e.getValue() + matches.get(e.getKey()));
+        }
       }
 
       if (intersection.isEmpty())
@@ -399,19 +408,24 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    * Builds the most-relevant-first cursor over an already scored document set, RID as a stable tiebreaker so equal-scored
    * documents come back in a deterministic order.
    */
-  static IndexCursor rankedCursor(final Map<RID, Float> scores, final Object[] keys, final int limit) {
+  static IndexCursor rankedCursor(final Map<RID, Float> scores, final Object[] keys, final int limit, final WorkGuard guard) {
     if (scores == null || scores.isEmpty())
       return new TempIndexCursor(List.of());
 
     final ArrayList<IndexCursorEntry> list = new ArrayList<>(scores.size());
-    for (final Map.Entry<RID, Float> e : scores.entrySet())
+    int ticks = 0;
+    for (final Map.Entry<RID, Float> e : scores.entrySet()) {
+      guard.checkPeriodically(++ticks);
       list.add(new IndexCursorEntry(keys, e.getKey(), e.getValue()));
+    }
 
-    if (list.size() > 1)
+    if (list.size() > 1) {
+      guard.check();
       list.sort((o1, o2) -> {
         final int cmp = Float.compare(o2.floatScore, o1.floatScore);
         return cmp != 0 ? cmp : o1.record.getIdentity().compareTo(o2.record.getIdentity());
       });
+    }
 
     return new TempIndexCursor(limit > -1 && list.size() > limit ? list.subList(0, limit) : list);
   }
@@ -431,35 +445,48 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    */
   @Override
   public IndexCursor get(final Object[] keys, final int limit) {
+    // No command context on the direct path: the guard stops a terminated statement (issue #9894)
+    return get(keys, limit, WorkGuard.forCommandDeadline(null));
+  }
+
+  /**
+   * {@link #get(Object[], int)} stopping through {@code guard} - checked while the postings of every word of the key are read and
+   * the matches ranked - when the statement it runs for is terminated or past its deadline. The whole lookup happens before its
+   * first entry is returned, so no check between the rows of the statement reaches it.
+   * <p>
+   * A word the key repeats is looked up once and counts as many times, so it adds to the score of a match what it always did.
+   */
+  public IndexCursor get(final Object[] keys, final int limit, final WorkGuard guard) {
+    guard.check();
     final List<Object[]> perProperty = splitPositionalKey(getPropertyNames(), keys);
     if (perProperty != null)
-      return rankedCursor(intersectPerProperty(perProperty, key -> get(key, -1)), keys, limit);
+      return rankedCursor(intersectPerProperty(perProperty, key -> get(key, -1, guard), guard), keys, limit, guard);
 
     if (underlyingIndex.isStoreTermFrequency())
-      return getBM25(keys, limit);
+      return getBM25(keys, limit, guard);
 
     final HashMap<RID, AtomicInteger> scoreMap = new HashMap<>();
 
-    // Parse query text to handle field-specific terms (field:term)
-    final List<QueryTerm> queryTerms = queryTerms(keys);
-    // No command context on the direct path: the guard stops a terminated statement (issue #9894)
-    final WorkGuard guard = WorkGuard.forCommandDeadline(null);
-    int ticks = 0;
-
-    for (final QueryTerm term : queryTerms) {
+    // Parse query text to handle field-specific terms (field:term), keeping each stored key once with the number of times the
+    // query asks for it
+    final Map<String, int[]> lookups = new LinkedHashMap<>();
+    for (final QueryTerm term : queryTerms(keys)) {
       // Analyze the term value, with the property's own analyzer when the term is qualified to one that has it (issue #12163)
       final List<String> keywords = analyzeText(queryAnalyzerFor(term.fieldName), new Object[] { term.value });
 
       for (final String k : keywords) {
-        final IndexCursor rids;
-        if (term.fieldName != null) {
-          // Field-specific search - look up the prefixed token
-          rids = underlyingIndex.get(new String[] { term.fieldName + ":" + k });
-        } else {
-          // Unqualified search - search the unprefixed token, under the key it is stored with (issue #12162)
-          rids = underlyingIndex.get(new String[] { FullTextKeys.unqualifiedKey(getPropertyNames(), k) });
-        }
+        // A field-specific search looks up the prefixed token; an unqualified one the unprefixed token, under the key it is
+        // stored with (issue #12162)
+        final String storedKey = term.fieldName != null ? term.fieldName + ":" + k : FullTextKeys.unqualifiedKey(getPropertyNames(), k);
+        lookups.computeIfAbsent(storedKey, key -> new int[1])[0]++;
+      }
+    }
 
+    int ticks = 0;
+    for (final Map.Entry<String, int[]> lookup : lookups.entrySet()) {
+      guard.check();
+      final int repeats = lookup.getValue()[0];
+      try (final IndexCursor rids = underlyingIndex.get(new String[] { lookup.getKey() })) {
         while (rids.hasNext()) {
           guard.checkPeriodically(++ticks);
           final RID rid = rids.next().getIdentity();
@@ -467,9 +494,9 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
           // Accumulate score for this RID based on term frequency in the query
           final AtomicInteger score = scoreMap.get(rid);
           if (score == null)
-            scoreMap.put(rid, new AtomicInteger(1));
+            scoreMap.put(rid, new AtomicInteger(repeats));
           else
-            score.incrementAndGet();
+            score.addAndGet(repeats);
         }
       }
     }
@@ -477,18 +504,23 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     final int maxElements = limit > -1 ? limit : scoreMap.size();
 
     final ArrayList<IndexCursorEntry> list = new ArrayList<>(maxElements);
-    for (final Map.Entry<RID, AtomicInteger> entry : scoreMap.entrySet())
+    ticks = 0;
+    for (final Map.Entry<RID, AtomicInteger> entry : scoreMap.entrySet()) {
+      guard.checkPeriodically(++ticks);
       list.add(new IndexCursorEntry(keys, entry.getKey(), entry.getValue().get()));
+    }
 
     // Most-relevant first (descending coordination score), RID as a stable tiebreaker so the order is deterministic. Matches the
     // BM25 path; the previous ascending sort returned the least-relevant documents first.
-    if (list.size() > 1)
+    if (list.size() > 1) {
+      guard.check();
       list.sort((o1, o2) -> {
         final int cmp = Integer.compare(o2.score, o1.score);
         if (cmp != 0)
           return cmp;
         return o1.record.getIdentity().compareTo(o2.record.getIdentity());
       });
+    }
 
     if (limit > -1 && list.size() > limit)
       return new TempIndexCursor(list.subList(0, limit));
@@ -636,7 +668,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    * token's posting list twice (count df, then accumulate) - {@code 2*T} posting scans for a {@code T}-term query. The SQL
    * {@code SEARCH_INDEX} path is single-pass; prefer it for large or many-term queries.
    */
-  private IndexCursor getBM25(final Object[] keys, final int limit) {
+  private IndexCursor getBM25(final Object[] keys, final int limit, final WorkGuard guard) {
     final Map<String, Float> tokenBoosts = getSimpleQueryTokenBoosts(keys);
 
     // The no-candidate path streams each token's postings twice (df + accumulate). Log at FINE for a multi-term query so an
@@ -646,8 +678,6 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
           "Full-text get() scoring %d terms on index '%s' with two posting scans each; use SEARCH_INDEX(...) for a single-pass scan.",
           null, tokenBoosts.size(), getName());
 
-    // The direct path has no command context: the guard still stops a statement that was terminated (issue #9894)
-    final WorkGuard guard = WorkGuard.forCommandDeadline(null);
     return buildScoredCursor(computeBM25Scores(tokenBoosts, null, guard), keys, limit, guard);
   }
 

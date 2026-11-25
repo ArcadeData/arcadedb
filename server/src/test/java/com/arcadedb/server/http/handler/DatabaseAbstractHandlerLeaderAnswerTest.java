@@ -42,6 +42,7 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HeaderMap;
 import io.undertow.util.HttpString;
+import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
@@ -274,7 +275,7 @@ class DatabaseAbstractHandlerLeaderAnswerTest {
     void aRefusalAfterSeveralForwardsOrNoneIsRaised() {
       failure = new NeedRetryException("refused");
       publishes = 2;
-      assertThatThrownBy(() -> run("ha", null)).isSameAs(failure);
+      assertRaisedAsNotReplayable(() -> run("ha", null));
       publishes = 0;
       assertThatThrownBy(() -> run("ha", null)).isSameAs(failure);
     }
@@ -318,7 +319,7 @@ class DatabaseAbstractHandlerLeaderAnswerTest {
     void aForwardThatFailedAfterAnAnsweredOneIsRaised() {
       failure = new NeedRetryException("Database 'ha' is being replaced from the leader");
       refusedForwardsAfter = 1;
-      assertThatThrownBy(() -> run("ha", null)).isSameAs(failure);
+      assertRaisedAsNotReplayable(() -> run("ha", null));
       assertThat(ForwardedRequestIdContext.takeCommittedWriteAnswer()).as("the pooled thread is left clean").isNull();
     }
 
@@ -330,7 +331,7 @@ class DatabaseAbstractHandlerLeaderAnswerTest {
     void aRequestThatExecutedACommandLocallyIsRaised() {
       failure = new NeedRetryException("Database 'ha' is being replaced from the leader");
       executedLocally = true;
-      assertThatThrownBy(() -> run("ha", null)).isSameAs(failure);
+      assertRaisedAsNotReplayable(() -> run("ha", null));
     }
 
     /**
@@ -341,7 +342,7 @@ class DatabaseAbstractHandlerLeaderAnswerTest {
     void aRouteThatIsNotOneCommandNeverArms() {
       oneCommandRoute = false;
       failure = new NeedRetryException("refused");
-      assertThatThrownBy(() -> run("ha", null)).isSameAs(failure);
+      assertRaisedAsNotReplayable(() -> run("ha", null));
     }
 
     /** The answer of one request is not the answer of the next on the same pooled thread: arming starts from nothing. */
@@ -354,6 +355,26 @@ class DatabaseAbstractHandlerLeaderAnswerTest {
       assertThatThrownBy(() -> run("ha", null)).as("the second request forwarded nothing").isSameAs(failure);
     }
 
+    /**
+     * The refusal is raised by the auto-commit loop around the request, which a committed forward stops from replaying the block:
+     * it comes as the not-replayable failure with the refusal suppressed under it (issue #13251), and that is still the refusal
+     * the leader's answer stands in for.
+     */
+    @Test
+    void aRefusalTheRetryLoopRaisedAsNotReplayableIsAnsweredWithTheLeadersAnswer() throws Exception {
+      final NeedRetryException refusal = new NeedRetryException("Database 'ha' is being replaced from the leader");
+      failure = new TransactionException("Transaction block committed part of its work");
+      failure.addSuppressed(refusal);
+      assertThat(run("ha", null).getResponse()).isEqualTo(LEADERS_BODY);
+    }
+
+    /** Raised once a write the leader committed: as the failure no client replays, with the refusal under it (issue #13251). */
+    private void assertRaisedAsNotReplayable(final ThrowingCallable request) {
+      assertThatThrownBy(request).isInstanceOf(TransactionException.class).isNotInstanceOf(NeedRetryException.class)
+          .satisfies(raised -> assertThat(raised.getSuppressed()).contains(failure));
+      assertThat(ForwardedRequestIdContext.takeCommittedWriteAnswer()).as("the pooled thread is left clean").isNull();
+    }
+
     @Test
     void aRequestThatSucceedsLeavesNothingBehind() throws Exception {
       assertThat(run("ha", null).getResponse()).isEqualTo("{\"result\":\"rendered\"}");
@@ -363,7 +384,7 @@ class DatabaseAbstractHandlerLeaderAnswerTest {
     @Test
     void aDatabaseThatIsNotReplicatedNeverArms() {
       failure = new NeedRetryException("refused");
-      assertThatThrownBy(() -> run("plain", null)).isSameAs(failure);
+      assertRaisedAsNotReplayable(() -> run("plain", null));
     }
 
     @Test

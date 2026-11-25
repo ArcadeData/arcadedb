@@ -293,9 +293,9 @@ public class CompressedRID2RIDIndex {
    * built with for its whole life, so a caller that cannot know its entry count up front (the JSONL importer builds it with
    * 1,000 slots) walked chains of entries / 1,000 on every put() and get(), and a restore took time quadratic in the size of
    * the database (issue #12048). Called when the entries reach the slots: one pass over the entries per doubling keeps the total
-   * linear, and the chains as short as the hash allows. {@link RID#hashCode()} is {@code bucketId * 31 + position}, so the keys
-   * of RIDs spread over B buckets share a hash value B at a time and a chain holds about B entries at any table size: a
-   * constant, not a length that grows with the record count.
+   * linear, and the chains as short as the hash allows. {@link RID#hashCode()} mixes the bucket id and the position of the
+   * whole key (#12481), so the chains stay short at any table size: only keys that share one hash value share a chain, and
+   * those stay one chain however much the table grows.
    * <p>
    * Entries are appended to the tail of their new chain, so a chain still only moves forward in the chunk (the invariant the
    * chain walks of {@link #get} and {@link #put} assert). A table whose doubled form would not fit an int-addressed chunk keeps

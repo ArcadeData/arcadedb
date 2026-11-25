@@ -3653,7 +3653,9 @@ public enum GlobalConfiguration {
       "Path of the PEM private key served by the gRPC endpoint when arcadedb.grpc.tls.enabled is true", String.class, null),
 
   GRPC_MAX_MESSAGE_SIZE("arcadedb.grpc.maxMessageSize", SCOPE.SERVER,
-      "Maximum inbound gRPC message size, in megabytes (minimum 1). Default is 100", Integer.class, 100),
+      "Maximum gRPC message size, in megabytes (minimum 1): the largest message the server accepts, and the largest result it "
+          + "encodes into one response, streamed batch or materialized result (a larger one fails with RESOURCE_EXHAUSTED). "
+          + "Default is 100", Integer.class, 100),
 
   GRPC_MAX_METADATA_SIZE("arcadedb.grpc.maxMetadataSize", SCOPE.SERVER,
       "Maximum inbound gRPC metadata (headers) size, in kilobytes (minimum 1). Default is 16", Integer.class, 16),
@@ -3718,14 +3720,16 @@ public enum GlobalConfiguration {
   REDIS_MAX_MULTIBULK_LENGTH("arcadedb.redis.maxMultiBulkLength", SCOPE.SERVER, """
       Maximum number of elements accepted in a single RESP array by the Redis wire-protocol listener, matching \
       Redis' own hard limit on multibulk requests. Guards against a client-declared array length (e.g. \
-      *2000000000\\r\\n) starting a parse loop with billions of iterations. Default is 1048576.""",
+      *2000000000\\r\\n) starting a parse loop with billions of iterations. A connection that has not authenticated yet is \
+      held to 10 elements at most, the bound Redis applies, whatever this setting says. Default is 1048576.""",
       Integer.class, 1_048_576),
 
   REDIS_MAX_BULK_LENGTH("arcadedb.redis.maxBulkLength", SCOPE.SERVER, """
       Maximum length in bytes accepted for a single RESP bulk string ($) by the Redis wire-protocol listener, \
       matching Redis' own proto-max-bulk-len. Without a bound, a client-declared length (e.g. $2000000000\\r\\n) \
       can tie up a connection thread indefinitely by trickling bytes, or grow the parse buffer unbounded if the \
-      declared bytes are actually sent. Default is 536870912 (512MB).""",
+      declared bytes are actually sent. A connection that has not authenticated yet is held to 16384 bytes at most, the \
+      bound Redis applies, whatever this setting says. Default is 536870912 (512MB).""",
       Integer.class, 536_870_912),
 
   // MONGO

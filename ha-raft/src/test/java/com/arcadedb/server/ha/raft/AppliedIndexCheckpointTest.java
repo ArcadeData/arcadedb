@@ -58,14 +58,17 @@ import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
+import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermission;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -73,6 +76,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * The applied index and its checkpoint: durability of .raft/applied-index, data files synced before the checkpoint, skipped entries
@@ -824,6 +829,92 @@ class AppliedIndexCheckpointTest {
         server.stop();
         if (unwritable.isOpen())
           unwritable.drop();
+        if (healthy.isOpen())
+          healthy.drop();
+      }
+    }
+
+    /**
+     * Issue #12611: a drop whose files the filesystem would not remove (the rename aside refused, the inline delete refused
+     * too) was applied as done, so nothing held the checkpoint and Ratis could purge the entry that removes them: after a
+     * restart the node served a database the cluster had dropped. The entry is held instead, and released once the deletion,
+     * tried again from time to time, goes through.
+     */
+    // Regression for #12611: SkippedEntryHoldsTheCheckpoint
+    @Test
+    void aDropWhoseFilesCouldNotBeRemovedHoldsTheCheckpointUntilTheyAre() throws Exception {
+      assumeTrue(FileSystems.getDefault().supportedFileAttributeViews().contains("posix"), "needs POSIX permissions");
+      assumeFalse("root".equals(System.getProperty("user.name")), "root ignores directory permissions");
+
+      final ContextConfiguration config = new ContextConfiguration();
+      config.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, tempDir.resolve("databases").toString());
+      final ArcadeDBServer server = new ArcadeDBServer(config);
+      final Path undeletable = tempDir.resolve("databases").resolve(DB_NAME);
+      final LocalDatabase dropped = (LocalDatabase) new DatabaseFactory(undeletable.toString()).create();
+      final LocalDatabase healthy = (LocalDatabase) new DatabaseFactory(tempDir.resolve("databases").resolve("healthy").toString())
+          .create();
+      server.registerDatabase(DB_NAME, dropped);
+      server.registerDatabase("healthy", healthy);
+      final Set<PosixFilePermission> original = Files.getPosixFilePermissions(undeletable);
+      final AtomicBoolean readOnly = new AtomicBoolean(true);
+      try {
+        sm = stateMachine(server);
+        // A filesystem that cannot rename the directory aside, and refuses the unlinks of the inline delete that follows.
+        // Read-only from the moment the deleter is reached, which is after the drop closed the database
+        sm.setDeferredDatabaseDeleter(new DeferredDatabaseDeleter() {
+          @Override
+          Path rename(final Path directory) {
+            if (!readOnly.get())
+              return super.rename(directory);
+            try {
+              Files.setPosixFilePermissions(directory, Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_EXECUTE));
+            } catch (final IOException e) {
+              throw new IllegalStateException(e);
+            }
+            return null;
+          }
+        });
+        final AtomicLong clock = new AtomicLong();
+        sm.setUndeletedDropRetryClock(clock::get);
+
+        final Throwable failure = failedFuture(rawEntry(RaftLogEntryCodec.encodeDropDatabaseEntry(DB_NAME), SKIPPED_INDEX));
+        assertThat(failure).as("the drop left the files, so it is not reported as applied")
+            .isInstanceOf(EntryLeftForReplayException.class);
+        assertThat(Files.isDirectory(undeletable)).as("precondition: the files are still there").isTrue();
+        assertThat(sm.isDatabaseDiverged(DB_NAME)).as("held, not quarantined: the leader has no copy to resync from").isFalse();
+        assertThat(server.isDatabaseHeld(DB_NAME)).as("no request reopens the copy the cluster dropped").isTrue();
+
+        assertThat(sm.applyTransaction(rawEntry(RaftLogEntryCodec.encodeDatabaseConfigurationEntry("healthy", CONFIGURATION),
+            LATER_INDEX)).isCompletedExceptionally()).as("another database is unaffected").isFalse();
+        assertThat(sm.readAppliedIndexCounter()).isEqualTo(LATER_INDEX);
+        assertThat(sm.takeSnapshot()).as("the entry that removes the files must stay replayable").isLessThan(SKIPPED_INDEX);
+
+        // The retry is due, and the filesystem still refuses
+        clock.addAndGet(TimeUnit.MILLISECONDS.toNanos(SecurityDurabilityFloor.RETRY_INTERVAL_MS) + 1);
+        assertThat(sm.applyTransaction(rawEntry(RaftLogEntryCodec.encodeDatabaseConfigurationEntry("healthy", CONFIGURATION),
+            LATER_INDEX + 1)).isCompletedExceptionally()).as("a retry that fails does not fail the entry it rides on").isFalse();
+        assertThat(Files.isDirectory(undeletable)).isTrue();
+        assertThat(sm.takeSnapshot()).as("still held").isLessThan(SKIPPED_INDEX);
+        assertThat(sm.isHaltedAfterCriticalError()).isFalse();
+
+        // The filesystem is fixed
+        readOnly.set(false);
+        Files.setPosixFilePermissions(undeletable, original);
+        clock.addAndGet(TimeUnit.MILLISECONDS.toNanos(SecurityDurabilityFloor.RETRY_INTERVAL_MS) + 1);
+        assertThat(sm.applyTransaction(rawEntry(RaftLogEntryCodec.encodeDatabaseConfigurationEntry("healthy", CONFIGURATION),
+            LATER_INDEX + 2)).isCompletedExceptionally()).isFalse();
+
+        assertThat(Files.exists(undeletable)).as("the retry removed the dropped database's directory").isFalse();
+        assertThat(server.isDatabaseHeld(DB_NAME)).as("the close mark goes with the database").isFalse();
+        assertThat(sm.takeSnapshot()).as("the drop completed: nothing left to replay").isEqualTo(LATER_INDEX + 2);
+      } finally {
+        if (Files.exists(undeletable))
+          Files.setPosixFilePermissions(undeletable, original);
+        server.stop();
+        if (dropped.isOpen())
+          dropped.drop();
+        else
+          FileUtils.deleteRecursively(undeletable.toFile());
         if (healthy.isOpen())
           healthy.drop();
       }
