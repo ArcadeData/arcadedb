@@ -105,10 +105,11 @@ public class RefusedBeforePublishingException extends NeedRetryException {
      * thread, the answer is no: that thread's commits have nothing to do with the ones the watermark describes.
      */
     boolean isAtOrBefore(final TransactionContext txAtStart, final long commitCountAtStart) {
-      if (Thread.currentThread() != thread)
+      // Neither type overrides equals(): both comparisons are by identity
+      if (!thread.equals(Thread.currentThread()))
         return false;
       for (int i = 0; i < contexts.length; ++i)
-        if (contexts[i] == txAtStart)
+        if (contexts[i].equals(txAtStart))
           return commitCounts[i] <= commitCountAtStart;
       return true;
     }
