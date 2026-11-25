@@ -22,7 +22,7 @@ import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.VariableOverlayResult;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -83,30 +83,17 @@ public class ReduceExpression implements Expression {
     else
       throw new IllegalArgumentException("reduce() requires a list, got: " + listValue.getClass().getSimpleName());
 
-    // Iterate over each element, updating the accumulator
+    // One row per evaluation with the iterator variable and the accumulator rebound per element: the outer columns are read
+    // through it, not copied (issue #12723). The accumulator is bound second, so it shadows an iterator of the same name
+    final VariableOverlayResult iterResult = new VariableOverlayResult(result, iteratorVariable, accumulatorVariable);
     for (final Object item : iterable) {
-      // Create a new result with both the iterator variable and accumulator bound
-      final ResultInternal iterResult = createIterationResult(result, item, accumulator);
+      iterResult.bind(item, accumulator);
 
       // Evaluate the reduce expression with the current accumulator and item
       accumulator = OpenCypherQueryEngine.getExpressionEvaluator().evaluate(reduceExpression, iterResult, context);
     }
 
     return accumulator;
-  }
-
-  private ResultInternal createIterationResult(final Result baseResult, final Object item, final Object accumulator) {
-    final ResultInternal iterResult = new ResultInternal();
-
-    // Copy all properties from the base result
-    if (baseResult != null)
-      for (final String prop : baseResult.getPropertyNames())
-        iterResult.setProperty(prop, baseResult.getProperty(prop));
-
-    // Add the iterator variable and accumulator
-    iterResult.setProperty(iteratorVariable, item);
-    iterResult.setProperty(accumulatorVariable, accumulator);
-    return iterResult;
   }
 
   private List<Object> arrayToList(final Object array) {
