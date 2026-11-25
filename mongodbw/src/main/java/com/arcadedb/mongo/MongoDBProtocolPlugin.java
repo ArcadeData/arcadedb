@@ -111,6 +111,12 @@ public class MongoDBProtocolPlugin implements ServerPlugin, DatabaseResolver {
     }
   }
 
+  /** The wrapper the backend serves a database with, for the tests that look at what it holds: {@code null} before the service runs. */
+  MongoDBDatabaseWrapper wrapperOf(final String databaseName) {
+    final MongoDBBackend backend = mongoDBBackend;
+    return backend != null ? backend.wrapperOf(databaseName) : null;
+  }
+
   @Override
   public MongoDatabase resolve(final String s) {
     return databases.get(s);

@@ -233,7 +233,7 @@ class TimeSeriesDownsamplingTest extends TestHelper {
 
       final int blockCountAfterFirst = engine.getShard(0).getSealedStore().getBlockCount();
 
-      // Second downsampling (should be a no-op due to density check)
+      // Second downsampling (should be a no-op: the block carries the marker, and has one sample per bucket anyway)
       engine.applyDownsampling(tiers, 60001L);
 
       database.begin();

@@ -178,8 +178,8 @@ public class MaterializedViewChangeListener
   }
 
   /**
-   * The changes one transaction makes to the source records of a grouped view (issue #11937), and the after-commit callback that
-   * hands their delta to the view.
+   * The changes one transaction makes to the source records of a grouped view (issue #11937), and the ordered after-commit callback
+   * that hands their delta to the view.
    * <p>
    * The state of a record before the transaction is taken at its first change in the transaction: for an update, the image the
    * record was read from, which the update's own MVCC check refuses to commit over anything else (#6950); for a delete, the record
@@ -190,7 +190,11 @@ public class MaterializedViewChangeListener
    * <p>
    * The callback is ordered ({@link OrderedAfterCommitCallback}): at its commit point the transaction registers with the view, so a
    * rebuild pass of the view running concurrently knows that its scan may or may not have read this transaction's changes, and
-   * corrects for them (see {@link MaterializedViewGroupedState.Watch}).
+   * corrects for them (see {@link MaterializedViewGroupedState.Watch}). The delta is handed over once the pages are published, while
+   * the transaction still holds its locks ({@link #onPublished()}), and not when the callback runs, after they are released (issue
+   * #12720): a later transaction may by then have changed the same records again and handed its own delta over, and a rebuild
+   * beginning meanwhile would take this transaction's after-images, still in flight, for the newest state of those records. The run
+   * only refreshes the view.
    */
   final class GroupedCapture implements OrderedAfterCommitCallback {
     private final MaterializedViewGroupedPlan       plan             = view.groupedPlan();
@@ -206,6 +210,9 @@ public class MaterializedViewChangeListener
     private volatile MaterializedViewImpl            registeredWith;
     /** Set under the view's pending-delta lock when a rebuild pass took this transaction's changes over. */
     boolean                                          absorbed;
+    /** Set once {@link #onPublished()} ran; the failure to hand the delta over there, if any, is written before it. */
+    private volatile boolean                         delivered;
+    private          RuntimeException                deliveryFailure;
 
     void before(final Record record, final boolean update) {
       final RID rid = record.getIdentity();
@@ -334,6 +341,17 @@ public class MaterializedViewChangeListener
     }
 
     @Override
+    public void onPublished() {
+      try {
+        deliver(targetAtCommit());
+      } catch (final RuntimeException e) {
+        deliveryFailure = e;
+      } finally {
+        delivered = true;
+      }
+    }
+
+    @Override
     public void onAbandoned() {
       final MaterializedViewImpl registered = registeredWith;
       if (registered != null)
@@ -342,23 +360,38 @@ public class MaterializedViewChangeListener
 
     @Override
     public void run() {
-      final MaterializedViewImpl registered = registeredWith;
       final MaterializedViewImpl target = targetAtCommit();
+      // read first: the failure is written before it
+      final boolean published = delivered;
+      if (published && deliveryFailure != null) {
+        if (target != null)
+          markStale(target, deliveryFailure);
+        return;
+      }
       try {
-        final boolean maintained = target != null && target.isGroupedDelta();
-        // The delta can be applied when it is the one of the view this transaction registered with, built for the view's plan. A
-        // transaction that never registered (it was not told of its commit point) cannot say what a rebuild saw: the view is rebuilt
-        final boolean exact = maintained && !overflow && delta != null && registered == target && target.groupedPlan() == plan;
-        final boolean absorbed = registered != null && registered.groupedDelivered(this,
-            exact && (delta.size() > 0 || delta.inexact) ? delta : null);
-        if (maintained && !exact && !absorbed)
-          target.requestFullPass(false);
+        if (!published)
+          // Not told of its publication: it never reached its commit point (registered after it, or the replication layer published
+          // the pages elsewhere), so it has nothing in flight a rebuild could have taken over
+          deliver(target);
         if (target != null)
           MaterializedViewRefresher.refreshAfterCommit(database, target);
       } catch (final Exception e) {
         if (target != null)
           markStale(target, e);
       }
+    }
+
+    /** Takes the transaction out of flight and hands its delta to the view, or asks for the full pass it owes the view instead. */
+    private void deliver(final MaterializedViewImpl target) {
+      final MaterializedViewImpl registered = registeredWith;
+      final boolean maintained = target != null && target.isGroupedDelta();
+      // The delta can be applied when it is the one of the view this transaction registered with, built for the view's plan. A
+      // transaction that never registered (it was not told of its commit point) cannot say what a rebuild saw: the view is rebuilt
+      final boolean exact = maintained && !overflow && delta != null && registered == target && target.groupedPlan() == plan;
+      final boolean absorbed = registered != null && registered.groupedDelivered(this,
+          exact && (delta.size() > 0 || delta.inexact) ? delta : null);
+      if (maintained && !exact && !absorbed)
+        target.requestFullPass(false);
     }
   }
 

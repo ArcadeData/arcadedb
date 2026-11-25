@@ -113,10 +113,10 @@ class Issue11887ForwardedWriteOutcomeUnknownTest {
   /** Drives the private forward directly, as {@code Issue7527RaftReplicatedDatabaseForwardTimeoutTest} does. */
   private static Throwable forward(final RaftReplicatedDatabase db) throws Exception {
     final Method m = RaftReplicatedDatabase.class.getDeclaredMethod("forwardCommandToLeaderViaRaft", String.class, String.class,
-        Map.class, Object[].class);
+        Map.class, Object[].class, boolean.class);
     m.setAccessible(true);
     try {
-      m.invoke(db, "sql", "insert into V set a = 1", null, new Object[0]);
+      m.invoke(db, "sql", "insert into V set a = 1", null, new Object[0], true);
     } catch (final InvocationTargetException e) {
       return e.getCause();
     }

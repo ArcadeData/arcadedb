@@ -20,9 +20,12 @@ package com.arcadedb.gremlin.io;
 
 import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.DatabaseRID;
+import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.gremlin.io.graphson.EmbeddedDocumentGraphSONModule;
 import org.apache.tinkerpop.gremlin.structure.io.AbstractIoRegistry;
 import org.apache.tinkerpop.gremlin.structure.io.binary.GraphBinaryIo;
+import org.apache.tinkerpop.gremlin.structure.io.graphson.GraphSONIo;
 
 import java.util.Map;
 
@@ -47,6 +50,11 @@ public class ArcadeIoRegistry extends AbstractIoRegistry {
     final RIDSerializer ridSerializer = new RIDSerializer();
     register(GraphBinaryIo.class, RID.class, ridSerializer);
     register(GraphBinaryIo.class, DatabaseRID.class, ridSerializer);
+
+    // THE SAME FOR AN EMBEDDED DOCUMENT, THE OTHER ARCADEDB-SPECIFIC TYPE A PROPERTY VALUE CARRIES (ISSUE #13043). BY INTERFACE, SO
+    // THE IMMUTABLE AND THE MUTABLE IMPLEMENTATIONS ARE BOTH COVERED, AND FOR BOTH WIRE FORMATS: GraphBinary AND GraphSON
+    register(GraphBinaryIo.class, EmbeddedDocument.class, new EmbeddedDocumentSerializer());
+    register(GraphSONIo.class, EmbeddedDocument.class, new EmbeddedDocumentGraphSONModule());
   }
 
   public BasicDatabase getDatabase() {

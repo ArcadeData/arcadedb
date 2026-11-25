@@ -85,8 +85,7 @@ public class CypherTrimFunction implements StatelessFunction {
       final String mode = args[0] != null ? args[0].toString() : null;
       final String source = CypherFunctionHelper.requireStringArgument(args[2], getName());
       final String trimChar = CypherFunctionHelper.requireStringArgument(args[1], getName());
-      // the function form trim(mode, trimCharacter, source) takes the mode as an expression: a null one is a null input, which
-      // answers null like the other two, rather than a switch on null (issue #12847)
+      // a null mode is a null answer, as a null operand is: it was a NullPointerException on the switch (issue #12744)
       if (source == null || trimChar == null || mode == null)
         return null;
       if (trimChar.isEmpty()) {

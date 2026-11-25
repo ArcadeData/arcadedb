@@ -18,9 +18,11 @@
  */
 package com.arcadedb.gremlin;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.Vertex;
 import org.apache.tinkerpop.gremlin.process.traversal.Traverser;
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.FlatMapStep;
@@ -69,7 +71,7 @@ class ArcadeGAVVertexStep extends FlatMapStep<org.apache.tinkerpop.gremlin.struc
     else
       rid = null;
 
-    if (rid != null) {
+    if (rid != null && viewAnswers(graph)) {
       final int nodeId = provider.getNodeId(rid);
       if (nodeId >= 0) {
         final Vertex.DIRECTION dir = ArcadeGraph.mapDirection(direction);
@@ -110,5 +112,16 @@ class ArcadeGAVVertexStep extends FlatMapStep<org.apache.tinkerpop.gremlin.struc
   @Override
   public String toString() {
     return StringFactory.stepString(this, direction, String.join(",", edgeLabels), "GAV");
+  }
+
+  /**
+   * Whether the view may answer for the traverser now. The strategy picks the view when the traversal is compiled, and the view
+   * serves the committed graph: once the traversal's own transaction holds uncommitted changes (an edge added or dropped by an
+   * earlier step of the same traversal), the records are walked instead, as {@link GraphTraversalProviderRegistry#findProvider}
+   * already makes a traversal compiled after the write do (issue #12017). The strategy installs the view steps only over a
+   * {@link Database}.
+   */
+  static boolean viewAnswers(final ArcadeGraph graph) {
+    return !GraphTraversalProviderRegistry.isWithheld((Database) graph.getDatabase());
   }
 }

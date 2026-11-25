@@ -203,6 +203,15 @@ public class FullTextSearch {
    */
   public static Map<RID, Float> search(final TypeIndex typeIndex, final String queryText, final int limit,
       final WorkGuard guard, final List<String> restrictedFields, final RIDFilter ridFilter) {
+    return search(typeIndex, queryText, limit, guard, restrictedFields, ridFilter, null);
+  }
+
+  /**
+   * {@link #search(TypeIndex, String, int, WorkGuard, List, RIDFilter)} taking the postings of a disjunction of terms from
+   * {@code reuse} when an earlier search of the same statement read them, and leaving them there when it reads them.
+   */
+  public static Map<RID, Float> search(final TypeIndex typeIndex, final String queryText, final int limit,
+      final WorkGuard guard, final List<String> restrictedFields, final RIDFilter ridFilter, final FullTextPostingsReuse reuse) {
     final int effectiveLimit = limit < 1 ? -1 : limit;
     final List<LSMTreeFullTextIndex> bucketIndexes = getBucketIndexes(typeIndex);
     if (bucketIndexes.isEmpty() || (ridFilter != null && ridFilter.acceptsNothing()))
@@ -211,7 +220,7 @@ public class FullTextSearch {
     // A disjunction of terms is answered from the postings alone, read once, with one top-k threshold shared by the buckets
     // (issue #12458); every other query shape matches first and scores after
     final Map<RID, Float> disjunction = FullTextTopKSearch.search(bucketIndexes, queryText, effectiveLimit, guard, restrictedFields,
-        ridFilter);
+        ridFilter, reuse);
     if (disjunction != null)
       return disjunction;
 
@@ -340,6 +349,16 @@ public class FullTextSearch {
    * stay type-wide within each of those lookups, which is what keeps the scores comparable (issue #6414).
    */
   public static IndexCursor searchSimple(final TypeIndex typeIndex, final Object[] keys, final int limit) {
+    // A caller with no command context: the guard stops a terminated statement (issue #9894)
+    return searchSimple(typeIndex, keys, limit, WorkGuard.forCommandDeadline(null));
+  }
+
+  /**
+   * {@link #searchSimple(TypeIndex, Object[], int)} stopping through {@code guard} - checked while the postings are walked, the
+   * matches of the properties intersected and the answer ranked - when the statement it runs for is terminated or past its
+   * deadline. The lookup is complete before its first entry is returned, so no check between rows reaches it.
+   */
+  public static IndexCursor searchSimple(final TypeIndex typeIndex, final Object[] keys, final int limit, final WorkGuard guard) {
     final List<LSMTreeFullTextIndex> bucketIndexes = getBucketIndexes(typeIndex);
     if (bucketIndexes.isEmpty())
       return new TempIndexCursor(List.of());
@@ -347,8 +366,6 @@ public class FullTextSearch {
       throw new IllegalArgumentException("searchSimple requires a BM25 full-text index");
 
     final int effectiveLimit = limit < 1 ? -1 : limit;
-    // The literal lookup behind CONTAINSTEXT has no command context: the guard stops a terminated statement (issue #9894)
-    final WorkGuard guard = WorkGuard.forCommandDeadline(null);
 
     final List<Object[]> perProperty = LSMTreeFullTextIndex.splitPositionalKey(typeIndex.getPropertyNames(), keys);
     if (perProperty != null) {
@@ -372,8 +389,8 @@ public class FullTextSearch {
 
       return LSMTreeFullTextIndex.rankedCursor(
           LSMTreeFullTextIndex.intersectPerProperty(perProperty, propertyKey -> scoreAcrossBuckets(bucketIndexes,
-              tokensByProperty.get(propertyKey), propertyKey, -1, scoringContext, guard)),
-          keys, effectiveLimit);
+              tokensByProperty.get(propertyKey), propertyKey, -1, scoringContext, guard), guard),
+          keys, effectiveLimit, guard);
     }
 
     final Map<String, Float> scoringTokens = bucketIndexes.getFirst().getSimpleQueryTokenBoosts(keys);
@@ -395,7 +412,7 @@ public class FullTextSearch {
     for (final LSMTreeFullTextIndex ftIndex : bucketIndexes)
       mergeCursor(allResults, ftIndex.scoreBM25WithContext(null, scoringTokens, keys, limit, scoringContext, guard), guard);
 
-    return LSMTreeFullTextIndex.rankedCursor(allResults, keys, limit);
+    return LSMTreeFullTextIndex.rankedCursor(allResults, keys, limit, guard);
   }
 
   /**
@@ -411,15 +428,24 @@ public class FullTextSearch {
    * properties (see {@link #search(TypeIndex, String, int, WorkGuard, List, RIDFilter)}).
    */
   public static JSONObject explainScoring(final TypeIndex typeIndex, final String queryText, final List<String> restrictedFields) {
+    return explainScoring(typeIndex, queryText, restrictedFields, WorkGuard.forCommandDeadline(null));
+  }
+
+  /**
+   * {@link #explainScoring(TypeIndex, String, List)} stopping through {@code guard} while the terms are expanded and their
+   * postings counted, when the statement it runs for is terminated or past its deadline.
+   */
+  public static JSONObject explainScoring(final TypeIndex typeIndex, final String queryText, final List<String> restrictedFields,
+      final WorkGuard guard) {
     final List<LSMTreeFullTextIndex> bucketIndexes = getBucketIndexes(typeIndex);
     if (bucketIndexes.isEmpty() || !bucketIndexes.getFirst().isBM25())
       return null;
 
     final Map<String, Float> allTokens = collectScoringTokens(bucketIndexes, queryText, restrictedFields,
-        FullTextQueryExecutor.MAX_EXPANDED_SCORING_TERMS);
+        FullTextQueryExecutor.MAX_EXPANDED_SCORING_TERMS, guard);
     final Map<String, Float> shownTokens = firstTokens(allTokens, MAX_EXPLAIN_TERMS);
     final BM25ScoringContext context = createScoringContext(bucketIndexes,
-        scanDocumentFrequencies(bucketIndexes, shownTokens, WorkGuard.forCommandDeadline(null)));
+        scanDocumentFrequencies(bucketIndexes, shownTokens, guard));
     final FullTextIndexMetadata metadata = bucketIndexes.getFirst().getFullTextMetadata();
 
     final boolean wholeCorpus = bucketIndexes.getFirst().isCorpusReadable();
@@ -468,9 +494,8 @@ public class FullTextSearch {
   }
 
   private static Map<String, Float> collectScoringTokens(final List<LSMTreeFullTextIndex> bucketIndexes,
-      final String queryText, final List<String> restrictedFields, final int maxTerms) {
+      final String queryText, final List<String> restrictedFields, final int maxTerms, final WorkGuard guard) {
     final TreeMap<String, Float> tokens = new TreeMap<>();
-    final WorkGuard guard = WorkGuard.forCommandDeadline(null);
     final Map<FuzzyQuery, Set<String>> fuzzyExpansions = FullTextQueryExecutor.selectFuzzyExpansions(bucketIndexes, queryText, guard,
         restrictedFields);
     for (final LSMTreeFullTextIndex ftIndex : bucketIndexes)

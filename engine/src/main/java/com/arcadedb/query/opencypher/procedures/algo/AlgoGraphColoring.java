@@ -93,12 +93,11 @@ public class AlgoGraphColoring extends AbstractAlgoProcedure {
 
     final int[] color = new int[n];
     Arrays.fill(color, -1);
-    // Reused forbidden array — no per-vertex allocation in the loop
+    // Reused forbidden array, cleared after each vertex by unsetting only the colours its neighbours set: clearing all
+    // n entries per vertex made the call O(V²) (issue #12174), while the neighbours touch at most degree entries
     final boolean[] forbidden = new boolean[n];
 
     for (int v = 0; v < n; v++) {
-      // Reset forbidden for this vertex
-      Arrays.fill(forbidden, false);
       for (final int u : adj[v])
         if (color[u] != -1)
           forbidden[color[u]] = true;
@@ -107,6 +106,9 @@ public class AlgoGraphColoring extends AbstractAlgoProcedure {
       while (forbidden[c])
         c++;
       color[v] = c;
+      for (final int u : adj[v])
+        if (color[u] != -1)
+          forbidden[color[u]] = false;
     }
 
     int chromaticNumber = 0;

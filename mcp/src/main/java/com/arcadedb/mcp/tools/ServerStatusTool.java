@@ -19,6 +19,7 @@
 package com.arcadedb.mcp.tools;
 
 import com.arcadedb.mcp.MCPConfiguration;
+import com.arcadedb.mcp.MCPRefusalException;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
@@ -44,7 +45,7 @@ public class ServerStatusTool {
   public static JSONObject execute(final ArcadeDBServer server, final ServerSecurityUser user, final JSONObject args,
       final MCPConfiguration config) {
     if (!config.isAllowReads())
-      throw new SecurityException("Read operations are not allowed by MCP configuration");
+      throw new MCPRefusalException("Read operations are not allowed by MCP configuration");
 
     return ServerInfo.toJSON(server, databaseName -> MCPToolUtils.canReadDatabase(user, config, databaseName),
         config.isAllowAdmin());

@@ -29,9 +29,11 @@ import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.fulltext.FullTextSearch;
 import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
+import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.IndexMetadata;
@@ -141,7 +143,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   private List<IndexInternal> subIndexesToRead() {
     final List<IndexInternal> snapshot = List.copyOf(indexesOnBuckets);
     if (snapshot.isEmpty())
-      throw new IndexException("Index '" + getName() + "' is not valid. Probably has been drop or rebuilt");
+      throw new StaleIndexException("Index '" + getName() + "' is not valid. Probably has been drop or rebuilt");
     return snapshot;
   }
 
@@ -189,11 +191,11 @@ public class TypeIndex implements RangeIndex, IndexInternal {
    */
   public IndexCursor getForQuery(final Object[] keys) {
     if (!isReadyForQueries())
-      throw new IndexException("Index '" + getName() + "' is not ready for queries: it is being built, rebuilt or dropped");
+      throw new StaleIndexException("Index '" + getName() + "' is not ready for queries: it is being built, rebuilt or dropped");
 
     final long changesBefore = subIndexChanges.get();
     if ((changesBefore & 1) != 0)
-      throw new IndexException("Index '" + getName() + "' is being changed by a concurrent DDL");
+      throw new StaleIndexException("Index '" + getName() + "' is being changed by a concurrent DDL");
     final IndexCursor cursor;
     try {
       cursor = get(keys);
@@ -201,13 +203,13 @@ public class TypeIndex implements RangeIndex, IndexInternal {
       throw e;
     } catch (final RuntimeException e) {
       if (isStaleRead(this, e))
-        throw new IndexException("Index '" + getName() + "' was dropped or rebuilt while it was read", e);
+        throw new StaleIndexException("Index '" + getName() + "' was dropped or rebuilt while it was read", e);
       throw e;
     }
 
     if (!valid || dropping || subIndexChanges.get() != changesBefore) {
       cursor.close();
-      throw new IndexException("Index '" + getName() + "' was dropped or rebuilt while it was read");
+      throw new StaleIndexException("Index '" + getName() + "' was dropped or rebuilt while it was read");
     }
     return cursor;
   }
@@ -238,11 +240,11 @@ public class TypeIndex implements RangeIndex, IndexInternal {
    */
   public IndexCursor prefixForQuery(final Object[] prefix) {
     if (!isReadyForQueries())
-      throw new IndexException("Index '" + getName() + "' is not ready for queries: it is being built, rebuilt or dropped");
+      throw new StaleIndexException("Index '" + getName() + "' is not ready for queries: it is being built, rebuilt or dropped");
 
     final long changesBefore = subIndexChanges.get();
     if ((changesBefore & 1) != 0)
-      throw new IndexException("Index '" + getName() + "' is being changed by a concurrent DDL");
+      throw new StaleIndexException("Index '" + getName() + "' is being changed by a concurrent DDL");
     final List<IndexCursorEntry> entries = new ArrayList<>();
     try (final IndexCursor cursor = range(true, prefix, true, prefix, true)) {
       while (cursor.hasNext()) {
@@ -254,12 +256,12 @@ public class TypeIndex implements RangeIndex, IndexInternal {
       throw e;
     } catch (final RuntimeException e) {
       if (isStaleRead(this, e))
-        throw new IndexException("Index '" + getName() + "' was dropped or rebuilt while it was read", e);
+        throw new StaleIndexException("Index '" + getName() + "' was dropped or rebuilt while it was read", e);
       throw e;
     }
 
     if (!valid || dropping || subIndexChanges.get() != changesBefore)
-      throw new IndexException("Index '" + getName() + "' was dropped or rebuilt while it was read");
+      throw new StaleIndexException("Index '" + getName() + "' was dropped or rebuilt while it was read");
     return new TempIndexCursor(entries);
   }
 
@@ -272,27 +274,8 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     final boolean isFullText = first != null && first.getType() == Schema.INDEX_TYPE.FULL_TEXT;
 
     if (isFullText) {
-      if (first instanceof final LSMTreeFullTextIndex fullTextIndex && fullTextIndex.isBM25())
-        return FullTextSearch.searchSimple(this, keys, -1);
-
-      // For full-text indexes, collect entries with scores
-      final List<IndexCursorEntry> entries = new ArrayList<>();
-
-      for (final Index index : getIndexesByKeys(keys)) {
-        try (final IndexCursor cursor = index.get(keys, -1)) {
-          while (cursor.hasNext()) {
-            final Identifiable record = cursor.next();
-            final int score = cursor.getScore();
-            entries.add(new IndexCursorEntry(keys, record, score));
-          }
-        }
-      }
-
-      // Sort by score descending
-      if (entries.size() > 1)
-        entries.sort((o1, o2) -> Integer.compare(o2.score, o1.score));
-
-      return new TempIndexCursor(entries);
+      // A caller with no command context: the guard stops a terminated statement
+      return getFullText(first, keys, -1, WorkGuard.forCommandDeadline(null));
     } else {
       // For non-full-text indexes, use the original implementation
       Set<Identifiable> result = null;
@@ -319,6 +302,50 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     }
   }
 
+  /**
+   * A probe for the uniqueness check of one commit, or null when the check must ask {@link #get(Object[], int)}: an index that is not
+   * an LSM tree of this type, or one an LSM index of this type cannot probe ({@link LSMTreeIndex#newKeyProbe()}).
+   */
+  public KeyProbe newKeyProbe() {
+    checkIsValid();
+    final IndexInternal first = firstOrNull();
+    if (first == null || first.getType() != Schema.INDEX_TYPE.LSM_TREE || isResultApproximate())
+      return null;
+    return new KeyProbe();
+  }
+
+  /**
+   * Whether {@link #get(Object[], int)} answers a key with nothing, judged from the pages of the bucket indexes without building the
+   * answer: true is a promise, false is "do not know, ask {@link #get(Object[], int)}". The bucket indexes of a key are probed one
+   * after the other and the first that cannot say ends it. Each probes a snapshot of its pages taken at the first key it is asked
+   * about ({@link LSMTreeIndex.KeyProbe}), so it must only be used for the keys of one commit, by the thread of that commit, while it
+   * holds the file locks of the commit, and never after a write to the pages it probes (the dangling-entry repair of the check).
+   */
+  public final class KeyProbe {
+    // a bucket index mapped to null cannot be probed (LSMTreeIndex.newKeyProbe() said so): asked once, not once per key
+    private final Map<LSMTreeIndex, LSMTreeIndex.KeyProbe> probes = new IdentityHashMap<>();
+
+    public boolean holdsNoEntryFor(final Object[] keys) {
+      checkIsValid();
+      for (final Index index : getIndexesByKeys(keys)) {
+        if (!(index instanceof final LSMTreeIndex lsmIndex))
+          return false;
+        LSMTreeIndex.KeyProbe probe = probes.get(lsmIndex);
+        if (probe == null) {
+          if (probes.containsKey(lsmIndex))
+            return false;
+          probe = lsmIndex.newKeyProbe();
+          probes.put(lsmIndex, probe);
+          if (probe == null)
+            return false;
+        }
+        if (!probe.holdsNoEntryFor(keys))
+          return false;
+      }
+      return true;
+    }
+  }
+
   @Override
   public IndexCursor get(final Object[] keys, final int limit) {
     checkIsValid();
@@ -328,37 +355,8 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     final boolean isFullText = first != null && first.getType() == Schema.INDEX_TYPE.FULL_TEXT;
 
     if (isFullText) {
-      if (first instanceof final LSMTreeFullTextIndex fullTextIndex && fullTextIndex.isBM25())
-        return FullTextSearch.searchSimple(this, keys, limit);
-
-      // For full-text indexes, collect entries with scores
-      final List<IndexCursorEntry> entries = new ArrayList<>();
-
-      for (final Index index : getIndexesByKeys(keys)) {
-        // #5662: try-with-resources - the limit breaks out of the loop, abandoning the cursor partway
-        try (final IndexCursor cursor = index.get(keys, limit > -1 ? limit - entries.size() : -1)) {
-          while (cursor.hasNext()) {
-            final Identifiable record = cursor.next();
-            final int score = cursor.getScore();
-            entries.add(new IndexCursorEntry(keys, record, score));
-
-            if (limit > -1 && entries.size() >= limit)
-              break;
-          }
-        }
-        if (limit > -1 && entries.size() >= limit)
-          break;
-      }
-
-      // Sort by score descending
-      if (entries.size() > 1)
-        entries.sort((o1, o2) -> Integer.compare(o2.score, o1.score));
-
-      // Apply limit after sorting
-      if (limit > -1 && entries.size() > limit)
-        return new TempIndexCursor(entries.subList(0, limit));
-
-      return new TempIndexCursor(entries);
+      // A caller with no command context: the guard stops a terminated statement
+      return getFullText(first, keys, limit, WorkGuard.forCommandDeadline(null));
     } else {
       // For non-full-text indexes, use the original implementation.
       // An index whose results are APPROXIMATE (a spatial grid: a cell hit is a candidate, not a match) cannot have a
@@ -389,6 +387,69 @@ public class TypeIndex implements RangeIndex, IndexInternal {
       }
       return keyedCursor(result != null ? result : Collections.emptyList(), keys);
     }
+  }
+
+  /**
+   * {@link #get(Object[], int)} stopping through {@code guard} when the statement it runs for is terminated or past its deadline.
+   * <p>
+   * A full-text lookup reads the postings of every word of the key, and answers only once it has them all, so a check between the
+   * rows of the statement comes too late: the guard is checked inside that read. The other kinds of index answer a key from the
+   * entries it names, as {@link #get(Object[], int)} does.
+   */
+  public IndexCursor get(final Object[] keys, final int limit, final WorkGuard guard) {
+    checkIsValid();
+
+    final IndexInternal first = firstOrNull();
+    if (first != null && first.getType() == Schema.INDEX_TYPE.FULL_TEXT)
+      return getFullText(first, keys, limit, guard);
+
+    return get(keys, limit);
+  }
+
+  /**
+   * The lookup of a full-text index, over every bucket: collects the entries with their scores, ranked best first, and applies the
+   * limit after the ranking.
+   */
+  private IndexCursor getFullText(final IndexInternal first, final Object[] keys, final int limit, final WorkGuard guard) {
+    if (first instanceof final LSMTreeFullTextIndex fullTextIndex && fullTextIndex.isBM25())
+      return FullTextSearch.searchSimple(this, keys, limit, guard);
+
+    // For full-text indexes, collect entries with scores
+    final List<IndexCursorEntry> entries = new ArrayList<>();
+    int ticks = 0;
+
+    for (final Index index : getIndexesByKeys(keys)) {
+      guard.check();
+      final int bucketLimit = limit > -1 ? limit - entries.size() : -1;
+      // #5662: try-with-resources - the limit breaks out of the loop, abandoning the cursor partway
+      try (final IndexCursor cursor = index instanceof final LSMTreeFullTextIndex fullTextIndex ?
+          fullTextIndex.get(keys, bucketLimit, guard) :
+          index.get(keys, bucketLimit)) {
+        while (cursor.hasNext()) {
+          guard.checkPeriodically(++ticks);
+          final Identifiable record = cursor.next();
+          final int score = cursor.getScore();
+          entries.add(new IndexCursorEntry(keys, record, score));
+
+          if (limit > -1 && entries.size() >= limit)
+            break;
+        }
+      }
+      if (limit > -1 && entries.size() >= limit)
+        break;
+    }
+
+    // Sort by score descending
+    if (entries.size() > 1) {
+      guard.check();
+      entries.sort((o1, o2) -> Integer.compare(o2.score, o1.score));
+    }
+
+    // Apply limit after sorting
+    if (limit > -1 && entries.size() > limit)
+      return new TempIndexCursor(entries.subList(0, limit));
+
+    return new TempIndexCursor(entries);
   }
 
   /** The entries of the set, at most {@code limit} of them when the limit is set (-1 for none) */
@@ -1265,14 +1326,14 @@ public class TypeIndex implements RangeIndex, IndexInternal {
 
   private void checkIsValid() {
     if (!valid)
-      throw new IndexException("Index '" + getName() + "' is not valid. Probably has been drop or rebuilt");
+      throw new StaleIndexException("Index '" + getName() + "' is not valid. Probably has been drop or rebuilt");
   }
 
   private IndexInternal getFirstUnderlyingIndex() {
     checkIsValid();
     final IndexInternal first = firstOrNull();
     if (first == null)
-      throw new IndexException("Index '" + getName() + "' is not valid. Probably has been drop or rebuilt");
+      throw new StaleIndexException("Index '" + getName() + "' is not valid. Probably has been drop or rebuilt");
     return first;
   }
 

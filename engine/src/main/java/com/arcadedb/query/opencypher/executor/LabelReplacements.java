@@ -524,7 +524,9 @@ public final class LabelReplacements {
     final TraversalPath rebuilt = new TraversalPath(liveVertices.get(0));
     for (int i = 0; i < liveEdges.size(); i++)
       rebuilt.addStep(liveEdges.get(i), liveVertices.get(i + 1));
-    return rebuilt;
+    // The rebuilt path reads what the statement deleted as the original did (issue #12548)
+    final DeletedReferences.Deletions deletions = path.getDeletions();
+    return deletions != null ? rebuilt.withDeletions(deletions) : rebuilt;
   }
 
   /**

@@ -24,6 +24,8 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.TestServerHelper;
 import java.lang.reflect.Field;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.ratis.proto.RaftProtos;
 import org.apache.ratis.protocol.RaftPeer;
@@ -507,6 +509,35 @@ class RaftHAServerReadinessTest {
     // After a success, the next tick probes again.
     f.raft.refreshLeaderCommitIndex();
     assertThat(f.probes.get()).isEqualTo(3);
+  }
+
+  // Regression for #12552: a node otherwise ready is not ready while the close of its old Ratis server is still running
+  @Test
+  void aStuckRatisCloseMakesAnOtherwiseReadyNodeNotReady() throws Exception {
+    final Fixture f = new Fixture(true, 100L, 100L);
+    assertThat(f.raft.isReadyForTraffic(MAX_LAG)).as("every other gate is open").isTrue();
+
+    final CountDownLatch release = new CountDownLatch(1);
+    final Thread closer = new Thread(() -> {
+      try {
+        release.await();
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+    }, "issue12552-stuck-close");
+    closer.setDaemon(true);
+    closer.start();
+    try {
+      final Field field = RaftHAServer.class.getDeclaredField("stuckRatisClose");
+      field.setAccessible(true);
+      field.set(f.raft, closer);
+
+      assertThat(f.raft.isReadyForTraffic(MAX_LAG)).isFalse();
+    } finally {
+      release.countDown();
+      closer.join(TimeUnit.SECONDS.toMillis(30));
+    }
+    assertThat(f.raft.isReadyForTraffic(MAX_LAG)).as("the close ended").isTrue();
   }
 
   // Regression for #7619: the backoff is bounded

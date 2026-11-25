@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.planner;
 
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.CallClause;
 import com.arcadedb.query.opencypher.ast.ClauseEntry;
@@ -125,6 +126,10 @@ public final class CypherEagernessAnalyzer {
   private final Set<String> mergeReadLabels        = new HashSet<>();
   private       boolean     mergeReadsAnyKey       = false;
   private       boolean     mergeReadsAnyLabel     = false;
+  // The keys among them a MERGE looks the entity it binds up by with the same key of another variable, (n {uuid: row.uuid}):
+  // the entity variable, the key and the other variable. A SET n = row or SET n += row writes each such key with the value
+  // the MERGE matched it by, so it changes no lookup: on every row the key already holds that value (issue #12640).
+  private final Set<PropertyReadSite> mergeKeyPairs;
   // The property reads of the clauses planned since the last barrier that evaluate an expression per row (a WITH, an UNWIND,
   // the right-hand side of a SET, ...): a later write of one of those keys runs for one row before the read of the next row
   // (issue #11005). A MATCH's own pattern and WHERE are not among them, see observeClause()
@@ -141,6 +146,9 @@ public final class CypherEagernessAnalyzer {
   // The variables a WITH bound to a property of a variable that cannot hold a record ({@code WITH row, row.id AS id}), to the
   // variable and the key: a lookup by one of them reads the same value as that property (issue #11230)
   private final Map<String, String[]> projectedProperties;
+  // The parameters of the execution being planned, or null: an UNWIND of a parameter that holds no record binds a variable no
+  // record write can change, as an UNWIND of a literal list does (issue #12640)
+  private final Map<String, Object> parameters;
   // Whether observeClause() collects anything: what it collects is read only to weigh a property write against, and a statement
   // with no write clause has none, so for it the walk of every clause's expressions is pure planning cost (issue #11323)
   private final boolean             tracksPropertyReads;
@@ -149,11 +157,12 @@ public final class CypherEagernessAnalyzer {
 
   /** An analyzer that weighs every write it is asked about: the shape of a statement it is not told about. */
   public CypherEagernessAnalyzer() {
-    this(true);
+    this(true, null);
   }
 
-  private CypherEagernessAnalyzer(final boolean tracksPropertyReads) {
+  private CypherEagernessAnalyzer(final boolean tracksPropertyReads, final Map<String, Object> parameters) {
     this.tracksPropertyReads = tracksPropertyReads;
+    this.parameters = parameters;
     // Only observeClause() adds to these: an analyzer that tracks nothing shares the empty collections, which read as empty
     // and clear as a no-op, instead of allocating five per planning (issue #11323)
     if (tracksPropertyReads) {
@@ -162,12 +171,14 @@ public final class CypherEagernessAnalyzer {
       rowUniqueVariables = new HashSet<>();
       nonRecordVariables = new HashSet<>();
       projectedProperties = new HashMap<>();
+      mergeKeyPairs = new HashSet<>();
     } else {
       pendingPropertyReads = Collections.emptySet();
       pendingMatchReads = Collections.emptySet();
       rowUniqueVariables = Collections.emptySet();
       nonRecordVariables = Collections.emptySet();
       projectedProperties = Collections.emptyMap();
+      mergeKeyPairs = Collections.emptySet();
     }
   }
 
@@ -175,9 +186,11 @@ public final class CypherEagernessAnalyzer {
    * The analyzer for planning {@code statement}. A read-only statement asks no {@code needsBarrierForPropertyWrites} question,
    * so its analyzer skips the per-clause property-read walk of {@link #observeClause}: an indexed point lookup planned on every
    * execution paid about 1.2 KB and 13% of its time for it (issue #11323).
+   *
+   * @param parameters the parameters of the execution being planned, or null when the plan does not depend on them
    */
-  public static CypherEagernessAnalyzer forStatement(final CypherStatement statement) {
-    return new CypherEagernessAnalyzer(statement == null || !statement.isReadOnly());
+  public static CypherEagernessAnalyzer forStatement(final CypherStatement statement, final Map<String, Object> parameters) {
+    return new CypherEagernessAnalyzer(statement == null || !statement.isReadOnly(), parameters);
   }
 
   /**
@@ -342,6 +355,7 @@ public final class CypherEagernessAnalyzer {
     mergeReadLabels.clear();
     mergeReadsAnyKey = false;
     mergeReadsAnyLabel = false;
+    mergeKeyPairs.clear();
     pendingPropertyReads.clear();
     pendingMatchReads.clear();
   }
@@ -356,22 +370,79 @@ public final class CypherEagernessAnalyzer {
     if (mergeClause == null || mergeClause.getPathPattern() == null)
       return;
     final PathPattern pathPattern = mergeClause.getPathPattern();
+    // The keys the MERGE's own ON CREATE SET / ON MATCH SET writes between the lookup and a SET after the MERGE: such a key no
+    // longer holds the value it was matched by when that SET runs, so it pairs with nothing. Null when an action writes keys
+    // the planner cannot name (a whole map, a computed key), which leaves no key paired.
+    final Set<String> actionWrittenKeys = tracksPropertyReads ? actionWrittenKeys(mergeClause) : Set.of();
+    // The entity a MERGE binds itself: the node of a single-node pattern (the validator refuses one bound before) and the
+    // relationships of a path (MERGE cannot reuse a bound relationship). A bound endpoint of a path is only filtered by its map.
+    final boolean singleNode = pathPattern.isSingleNode();
     for (final NodePattern node : pathPattern.getNodes()) {
-      observeMergeReadKeys(node.getProperties(), node.getPropertiesParameterName());
+      observeMergeReadKeys(singleNode ? node.getVariable() : null, node.getProperties(), node.getPropertiesParameterName(),
+          actionWrittenKeys);
       if (node.hasDynamicLabels())
         mergeReadsAnyLabel = true;
       else if (node.hasLabels())
         mergeReadLabels.addAll(node.getLabels());
     }
     for (final RelationshipPattern relationship : pathPattern.getRelationships())
-      observeMergeReadKeys(relationship.getProperties(), relationship.getPropertiesParameterName());
+      observeMergeReadKeys(relationship.getVariable(), relationship.getProperties(), relationship.getPropertiesParameterName(),
+          actionWrittenKeys);
   }
 
-  private void observeMergeReadKeys(final Map<String, Object> properties, final String parameterName) {
+  /**
+   * The property keys the {@code ON CREATE SET} and {@code ON MATCH SET} actions of {@code mergeClause} write, through any
+   * variable, or null when one of them writes keys the planner cannot name: {@code SET n = map}, {@code SET n += expr}, a
+   * computed key or an expression target.
+   */
+  private static Set<String> actionWrittenKeys(final MergeClause mergeClause) {
+    if (!mergeClause.hasOnCreateSet() && !mergeClause.hasOnMatchSet())
+      return Set.of();
+    final Set<String> keys = new HashSet<>();
+    for (final SetClause action : new SetClause[] { mergeClause.getOnCreateSet(), mergeClause.getOnMatchSet() }) {
+      if (action == null)
+        continue;
+      for (final SetClause.SetItem item : action.getItems()) {
+        switch (item.getType()) {
+        case PROPERTY -> {
+          if (item.getKeyExpression() != null || item.getTargetExpression() != null || item.getProperty() == null)
+            return null;
+          keys.add(item.getProperty());
+        }
+        case MERGE_MAP -> {
+          if (!(item.getValueExpression() instanceof MapExpression map) || item.getTargetExpression() != null)
+            return null;
+          keys.addAll(map.getEntries().keySet());
+        }
+        case REPLACE_MAP -> {
+          return null;
+        }
+        default -> {
+          // a label write changes no property
+        }
+        }
+      }
+    }
+    return keys;
+  }
+
+  /**
+   * @param variable          the variable of the entity the MERGE binds by these keys, or null when the pattern element only
+   *                          filters an entity bound before
+   * @param actionWrittenKeys the keys the MERGE's own actions write, which pair with nothing, or null when they may write any
+   */
+  private void observeMergeReadKeys(final String variable, final Map<String, Object> properties, final String parameterName,
+      final Set<String> actionWrittenKeys) {
     if (parameterName != null)
       mergeReadsAnyKey = true;
     else if (properties != null)
-      mergeReadKeys.addAll(properties.keySet());
+      for (final Map.Entry<String, Object> entry : properties.entrySet()) {
+        mergeReadKeys.add(entry.getKey());
+        if (tracksPropertyReads && variable != null && actionWrittenKeys != null && !actionWrittenKeys.contains(entry.getKey())
+            && entry.getValue() instanceof PropertyAccessExpression access
+            && entry.getKey().equals(access.getPropertyName()) && !variable.equals(access.getVariableName()))
+          mergeKeyPairs.add(new PropertyReadSite(variable, entry.getKey(), access.getVariableName()));
+      }
   }
 
   /**
@@ -382,9 +453,20 @@ public final class CypherEagernessAnalyzer {
    * between the two clauses brought it back to one only as long as the input fit one pull batch (issue #10889).
    * <p>
    * A whole-map write ({@code SET n = map}, {@code SET n += expr}) or a key computed per row writes keys the planner
-   * cannot name, and counts as writing every key; a {@code SET n += {..}} literal writes exactly its keys.
+   * cannot name, and counts as writing every key; a {@code SET n += {..}} literal writes exactly its keys. The exception is
+   * the upsert of a bulk load, {@code UNWIND $rows AS row MERGE (n:L {uuid: row.uuid}) SET n = row}: when every key the
+   * MERGE clauses read is one the MERGE looked {@code n} up by with the same key of {@code row}, the map write gives each of
+   * them the value it already holds, so it changes nothing a MERGE of another row can find (issue #12640).
    */
   public boolean needsBarrierAfterMerge(final SetClause setClause) {
+    return needsBarrierAfterMerge(setClause, true);
+  }
+
+  /**
+   * @param sameScope whether the SET runs in the scope of the MERGE clauses, where a variable names the entity the MERGE bound
+   *                  and {@link #mergeKeyPairs} applies; a FOREACH or a CALL body can shadow either side of a pair
+   */
+  private boolean needsBarrierAfterMerge(final SetClause setClause, final boolean sameScope) {
     if (setClause == null || !mergeReadsAnything())
       return false;
     for (final SetClause.SetItem item : setClause.getItems()) {
@@ -398,12 +480,12 @@ public final class CypherEagernessAnalyzer {
           for (final String key : map.getEntries().keySet())
             if (mergeReadsKey(key))
               return true;
-        } else if (mergeReadsKey(null))
+        } else if (mergeReadsKey(null) && !(sameScope && rewritesMergeKeysUnchanged(item)))
           return true;
       }
       case REPLACE_MAP -> {
         // replaces the whole map, so every key the MERGE reads is either rewritten or removed
-        if (mergeReadsKey(null))
+        if (mergeReadsKey(null) && !(sameScope && rewritesMergeKeysUnchanged(item)))
           return true;
       }
       case LABELS -> {
@@ -413,6 +495,22 @@ public final class CypherEagernessAnalyzer {
       }
     }
     return false;
+  }
+
+  /**
+   * Whether a map write {@code SET n = row} / {@code SET n += row} writes every key a MERGE reads with the value it holds: each
+   * such key is one a MERGE looked {@code n} up by as {@code k: row.k}. A key it does not pair could be removed or rewritten on
+   * {@code n}, which another MERGE may be looking for.
+   */
+  private boolean rewritesMergeKeysUnchanged(final SetClause.SetItem item) {
+    final String variable = item.getVariable();
+    final String map = mapVariable(item.getValueExpression());
+    if (mergeReadsAnyKey || variable == null || map == null || item.getKeyExpression() != null || item.getTargetExpression() != null)
+      return false;
+    for (final String key : mergeReadKeys)
+      if (!mergeKeyPairs.contains(new PropertyReadSite(variable, key, map)))
+        return false;
+    return true;
   }
 
   /** The REMOVE counterpart of {@link #needsBarrierAfterMerge(SetClause)}. */
@@ -435,8 +533,8 @@ public final class CypherEagernessAnalyzer {
    * is part of that MERGE, applied row by row.
    */
   public boolean needsBarrierAfterMerge(final MergeClause mergeClause) {
-    return mergeClause != null && (needsBarrierAfterMerge(mergeClause.getOnCreateSet())
-        || needsBarrierAfterMerge(mergeClause.getOnMatchSet()));
+    return mergeClause != null && (needsBarrierAfterMerge(mergeClause.getOnCreateSet(), false)
+        || needsBarrierAfterMerge(mergeClause.getOnMatchSet(), false));
   }
 
   /** A FOREACH whose body, at any nesting depth, writes what a MERGE before it matches on. */
@@ -445,7 +543,7 @@ public final class CypherEagernessAnalyzer {
       return false;
     for (final ClauseEntry innerClause : foreachClause.getInnerClauses()) {
       final boolean conflicts = switch (innerClause.getType()) {
-        case SET -> needsBarrierAfterMerge((SetClause) innerClause.getClause());
+        case SET -> needsBarrierAfterMerge((SetClause) innerClause.getClause(), false);
         case REMOVE -> needsBarrierAfterMerge((RemoveClause) innerClause.getClause());
         case MERGE -> needsBarrierAfterMerge((MergeClause) innerClause.getClause());
         case FOREACH -> needsBarrierAfterMerge((ForeachClause) innerClause.getClause());
@@ -480,7 +578,7 @@ public final class CypherEagernessAnalyzer {
       return true;
     for (final ClauseEntry clause : clauses) {
       final boolean conflicts = switch (clause.getType()) {
-        case SET -> needsBarrierAfterMerge((SetClause) clause.getClause());
+        case SET -> needsBarrierAfterMerge((SetClause) clause.getClause(), false);
         case REMOVE -> needsBarrierAfterMerge((RemoveClause) clause.getClause());
         case MERGE -> needsBarrierAfterMerge((MergeClause) clause.getClause());
         case FOREACH -> needsBarrierAfterMerge((ForeachClause) clause.getClause());
@@ -776,6 +874,14 @@ public final class CypherEagernessAnalyzer {
    * @param boundVariables  the names bound before the clause runs
    */
   public void observeClause(final ClauseEntry entry, final boolean startsStatement, final Set<String> boundVariables) {
+    // a clause that binds names can rebind either name of a pair of mergeKeyPairs to another value: a WITH, and an UNWIND, a
+    // LOAD CSV, a procedure's YIELD or a subquery's RETURN, which may shadow a name already in scope
+    if (entry != null)
+      switch (entry.getType()) {
+      case WITH, UNWIND, LOAD_CSV, CALL, SUBQUERY -> mergeKeyPairs.clear();
+      default -> {
+      }
+      }
     if (entry == null || !tracksPropertyReads)
       return;
     observeEmbeddedReads(entry);
@@ -809,7 +915,7 @@ public final class CypherEagernessAnalyzer {
     case UNWIND -> {
       final UnwindClause unwind = entry.getTypedClause();
       rowUniqueVariables.clear();
-      if (cannotHoldRecord(unwind.getListExpression()))
+      if (cannotHoldRecord(unwind.getListExpression()) || parameterHoldsNoRecord(unwind.getListExpression()))
         nonRecordVariables.add(unwind.getVariable());
       else
         nonRecordVariables.remove(unwind.getVariable());
@@ -839,6 +945,25 @@ public final class CypherEagernessAnalyzer {
       // SET, REMOVE, DELETE and FOREACH hand on the rows they receive
     }
     }
+  }
+
+  /**
+   * Whether {@code expression} is a parameter whose value, in the execution being planned, is a list of maps and scalars: what an
+   * application sends as the rows of a batch over HTTP or Bolt. An UNWIND of it binds plain values, as an UNWIND of a literal
+   * list does, so a property read of the variable reads a map entry no record write can change. A record in the list keeps it
+   * one that can hold a record.
+   */
+  private boolean parameterHoldsNoRecord(final Expression expression) {
+    if (parameters == null || !(expression instanceof ParameterExpression parameter))
+      return false;
+    final Object value = parameters.get(parameter.getParameterName());
+    if (!(value instanceof Collection<?> rows))
+      return false;
+    for (final Object row : rows)
+      if (row != null && !(row instanceof String) && !(row instanceof Number) && !(row instanceof Boolean)
+          && (!(row instanceof Map) || row instanceof Identifiable))
+        return false;
+    return true;
   }
 
   /** True when a SET writes a key a clause ahead of it read for another row, see {@link #observeClause}. */
@@ -960,24 +1085,35 @@ public final class CypherEagernessAnalyzer {
    */
   private boolean propertyWriteConflicts(final String variable, final String key, final Set<String> shadowed, final String mapVariable) {
     final boolean ownRowOnly = variable != null && !shadowed.contains(variable) && rowUniqueVariables.contains(variable);
+    final boolean pairedMap = mapVariable != null && variable != null && !shadowed.contains(variable) && !shadowed.contains(mapVariable);
     for (final PropertyReadSite read : pendingPropertyReads) {
       if (key != null && read.key() != null && !key.equals(read.key()))
         continue;
       if (ownRowOnly && variable.equals(read.variable()))
         continue;
+      if (key == null && pairedMap && read.key() != null && keepsMergeKey(variable, read.key(), mapVariable))
+        continue;
       return true;
     }
-    final boolean pairedMap = mapVariable != null && variable != null && !shadowed.contains(variable) && !shadowed.contains(mapVariable);
     for (final PropertyReadSite read : pendingMatchReads) {
       if (key != null && read.key() != null && !key.equals(read.key()))
         continue;
       if (ownRowOnly && variable.equals(read.variable()))
         continue;
-      if (key == null && pairedMap && read.key() != null && isPairedLookup(read, variable, mapVariable))
+      if (key == null && pairedMap && read.key() != null
+          && (isPairedLookup(read, variable, mapVariable) || keepsMergeKey(variable, read.key(), mapVariable)))
         continue;
       return true;
     }
     return false;
+  }
+
+  /**
+   * Whether the map write {@code SET variable = mapVariable} gives {@code key} the value it holds: a MERGE looked {@code variable}
+   * up by that key of {@code mapVariable}, see {@link #mergeKeyPairs}.
+   */
+  private boolean keepsMergeKey(final String variable, final String key, final String mapVariable) {
+    return mergeKeyPairs.contains(new PropertyReadSite(variable, key, mapVariable));
   }
 
   /** Whether {@code read} is one side of an equality between {@code variable} and {@code mapVariable} on one key. */
