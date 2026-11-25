@@ -21,12 +21,13 @@ package com.arcadedb.function.map;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.ArrayList;
-import java.util.Collections;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
 /**
- * map.sortedProperties(map) - Get sorted list of [key, value] pairs.
+ * map.sortedProperties(map, ignoreCase = true) - Get the list of [key, value] pairs sorted by key, case-insensitively
+ * unless ignoreCase is false, as APOC does.
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -43,28 +44,30 @@ public class MapSortedProperties extends AbstractMapFunction {
 
   @Override
   public int getMaxArgs() {
-    return 1;
+    return 2;
   }
 
   @Override
   public String getDescription() {
-    return "Get a list of [key, value] pairs sorted by key";
+    return "Get a list of [key, value] pairs sorted by key, case-insensitively unless the second argument is false";
   }
 
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     final Map<String, Object> map = asMap(args[0]);
+    final Object ignoreCase = args.length > 1 ? args[1] : null;
+    if (ignoreCase != null && !(ignoreCase instanceof Boolean))
+      throw new IllegalArgumentException("map.sortedProperties() second argument must be a boolean");
 
     if (map == null || map.isEmpty())
       return new ArrayList<>();
 
     final List<String> keys = new ArrayList<>(map.keySet());
-    Collections.sort(keys);
+    keys.sort(Boolean.FALSE.equals(ignoreCase) ? null : String.CASE_INSENSITIVE_ORDER);
 
     final List<List<Object>> result = new ArrayList<>(keys.size());
-    for (final String key : keys) {
-      result.add(List.of(key, map.get(key) == null ? "null" : map.get(key)));
-    }
+    for (final String key : keys)
+      result.add(Arrays.asList(key, map.get(key)));
 
     return result;
   }

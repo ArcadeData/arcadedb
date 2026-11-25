@@ -21,12 +21,14 @@ package com.arcadedb.query.opencypher.executor.steps;
 import com.arcadedb.database.BaseRecord;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.DocumentValidator;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.VirtualVertex;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.SetClause;
@@ -192,6 +194,9 @@ public final class SetClauseApplier {
       evaluateRightHandSides(items, result, writtenDocs, false, values, targets, keys, keyIsNull);
     }
 
+    // A null written to a NOTNULL property is refused here, before any item of the clause is written (issue #13227)
+    refuseNullsOnNotNullProperties(items, result, writtenDocs, values, targets, keys, keyIsNull);
+
     // Phase 2: apply the writes using the pre-computed snapshot values. A record is saved once, after every item of the
     // clause has been applied to it (issue #12824): saving it per item fired its BEFORE/AFTER UPDATE triggers once per item,
     // each time on a half-applied record, while SQL UPDATE with the same assignments saves it once
@@ -227,6 +232,51 @@ public final class SetClauseApplier {
     // above already moved those to the replacement vertex, and the redirect keeps a copy shared with earlier rows there too
     heldCollections.refresh(result);
     labelReplacements.redirect(result);
+  }
+
+  /**
+   * Refuses the clause when one of its items writes a null to a NOTNULL property of its target (issue #13227). openCypher
+   * never stores a null, it removes the property ({@code SET n.p = null}, {@code SET n += {p: null}}) or leaves it out
+   * ({@code SET n = {p: null}}), so the presence-based rule of the validator would never see the null that SQL refuses.
+   * Asked between the two phases, so a refused clause has written nothing. The properties {@code SET n = map} leaves out
+   * are removals, not null writes, and stay accepted like {@code REMOVE n.p}.
+   */
+  private void refuseNullsOnNotNullProperties(final List<SetClause.SetItem> items, final Result result,
+      final Map<RID, MutableDocument> writtenDocs, final Object[] values, final Object[] targets, final String[] keys,
+      final boolean[] keyIsNull) {
+    for (int i = 0; i < items.size(); i++) {
+      final SetClause.SetItem item = items.get(i);
+      switch (item.getType()) {
+      case PROPERTY: {
+        if (values[i] != null || keyIsNull[i])
+          break;
+        final Object target = item.getTargetExpression() != null ? targets[i] : resolveLatestDoc(item.getVariable(), result, writtenDocs);
+        if (target instanceof Document doc)
+          DocumentValidator.requireNullAllowed(doc.getType(), item.getKeyExpression() != null ? keys[i] : item.getProperty(), doc);
+        break;
+      }
+      case REPLACE_MAP:
+      case MERGE_MAP: {
+        final Map<String, Object> map = asPropertyMap(values[i]);
+        if (map == null || !map.containsValue(null))
+          break;
+        if (resolveLatestDoc(item.getVariable(), result, writtenDocs) instanceof Document doc)
+          requireNullsAllowed(doc.getType(), map, doc);
+        break;
+      }
+      default:
+        break;
+      }
+    }
+  }
+
+  /** Refuses the null entries of a property map written to a record of {@code type} that are NOTNULL properties (#13227). */
+  static void requireNullsAllowed(final DocumentType type, final Map<String, Object> map, final Document record) {
+    if (map == null)
+      return;
+    for (final Map.Entry<String, Object> entry : map.entrySet())
+      if (entry.getValue() == null)
+        DocumentValidator.requireNullAllowed(type, entry.getKey(), record);
   }
 
   /**
@@ -496,6 +546,10 @@ public final class SetClauseApplier {
       propertyName = item.getProperty();
 
     final Object value = precomputedValue;
+    // Asked again here, on the record the write lands on: a label written earlier in the clause can have moved it to
+    // another type than the one the check before the writes saw (issue #13227)
+    if (value == null)
+      DocumentValidator.requireNullAllowed(doc.getType(), propertyName, doc);
 
     // Issue #4474: a MERGE action never re-asserts a value the record already holds, because the write would bump
     // the MVCC version and invalidate the record for every concurrent reader that had matched it. The statistic is
@@ -551,6 +605,8 @@ public final class SetClauseApplier {
     final Document doc = resolveLatestDoc(item.getVariable(), result, writtenDocs);
     if (doc == null)
       return;
+    // issue #13227, asked again on the record the write lands on, see applyPropertySet()
+    requireNullsAllowed(doc.getType(), map, doc);
 
     final MutableDocument mutableDoc = doc.modify();
     if (mutableDoc != doc)
@@ -595,6 +651,8 @@ public final class SetClauseApplier {
     final Document doc = resolveLatestDoc(item.getVariable(), result, writtenDocs);
     if (doc == null)
       return;
+    // issue #13227, asked again on the record the write lands on, see applyPropertySet()
+    requireNullsAllowed(doc.getType(), map, doc);
 
     final MutableDocument mutableDoc = doc.modify();
     if (mutableDoc != doc)
@@ -775,6 +833,9 @@ public final class SetClauseApplier {
     DeletedEntityMarker.checkNotDeleted(obj);
     if (!(obj instanceof Vertex vertex))
       return;
+    // A virtual node (create.vNode) has no stored type to rewrite under a composite one (issue #12109)
+    if (vertex instanceof VirtualVertex virtual)
+      throw virtual.unsupported("relabelled");
 
     // If this vertex was already replaced on a prior row (row fanout hitting the same node), redirect to the
     // replacement so the idempotency check below reads the current type. The per-row redirect() at the top of

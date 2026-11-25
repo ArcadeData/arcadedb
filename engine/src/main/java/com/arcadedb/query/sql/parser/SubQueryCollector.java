@@ -79,6 +79,10 @@ public class SubQueryCollector {
 
   public Identifier addStatement(final Statement stm) {
     final Identifier alias = getNextAlias();
+    // A correlated sub-query becomes a per-record LET, computed after the fetch: its alias has no value when the fetch
+    // or an earlier filter is planned, so it must not count as early calculated (an index key, issue #12287)
+    if (stm.refersToParent())
+      alias.internalAlias = false;
     return addStatement(alias, stm);
   }
 
