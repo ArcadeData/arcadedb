@@ -62,20 +62,9 @@ class SlotRebasePageBufferTest extends TestHelper {
 
   @Test
   void eachFurtherRebasedPageCostsTheCommitLessThanAPage() throws Exception {
-    database.getSchema().createDocumentType("Rebased", 1);
-    final List<RID> all = new ArrayList<>();
-    database.transaction(() -> {
-      for (int i = 0; i < 1100; i++)
-        all.add(database.newDocument("Rebased").set("tag", BULKY).set("n", i).save().getIdentity());
-    });
-    final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(all.getFirst().getBucketId());
-    final int perPage = bucket.getMaxRecordsInPage();
-
-    // the records of each page, in page order; each run takes the first two of a stretch of pages
-    final TreeMap<Long, List<RID>> byPage = new TreeMap<>();
-    for (final RID rid : all)
-      byPage.computeIfAbsent(rid.getPosition() / perPage, k -> new ArrayList<>()).add(rid);
-    final List<List<RID>> pages = new ArrayList<>(byPage.values());
+    // each run takes the first two records of a stretch of pages
+    final List<List<RID>> pages = insertRecordsByPage(1100);
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(pages.getFirst().getFirst().getBucketId());
     assertThat(pages.size()).as("pages the records fill").isGreaterThanOrEqualTo(FEW_PAGES + MANY_PAGES);
 
     final long recycledBefore = ((DatabaseInternal) database).getPageManager().getStats().txPageBuffersRecycled;
@@ -92,18 +81,7 @@ class SlotRebasePageBufferTest extends TestHelper {
 
   @Test
   void aRebaseWithAStatementOpenMergesTheSameButDoesNotReuseTheDroppedArray() throws Exception {
-    database.getSchema().createDocumentType("Rebased", 1);
-    final List<RID> all = new ArrayList<>();
-    database.transaction(() -> {
-      for (int i = 0; i < 300; i++)
-        all.add(database.newDocument("Rebased").set("tag", BULKY).set("n", i).save().getIdentity());
-    });
-    final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(all.getFirst().getBucketId());
-    final int perPage = bucket.getMaxRecordsInPage();
-    final TreeMap<Long, List<RID>> byPage = new TreeMap<>();
-    for (final RID rid : all)
-      byPage.computeIfAbsent(rid.getPosition() / perPage, k -> new ArrayList<>()).add(rid);
-    final List<List<RID>> pages = new ArrayList<>(byPage.values());
+    final List<List<RID>> pages = insertRecordsByPage(300);
     assertThat(pages.size()).as("pages the records fill").isGreaterThanOrEqualTo(FEW_PAGES);
 
     final long recycledBefore = ((DatabaseInternal) database).getPageManager().getStats().txPageBuffersRecycled;
@@ -112,6 +90,21 @@ class SlotRebasePageBufferTest extends TestHelper {
 
     assertThat(((DatabaseInternal) database).getPageManager().getStats().txPageBuffersRecycled - recycledBefore)
         .as("page copies written into a dropped array while a statement was open").isZero();
+  }
+
+  /** Inserts {@code count} bulky records in one bucket and returns them grouped by the page that holds them, in page order. */
+  private List<List<RID>> insertRecordsByPage(final int count) {
+    database.getSchema().createDocumentType("Rebased", 1);
+    final List<RID> all = new ArrayList<>();
+    database.transaction(() -> {
+      for (int i = 0; i < count; i++)
+        all.add(database.newDocument("Rebased").set("tag", BULKY).set("n", i).save().getIdentity());
+    });
+    final int perPage = ((LocalBucket) database.getSchema().getBucketById(all.getFirst().getBucketId())).getMaxRecordsInPage();
+    final TreeMap<Long, List<RID>> byPage = new TreeMap<>();
+    for (final RID rid : all)
+      byPage.computeIfAbsent(rid.getPosition() / perPage, k -> new ArrayList<>()).add(rid);
+    return new ArrayList<>(byPage.values());
   }
 
   /**
