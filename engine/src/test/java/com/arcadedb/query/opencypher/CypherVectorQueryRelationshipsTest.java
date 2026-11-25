@@ -19,6 +19,8 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.RID;
+import com.arcadedb.event.AfterRecordReadListener;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -110,6 +112,31 @@ class CypherVectorQueryRelationshipsTest extends TestHelper {
   }
 
   /**
+   * The relationship the search loaded is the one yielded: looking its RID up again read every edge twice, and an edge deleted
+   * between the two reads failed outside the search's handling of a record gone.
+   */
+  @Test
+  void aYieldedRelationshipIsReadOnce() {
+    final Map<RID, Integer> reads = new HashMap<>();
+    final AfterRecordReadListener listener = record -> {
+      reads.merge(record.getIdentity(), 1, Integer::sum);
+      return record;
+    };
+    database.getSchema().getType("RELATES_TO").getEvents().registerListener(listener);
+    try {
+      final String call = "CALL db.index.vector.queryRelationships('RELATES_TO[fact_embedding]', 5, $v) YIELD relationship AS r RETURN r.uuid AS uuid";
+      // the first search builds the index graph, which reads the edges: the one that follows reads only the 5 it answers
+      query(call, Map.of("v", vector(3)));
+      reads.clear();
+
+      assertThat(query(call, Map.of("v", vector(3)))).hasSize(5);
+      assertThat(reads).hasSize(5).allSatisfy((rid, count) -> assertThat(count).as("reads of %s", rid).isEqualTo(1));
+    } finally {
+      database.getSchema().getType("RELATES_TO").getEvents().unregisterListener(listener);
+    }
+  }
+
+  /**
    * The {@code where} option is applied by the index while it walks. Asking for as many rows as the group holds, with a query
    * vector nearest to another group, only comes back full if the filter is a pre-filter: a top k cut down afterwards would hold
    * rows of the other groups and leave the group short.
@@ -185,6 +212,25 @@ class CypherVectorQueryRelationshipsTest extends TestHelper {
     // and none is of another type, one the schema does declare, so it is the type test that refuses them
     assertThat(query("MATCH (a:Entity)-[r:OTHER]->(b:Entity) "
         + "SEARCH r IN (VECTOR INDEX $idx FOR $v LIMIT 5) RETURN r.uuid AS uuid", params)).isEmpty();
+  }
+
+  /**
+   * A relationship of a {@code shortestPath()} is refused: the step that finds the path keeps the row's bindings and would carry
+   * the relationship the search bound (here {@code e3}, from a to b) beside a path from c to d that does not use it.
+   */
+  @Test
+  void theSearchClauseRefusesARelationshipOfAShortestPath() {
+    database.transaction(() -> {
+      final MutableVertex c = database.newVertex("Entity").set("id", "c").set("embedding", vector(2)).save();
+      final MutableVertex d = database.newVertex("Entity").set("id", "d").set("embedding", vector(4)).save();
+      c.newEdge("RELATES_TO", d).set("uuid", "cd").set("grp", "gx").set("fact_embedding", vector(5)).save();
+    });
+
+    assertThatThrownBy(() -> query(
+        "MATCH shortestPath((x:Entity {id: 'c'})-[r:RELATES_TO]->(y:Entity {id: 'd'})) "
+            + "SEARCH r IN (VECTOR INDEX $idx FOR $v WHERE r.uuid = 'e3' LIMIT 5) RETURN r.uuid AS uuid, x.id AS x, y.id AS y",
+        Map.of("idx", "RELATES_TO[fact_embedding]", "v", vector(3))))
+        .hasMessageContaining("shortestPath");
   }
 
   /** A variable that is neither a node nor a (single) relationship of the pattern is still refused. */

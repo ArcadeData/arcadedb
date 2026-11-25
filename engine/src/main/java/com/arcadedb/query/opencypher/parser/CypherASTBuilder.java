@@ -335,6 +335,9 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       throw new FeatureNotImplementedException("SEARCH is not supported in an OPTIONAL MATCH");
 
     final String variable = stripBackticks(ctx.variable().getText());
+    if (isRelationshipOfShortestPath(match, variable))
+      throw new FeatureNotImplementedException("SEARCH: the binding variable '" + variable
+          + "' is a relationship of a shortestPath() pattern, which a search cannot restrict to the paths that contain it");
     if (!isNodeVariableOf(match, variable) && !isRelationshipVariableOf(match, variable))
       throw new CommandSemanticException(
           "SEARCH: the binding variable '" + variable + "' must be a node or relationship variable of the pattern of its MATCH");
@@ -377,6 +380,20 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       for (final RelationshipPattern relationship : path.getRelationships())
         if (variable.equals(relationship.getVariable()) && !relationship.isVariableLength())
           return true;
+    return false;
+  }
+
+  /**
+   * Whether {@code variable} names a relationship of a {@code shortestPath()} or {@code allShortestPaths()} pattern of the
+   * {@code MATCH}. The step that finds the path copies the row's bindings and never checks that the path holds the relationship the
+   * search bound there, so the row would carry a relationship the path does not use.
+   */
+  private static boolean isRelationshipOfShortestPath(final MatchClause match, final String variable) {
+    for (final PathPattern path : match.getPathPatterns())
+      if (path instanceof ShortestPathPattern)
+        for (final RelationshipPattern relationship : path.getRelationships())
+          if (variable.equals(relationship.getVariable()))
+            return true;
     return false;
   }
 

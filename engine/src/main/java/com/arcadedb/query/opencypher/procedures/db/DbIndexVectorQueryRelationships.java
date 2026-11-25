@@ -18,8 +18,8 @@
  */
 package com.arcadedb.query.opencypher.procedures.db;
 
-import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -96,10 +96,14 @@ public class DbIndexVectorQueryRelationships implements CypherProcedure {
         DISPLAY_NAME + "()").stream().map(DbIndexVectorQueryRelationships::asRelationshipRow);
   }
 
-  /** The row the search answered, with its record yielded as a relationship. */
+  /**
+   * The row the search answered, with its record yielded as a relationship: the edge the search loaded, not its RID looked up again,
+   * which an edge deleted since could fail outside the search's handling of a record gone (issue #12571). The index is over an edge
+   * type, so the record the search loaded is an edge.
+   */
   private static Result asRelationshipRow(final Result row) {
     final ResultInternal out = new ResultInternal();
-    out.setProperty("relationship", ((Identifiable) row.getProperty("node")).getIdentity().asEdge(true));
+    out.setProperty("relationship", (Edge) row.getProperty("node"));
     out.setProperty("score", row.getProperty("score"));
     return out;
   }
