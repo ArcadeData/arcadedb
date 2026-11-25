@@ -31,6 +31,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 import java.util.Set;
 import java.util.stream.Stream;
 
@@ -262,18 +263,79 @@ class HeapEstimatorNestedValuesTest {
     assertThat(registry.containers()).isZero();
   }
 
-  @Test
-  void aSharedRegistryGivesBackWhatItChargedForTwoRowsHoldingTheSameArrayInSmallContainers() {
+  @ParameterizedTest(name = "lists of {0} and {1} elements, removed in the order of {2}")
+  @MethodSource("rowsHoldingTheSameArrayInSmallListsOfDifferentSizes")
+  void aSharedRegistryGivesBackWhatItChargedForRowsHoldingTheSameArrayInSmallListsOfDifferentSizes(final int firstSize,
+      final int secondSize, final String order) {
     final byte[] array = new byte[4_096];
-    final ResultInternal first = row(wrap(new ArrayList<>(List.of(array, array)), 6));
-    final ResultInternal second = row(wrap(new ArrayList<>(List.of(array, array)), 6));
+    final ResultInternal first = row(wrap(new ArrayList<>(Collections.nCopies(firstSize, array)), 6));
+    final ResultInternal second = row(wrap(new ArrayList<>(Collections.nCopies(secondSize, array)), 6));
     final HeapEstimator.Shared registry = new HeapEstimator.Shared();
 
     final long charged = registry.add(first) + registry.add(second);
-    final long givenBack = registry.remove(first) + registry.remove(second);
+    final long givenBack = "same".equals(order) ? registry.remove(first) + registry.remove(second) :
+        registry.remove(second) + registry.remove(first);
 
     assertThat(givenBack).isEqualTo(charged);
     assertThat(registry.containers()).isZero();
+  }
+
+  static Stream<Arguments> rowsHoldingTheSameArrayInSmallListsOfDifferentSizes() {
+    final List<Arguments> arguments = new ArrayList<>();
+    for (final int[] sizes : new int[][] { { 2, 2 }, { 2, 3 }, { 3, 2 }, { 1, 5 }, { 5, 1 }, { 2, 16 }, { 16, 2 } })
+      for (final String order : new String[] { "same", "reverse" })
+        arguments.add(Arguments.of(sizes[0], sizes[1], order));
+    return arguments.stream();
+  }
+
+  @ParameterizedTest(name = "seed {0}")
+  @ValueSource(longs = { 1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L })
+  void aSharedRegistryNeverGivesBackMoreThanItChargedForRowsSharingContainersAtAnyDepth(final long seed) {
+    final Random random = new Random(seed);
+    // The containers the rows share: arrays and lists of every size class
+    final List<Object> pool = new ArrayList<>();
+    for (final int size : new int[] { 3, 40 })
+      pool.add(new ArrayList<>(Collections.nCopies(size, 7L)));
+    pool.add(new byte[4_096]);
+    pool.add(new long[600]);
+    pool.add(new Object[20]);
+
+    for (int round = 0; round < 200; round++) {
+      final HeapEstimator.Shared registry = new HeapEstimator.Shared();
+      final List<ResultInternal> rows = new ArrayList<>();
+      long charged = 0L;
+      for (int i = random.nextInt(5) + 1; i > 0; i--) {
+        final ResultInternal row = row(randomValue(random, pool, 1 + random.nextInt(9)));
+        rows.add(row);
+        charged += registry.add(row);
+      }
+      Collections.shuffle(rows, random);
+      long givenBack = 0L;
+      for (final ResultInternal row : rows)
+        givenBack += registry.remove(row);
+
+      assertThat(givenBack).as("seed %d round %d", seed, round).isEqualTo(charged);
+      assertThat(registry.containers()).as("seed %d round %d", seed, round).isZero();
+    }
+  }
+
+  private static Object randomValue(final Random random, final List<Object> pool, final int levels) {
+    if (levels == 0 || random.nextInt(6) == 0)
+      return pool.get(random.nextInt(pool.size()));
+    final int size = random.nextInt(4) == 0 ? 1 : 1 + random.nextInt(HeapEstimator.SAMPLED_ELEMENTS);
+    final Object[] held = new Object[size];
+    for (int i = 0; i < size; i++)
+      held[i] = random.nextBoolean() ? randomValue(random, pool, levels - 1) : pool.get(random.nextInt(pool.size()));
+    return switch (random.nextInt(3)) {
+      case 0 -> new ArrayList<>(List.of(held));
+      case 1 -> held;
+      default -> {
+        final Map<Object, Object> map = new LinkedHashMap<>();
+        for (int i = 0; i < size; i++)
+          map.put("k" + i, held[i]);
+        yield map;
+      }
+    };
   }
 
   @Test

@@ -115,8 +115,9 @@ public final class HeapEstimator {
    * Each container is remembered with the elements that hold it, so a buffer that lets an element go ({@link #remove}) gives
    * back a container with the last element that held it, and forgets it then. The bytes charged for a container are kept with it
    * and given back as they were charged; what is walked again at {@link #remove} is the element, and the large containers nested in
-   * the container, to take away the holders they had. A container held by an element that stands for others (a small list met deep
-   * down, of which one element is estimated) was charged for all of them, and is given back for all of them. A container that changed while an element held it can therefore give back a
+   * the container, to take away the holders they had. A container met below the sampled levels inside a small list, map or array that
+   * stands for more elements than it samples is not remembered, but counted as it is by every row that holds it: what it was charged
+   * for all those elements is then given back as it was charged. A container that changed while an element held it can therefore give back a
    * different amount than it was charged (the operation never gives back more than it charged), so a buffer is not to change a
    * container it holds.
    * <p>
@@ -138,7 +139,7 @@ public final class HeapEstimator {
     // The container met for the first time that the current walk is inside of, null at the top of the element
     private Held    firstSighted;
     private boolean releasing;
-    // Inside the walk of a container being forgotten: what it gives back is the bytes it was charged, already scaled
+    // Inside the walk that takes the holders of a forgotten container away from the containers nested in it
     private boolean forgetting;
     private long    releasedBytes;
 
@@ -165,6 +166,7 @@ public final class HeapEstimator {
      */
     public long remove(final Object value) {
       releasing = true;
+      firstSighted = null;
       releasedBytes = 0L;
       try {
         return estimate(value, 0, this) + releasedBytes;
@@ -282,16 +284,11 @@ public final class HeapEstimator {
     }
 
     /**
-     * A release gives back, for the elements of a container that were estimated, what {@link #add(Object)} charged for all the
-     * elements they stand for: the container held by the sampled element is one object, the others are charged as the first.
-     * What a container that is forgotten gives back is the bytes it was charged, which carry that already.
+     * Whether the walk is at the top of an element: not inside a container this registry is remembering or forgetting, whose
+     * bytes carry what the containers it holds were charged.
      */
-    private void scaleReleased(final long releasedBefore, final long size, final int counted) {
-      if (!releasing || forgetting || counted >= size)
-        return;
-      final long sampled = releasedBytes - releasedBefore;
-      if (sampled > 0L)
-        releasedBytes = releasedBefore + extrapolate(sampled, size, counted);
+    private boolean atTopOfElement() {
+      return firstSighted == null && !forgetting;
     }
   }
 
@@ -393,20 +390,17 @@ public final class HeapEstimator {
     return depth < MAX_WALK_DEPTH ? DEEP_SAMPLED_ELEMENTS : 0;
   }
 
-  /** The bytes {@code shared} has given back so far, to tell what a walk of the elements of a container gave back. */
-  private static long releasedMark(final Shared shared) {
-    return shared != null ? shared.releasedBytes : 0L;
-  }
-
   /**
-   * What {@code sampled}, the estimate of {@code counted} elements, stands for when the container holds {@code size}: the same
-   * for what {@code shared} gave back for them since {@code releasedBefore}, as it is what an add charged for all of them.
+   * The registry the sampled elements of a container met at {@code depth} are estimated with. A container below {@link #MAX_DEPTH}
+   * that holds more than it samples stands for all of its elements, and a container its sampled element holds is charged once for
+   * each of them: what a registry would give back for that container, with the last row that holds it, is not what the row that
+   * met it first was charged, whichever rows came between. So what such a container holds is counted as it is, every time and
+   * by every row, and not remembered: an add and the remove of the same value then agree, whatever else the registry holds.
+   * Inside a container the registry remembers or forgets, the charge for the elements it stands for is part of that container's
+   * own bytes, and the containers it holds are remembered as before.
    */
-  private static long extrapolate(final long sampled, final long size, final int counted, final Shared shared,
-      final long releasedBefore) {
-    if (shared != null)
-      shared.scaleReleased(releasedBefore, size, counted);
-    return extrapolate(sampled, size, counted);
+  private static Shared sharedForSampled(final Shared shared, final int depth, final long size, final int sample) {
+    return shared != null && depth >= MAX_DEPTH && size > sample && shared.atTopOfElement() ? null : shared;
   }
 
   /**
@@ -580,16 +574,16 @@ public final class HeapEstimator {
     else {
       final Set<String> names = result.getPropertyNames();
       final int sample = sampleSize(depth);
-      final long released = releasedMark(shared);
+      final Shared sampledShared = sharedForSampled(shared, depth, names.size(), sample);
       int counted = 0;
       long sampled = 0L;
       for (final String name : names) {
         if (counted == sample)
           break;
-        sampled += REFERENCE_BYTES + estimate(result.getProperty(name), depth + 1, shared);
+        sampled += REFERENCE_BYTES + estimate(result.getProperty(name), depth + 1, sampledShared);
         ++counted;
       }
-      bytes += extrapolate(sampled, names.size(), counted, shared, released);
+      bytes += extrapolate(sampled, names.size(), counted);
     }
     return bytes;
   }
@@ -599,16 +593,16 @@ public final class HeapEstimator {
       // A DOCUMENT BUILT IN MEMORY, NOT SERIALIZED YET: ITS PROPERTIES ARE WHAT IT HOLDS
       final Set<String> names = mutable.getPropertyNames();
       final int sample = sampleSize(depth);
-      final long released = releasedMark(shared);
+      final Shared sampledShared = sharedForSampled(shared, depth, names.size(), sample);
       int counted = 0;
       long sampled = 0L;
       for (final String name : names) {
         if (counted == sample)
           break;
-        sampled += HASH_ENTRY_BYTES + estimate(mutable.get(name), depth + 1, shared);
+        sampled += HASH_ENTRY_BYTES + estimate(mutable.get(name), depth + 1, sampledShared);
         ++counted;
       }
-      return RECORD_BYTES + MAP_BYTES + extrapolate(sampled, names.size(), counted, shared, released);
+      return RECORD_BYTES + MAP_BYTES + extrapolate(sampled, names.size(), counted);
     }
     if (document instanceof BaseRecord record) {
       final Binary buffer = record.getBuffer();
@@ -622,32 +616,33 @@ public final class HeapEstimator {
     if (size == 0)
       return LIST_BYTES;
     final int sample = sampleSize(depth);
-    final long released = releasedMark(shared);
+    final Shared sampledShared = sharedForSampled(shared, depth, size, sample);
     long sampled = 0L;
     int counted = 0;
     if (collection instanceof List<?> list && collection instanceof RandomAccess) {
       counted = Math.min(size, sample);
       for (int i = 0; i < counted; i++)
-        sampled += estimate(list.get(i), depth + 1, shared);
+        sampled += estimate(list.get(i), depth + 1, sampledShared);
     } else if (sample > 0) {
       final Iterator<?> iterator = collection.iterator();
       while (counted < sample && iterator.hasNext()) {
-        sampled += estimate(iterator.next(), depth + 1, shared);
+        sampled += estimate(iterator.next(), depth + 1, sampledShared);
         ++counted;
       }
     }
     // A SET HOLDS EVERY ELEMENT IN A HASH ENTRY, A LIST IN AN ARRAY SLOT
     final long perSlot = collection instanceof Set ? HASH_ENTRY_BYTES : REFERENCE_BYTES;
-    return LIST_BYTES + perSlot * size + extrapolate(sampled, size, counted, shared, released);
+    return LIST_BYTES + perSlot * size + extrapolate(sampled, size, counted);
   }
 
   private static long estimateArray(final Object[] array, final int depth, final Shared shared) {
-    final int counted = Math.min(array.length, sampleSize(depth));
-    final long released = releasedMark(shared);
+    final int sample = sampleSize(depth);
+    final int counted = Math.min(array.length, sample);
+    final Shared sampledShared = sharedForSampled(shared, depth, array.length, sample);
     long sampled = 0L;
     for (int i = 0; i < counted; i++)
-      sampled += estimate(array[i], depth + 1, shared);
-    return ARRAY_BYTES + (long) REFERENCE_BYTES * array.length + extrapolate(sampled, array.length, counted, shared, released);
+      sampled += estimate(array[i], depth + 1, sampledShared);
+    return ARRAY_BYTES + (long) REFERENCE_BYTES * array.length + extrapolate(sampled, array.length, counted);
   }
 
   /** The entries of a map and the values they hold; the keys are counted only when they are not strings. */
@@ -656,7 +651,7 @@ public final class HeapEstimator {
     if (size == 0)
       return 0L;
     final int sample = sampleSize(depth);
-    final long released = releasedMark(shared);
+    final Shared sampledShared = sharedForSampled(shared, depth, size, sample);
     long sampled = 0L;
     int counted = 0;
     for (final Map.Entry<?, ?> entry : map.entrySet()) {
@@ -664,10 +659,10 @@ public final class HeapEstimator {
         break;
       final Object key = entry.getKey();
       if (!(key instanceof String))
-        sampled += estimate(key, depth + 1, shared);
-      sampled += estimate(entry.getValue(), depth + 1, shared);
+        sampled += estimate(key, depth + 1, sampledShared);
+      sampled += estimate(entry.getValue(), depth + 1, sampledShared);
       ++counted;
     }
-    return (long) HASH_ENTRY_BYTES * size + extrapolate(sampled, size, counted, shared, released);
+    return (long) HASH_ENTRY_BYTES * size + extrapolate(sampled, size, counted);
   }
 }
