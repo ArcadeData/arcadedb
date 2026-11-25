@@ -27,6 +27,7 @@ import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.CollectionUtils;
 
 import java.lang.reflect.Array;
 import java.util.ArrayList;
@@ -57,6 +58,12 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   // edge list, so that a save can tell a property write computed from an earlier read from an edge-list-only change. An
   // in-place change to a container got from this record is not tracked: it changes this record's own, reloaded content
   protected boolean             propertiesAssigned;
+  // #11751: the same assignments, counted from the last save() the transaction queued this record with. That save diffs the indexes
+  // against the values the record holds then, and the commit writes the record as it is THEN, so what is assigned after it reaches the
+  // record and not the indexes unless the commit indexes it: the commit asks this flag which records to look at. Cleared by that save
+  // (LocalDatabase.applyUpdate), whereas propertiesAssigned stays set for the whole transaction. A change made in place to a container got
+  // from this record assigns nothing, exactly as for propertiesAssigned: it has to be saved
+  private   boolean             assignedAfterSave;
   // #8610: built by modify() from content reloaded because a concurrent commit changed it after this transaction read it.
   // Deliberately not reset by a save: an edge-list-only save leaves the read just as stale for a later property write
   private   boolean             basedOnStaleRead;
@@ -108,6 +115,31 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   }
 
   /**
+   * Whether the properties were decoded into this instance. Reading a property and changing one both decode them first, so an
+   * instance that has not has them exactly as its buffer holds them: a write of it that moved only an edge-list head changes nothing
+   * a validation, an index or the serialization of the properties has to look at, and the vertex update leaves them alone.
+   */
+  public boolean arePropertiesLoaded() {
+    return map != null;
+  }
+
+  /**
+   * Whether a property was assigned or removed since the last {@code save()} that queued this record for its transaction's commit, or
+   * since the record was loaded when there was none (issue #11751). Such a change is written by the commit but was not seen by the
+   * indexes, which follow the {@code save()}: the commit indexes it.
+   */
+  boolean isAssignedAfterSave() {
+    return assignedAfterSave;
+  }
+
+  /**
+   * Called by the save that has just brought the indexes to what this record holds (issue #11751).
+   */
+  void clearAssignedAfterSave() {
+    assignedAfterSave = false;
+  }
+
+  /**
    * Whether this record was built by {@code modify()} from content reloaded because a concurrent transaction committed
    * a change to it after this transaction read it (issue #8610). Assigning a property then is refused at save as a
    * retryable conflict: the value is presumably computed from the older read.
@@ -143,6 +175,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     super.setBuffer(buffer);
     dirty = false;
     propertiesAssigned = false;
+    assignedAfterSave = false;
     //map = null; // AVOID RESETTING HERE FOR INDEXES THAT CAN LOOKUP UP FOR FIELDS CAUSING AN UNMARSHALLING
   }
 
@@ -151,6 +184,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     //map = null;
     dirty = false;
     propertiesAssigned = false;
+    assignedAfterSave = false;
   }
 
   public MutableDocument fromMap(final Map<String, Object> map) {
@@ -161,7 +195,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
       putFromMap(entry.getKey(), entry.getValue());
 
     dirty = true;
-    propertiesAssigned = true;
+    propertiesAssigned = assignedAfterSave = true;
     return this;
   }
 
@@ -244,7 +278,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     checkPropertyName(name);
     checkForLazyLoadingProperties();
     dirty = true;
-    propertiesAssigned = true;
+    propertiesAssigned = assignedAfterSave = true;
     putProperty(name, value);
     return this;
   }
@@ -257,7 +291,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     checkPropertyName(name2);
     checkForLazyLoadingProperties();
     dirty = true;
-    propertiesAssigned = true;
+    propertiesAssigned = assignedAfterSave = true;
     putProperty(name1, value1);
     putProperty(name2, value2);
     return this;
@@ -273,7 +307,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     checkPropertyName(name3);
     checkForLazyLoadingProperties();
     dirty = true;
-    propertiesAssigned = true;
+    propertiesAssigned = assignedAfterSave = true;
     putProperty(name1, value1);
     putProperty(name2, value2);
     putProperty(name3, value3);
@@ -301,7 +335,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
 
     checkForLazyLoadingProperties();
     dirty = true;
-    propertiesAssigned = true;
+    propertiesAssigned = assignedAfterSave = true;
 
     for (int p = 0; p < properties.length; p += 2)
       putProperty((String) properties[p], properties[p + 1]);
@@ -330,13 +364,12 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   public MutableEmbeddedDocument newEmbeddedDocument(final String embeddedTypeName, final String propertyName) {
     final Object old = get(propertyName);
 
-    final MutableEmbeddedDocument emb = database.newEmbeddedDocument(new EmbeddedModifierProperty(this, propertyName),
-        embeddedTypeName);
+    final MutableEmbeddedDocument emb = createEmbeddedDocument(embeddedTypeName, propertyName);
     if (old instanceof Collection<?> collection) {
       try {
         ((Collection<EmbeddedDocument>) old).add(emb);
         dirty = true;
-        propertiesAssigned = true;
+        propertiesAssigned = assignedAfterSave = true;
       } catch (final UnsupportedOperationException e) {
         // THE STORED COLLECTION IS IMMUTABLE (E.G. A List.of() THE CALLER SET, WHICH A LIST PROPERTY KEEPS AS-IS BECAUSE
         // IT IS ALREADY A List): REPLACE IT WITH A MUTABLE COPY THAT CARRIES THE NEW ELEMENT (ISSUE #7777). TRY/CATCH
@@ -366,8 +399,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
                                                      final String mapKey) {
     final Object old = get(propertyName);
 
-    final MutableEmbeddedDocument emb = database.newEmbeddedDocument(new EmbeddedModifierProperty(this, propertyName),
-        embeddedTypeName);
+    final MutableEmbeddedDocument emb = createEmbeddedDocument(embeddedTypeName, propertyName);
 
     if (old == null) {
       final Map<String, EmbeddedDocument> embMap = new HashMap<>();
@@ -407,11 +439,18 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
       throw new IllegalArgumentException(
           "Cannot store an embedded document in a map because another value was found instead of a Map");
 
-    final MutableEmbeddedDocument emb = database.newEmbeddedDocument(new EmbeddedModifierProperty(this, propertyName),
-        embeddedTypeName);
+    final MutableEmbeddedDocument emb = createEmbeddedDocument(embeddedTypeName, propertyName);
     putInStoredMap(propertyName, (Map<Object, EmbeddedDocument>) old, propertyMapKey, emb);
 
     return emb;
+  }
+
+  /**
+   * Creates the embedded document the {@code newEmbeddedDocument()} methods store in {@code propertyName}. A record with no
+   * {@link Database} behind it, the remote client's, builds it itself (issue #12190).
+   */
+  protected MutableEmbeddedDocument createEmbeddedDocument(final String embeddedTypeName, final String propertyName) {
+    return database.newEmbeddedDocument(new EmbeddedModifierProperty(this, propertyName), embeddedTypeName);
   }
 
   /**
@@ -423,7 +462,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     try {
       stored.put(key, emb);
       dirty = true;
-      propertiesAssigned = true;
+      propertiesAssigned = assignedAfterSave = true;
     } catch (final UnsupportedOperationException e) {
       // THE STORED MAP IS IMMUTABLE (E.G. A Map.of() THE CALLER SET): REPLACE IT WITH A MUTABLE COPY THAT CARRIES THE
       // NEW ENTRY. TRY/CATCH RATHER THAN A CHECK UP FRONT BECAUSE THE JDK EXPOSES NO "IS IT MUTABLE" QUERY
@@ -445,7 +484,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
 
     checkForLazyLoadingProperties();
     dirty = true;
-    propertiesAssigned = true;
+    propertiesAssigned = assignedAfterSave = true;
 
     for (final Map.Entry<String, Object> entry : properties.entrySet())
       putFromMap(entry.getKey(), entry.getValue());
@@ -527,7 +566,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   public Object remove(final String name) {
     checkForLazyLoadingProperties();
     dirty = true;
-    propertiesAssigned = true;
+    propertiesAssigned = assignedAfterSave = true;
     return map.remove(name);
   }
 
@@ -634,6 +673,9 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   @Override
   public void reload() {
     dirty = false;
+    // #11751: the content is replaced by what the page holds, which is not what the last save() brought the indexes to when this record
+    // is queued for the commit: the commit compares the two
+    assignedAfterSave = true;
     map = null;
     undecodableContent = null;
     buffer = null;
@@ -657,6 +699,49 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     parseRecordPrefix(snapshot);
     dirty = dirtyBefore;
     propertiesAssigned = assignedBefore;
+    // #11751: the content from before the statement can hold assignments no save brought to the indexes, and which ones is not kept:
+    // the commit compares the record with what the indexes hold, which finds nothing to queue when they agree
+    assignedAfterSave = true;
+  }
+
+  /**
+   * Gives a record an earlier statement of the transaction queued for its commit the content it held before a statement that changed it
+   * was taken back (issue #10346), and keeps the buffer it was read with. That buffer is the image of the record the transaction
+   * started from: it stays frozen until the commit because the write is deferred, and everything that asks "what was this record read
+   * as" compares with it - the delete refusing a record changed by a concurrent commit since its read (#12472), the pre-update image
+   * the indexes are diffed against, the commit's own checks. Installing the snapshot as the buffer, as {@link #restoreContent} does,
+   * made the record look read from a slot that never held that content, and a later delete of it was refused as a conflict with a
+   * transaction that does not exist (issue #12747). The properties are decoded from the snapshot here, the record having no
+   * buffer to decode them from afterwards.
+   * <p>
+   * The buffer given back is the one the record held when the snapshot was taken, not the one it holds now: the failed statement may
+   * have replaced it (a reload against a slot a concurrent commit has changed since), and that newer image would silently become
+   * "what the record was read as". The prefix of the snapshot has the length of the one of the read image (a vertex prefix has a fixed
+   * length, the endpoints of an edge never change), so the offset of the properties parsed from it describes both.
+   *
+   * @param snapshot       the content of the record before the statement
+   * @param readBuffer     the buffer the record held when the snapshot was taken, null if it held none
+   * @param dirtyBefore    whether the record was dirty then
+   * @param assignedBefore whether a property had been assigned or removed then
+   */
+  void restoreQueuedContent(final Binary snapshot, final Binary readBuffer, final boolean dirtyBefore, final boolean assignedBefore) {
+    // The prefix (the heads of a vertex, the endpoints of an edge) and the properties are read from the snapshot
+    restoreContent(snapshot, dirtyBefore, assignedBefore);
+    if (readBuffer == null)
+      // A record with no image it was read with: the snapshot is the only content it has
+      return;
+
+    try {
+      checkForLazyLoadingProperties();
+    } catch (final RuntimeException e) {
+      // The snapshot stays the buffer: the record keeps the content of the earlier statements, at worst a later delete of it is refused
+      // as a conflict. Giving the read image back with no decoded properties would make the next read decode the image from before
+      // the transaction and silently drop those changes
+      map = null;
+      return;
+    }
+    if (map != null && undecodableContent == null)
+      buffer = readBuffer;
   }
 
   protected void checkForLazyLoadingProperties() {
@@ -732,7 +817,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
 
   private Object setTransformValue(final Object value, final String propertyName) {
     if (value instanceof EmbeddedDocument document) {
-      if (!document.getDatabase().getName().equals(database.getName())) {
+      if (fromAnotherDatabase(document)) {
         // SET DIRTY TO FORCE RE-MARSHALL. IF THE RECORD COMES FROM ANOTHER DATABASE WITHOUT A FULL RE-MARSHALL, IT
         // WILL HAVE THE DICTIONARY IDS OF THE OTHER DATABASE
         ((BaseDocument) value).buffer.rewind();
@@ -749,7 +834,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
       final List<Object> list = (List<Object>) value;
       for (int i = 0; i < list.size(); i++) {
         final Object v = list.get(i);
-        if (v instanceof Document document && !document.getDatabase().getName().equals(database.getName())) {
+        if (v instanceof Document document && fromAnotherDatabase(document)) {
           ((BaseDocument) v).buffer.rewind();
           final MutableDocument newRecord = (MutableDocument) database.getRecordFactory()
               .newMutableRecord(database, ((EmbeddedDocument) v).getType(), null, ((BaseDocument) v).buffer,
@@ -766,7 +851,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
       final Map<String, Object> map = (Map<String, Object>) value;
       for (final Map.Entry<String, Object> entry : map.entrySet()) {
         final Object v = entry.getValue();
-        if (v instanceof Document document && !document.getDatabase().getName().equals(database.getName())) {
+        if (v instanceof Document document && fromAnotherDatabase(document)) {
           ((BaseDocument) v).buffer.rewind();
           final MutableDocument newRecord = (MutableDocument) database.getRecordFactory()
               .newMutableRecord(database, ((EmbeddedDocument) v).getType(), null, ((BaseDocument) v).buffer,
@@ -782,6 +867,14 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
       return transformMapToEmbedded(materialiseMapValues(map, propertyName), propertyName);
     }
     return value;
+  }
+
+  /**
+   * Whether {@code document} was read from another database than this record's, so it has to be re-marshalled with the dictionary
+   * of this one. A record with no {@link Database} behind it, the remote client's, holds no dictionary ids (issue #12190).
+   */
+  private boolean fromAnotherDatabase(final Document document) {
+    return database != null && !document.getDatabase().getName().equals(database.getName());
   }
 
   /**
@@ -830,14 +923,16 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
    * Same as {@link #materialiseListElements} for the values of a {@code MAP OF <document type>}.
    */
   @SuppressWarnings("unchecked")
-  private Map<String, Object> materialiseMapValues(final Map<String, Object> map, final String propertyName) {
+  private <K> Map<K, Object> materialiseMapValues(final Map<K, Object> map, final String propertyName) {
     final String ofType = map.isEmpty() ? null : documentTypeOfCollectionElements(propertyName);
     if (ofType == null)
       return map;
 
-    Map<String, Object> result = map;
+    // GENERIC IN THE KEY ON PURPOSE: THE KEYS ARE THE CALLER'S AND ARE NOT ALWAYS STRINGS (A Character IS STORED AS ITS TEXT, #12021),
+    // SO THEY MUST NEVER BE READ AS ONE HERE (#12590)
+    Map<K, Object> result = map;
     boolean copied = false;
-    for (final Map.Entry<String, Object> entry : map.entrySet())
+    for (final Map.Entry<K, Object> entry : map.entrySet())
       if (entry.getValue() instanceof Map<?, ?> element) {
         if (!copied) {
           result = new LinkedHashMap<>(map);
@@ -882,7 +977,9 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
       // subclasses override convertValueToSchemaType() to a pass-through
       return map;
 
-    final Object explicitType = map.get("@type");
+    // A MAP THAT CANNOT BE ASKED FOR A STRING KEY (A SORTED MAP OF Character OR Integer KEYS) CANNOT CARRY THE "@type" ENTRY: IT IS A PLAIN
+    // MAP, AS THE SAME ENTRIES IN A LinkedHashMap ARE (#12590)
+    final Object explicitType = CollectionUtils.getOrNullIfKeyRefused(map, TYPE_PROPERTY);
 
     final Property property = type != null ? type.getPolymorphicPropertyIfExists(propertyName) : null;
     final boolean embeddedProperty = property != null && property.getType() == Type.EMBEDDED;
@@ -908,7 +1005,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   }
 
   private MutableEmbeddedDocument mapToEmbedded(final Map<String, Object> map, final String propertyName, final String ofType) {
-    final Object explicitType = map.get("@type");
+    final Object explicitType = CollectionUtils.getOrNullIfKeyRefused(map, TYPE_PROPERTY);
     final String embType = explicitType != null ? explicitType.toString() : ofType;
     requireEmbeddedTypeCompatible(embType, ofType, propertyName);
     final MutableEmbeddedDocument embedded = newEmbeddedDocument(embType, propertyName);

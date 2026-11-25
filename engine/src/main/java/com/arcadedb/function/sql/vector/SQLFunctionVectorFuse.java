@@ -92,10 +92,19 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
   }
 
   @Override
+  public int getMinArgs() {
+    return 1;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return Integer.MAX_VALUE;
+  }
+
+  @Override
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
-    if (params == null || params.length == 0)
-      throw new CommandSQLParsingException(getSyntax());
+    checkArity(params);
 
     // Detect the trailing options map.
     int sourceCount = params.length;
@@ -110,11 +119,12 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
 
     final FunctionOptions opts = new FunctionOptions(NAME, rawOpts, OPTIONS);
     final Strategy strategy = parseStrategy(opts.getString("fusion", "RRF"));
-    final long k = opts.getLong("k", DEFAULT_K);
+    final long k = opts.getNonNegativeLong("k", DEFAULT_K);
     final float[] weights = parseWeights(opts.getList("weights"), sourceCount);
     final String groupBy = opts.getString("groupBy", null);
     final int groupSize = opts.getInt("groupSize", 1);
-    final int limit = opts.getInt("limit", -1);
+    // Absent (or null) is no cap; 0 is a cap of no row and a negative one is refused, as the count of vector.neighbors is
+    final int targetSize = opts.getNonNegativeInt("limit", Integer.MAX_VALUE);
 
     if (groupSize < 1)
       throw new CommandSQLParsingException(NAME + " groupSize must be >= 1, got " + groupSize);
@@ -135,13 +145,19 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
     case DBSF -> applyDBSF(sources, weights, fused);
     }
 
-    if (fused.isEmpty())
+    // A limit of 0 returns here, after every source and score was validated, without ranking and sorting what it would drop
+    if (fused.isEmpty() || targetSize == 0)
       return new ArrayList<>(0);
 
     final ArrayList<RidScore> ranked = new ArrayList<>(fused.size());
     for (final Map.Entry<RID, Float> e : fused.entrySet())
       ranked.add(new RidScore(e.getKey(), e.getValue()));
-    ranked.sort((a, b) -> Float.compare(b.score(), a.score()));
+    // Equal fused scores are common (RRF ranks sum to the same value): break them by RID, not by the iteration order of `fused`, which
+    // is whatever RID.hashCode() makes it
+    ranked.sort((a, b) -> {
+      final int byScore = Float.compare(b.score(), a.score());
+      return byScore != 0 ? byScore : a.rid().compareTo(b.rid());
+    });
 
     // Single pass: one record per RID - the one a source row carried, else lookupByRID - applying groupBy and limit on the fly. Doing this
     // in two passes (one to filter by group, one to serialize) would double the record I/O for
@@ -154,7 +170,6 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
     final GroupAdmissionState groups = groupBy != null
         ? new GroupAdmissionState(Integer.MAX_VALUE, groupSize)
         : null;
-    final int targetSize = limit > 0 ? limit : Integer.MAX_VALUE;
     final ArrayList<Object> result = new ArrayList<>(Math.min(targetSize, ranked.size()));
     final BasicDatabase db = context.getDatabase();
 

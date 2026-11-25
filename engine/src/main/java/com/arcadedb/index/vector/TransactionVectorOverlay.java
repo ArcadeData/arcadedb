@@ -201,9 +201,10 @@ final class TransactionVectorOverlay {
           }
 
           final float[] vector = vectorOf(entry.keyValues);
-          if (vector == null)
+          if (vector == null || (index instanceof final LSMVectorIndex vectorIndex && vectorIndex.isUnscorable(vector)))
             // Not a vector this index can score. Nothing to contribute, and deliberately not an exception: commit
-            // replay is where a malformed queued key is diagnosed, and a search must not be the thing that fails.
+            // replay is where a malformed queued key is diagnosed, and a search must not be the thing that fails. One whose
+            // squared norm the float cosine cannot hold (issue #11635) is such a vector: the commit leaves it out of the buffer.
             continue;
 
           // The committed copy of a re-embedded row must not be ranked alongside the pending one, so an ADD

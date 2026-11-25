@@ -18,7 +18,9 @@
  */
 package com.arcadedb.query.opencypher.executor.steps;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.DeferredExistenceChecks;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
@@ -41,6 +43,7 @@ import com.arcadedb.query.opencypher.executor.CypherExecutionPlan;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.executor.LabelReplacements;
 import com.arcadedb.query.opencypher.executor.WrittenCopy;
+import com.arcadedb.query.opencypher.parser.ReturnScope;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -92,6 +95,10 @@ public class SubqueryStep extends AbstractExecutionStep {
   private boolean streamBody;
   // THE BODY RESULT SET BEING STREAMED, CLOSED WHEN IT ENDS OR WHEN THE CONSUMER STOPS EARLY
   private ResultSet streamedBody;
+  // THE BODY'S PLAN, BUILT ON THE FIRST OUTER ROW AND RUN FOR EVERY LATER ONE (ISSUE #12136)
+  private CypherExecutionPlan innerPlan;
+  // THE COLUMNS THE BODY RETURNS, BOUND TO NULL ON A ROW THE BODY ANSWERED NOTHING FOR: COMPUTED ON FIRST USE
+  private String[] returnedColumns;
 
   public SubqueryStep(final SubqueryClause subqueryClause, final CommandContext context,
                        final DatabaseInternal database, final Map<String, Object> parameters,
@@ -292,13 +299,14 @@ public class SubqueryStep extends AbstractExecutionStep {
               // The body reads as many rows at a time as this step was asked for, so a LIMIT after it bounds the body too
               final ResultSet body = executeBody(currentOuterRow, context,
                   Math.max(1, Math.min(nRecords, CypherExecutionPlan.SEEDED_BATCH_SIZE)));
+              // Registered before the first pull, so close() also reaches a body that fails on it
+              streamedBody = body;
               if (body.hasNext()) {
-                streamedBody = body;
                 currentInnerResults = body;
               } else {
-                body.close();
+                closeStreamedBody();
                 if (subqueryClause.isOptional())
-                  buffer.add(currentOuterRow);
+                  buffer.add(withReturnedColumnsNull(currentOuterRow));
               }
               continue;
             }
@@ -308,10 +316,9 @@ public class SubqueryStep extends AbstractExecutionStep {
             refreshOuterBindings(currentOuterRow, context);
 
             if (innerResults.isEmpty()) {
-              if (subqueryClause.isOptional()) {
-                // OPTIONAL CALL - produce the outer row with nulls for inner columns
-                buffer.add(currentOuterRow);
-              }
+              // OPTIONAL CALL - produce the outer row with nulls for inner columns (issue #11632)
+              if (subqueryClause.isOptional())
+                buffer.add(withReturnedColumnsNull(currentOuterRow));
               // Non-optional: no output rows for this outer row
               currentInnerResults = null;
             } else {
@@ -429,6 +436,7 @@ public class SubqueryStep extends AbstractExecutionStep {
         // Execute the batch in its own transaction
         final List<List<Result>> innerResultsPerRow = new ArrayList<>(batch.size());
         final String transactionId = String.valueOf(++batchNumber);
+        committedWrites = commitStatementWrites(committedWrites);
         final boolean callerTransaction = database.isTransactionActive();
         final int nesting = database.getNestedTransactions();
         // A label the batch writes replaces the node by a new record, noted for the outer rows to follow: a batch that does not
@@ -459,20 +467,28 @@ public class SubqueryStep extends AbstractExecutionStep {
               tx.collectWrittenRecordIds(committedWrites);
             }
           }
-          database.commit();
+          // A record the batch left without a MANDATORY property must not be committed with it: checked here, where a violation is a
+          // failure of this batch that ON ERROR governs, and not only at the end of the statement, when the batch has long committed
+          // and the record can no longer be taken back (issue #13221)
+          DeferredExistenceChecks.checkBeforeCommit(database);
+          commitBatch();
         } catch (final TimeoutException e) {
           // The statement's deadline ends it whatever ON ERROR says
           database.rollbackAllNested();
+          DeferredExistenceChecks.rolledBack(database);
           throw e;
         } catch (final Exception e) {
           if (onError == SubqueryClause.OnError.FAIL) {
             database.rollbackAllNested();
+            DeferredExistenceChecks.rolledBack(database);
             throw e;
           }
           // ON ERROR CONTINUE or BREAK (issue #11595): only the batch's own transaction is undone, never the caller's. A failed
           // commit has already ended it
           if (database.getNestedTransactions() > nesting || !callerTransaction && database.isTransactionActive())
             database.rollback();
+          // What the batch left provisional went with it
+          DeferredExistenceChecks.rolledBack(database);
           if (labelReplacements != null)
             LabelReplacements.of(context).restore(labelReplacements);
           if (onError == SubqueryClause.OnError.BREAK)
@@ -499,8 +515,12 @@ public class SubqueryStep extends AbstractExecutionStep {
           reloadCommittedRecords(outerRow, committedWrites);
           final List<Result> innerResults = innerResultsPerRow.get(i);
           if (innerResults.isEmpty()) {
-            if (subqueryClause.isOptional())
-              buffer.add(committedStatus != null ? withStatus(outerRow, statusVariable, committedStatus) : outerRow);
+            if (subqueryClause.isOptional()) {
+              final ResultInternal row = withReturnedColumnsNull(outerRow);
+              if (committedStatus != null)
+                row.setProperty(statusVariable, committedStatus);
+              buffer.add(row);
+            }
           } else {
             for (final Result innerRow : innerResults) {
               final ResultInternal merged = mergeResults(outerRow, innerRow);
@@ -524,29 +544,121 @@ public class SubqueryStep extends AbstractExecutionStep {
   }
 
   /**
+   * Commits what the statement wrote before a batch of {@code CALL { ... } IN TRANSACTIONS}, then begins its transaction again
+   * for the clauses that follow (issue #13172). The batch's own transaction does not see the statement's uncommitted writes, so a
+   * label written before the CALL left the body pointed at a record it could not find. IN TRANSACTIONS already gives up the
+   * statement's atomicity, so committing these writes is consistent with it. It runs before every batch: the outer rows of a later
+   * batch are produced after the earlier batches committed.
+   * <p>
+   * Only the implicit transaction at the first level is committed: a caller's transaction is refused with IN TRANSACTIONS before
+   * anything runs (issue #11588), and a deeper level belongs to someone else. A transaction a server shares between several
+   * statements stops being implicit once an earlier one wrote into it, so it is refused there too: the Postgres implicit block of
+   * a pipeline does so (issue #13222), and the multi-statement simple query declares its block the client's.
+   * <p>
+   * It runs outside the batch's error handling: a failed commit fails the statement whatever ON ERROR says, since no batch ran.
+   * <p>
+   * The commit lands on the transaction context a retry loop sampled (the same context is begun again), so its commit count moves:
+   * the HTTP, gRPC and MCP auto-commit wrappers, {@code Database.transaction()} and the asynchronous executor do not replay a request
+   * whose writes before the CALL are durable, the conflict reaches the caller instead (issue #13223).
+   * <p>
+   * The existence constraints deferred for the records written before the CALL are enforced before this commit, as at any commit
+   * point of the statement (issue #13221): an incomplete record fails the statement and is not committed.
+   *
+   * @return the set of the records the outer rows produced before must re-read, with what this commit wrote added to it
+   */
+  private RidHashSet commitStatementWrites(final RidHashSet committedWrites) {
+    if (database.getNestedTransactions() != 1)
+      return committedWrites;
+    final TransactionContext tx = database.getTransactionIfExists();
+    if (tx == null || !tx.isActive() || !tx.isImplicit() || tx.hasChangedNothing())
+      return committedWrites;
+
+    // The copies the outer rows produced so far hold are a version behind once this commits
+    final RidHashSet written = committedWrites != null ? committedWrites : new RidHashSet();
+    tx.collectWrittenRecordIds(written);
+
+    // A record written before the CALL and still incomplete fails the statement here, before it is committed: the check at the
+    // end of the statement could not take it back any more (issue #13221)
+    DeferredExistenceChecks.checkBeforeCommit(database);
+
+    final Database.TRANSACTION_ISOLATION_LEVEL isolationLevel = tx.getIsolationLevel();
+    database.commit();
+    database.begin(isolationLevel);
+    database.getTransaction().setImplicit(true);
+    return written;
+  }
+
+  /**
+   * Commits the transaction of one batch, and reports the commit to the transaction under it (issue #13223). A batch runs in a
+   * transaction nested in the statement's, which its commit pops: the retry loop around the request - the HTTP, gRPC and MCP
+   * auto-commit wrappers, {@code Database.transaction()}, the asynchronous executor - sampled the statement's transaction and would
+   * not see that anything is durable, so a conflict after the batch replayed the request and applied the batch twice. Reported as
+   * {@code BATCH n} reports its boundary ({@code BatchStep}), the loop hands the conflict to the caller instead. When the batch
+   * began the only transaction of the thread, its commit already moved the counter of that very context. A batch that wrote
+   * nothing (a MATCH ... SET that matched no node) leaves nothing durable, so it is not reported and the block stays replayable.
+   */
+  private void commitBatch() {
+    final TransactionContext batch = database.getTransactionIfExists();
+    final boolean wroteSomething = batch != null && !batch.hasChangedNothing();
+    database.commit();
+    final TransactionContext survivor = database.getTransactionIfExists();
+    if (wroteSomething && survivor != null && survivor != batch)
+      survivor.reportBatchBoundaryOfNestedTransaction();
+  }
+
+  /**
    * The row of an outer row whose batch did not commit, under ON ERROR CONTINUE or BREAK: the outer bindings, null for every
    * variable the subquery returns, and the status when REPORT STATUS asks for it (issue #11595).
    */
   private Result rowOfUncommittedBatch(final Result outerRow, final String statusVariable, final Map<String, Object> status) {
-    final ResultInternal row = new ResultInternal();
-    for (final String prop : outerRow.getPropertyNames())
-      row.setProperty(prop, outerRow.getProperty(prop));
-    final ReturnClause innerReturn = subqueryClause.getInnerStatement().getReturnClause();
-    if (innerReturn != null)
-      for (final ReturnClause.ReturnItem item : innerReturn.getReturnItems())
-        if (!item.isStar())
-          row.setProperty(item.getOutputName(), null);
+    final ResultInternal row = withReturnedColumnsNull(outerRow);
     if (statusVariable != null)
       row.setProperty(statusVariable, status);
     return row;
   }
 
-  private static ResultInternal withStatus(final Result outerRow, final String statusVariable, final Map<String, Object> status) {
+  /**
+   * The row of an outer row the body answered no row for: the outer bindings, then {@code null} for every column the body
+   * returns that the outer row does not already bind, in the order a merged row carries them (issue #11632). Before, an OPTIONAL
+   * CALL passed the outer row on as it was, so the body's columns were missing instead of null, and a {@code RETURN *} after it
+   * answered fewer keys than the statement declares for a zero-row result. A column the outer row binds (an imported variable a
+   * body's {@code RETURN *} hands back) keeps its outer value.
+   */
+  private ResultInternal withReturnedColumnsNull(final Result outerRow) {
     final ResultInternal row = new ResultInternal();
     for (final String prop : outerRow.getPropertyNames())
       row.setProperty(prop, outerRow.getProperty(prop));
-    row.setProperty(statusVariable, status);
+    for (final String column : returnedColumns())
+      if (!row.hasProperty(column))
+        row.setProperty(column, null);
     return row;
+  }
+
+  /**
+   * The columns the body returns, by the walk {@code declaredColumns} does: the RETURN items by output name, and for a
+   * {@code RETURN *} the body's scope at its RETURN. The branches of a UNION body return the same columns, under the names of the
+   * first one; a unit subquery returns none. When the scope of a {@code *} is not known without running (a procedure the engine
+   * does not know), only the explicit items are bound.
+   */
+  private String[] returnedColumns() {
+    if (returnedColumns == null) {
+      final CypherStatement body = subqueryClause.getInnerStatement();
+      final CypherStatement first = body instanceof UnionStatement union ? union.getQueries().getFirst() : body;
+      final ReturnClause innerReturn = first != null ? first.getReturnClause() : null;
+      if (innerReturn == null)
+        returnedColumns = new String[0];
+      else {
+        List<String> columns = ReturnScope.returnedColumns(first, innerReturn);
+        if (columns == null) {
+          columns = new ArrayList<>();
+          for (final ReturnClause.ReturnItem item : innerReturn.getReturnItems())
+            if (!item.isStar())
+              columns.add(item.getOutputName());
+        }
+        returnedColumns = columns.toArray(new String[0]);
+      }
+    }
+    return returnedColumns;
   }
 
   /** The value REPORT STATUS binds: whether the inner transaction started and committed, its number, and its error. */
@@ -625,6 +737,10 @@ public class SubqueryStep extends AbstractExecutionStep {
     // gone one (issue #6977).
     LabelReplacements.of(context).redirect(outerRow);
     refreshDocumentBindings(outerRow);
+    // The records the outer row holds in a list or a map, and the members of its paths, follow the body's writes too:
+    // WITH n, collect(n) AS ns CALL (n) { SET n.v = 31 } RETURN head(ns).v read the value from before the body (issue
+    // #11754). The same walk as before the body, with the same rule: only what the transaction wrote replaces a record
+    refreshWrittenBindings(outerRow);
   }
 
   /**
@@ -639,12 +755,17 @@ public class SubqueryStep extends AbstractExecutionStep {
     return row;
   }
 
-  /** Runs the body seeded with the outer row, {@code batchSize} rows at a time, as far as the returned result set is pulled. */
+  /**
+   * Runs the body seeded with the outer row, {@code batchSize} rows at a time, as far as the returned result set is pulled.
+   * The body is planned once for the step, and in a statement that cannot write its step chain is run again for each outer
+   * row (issue #12136).
+   */
   private ResultSet executeBody(final Result outerRow, final CommandContext context, final int batchSize) {
     if (innerMayWrite)
       refreshWrittenBindings(outerRow);
-    final CypherExecutionPlan innerPlan = new CypherExecutionPlan(
-        database, subqueryClause.getInnerStatement(), parameters, database.getConfiguration(), null, expressionEvaluator);
+    if (innerPlan == null)
+      innerPlan = new CypherExecutionPlan(database, subqueryClause.getInnerStatement(), parameters, database.getConfiguration(),
+          null, expressionEvaluator);
     return innerPlan.executeWithSeedRow(filterSeedRow(outerRow), context, batchSize);
   }
 

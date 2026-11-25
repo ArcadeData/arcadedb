@@ -113,8 +113,7 @@ class FullTextQuerySyntaxTest extends TestHelper {
     });
 
     database.transaction(() -> {
-      // Phrase query: "java programming" (exact sequence)
-      // Note: Current implementation requires all terms but doesn't verify order
+      // Phrase query: "java programming" (exact sequence: the terms in order and adjacent, issue #12165)
       final ResultSet result = database.query("sql",
           "SELECT title FROM Article WHERE SEARCH_INDEX('Article[content]', '\"java programming\"') = true");
 
@@ -123,8 +122,8 @@ class FullTextQuerySyntaxTest extends TestHelper {
         titles.add(result.next().getProperty("title"));
       }
 
-      // Both Doc1 and Doc2 have both words (order not enforced in current impl)
-      assertThat(titles).containsExactlyInAnyOrder("Doc1", "Doc2");
+      // Only Doc1 has the terms in that order; Doc2 has both words the other way round
+      assertThat(titles).containsExactly("Doc1");
     });
   }
 

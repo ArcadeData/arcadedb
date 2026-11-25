@@ -29,6 +29,7 @@ import com.arcadedb.server.http.handler.DeleteApiTokenHandler;
 import com.arcadedb.server.http.handler.DeleteGroupHandler;
 import com.arcadedb.server.http.handler.DeleteUserHandler;
 import com.arcadedb.server.http.handler.GetApiDocsHandler;
+import com.arcadedb.server.http.handler.NotFoundRouteHandler;
 import com.arcadedb.server.http.handler.GetApiTokensHandler;
 import com.arcadedb.server.http.handler.GetDatabasesHandler;
 import com.arcadedb.server.http.handler.GetGroupsHandler;
@@ -97,6 +98,7 @@ import io.undertow.server.handlers.PathHandler;
 import io.undertow.util.Headers;
 import io.undertow.util.StatusCodes;
 import org.xnio.Options;
+import org.xnio.XnioWorker;
 
 import javax.net.ssl.KeyManager;
 import javax.net.ssl.KeyManagerFactory;
@@ -149,6 +151,9 @@ public class HttpServer implements ServerPlugin {
   // Built per startService() by setupRoutes(), like every other route handler, so there is one per start.
   private volatile PostBatchHandler         postBatchHandler;
   private          Undertow               undertow;
+  // The XNIO threads the started Undertow accepts and serves connections on (issue #12552): an OutOfMemoryError can end
+  // one and leave the port accepting connections nobody answers. Empty while not started.
+  private volatile List<Thread>           listenerThreads = List.of();
   private volatile String                 listeningAddress;
   private          int                    httpPortListening;
   private          int                    httpsPortListening = -1;
@@ -224,6 +229,8 @@ public class HttpServer implements ServerPlugin {
       idempotencyCleanupExecutor = null;
     }
 
+    // Before the stop, which ends these threads on purpose
+    listenerThreads = List.of();
     if (undertow != null)
       CodeUtils.executeIgnoringExceptions(undertow::stop);
 
@@ -290,6 +297,7 @@ public class HttpServer implements ServerPlugin {
         if (hook != null)
           hook.run();
         undertow.start();
+        listenerThreads = xnioListenerThreads(undertow.getWorker());
 
         LogManager.instance().log(this, Level.INFO, "- HTTP Server started (host=%s port=%d httpsPort=%s)",
             listenHosts.size() > 1 ? host + " " + listenHosts : host, httpPortListening,
@@ -324,6 +332,39 @@ public class HttpServer implements ServerPlugin {
     handleServerStartFailure(httpPortRange);
   }
 
+  /**
+   * The first XNIO thread of the HTTP listener found terminated, or {@code null} while all are alive and while the server
+   * is not started (issue #12552). Read by the readiness probe; the HTTP probe itself cannot answer once its accept thread
+   * is gone, but the gRPC one, which asks the same question, can.
+   */
+  @Override
+  public String getListenerFailure() {
+    for (final Thread thread : listenerThreads)
+      if (!thread.isAlive())
+        return "HTTP listener thread '" + thread.getName() + "' has terminated: this node no longer serves HTTP requests";
+    return null;
+  }
+
+  /**
+   * The I/O threads of {@code worker} and its accept thread. The I/O threads come from the worker's public API; the accept
+   * thread has none, and is found once, at start, by the name XNIO gives it ({@code "<worker name> Accept"}), unique per
+   * worker in the JVM. An XNIO version that names it otherwise only loses that one thread from the check.
+   */
+  static List<Thread> xnioListenerThreads(final XnioWorker worker) {
+    if (worker == null)
+      return List.of();
+    final List<Thread> threads = new ArrayList<>(worker.getIoThreadCount() + 1);
+    for (int i = 0; i < worker.getIoThreadCount(); i++)
+      threads.add(worker.getIoThread(i));
+    final String acceptThreadName = worker.getName() + " Accept";
+    for (final Thread thread : Thread.getAllStackTraces().keySet())
+      if (acceptThreadName.equals(thread.getName())) {
+        threads.add(thread);
+        break;
+      }
+    return List.copyOf(threads);
+  }
+
   /** Builds the {@code /api/v1/batch} handler and keeps it, so {@link #stopService()} can release its HTTP client. */
   private PostBatchHandler newPostBatchHandler() {
     postBatchHandler = new PostBatchHandler(this);
@@ -336,7 +377,9 @@ public class HttpServer implements ServerPlugin {
   }
 
   private PathHandler setupRoutes() {
-    final PluginPathHandler routes = new PluginPathHandler();
+    // A path that matches no prefix at all is answered with the same envelope as a route that refuses the request:
+    // the error field and the correlation and replay-protection headers (issue #12410)
+    final PluginPathHandler routes = new PluginPathHandler(new NotFoundRouteHandler());
     final RouteRecordingRoutingHandler basicRoutes = new RouteRecordingRoutingHandler();
 
     // Shared with the GET registrations below (issue #8133): container healthchecks such as
@@ -507,7 +550,7 @@ public class HttpServer implements ServerPlugin {
   /**
    * The handler serving each route {@link #getRegisteredRoutes()} lists, in registration order. Public because the sweeps that
    * ask a question of the handlers themselves live next to them, in the {@code handler} package: {@code
-   * Issue9849ServerRoutesIoThreadDispatchTest} holds every route to a verdict on whether it may block the Undertow IO thread, the
+   * ServerRoutesIoThreadDispatchTest} holds every route to a verdict on whether it may block the Undertow IO thread, the
    * same assertion the {@code ha-raft} routes have carried since issue #7621 (issue #9849).
    */
   public Map<RouteRecordingRoutingHandler.RouteDescriptor, HttpHandler> getRegisteredRouteHandlers() {

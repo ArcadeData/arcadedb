@@ -90,13 +90,14 @@ class OpenCypherTextFunctionsTest {
   }
 
   @Test
-  void textSplitSpecialCharDelimiter() {
+  void textSplitTakesARegularExpression() {
     final TextSplit fn = new TextSplit();
 
-    // Regex special characters should be treated as literals
-    @SuppressWarnings("unchecked")
-    final List<String> result = (List<String>) fn.execute(new Object[]{"a.b.c", "."}, null);
-    assertThat(result).containsExactly("a", "b", "c");
+    // The delimiter is a regular expression, as in apoc.text.split (issue #12104): '.' is any character, '\.' a dot
+    assertThat(fn.execute(new Object[]{"a.b.c", "."}, null)).isEqualTo(List.of());
+    assertThat(fn.execute(new Object[]{"a.b.c", "\\."}, null)).isEqualTo(List.of("a", "b", "c"));
+    assertThat(fn.execute(new Object[]{"a1b22c", "[0-9]+"}, null)).isEqualTo(List.of("a", "b", "c"));
+    assertThat(fn.execute(new Object[]{"a,b,c", ",", 2L}, null)).isEqualTo(List.of("a", "b,c"));
   }
 
   // ============ TextJoin tests ============
@@ -114,8 +115,9 @@ class OpenCypherTextFunctionsTest {
   void textJoinWithNullElements() {
     final TextJoin fn = new TextJoin();
 
+    // written as null, as in apoc.text.join (issue #12104)
     final Object result = fn.execute(new Object[]{Arrays.asList("a", null, "c"), "-"}, null);
-    assertThat(result).isEqualTo("a--c");
+    assertThat(result).isEqualTo("a-null-c");
   }
 
   @Test
@@ -128,8 +130,7 @@ class OpenCypherTextFunctionsTest {
   void textJoinNullDelimiter() {
     final TextJoin fn = new TextJoin();
 
-    final Object result = fn.execute(new Object[]{Arrays.asList("a", "b", "c"), null}, null);
-    assertThat(result).isEqualTo("abc");
+    assertThat(fn.execute(new Object[]{Arrays.asList("a", "b", "c"), null}, null)).isNull();
   }
 
   @Test
@@ -198,11 +199,11 @@ class OpenCypherTextFunctionsTest {
     final TextJaroWinklerDistance fn = new TextJaroWinklerDistance();
     assertThat(fn.getName()).isEqualTo("text.jaroWinklerDistance");
 
-    // Identical strings should return 1.0
-    assertThat((Double) fn.execute(new Object[]{"hello", "hello"}, null)).isCloseTo(1.0, within(0.001));
+    // A distance, as apoc.text.jaroWinklerDistance answers (issue #12104): identical strings are 0.0
+    assertThat((Double) fn.execute(new Object[]{"hello", "hello"}, null)).isCloseTo(0.0, within(0.001));
 
-    // Completely different strings should return 0.0
-    assertThat((Double) fn.execute(new Object[]{"abc", "xyz"}, null)).isCloseTo(0.0, within(0.001));
+    // Completely different strings are 1.0
+    assertThat((Double) fn.execute(new Object[]{"abc", "xyz"}, null)).isCloseTo(1.0, within(0.001));
   }
 
   @Test
@@ -241,9 +242,11 @@ class OpenCypherTextFunctionsTest {
     final TextFormat fn = new TextFormat();
     assertThat(fn.getName()).isEqualTo("text.format");
 
-    // TextFormat takes varargs, not a list
-    assertThat(fn.execute(new Object[]{"Hello %s!", "World"}, null)).isEqualTo("Hello World!");
-    assertThat(fn.execute(new Object[]{"Value: %d", 42}, null)).isEqualTo("Value: 42");
+    // The parameters are one list, as in apoc.text.format (issue #12104)
+    assertThat(fn.execute(new Object[]{"Hello %s!", List.of("World")}, null)).isEqualTo("Hello World!");
+    assertThat(fn.execute(new Object[]{"Value: %d", List.of(42)}, null)).isEqualTo("Value: 42");
+    assertThat(fn.execute(new Object[]{"%s-%d", List.of("a", 3L)}, null)).isEqualTo("a-3");
+    assertThat(fn.execute(new Object[]{"%,d", List.of(1234567L), "de"}, null)).isEqualTo("1.234.567");
   }
 
   @Test
@@ -284,14 +287,17 @@ class OpenCypherTextFunctionsTest {
     final TextCharAt fn = new TextCharAt();
     assertThat(fn.getName()).isEqualTo("text.charAt");
 
-    assertThat(fn.execute(new Object[]{"hello", 0}, null)).isEqualTo("h");
-    assertThat(fn.execute(new Object[]{"hello", 4}, null)).isEqualTo("o");
+    // the code point, as apoc.text.charAt answers (issue #12104)
+    assertThat(fn.execute(new Object[]{"hello", 0}, null)).isEqualTo(104L);
+    assertThat(fn.execute(new Object[]{"hello", 4}, null)).isEqualTo(111L);
+    assertThat(fn.execute(new Object[]{"hello", 5}, null)).isNull();
   }
 
   @Test
   void textCharAtNull() {
     final TextCharAt fn = new TextCharAt();
     assertThat(fn.execute(new Object[]{null, 0}, null)).isNull();
+    assertThat(fn.execute(new Object[]{"hello", null}, null)).isNull();
   }
 
   // ============ TextCode tests ============
@@ -301,8 +307,11 @@ class OpenCypherTextFunctionsTest {
     final TextCode fn = new TextCode();
     assertThat(fn.getName()).isEqualTo("text.code");
 
-    assertThat(fn.execute(new Object[]{"A"}, null)).isEqualTo(65L);
-    assertThat(fn.execute(new Object[]{"a"}, null)).isEqualTo(97L);
+    // the character of a code point, as apoc.text.code answers (issue #12104)
+    assertThat(fn.execute(new Object[]{65L}, null)).isEqualTo("A");
+    assertThat(fn.execute(new Object[]{97}, null)).isEqualTo("a");
+    assertThat(fn.execute(new Object[]{-1L}, null)).isNull();
+    assertThat(fn.execute(new Object[]{0x110000L}, null)).isNull();
   }
 
   @Test
@@ -318,10 +327,12 @@ class OpenCypherTextFunctionsTest {
     final TextHexValue fn = new TextHexValue();
     assertThat(fn.getName()).isEqualTo("text.hexValue");
 
-    // TextHexValue converts numbers to hex string
-    assertThat(fn.execute(new Object[]{255}, null)).isEqualTo("ff");
-    assertThat(fn.execute(new Object[]{16}, null)).isEqualTo("10");
-    assertThat(fn.execute(new Object[]{0}, null)).isEqualTo("0");
+    // upper case and zero-padded, as apoc.text.hexValue answers (issue #12104)
+    assertThat(fn.execute(new Object[]{255}, null)).isEqualTo("00FF");
+    assertThat(fn.execute(new Object[]{16}, null)).isEqualTo("0010");
+    assertThat(fn.execute(new Object[]{0}, null)).isEqualTo("0000");
+    assertThat(fn.execute(new Object[]{-1L}, null)).isEqualTo("FFFFFFFF");
+    assertThat(fn.execute(new Object[]{Long.MAX_VALUE}, null)).isEqualTo("7FFFFFFFFFFFFFFF");
   }
 
   @Test
@@ -453,7 +464,7 @@ class OpenCypherTextFunctionsTest {
     final TextIndexOf fn = new TextIndexOf();
 
     assertThat(fn.getMinArgs()).isEqualTo(2);
-    assertThat(fn.getMaxArgs()).isEqualTo(3);
+    assertThat(fn.getMaxArgs()).isEqualTo(4);
     assertThat(fn.getDescription()).isNotEmpty();
   }
 
@@ -473,11 +484,13 @@ class OpenCypherTextFunctionsTest {
     final TextSnakeCase fn = new TextSnakeCase();
     assertThat(fn.getName()).isEqualTo("text.snakeCase");
 
-    assertThat(fn.execute(new Object[]{"helloWorld"}, null)).isEqualTo("hello_world");
-    assertThat(fn.execute(new Object[]{"HelloWorld"}, null)).isEqualTo("hello_world");
-    assertThat(fn.execute(new Object[]{"hello-world"}, null)).isEqualTo("hello_world");
-    // Each uppercase letter is treated as a word boundary, so consecutive uppercase letters each get an underscore prefix
-    assertThat(fn.execute(new Object[]{"HELLO_WORLD"}, null)).isEqualTo("h_e_l_l_o_w_o_r_l_d");
+    // words joined by '-', as apoc.text.snakeCase answers (issue #12104)
+    assertThat(fn.execute(new Object[]{"helloWorld"}, null)).isEqualTo("hello-world");
+    assertThat(fn.execute(new Object[]{"HelloWorld"}, null)).isEqualTo("hello-world");
+    assertThat(fn.execute(new Object[]{"hello-world"}, null)).isEqualTo("hello-world");
+    assertThat(fn.execute(new Object[]{"hello world"}, null)).isEqualTo("hello-world");
+    // upper-case letters, digits and underscores only: the underscores separate the words
+    assertThat(fn.execute(new Object[]{"HELLO_WORLD"}, null)).isEqualTo("hello-world");
   }
 
   @Test
@@ -487,7 +500,8 @@ class OpenCypherTextFunctionsTest {
     assertThat(fn.execute(new Object[]{null}, null)).isNull();
     assertThat(fn.execute(new Object[]{""}, null)).isEqualTo("");
     assertThat(fn.execute(new Object[]{"a"}, null)).isEqualTo("a");
-    assertThat(fn.execute(new Object[]{"ABC"}, null)).isEqualTo("a_b_c");
+    assertThat(fn.execute(new Object[]{"ABC"}, null)).isEqualTo("abc");
+    assertThat(fn.execute(new Object[]{"HTTPServer"}, null)).isEqualTo("h-t-t-p-server");
   }
 
   // ============ TextUpperCamelCase tests ============
@@ -518,15 +532,16 @@ class OpenCypherTextFunctionsTest {
     final TextSlug fn = new TextSlug();
     assertThat(fn.getName()).isEqualTo("text.slug");
 
-    assertThat(fn.execute(new Object[]{"Hello World"}, null)).isEqualTo("hello-world");
-    assertThat(fn.execute(new Object[]{"Hello World!"}, null)).isEqualTo("hello-world");
+    // the case and the letters are kept, as apoc.text.slug answers (issue #12104)
+    assertThat(fn.execute(new Object[]{"Hello World"}, null)).isEqualTo("Hello-World");
+    assertThat(fn.execute(new Object[]{"Hello World!"}, null)).isEqualTo("Hello-World-");
   }
 
   @Test
   void textSlugWithCustomDelimiter() {
     final TextSlug fn = new TextSlug();
 
-    assertThat(fn.execute(new Object[]{"Hello World", "_"}, null)).isEqualTo("hello_world");
+    assertThat(fn.execute(new Object[]{"Hello World", "_"}, null)).isEqualTo("Hello_World");
   }
 
   @Test
@@ -534,14 +549,15 @@ class OpenCypherTextFunctionsTest {
     final TextSlug fn = new TextSlug();
 
     assertThat(fn.execute(new Object[]{null}, null)).isNull();
+    assertThat(fn.execute(new Object[]{"Hello World", null}, null)).isNull();
   }
 
   @Test
   void textSlugUnicode() {
     final TextSlug fn = new TextSlug();
 
-    // Unicode characters should be normalized and stripped
-    assertThat(fn.execute(new Object[]{"caf\u00e9 latt\u00e9"}, null)).isEqualTo("cafe-latte");
+    // letters outside ASCII are letters
+    assertThat(fn.execute(new Object[]{"caf\u00e9 latt\u00e9"}, null)).isEqualTo("caf\u00e9-latt\u00e9");
   }
 
   // ============ TextLevenshteinSimilarity tests ============
@@ -604,7 +620,7 @@ class OpenCypherTextFunctionsTest {
   void textSorensenDiceSimilarityShortStrings() {
     final TextSorensenDiceSimilarity fn = new TextSorensenDiceSimilarity();
 
-    // Single char strings fall back to equality
+    // Single-character strings have no bigram: equal strings are 1.0, different ones 0.0 (APOC answers NaN)
     assertThat((Double) fn.execute(new Object[]{"a", "a"}, null)).isCloseTo(1.0, within(0.001));
     assertThat((Double) fn.execute(new Object[]{"a", "b"}, null)).isCloseTo(0.0, within(0.001));
   }
@@ -640,8 +656,8 @@ class OpenCypherTextFunctionsTest {
   void textRpadNegativeLength() {
     final TextRpad fn = new TextRpad();
 
-    assertThatThrownBy(() -> fn.execute(new Object[]{"test", -1, "0"}, null))
-        .isInstanceOf(IllegalArgumentException.class);
+    // A negative length is one the string already reaches: unchanged, as in APOC (issue #12105), not an error
+    assertThat(fn.execute(new Object[]{"test", -1, "0"}, null)).isEqualTo("test");
   }
 
   // ============ TextRegexReplace tests ============
@@ -684,6 +700,9 @@ class OpenCypherTextFunctionsTest {
 
     assertThat(fn.execute(new Object[]{"hello world", "world", "there"}, null)).isEqualTo("hello there");
     assertThat(fn.execute(new Object[]{"aaa", "a", "bb"}, null)).isEqualTo("bbbbbb");
+    // a regular expression, as in apoc.text.replace (issue #12104)
+    assertThat(fn.execute(new Object[]{"a1b22c", "[0-9]+", "#"}, null)).isEqualTo("a#b#c");
+    assertThat(fn.execute(new Object[]{"hello", "(l+)", "<$1>"}, null)).isEqualTo("he<ll>o");
   }
 
   @Test
@@ -691,10 +710,9 @@ class OpenCypherTextFunctionsTest {
     final TextReplace fn = new TextReplace();
 
     assertThat(fn.execute(new Object[]{null, "a", "b"}, null)).isNull();
-    // Null search returns original
-    assertThat(fn.execute(new Object[]{"hello", null, "b"}, null)).isEqualTo("hello");
-    // Null replacement treated as empty string
-    assertThat(fn.execute(new Object[]{"hello", "l", null}, null)).isEqualTo("heo");
+    // a null regex or replacement answers null, as in apoc.text.replace (issue #12104)
+    assertThat(fn.execute(new Object[]{"hello", null, "b"}, null)).isNull();
+    assertThat(fn.execute(new Object[]{"hello", "l", null}, null)).isNull();
   }
 
   // ============ Additional edge case tests for existing functions ============
@@ -723,10 +741,12 @@ class OpenCypherTextFunctionsTest {
   }
 
   @Test
-  void textCodeEmptyString() {
+  void textCodeRefusesAText() {
     final TextCode fn = new TextCode();
 
-    assertThat(fn.execute(new Object[]{""}, null)).isNull();
+    // the argument is a code point; a text holding one is read as the number
+    assertThat(fn.execute(new Object[]{"65"}, null)).isEqualTo("A");
+    assertThatThrownBy(() -> fn.execute(new Object[]{"A"}, null)).hasMessageContaining("codepoint");
   }
 
   @Test
@@ -734,14 +754,14 @@ class OpenCypherTextFunctionsTest {
     final TextHexValue fn = new TextHexValue();
 
     assertThat(fn.execute(new Object[]{new byte[]{(byte) 0xFF, (byte) 0x00, (byte) 0xAB}}, null))
-        .isEqualTo("ff00ab");
+        .isEqualTo("FF00AB");
   }
 
   @Test
   void textFormatMultipleArgs() {
     final TextFormat fn = new TextFormat();
 
-    assertThat(fn.execute(new Object[]{"%s has %d items", "Cart", 5}, null)).isEqualTo("Cart has 5 items");
+    assertThat(fn.execute(new Object[]{"%s has %d items", List.of("Cart", 5)}, null)).isEqualTo("Cart has 5 items");
   }
 
   @Test
@@ -774,25 +794,23 @@ class OpenCypherTextFunctionsTest {
   void textLpadNegativeLength() {
     final TextLpad fn = new TextLpad();
 
-    assertThatThrownBy(() -> fn.execute(new Object[]{"test", -1, "0"}, null))
-        .isInstanceOf(IllegalArgumentException.class);
+    // A negative length is one the string already reaches: unchanged, as in APOC (issue #12105), not an error
+    assertThat(fn.execute(new Object[]{"test", -1, "0"}, null)).isEqualTo("test");
   }
 
   @Test
   void textJaroWinklerDistanceEmptyStrings() {
     final TextJaroWinklerDistance fn = new TextJaroWinklerDistance();
 
-    assertThat((Double) fn.execute(new Object[]{"", "hello"}, null)).isCloseTo(0.0, within(0.001));
-    assertThat((Double) fn.execute(new Object[]{"hello", ""}, null)).isCloseTo(0.0, within(0.001));
+    assertThat((Double) fn.execute(new Object[]{"", "hello"}, null)).isCloseTo(1.0, within(0.001));
+    assertThat((Double) fn.execute(new Object[]{"hello", ""}, null)).isCloseTo(1.0, within(0.001));
   }
 
   @Test
   void textSplitNullDelimiter() {
     final TextSplit fn = new TextSplit();
 
-    @SuppressWarnings("unchecked")
-    final List<String> result = (List<String>) fn.execute(new Object[]{"abc", null}, null);
-    assertThat(result).containsExactly("a", "b", "c");
+    assertThat(fn.execute(new Object[]{"abc", null}, null)).isNull();
   }
 
   // ============ Security boundary tests ============

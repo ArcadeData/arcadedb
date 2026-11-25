@@ -20,6 +20,7 @@ package com.arcadedb.utility;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.exception.SerializationException;
 import com.arcadedb.query.opencypher.temporal.CypherDate;
 import com.arcadedb.query.opencypher.temporal.CypherDateTime;
@@ -391,16 +392,18 @@ public class DateUtils {
         // NOT SUPPORTED
         timestamp = 0;
     } else if (value instanceof LocalDate localDate) {
+      // From the epoch second, which every LocalDate has (the epoch day times 86,400 cannot overflow). TimeUnit.convert()
+      // SATURATES to Long.MAX_VALUE/MIN_VALUE on overflow instead of silently wrapping, unlike a raw `* 1_000_000L`
+      // multiplication (issue #5625); toEpochMilli() threw instead, past year 292278993 either way (issue #11625)
+      final long epochSecond = localDate.toEpochDay() * 86_400L;
       if (precisionToUse.equals(ChronoUnit.SECONDS))
-        timestamp = localDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli() / 1_000L;
+        timestamp = epochSecond;
       else if (precisionToUse.equals(ChronoUnit.MILLIS))
-        timestamp = localDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli();
+        timestamp = TimeUnit.MILLISECONDS.convert(epochSecond, TimeUnit.SECONDS);
       else if (precisionToUse.equals(ChronoUnit.MICROS))
-        // TimeUnit.convert() SATURATES to Long.MAX_VALUE/MIN_VALUE on overflow instead of silently wrapping,
-        // unlike a raw `* 1_000_000L` multiplication (issue #5625).
-        timestamp = TimeUnit.MICROSECONDS.convert(localDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli(), TimeUnit.MILLISECONDS);
+        timestamp = TimeUnit.MICROSECONDS.convert(epochSecond, TimeUnit.SECONDS);
       else if (precisionToUse.equals(ChronoUnit.NANOS))
-        timestamp = TimeUnit.NANOSECONDS.convert(localDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli(), TimeUnit.MILLISECONDS);
+        timestamp = TimeUnit.NANOSECONDS.convert(epochSecond, TimeUnit.SECONDS);
       else
         // NOT SUPPORTED
         timestamp = 0;
@@ -941,7 +944,8 @@ public class DateUtils {
       case "millisecond", "milliseconds", "millis" -> ChronoUnit.MILLIS;
       case "microsecond", "microseconds", "micros" -> ChronoUnit.MICROS;
       case "nanosecond", "nanoseconds", "nanos" -> ChronoUnit.NANOS;
-      default -> throw new SerializationException("Unsupported datetime precision '" + precision + "'");
+      // a unit nothing names is the caller's argument: VALIDATION on every protocol, not a server fault (issue #12020)
+      default -> throw new InvalidArgumentException("Unsupported datetime precision '" + InvalidArgumentException.quote(precision) + "'");
     };
   }
 
@@ -1466,6 +1470,16 @@ public class DateUtils {
 
     if (date.getClass().equals(dateImplementation))
       return date;
+
+    // dateTimeToTimestamp() saturates a DATE past the millisecond range, which orders it right in a comparison but is another
+    // instant as a converted value (issue #11625): a date-time takes the date's midnight exactly, and a Date or a Calendar,
+    // which hold milliseconds, refuse it as they did before
+    if (date instanceof LocalDate localDate) {
+      if (dateImplementation.equals(LocalDateTime.class))
+        return localDate.atStartOfDay();
+      if (dateImplementation.equals(Date.class) || dateImplementation.equals(Calendar.class))
+        Math.multiplyExact(localDate.toEpochDay(), DateUtils.MS_IN_A_DAY);
+    }
 
     final long timestamp = DateUtils.dateTimeToTimestamp(date, ChronoUnit.MILLIS);
 

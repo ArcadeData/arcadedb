@@ -96,9 +96,9 @@ public class AlgoJaccardSimilarity extends AbstractAlgoProcedure {
     final int srcIdx = graph.nodeOf(sourceVertex.getIdentity());
     if (srcIdx < 0)
       return Stream.empty();
-    final int srcDeg = graph.neighbors(srcIdx, dir).length;
+    final int srcDeg = graph.distinctDegree(srcIdx, dir);
 
-    // count = |N(src) ∩ N(v)|: the entries of v's row that name a neighbour of the source
+    // count = |N(src) ∩ N(v)|: the distinct neighbours of v that are neighbours of the source
     final NodeScores shared = scoresThroughNeighbours(graph, srcIdx, dir, w -> 0.0, guard);
 
     // A node sharing no neighbour scores 0, and is listed only when the cutoff admits 0 (a negative one)
@@ -110,7 +110,7 @@ public class AlgoJaccardSimilarity extends AbstractAlgoProcedure {
       guard.checkPeriodically(candidate++);
       final int slot = shared.slotOf(v);
       final int intersection = slot >= 0 ? shared.count(slot) : 0;
-      final int union = srcDeg + graph.neighbors(v, dir).length - intersection;
+      final int union = srcDeg + graph.distinctDegree(v, dir) - intersection;
       if (union == 0)
         continue;
       final double similarity = (double) intersection / union;

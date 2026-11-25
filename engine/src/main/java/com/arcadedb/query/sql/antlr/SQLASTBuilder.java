@@ -18,10 +18,10 @@
  */
 package com.arcadedb.query.sql.antlr;
 
-import com.arcadedb.database.Identifiable;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.DownsamplingTier;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.function.FunctionRegistry;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.query.literal.LiteralParameterizer;
@@ -31,7 +31,6 @@ import com.arcadedb.query.sql.executor.SqlAstInspector;
 import com.arcadedb.query.sql.grammar.SQLParser;
 import com.arcadedb.query.sql.grammar.SQLParserBaseVisitor;
 import com.arcadedb.query.sql.parser.AlignDatabaseStatement;
-import com.arcadedb.query.sql.parser.AlterBucketStatement;
 import com.arcadedb.query.sql.parser.AlterDatabaseStatement;
 import com.arcadedb.query.sql.parser.AlterGraphAnalyticalViewStatement;
 import com.arcadedb.query.sql.parser.AlterMaterializedViewStatement;
@@ -191,13 +190,11 @@ import com.arcadedb.query.sql.parser.SetGlobalStatement;
 import com.arcadedb.query.sql.parser.Skip;
 import com.arcadedb.query.sql.parser.SleepStatement;
 import com.arcadedb.query.sql.parser.Statement;
-import com.arcadedb.query.sql.parser.SubQueryCollector;
 import com.arcadedb.query.sql.parser.SuffixIdentifier;
 import com.arcadedb.query.sql.parser.Timeout;
 import com.arcadedb.query.sql.parser.TraverseProjectionItem;
 import com.arcadedb.query.sql.parser.TraverseStatement;
 import com.arcadedb.query.sql.parser.TruncateBucketStatement;
-import com.arcadedb.query.sql.parser.TruncateRecordStatement;
 import com.arcadedb.query.sql.parser.TruncateTypeStatement;
 import com.arcadedb.query.sql.parser.Unwind;
 import com.arcadedb.query.sql.parser.UpdateIncrementItem;
@@ -253,6 +250,10 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    * vector.size()}) for as long as no function is registered under that name: a registered name ({@code vector.max()}) wins
    * over the method of a property called {@code vector}, as the run-time lookup this replaced already did, and back-ticking the
    * property ({@code `vector`.max()}) makes it a property again (issue #9076).
+   * <p>
+   * The set is read for a single identifier before the call only. A longer chain ({@code node.relationship.exists(n)},
+   * {@code apoc.text.indexOf(s, t)}) is a function call when it spells a registered function, or always when it starts with
+   * {@code apoc.}; any other ({@code map.a.size()}) stays a property chain (issue #12086).
    */
   private static final Set<String> FUNCTION_NAMESPACES = Set.of("ts", "geo", "text", "math", "convert", "date", "util", "coll",
       "map", "agg", "node", "rel", "path", "create");
@@ -342,6 +343,17 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   /** The message of a FACETS clause written after SKIP or LIMIT; the HTTP auto-limit recognizes it so it does not append a second LIMIT. */
   public static final String FACETS_AFTER_LIMIT_MESSAGE = "FACETS must come before SKIP and LIMIT";
 
+  /** The refusal of ALTER BUCKET, a statement the engine does not implement (issue #11796). */
+  public static final String ALTER_BUCKET_NOT_SUPPORTED =
+      "ALTER BUCKET is not supported: a bucket has no attribute that can be altered, and a bucket cannot be renamed. To move the "
+          + "records of a bucket to another one, create the bucket and copy them with MOVE VERTEX or INSERT ... SELECT. A record "
+          + "copied this way gets a new RID: rewrite the links to the old RIDs before DROP BUCKET, which deletes the source records";
+
+  /** The refusal of TRUNCATE RECORD, a statement the engine does not implement (issue #11796). */
+  public static final String TRUNCATE_RECORD_NOT_SUPPORTED =
+      "TRUNCATE RECORD is not supported: use DELETE FROM <rid> to remove a record together with its index entries and edges, or "
+          + "CHECK DATABASE FIX to remove a record that cannot be read and rebuild the indexes of its bucket";
+
   /** Target aliases of the statements currently being built, innermost first. See {@link #resolveTargetAlias}. */
   private final Deque<String> targetAliases = new ArrayDeque<>();
 
@@ -401,6 +413,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    * map.get('x') = 1}) still parses as the namespaced function {@code map.get}. That ambiguity predates aliases -
    * it applies to any property named {@code map}, {@code ts}, {@code geo}, ... - and is left as is; backtick-quote
    * the alias (or the property, as in {@code `map`.values()}), or pick another name, to address the record instead.
+   * The same holds for an alias called {@code apoc} followed by a longer chain: {@code SELECT FROM Foo apoc WHERE
+   * apoc.name.toUpperCase() = 'X'} parses as the function {@code apoc.name.toUpperCase}, since every multi-part name that
+   * starts with {@code apoc.} is a function call (issue #12086). The same back-ticks address the record.
    *
    * @return {@code expr}, rewritten in place when it was alias-qualified
    */
@@ -794,7 +809,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       // -9223372036854775808: only the negated literal fits a long
       if (negative)
         try {
-          return Long.parseLong("-" + (text.endsWith("L") || text.endsWith("l") ? text.substring(0, text.length() - 1) : text));
+          return parseNegatedLongLiteral(text);
         } catch (final NumberFormatException ignored) {
           // reported below
         }
@@ -1334,24 +1349,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // Arrow syntax with identifier: -EdgeType-> <-EdgeType- -EdgeType-
     // Determine direction based on arrow combination
     final MatchPathItem pathItem = new MatchPathItem();
-    final boolean leftIsArrow = ctx.ARROW_LEFT() != null;
-    final boolean rightIsArrow = ctx.ARROW_RIGHT() != null;
-
-    String methodName;
-    if (leftIsArrow && !rightIsArrow) {
-      // <-EdgeType- = incoming
-      methodName = "in";
-    } else if (!leftIsArrow && rightIsArrow) {
-      // -EdgeType-> = outgoing
-      methodName = "out";
-    } else {
-      // -EdgeType- = bidirectional
-      methodName = "both";
-    }
-
     // Create a MethodCall with the edge type as parameter
     final MethodCall method = new MethodCall();
-    method.methodName = new Identifier(methodName);
+    method.methodName = new Identifier(typedArrowDirection(ctx.ARROW_LEFT() != null, ctx.ARROW_RIGHT() != null));
 
     // Edge type becomes the parameter (as a string literal Expression)
     final Identifier edgeLabel = (Identifier) visit(ctx.identifier());
@@ -1370,6 +1370,18 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     }
 
     return pathItem;
+  }
+
+  /**
+   * Direction of a typed arrow step, {@code (MINUS | ARROW_LEFT) identifier (MINUS | ARROW_RIGHT)}, which the grammar accepts in
+   * both {@code matchMethod} and {@code nestedMatchMethod}: the one decision both visitors take, so a spelling cannot answer
+   * different rows at the top level of a path and inside {@code .( )} (issue #11780). A head on one side only is that direction;
+   * no head, or a head on both sides ({@code <-E->}, as openCypher reads {@code <-[:E]->}), is a hop in either direction.
+   */
+  private static String typedArrowDirection(final boolean leftArrow, final boolean rightArrow) {
+    if (leftArrow == rightArrow)
+      return "both";
+    return leftArrow ? "in" : "out";
   }
 
   /**
@@ -1426,16 +1438,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       } else if (ctx.DECR() != null && ctx.GT() == null) {
         // -- : anonymous bidirectional edge
         methodName = "both";
-      } else if (ctx.ARROW_LEFT() != null && ctx.identifier() != null) {
-        // <-EdgeType- : incoming edge with type
-        methodName = "in";
       } else {
-        // -EdgeType-> or -EdgeType- : outgoing or bidirectional edge with type
-        if (ctx.ARROW_RIGHT() != null) {
-          methodName = "out";
-        } else {
-          methodName = "both";
-        }
+        // -EdgeType->, <-EdgeType-, -EdgeType- or <-EdgeType->: the same decision as the top level of a path (issue #11780)
+        methodName = typedArrowDirection(ctx.ARROW_LEFT() != null, ctx.ARROW_RIGHT() != null);
       }
 
       // Create a MethodCall
@@ -3436,17 +3441,20 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     for (int i = 0; i < text.length(); i++)
       if (!Character.isDigit(text.charAt(i)))
-        return null; // hex/octal-shaped: not the plain-decimal shape we fold here
+        return null; // hex-shaped: not the digits-only shape we fold here
 
+    // a leading 0 makes the digits octal (#12082): the magnitude of Long.MIN_VALUE is 01000000000000000000000. `text` is the
+    // digits without the L suffix, tested for fit here; the fold below takes `originalText` and strips the suffix itself
+    final int radix = integerLiteralRadix(text);
     try {
-      Long.parseLong(text);
+      Long.parseLong(text, radix);
       return null; // magnitude fits on its own: let the existing 0 - X handling run as before
     } catch (final NumberFormatException magnitudeOverflow) {
       // only Long.MIN_VALUE's magnitude can still be represented once the sign is folded in;
       // anything larger is a genuine overflow and keeps raising the original error
       try {
         final BaseExpression baseExpr = new BaseExpression();
-        baseExpr.number = new PInteger().setValue(Long.parseLong("-" + text));
+        baseExpr.number = new PInteger().setValue(parseNegatedLongLiteral(originalText));
         return baseExpr;
       } catch (final NumberFormatException stillInvalid) {
         throw new CommandSQLParsingException("Invalid integer: " + originalText);
@@ -3581,15 +3589,20 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
-   * Parses an {@code INTEGER_LITERAL} token: decimal or hexadecimal ({@code 0xFF}), with an optional {@code L} suffix. A value
-   * above {@code Integer.MAX_VALUE} (hexadecimal included, so {@code 0xFFFFFFFF} is 4294967295 and not -1) is a long.
+   * Parses the {@code INTEGER_LITERAL} token of a numeric literal: decimal, hexadecimal ({@code 0xFF}) or octal (a leading
+   * {@code 0} followed by more digits: {@code 010} is 8, as the documentation and the lexer's {@code OCTAL_LITERAL} say, issue
+   * #12082), with an optional {@code L} suffix. A value above {@code Integer.MAX_VALUE} (hexadecimal and octal included, so
+   * {@code 0xFFFFFFFF} is 4294967295 and not -1) is a long.
+   * <p>
+   * Only the positions that read a numeric value come here. The positions that name something with a number (a bucket id, a
+   * bucket or shard count, a page size, a retry count, a {@code $N} parameter, the parts of a RID) keep reading plain decimal
+   * digits, as they always did: {@code bucket:010} is bucket 10, like {@code #10:0}.
    */
   static Number parseIntegerLiteral(final String text) {
     final boolean isLong = text.endsWith("L") || text.endsWith("l");
     final String digits = isLong ? text.substring(0, text.length() - 1) : text;
-    final boolean isHex = digits.length() > 2 && digits.charAt(0) == '0' && (digits.charAt(1) == 'x' || digits.charAt(1) == 'X');
-    final String body = isHex ? digits.substring(2) : digits;
-    final int radix = isHex ? 16 : 10;
+    final int radix = integerLiteralRadix(digits);
+    final String body = radix == 16 ? digits.substring(2) : digits;
     if (isLong)
       return Long.parseLong(body, radix);
     try {
@@ -3598,6 +3611,30 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       // If it's too large for int, try long
       return Long.parseLong(body, radix);
     }
+  }
+
+  /**
+   * The value of a directly negated {@code INTEGER_LITERAL} (optionally {@code L}-suffixed) whose magnitude does not fit a
+   * long on its own: only the magnitude of {@code Long.MIN_VALUE} can still be represented once the sign is folded in, anything
+   * larger raises {@link NumberFormatException}. The digits are read in the radix {@link #parseIntegerLiteral} reads them in,
+   * except that a hexadecimal one is refused (the {@code x} of its prefix is no digit): folding the minimum of a hexadecimal
+   * literal was never accepted.
+   */
+  static long parseNegatedLongLiteral(final String text) {
+    final String digits = text.endsWith("L") || text.endsWith("l") ? text.substring(0, text.length() - 1) : text;
+    return Long.parseLong("-" + digits, integerLiteralRadix(digits));
+  }
+
+  /**
+   * The radix of the digits of an {@code INTEGER_LITERAL} without its {@code L} suffix: 16 for {@code 0x}, 8 for a leading
+   * {@code 0} followed by more digits, 10 otherwise ({@code 0} alone is 0).
+   */
+  private static int integerLiteralRadix(final String digits) {
+    if (digits.length() > 1 && digits.charAt(0) == '0') {
+      final char second = digits.charAt(1);
+      return second == 'x' || second == 'X' ? 16 : 8;
+    }
+    return 10;
   }
 
   /**
@@ -3967,18 +4004,19 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     if (ctx.identifier() != null) {
       final SQLParser.IdentifierContext firstIdCtx = ctx.identifier();
 
-      // Detect namespace-qualified function calls: geo.methodName(args), vector.sum(v)
-      // Pattern: exactly one base identifier, no additional DOT-identifiers and at least one methodCall, where the first
-      // methodCall names a function of that namespace → rewrite as FunctionCall("namespace.methodName", args) and chain
-      // whatever follows it as modifiers. Done here, on the AST, because everything the planner decides about a call (whether
-      // it aggregates above all) it decides by walking the AST.
-      if (ctx.propertyName().isEmpty() && CollectionUtils.isNotEmpty(ctx.methodCall())
+      // Detect namespace-qualified function calls: geo.methodName(args), vector.sum(v), node.relationship.exists(n),
+      // apoc.text.indexOf(s, t)
+      // Pattern: a base identifier, any DOT-identifiers and at least one methodCall, where the dotted name up to and including
+      // the first methodCall names a function → rewrite as FunctionCall("namespace.methodName", args) and chain whatever follows
+      // it as modifiers. Done here, on the AST, because everything the planner decides about a call (whether it aggregates
+      // above all) it decides by walking the AST.
+      if (CollectionUtils.isNotEmpty(ctx.methodCall())
           && firstIdCtx.RID_ATTR() == null && firstIdCtx.TYPE_ATTR() == null
           && firstIdCtx.IN_ATTR() == null && firstIdCtx.OUT_ATTR() == null && firstIdCtx.THIS() == null
           && firstIdCtx.CAT_ATTR() == null) {
-        final String baseIdText = firstIdCtx.getText();
-        if (isNamespacedFunctionCall(baseIdText, ctx.methodCall(0)))
-          return buildNamespaceQualifiedFunctionCall(baseIdText, ctx.methodCall(), ctx);
+        final String qualifier = functionQualifier(firstIdCtx, ctx.propertyName());
+        if (qualifier != null && isNamespacedFunctionCall(qualifier, !ctx.propertyName().isEmpty(), ctx.methodCall(0)))
+          return buildNamespaceQualifiedFunctionCall(qualifier, ctx.methodCall(), ctx);
       }
 
       // Check if the first identifier is a record attribute (@rid, @type, @in, @out, @this),
@@ -4067,15 +4105,47 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
-   * Whether {@code <baseIdText>.<methodCall>(...)} is a call of the function {@code <baseIdText>.<methodCall>} rather than a
-   * method call on a property called {@code baseIdText}: the namespaces of {@link #FUNCTION_NAMESPACES} always are, any other is
-   * exactly when that function is registered. A back-ticked identifier is a property, never a namespace (issue #9076), and its
+   * The dotted name a call written as {@code <base>.<p1>...<pN>.<method>(...)} would be a function of: the base alone when the
+   * chain has no property names, {@code base.p1...pN} otherwise. Null when a property name is back-ticked or a record attribute
+   * ({@code @rid}...), since such a chain addresses a record and never spells a function name.
+   */
+  private static String functionQualifier(final SQLParser.IdentifierContext firstIdCtx,
+      final List<SQLParser.PropertyNameContext> propertyNames) {
+    final String baseIdText = firstIdCtx.getText();
+    if (propertyNames.isEmpty())
+      return baseIdText;
+    if (!isPlainNameSegment(baseIdText))
+      return null;
+
+    final StringBuilder qualifier = new StringBuilder(baseIdText);
+    for (final SQLParser.PropertyNameContext propCtx : propertyNames) {
+      final String segment = propCtx.getText();
+      if (!isPlainNameSegment(segment))
+        return null;
+      qualifier.append('.').append(segment);
+    }
+    return qualifier.toString();
+  }
+
+  private static boolean isPlainNameSegment(final String segment) {
+    return !segment.isEmpty() && segment.charAt(0) != '`' && segment.charAt(0) != '@';
+  }
+
+  /**
+   * Whether {@code <qualifier>.<methodCall>(...)} is a call of the function {@code <qualifier>.<methodCall>} rather than a
+   * method call on the property chain {@code qualifier}: exactly when that function is registered (any letter case, with or
+   * without the {@code apoc.} prefix, as {@link FunctionRegistry} resolves it for SQL and Cypher alike), and also, for an unknown
+   * function, when a single-identifier qualifier is one of the {@link #FUNCTION_NAMESPACES} or a multi-part qualifier starts with
+   * {@code apoc.}, so that a typo is reported as an unknown function and not answered as a method call on a missing property
+   * (issue #12086). Any other multi-part qualifier ({@code a.b.size()}, {@code node.label.toUpperCase()}) stays a property chain
+   * unless it spells a registered function. A back-ticked identifier is a property, never a namespace (issue #9076), and its
    * text keeps the back-ticks, so it matches neither.
    */
-  private static boolean isNamespacedFunctionCall(final String baseIdText, final SQLParser.MethodCallContext methodCtx) {
-    if (FUNCTION_NAMESPACES.contains(baseIdText.toLowerCase(Locale.ROOT)))
+  private static boolean isNamespacedFunctionCall(final String qualifier, final boolean multipart,
+      final SQLParser.MethodCallContext methodCtx) {
+    if (multipart ? FunctionRegistry.hasApocPrefix(qualifier) : FUNCTION_NAMESPACES.contains(qualifier.toLowerCase(Locale.ROOT)))
       return true;
-    return DefaultSQLFunctionFactory.getInstance().hasNamespacedFunction(baseIdText + "." + methodCtx.identifier().getText());
+    return DefaultSQLFunctionFactory.getInstance().hasNamespacedFunction(qualifier + "." + methodCtx.identifier().getText());
   }
 
   /**
@@ -4747,7 +4817,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
-   * Visit integer (positive or negative integer for RIDs).
+   * Visit integer (positive or negative integer for RIDs). The parts of a RID are read in decimal, as the RID's own text form
+   * ({@code #12:10}, {@code new RID("#12:010")}) is: a record address, not a numeric literal, so {@code #12:010} is
+   * {@code #12:10} and not the octal {@code #12:8} (issue #12082).
    */
   @Override
   public PInteger visitInteger(final SQLParser.IntegerContext ctx) {
@@ -5541,6 +5613,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    * Builds every DELETE clause but the target, whose alias is in scope for the duration of this call (issue #7153).
    */
   private void buildDeleteClauses(final DeleteStatement stmt, final SQLParser.DeleteStatementContext deleteCtx) {
+    // DELETE VERTEX: only vertices may be deleted, kept on the AST so the statement renders as written (issue #11620)
+    stmt.deleteVertex = deleteCtx.VERTEX() != null;
+
     // RETURN BEFORE flag
     stmt.returnBefore = deleteCtx.RETURN() != null && deleteCtx.BEFORE() != null;
     // PostgreSQL's trailing RETURNING (issue #11392): the records as they were before the delete, projected
@@ -6860,34 +6935,14 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
-   * Visit ALTER BUCKET statement.
+   * ALTER BUCKET is recognised only to be refused with a message that names it (issue #11796): no attribute of a bucket can be
+   * altered, and the statement used to parse, plan and then fail every time with a bare {@code UnsupportedOperationException}
+   * (HTTP 500), which a client or a retry policy reads as a transient server fault. Refused while the text is parsed, so a script
+   * holding it runs none of its statements.
    */
   @Override
-  public AlterBucketStatement visitAlterBucketStmt(final SQLParser.AlterBucketStmtContext ctx) {
-    final AlterBucketStatement stmt = new AlterBucketStatement();
-    final SQLParser.AlterBucketBodyContext bodyCtx = ctx.alterBucketBody();
-
-    // Bucket name (possibly with wildcard *)
-    stmt.name = (Identifier) visit(bodyCtx.identifier());
-    stmt.starred = bodyCtx.STAR() != null;
-
-    // Process all alter bucket items
-    for (final SQLParser.AlterBucketItemContext itemCtx : bodyCtx.alterBucketItem()) {
-      if (itemCtx.NAME() != null) {
-        stmt.attributeName = new Identifier("name");
-        final Identifier attrNameId = (Identifier) visit(itemCtx.identifier());
-        final BaseExpression attrNameBaseExpr = new BaseExpression();
-        attrNameBaseExpr.identifier = new BaseIdentifier(attrNameId);
-        final Expression attrNameExpr = new Expression();
-        attrNameExpr.mathExpression = attrNameBaseExpr;
-        stmt.attributeValue = attrNameExpr;
-      } else if (itemCtx.CUSTOM() != null) {
-        stmt.attributeName = (Identifier) visit(itemCtx.identifier());
-        stmt.attributeValue = (Expression) visit(itemCtx.expression());
-      }
-    }
-
-    return stmt;
+  public Object visitAlterBucketStmt(final SQLParser.AlterBucketStmtContext ctx) {
+    throw new CommandSQLParsingException(ALTER_BUCKET_NOT_SUPPORTED);
   }
 
   /**
@@ -7210,7 +7265,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
       // The first tsRetentionUnit after RETENTION belongs to RETENTION
       final long multiplier = resolveTimeUnitAfterKeyword(bodyCtx, SQLParser.RETENTION, 86400000L);
-      stmt.retentionMs = retentionValue * multiplier;
+      stmt.retentionMs = Math.multiplyExact(retentionValue, multiplier);
     }
 
     // COMPACTION_INTERVAL or COMPACTION INTERVAL - value with optional time unit
@@ -7234,7 +7289,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       }
 
       final long multiplier = resolveTimeUnitAfterKeyword(bodyCtx, compactionTokenType, 3600000L);
-      stmt.compactionIntervalMs = compactionValue * multiplier;
+      stmt.compactionIntervalMs = Math.multiplyExact(compactionValue, multiplier);
     }
 
     // DOWNSAMPLING POLICY AFTER ... GRANULARITY ... (issue #7689). Same tier clause, and the same ascending sort,
@@ -7586,26 +7641,15 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
-   * Visit TRUNCATE RECORD statement.
+   * TRUNCATE RECORD is recognised only to be refused with a message that names the statements doing its job (issue #11796). It
+   * is the legacy raw delete of a record without its callbacks: in ArcadeDB that would leave the record's index entries and
+   * edges pointing at a RID the bucket hands out again, so it was never implemented and failed every time with a bare
+   * {@code UnsupportedOperationException} (HTTP 500). DELETE removes a record with everything that refers to it, and CHECK
+   * DATABASE FIX removes a record that cannot be read and rebuilds the indexes of its bucket.
    */
   @Override
-  public TruncateRecordStatement visitTruncateRecordStmt(final SQLParser.TruncateRecordStmtContext ctx) {
-    final TruncateRecordStatement stmt = new TruncateRecordStatement();
-    final SQLParser.TruncateRecordBodyContext bodyCtx = ctx.truncateRecordBody();
-
-    // Record RIDs (one or more)
-    stmt.records = new ArrayList<>();
-    for (final SQLParser.RidContext ridCtx : bodyCtx.rid()) {
-      final Rid rid = (Rid) visit(ridCtx);
-      stmt.records.add(rid);
-    }
-
-    // Set single record if only one
-    if (stmt.records.size() == 1) {
-      stmt.record = stmt.records.get(0);
-    }
-
-    return stmt;
+  public Object visitTruncateRecordStmt(final SQLParser.TruncateRecordStmtContext ctx) {
+    throw new CommandSQLParsingException(TRUNCATE_RECORD_NOT_SUPPORTED);
   }
 
   /**
@@ -7887,8 +7931,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final ConsoleStatement stmt = new ConsoleStatement();
     final SQLParser.ConsoleStatementContext consoleCtx = ctx.consoleStatement();
 
-    // LOG LEVEL: log, output, error, warn, debug
+    // LOG LEVEL: log, output, error, warn, debug. Any other is refused here, before a statement of the script runs (issue #11893)
     stmt.logLevel = (Identifier) visit(consoleCtx.identifier());
+    ConsoleStatement.validateLevel(stmt.logLevel);
 
     // MESSAGE: expression to log
     stmt.message = (Expression) visit(consoleCtx.expression());
@@ -8580,8 +8625,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       final String[] parts = inclusive ? tokenText.split("\\.\\.\\.") : tokenText.split("\\.\\.");
 
       if (parts.length == 2) {
-        final int from = Integer.parseInt(parts[0].trim());
-        final int to = Integer.parseInt(parts[1].trim());
+        final int from = parseRangeBound(parts[0].trim());
+        final int to = parseRangeBound(parts[1].trim());
 
         // Set from and to fields
         selector.from = from;
@@ -8599,6 +8644,16 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     }
 
     return selector;
+  }
+
+  /**
+   * A bound of an integer range token ({@code [01..010]}, optionally negative): a leading {@code 0} followed by more digits is
+   * octal like in every numeric literal, so the token and {@code [01 .. 010]}, which goes through the expression parser, agree
+   * (issue #12082). Hexadecimal and the {@code L} suffix were never accepted in the token and still raise
+   * {@link NumberFormatException}: neither the {@code x} nor the {@code L} is a digit of the radix chosen.
+   */
+  private static int parseRangeBound(final String text) {
+    return Integer.parseInt(text, integerLiteralRadix(text.startsWith("-") ? text.substring(1) : text));
   }
 
   /**
@@ -8815,41 +8870,14 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     return whereClause;
   }
 
-  private BooleanExpression createBooleanLiteral(final Boolean boolValue) {
-    // Create an anonymous BooleanExpression that returns the literal value
-    final boolean val = boolValue != null && boolValue;  // Convert to primitive to avoid closure issues
-    return new BooleanExpression() {
-      @Override
-      public Boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
-        return val;
-      }
-
-      @Override
-      public Boolean evaluate(final Result currentRecord, final CommandContext ctx) {
-        return val;
-      }
-
-      @Override
-      public void toString(final Map<String, Object> params, final StringBuilder builder) {
-        builder.append(val);
-      }
-
-      @Override
-      public BooleanExpression copy() {
-        return createBooleanLiteral(val);
-      }
-
-      @Override
-      public void extractSubQueries(final SubQueryCollector collector) {
-        // No subqueries in a boolean literal
-      }
-
-      @Override
-      public List<String> getMatchPatternInvolvedAliases() {
-        // No aliases involved in a boolean literal
-        return Collections.emptyList();
-      }
-    };
+  /**
+   * The boolean literal of a MATCH {@code where:} / {@code while:} filter: the shared {@link BooleanExpression#TRUE} and
+   * {@link BooleanExpression#FALSE} nodes a {@code WHERE true} / {@code WHERE false} builds too. Their {@code copy()} answers the
+   * node itself, so a copied statement is equal to its original and hashes the same (issue #12528: an anonymous node per literal
+   * kept {@code Object} identity, and its copy was never equal to it).
+   */
+  private static BooleanExpression createBooleanLiteral(final Boolean boolValue) {
+    return boolValue != null && boolValue ? BooleanExpression.TRUE : BooleanExpression.FALSE;
   }
 
   private static int parseCompactionThreshold(final String text) {

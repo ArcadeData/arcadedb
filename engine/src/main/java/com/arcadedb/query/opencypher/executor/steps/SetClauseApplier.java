@@ -21,20 +21,24 @@ package com.arcadedb.query.opencypher.executor.steps;
 import com.arcadedb.database.BaseRecord;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.DocumentValidator;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.VirtualVertex;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.SetClause;
 import com.arcadedb.query.opencypher.executor.CypherValues;
 import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
+import com.arcadedb.query.opencypher.executor.HeldCollectionRefresher;
 import com.arcadedb.query.opencypher.executor.LabelReplacements;
 import com.arcadedb.query.opencypher.executor.RowAliases;
+import com.arcadedb.query.opencypher.executor.SelectionPredicates;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
@@ -82,16 +86,22 @@ public final class SetClauseApplier {
   private final ExpressionEvaluator evaluator;
   private final boolean             reloadLatestTarget;
   private final boolean             skipUnchangedPropertyWrites;
+  // The predicates that selected the records the clause writes, evaluated again on a target reloaded with changed content (#11818)
+  private final SelectionPredicates selection;
   // The records the clause reloaded while applying the current row (#8538), reused across rows. Not thread-safe, like
   // SetStep's writtenDocs: every SetStep and MergeStep builds its own applier and applies its rows one at a time.
   private       Set<RID>            reloadedRids;
+  // Lines up the records the row's lists and maps hold with what the statement wrote (issue #11754): the statement's own,
+  // shared by every clause, resolved at the start of each apply()
+  private       HeldCollectionRefresher heldCollections;
 
   private SetClauseApplier(final CommandContext context, final ExpressionEvaluator evaluator,
-      final boolean reloadLatestTarget, final boolean skipUnchangedPropertyWrites) {
+      final boolean reloadLatestTarget, final boolean skipUnchangedPropertyWrites, final SelectionPredicates selection) {
     this.context = context;
     this.evaluator = evaluator;
     this.reloadLatestTarget = reloadLatestTarget;
     this.skipUnchangedPropertyWrites = skipUnchangedPropertyWrites;
+    this.selection = selection;
   }
 
   /**
@@ -99,7 +109,16 @@ public final class SetClauseApplier {
    * item unconditionally.
    */
   public static SetClauseApplier forSetClause(final CommandContext context, final ExpressionEvaluator evaluator) {
-    return new SetClauseApplier(context, evaluator, true, false);
+    return forSetClause(context, evaluator, SelectionPredicates.NONE);
+  }
+
+  /**
+   * {@link #forSetClause(CommandContext, ExpressionEvaluator)}, refusing the write of a target that a concurrent commit changed
+   * since the row read it so that one of {@code selection} no longer holds (issue #11818).
+   */
+  public static SetClauseApplier forSetClause(final CommandContext context, final ExpressionEvaluator evaluator,
+      final SelectionPredicates selection) {
+    return new SetClauseApplier(context, evaluator, true, false, selection);
   }
 
   /**
@@ -107,7 +126,7 @@ public final class SetClauseApplier {
    * transaction matched or created, and an unchanged property value is not re-written.
    */
   public static SetClauseApplier forMergeAction(final CommandContext context, final ExpressionEvaluator evaluator) {
-    return new SetClauseApplier(context, evaluator, false, true);
+    return new SetClauseApplier(context, evaluator, false, true, SelectionPredicates.NONE);
   }
 
   /**
@@ -128,6 +147,10 @@ public final class SetClauseApplier {
     // Pre-resolve any vertex aliases that were replaced by a label change on a prior row so that property-SET
     // operations (which go through resolveLatestDoc) observe the live vertex rather than the deleted original.
     labelReplacements.redirect(result);
+    // ...and the records the row holds in a list or a map at what this statement wrote so far, so the right-hand sides read
+    // it: an UNWIND hands the same list to every row, and the copy an earlier row lined up is not that list (issue #11754)
+    heldCollections = HeldCollectionRefresher.of(context);
+    heldCollections.refresh(result);
 
     final List<SetClause.SetItem> items = setClause.getItems();
     if (reloadedRids != null)
@@ -167,6 +190,9 @@ public final class SetClauseApplier {
       evaluateRightHandSides(items, result, writtenDocs, false, values, targets, keys, keyIsNull);
     }
 
+    // A null written to a NOTNULL property is refused here, before any item of the clause is written (issue #13227)
+    refuseNullsOnNotNullProperties(items, result, writtenDocs, values, targets, keys, keyIsNull);
+
     // Phase 2: apply the writes using the pre-computed snapshot values.
     for (int i = 0; i < items.size(); i++) {
       final SetClause.SetItem item = items.get(i);
@@ -185,6 +211,57 @@ public final class SetClauseApplier {
         break;
       }
     }
+
+    // The row's own aliases follow each write as it lands (RowAliases.propagateUpdate); a node the row holds in a list or
+    // a map, such as the collect() the target was read from, follows it here, once per row (issue #11754). A label write
+    // above already moved those to the replacement vertex, and the redirect keeps a copy shared with earlier rows there too
+    heldCollections.refresh(result);
+    labelReplacements.redirect(result);
+  }
+
+  /**
+   * Refuses the clause when one of its items writes a null to a NOTNULL property of its target (issue #13227). openCypher
+   * never stores a null, it removes the property ({@code SET n.p = null}, {@code SET n += {p: null}}) or leaves it out
+   * ({@code SET n = {p: null}}), so the presence-based rule of the validator would never see the null that SQL refuses.
+   * Asked between the two phases, so a refused clause has written nothing. The properties {@code SET n = map} leaves out
+   * are removals, not null writes, and stay accepted like {@code REMOVE n.p}.
+   */
+  private void refuseNullsOnNotNullProperties(final List<SetClause.SetItem> items, final Result result,
+      final Map<RID, MutableDocument> writtenDocs, final Object[] values, final Object[] targets, final String[] keys,
+      final boolean[] keyIsNull) {
+    for (int i = 0; i < items.size(); i++) {
+      final SetClause.SetItem item = items.get(i);
+      switch (item.getType()) {
+      case PROPERTY: {
+        if (values[i] != null || keyIsNull[i])
+          break;
+        final Object target = item.getTargetExpression() != null ? targets[i] : resolveLatestDoc(item.getVariable(), result, writtenDocs);
+        if (target instanceof Document doc)
+          DocumentValidator.requireNullAllowed(doc.getType(), item.getKeyExpression() != null ? keys[i] : item.getProperty(), doc);
+        break;
+      }
+      case REPLACE_MAP:
+      case MERGE_MAP: {
+        final Map<String, Object> map = asPropertyMap(values[i]);
+        if (map == null || !map.containsValue(null))
+          break;
+        if (resolveLatestDoc(item.getVariable(), result, writtenDocs) instanceof Document doc)
+          requireNullsAllowed(doc.getType(), map, doc);
+        break;
+      }
+      default:
+        break;
+      }
+    }
+  }
+
+  /** Refuses the null entries of a property map written to a record of {@code type} that are NOTNULL properties (#13227). */
+  static void requireNullsAllowed(final DocumentType type, final Map<String, Object> map, final Document record) {
+    if (map == null)
+      return;
+    for (final Map.Entry<String, Object> entry : map.entrySet())
+      if (entry.getValue() == null)
+        DocumentValidator.requireNullAllowed(type, entry.getKey(), record);
   }
 
   /**
@@ -356,15 +433,31 @@ public final class SetClauseApplier {
     // record had no buffer to compare, and the transaction's own modified copy, answered from its record cache, can
     // differ from the committed image the row read (an UNWIND fanning out onto a record already written re-evaluates
     // once per row for that reason). Any of the three asks for a new evaluation.
-    final Binary current = record != null ? record.getBuffer() : null;
-    final boolean contentChanged = readImage == null || (current != readImage && !sameContent(readImage, current))
-        || (rid != null && context.getDatabase().getTransaction().getRecordFromCache(rid) == mutable);
+    final boolean ownCopy = rid != null && context.getDatabase().getTransaction().getRecordFromCache(rid) == mutable;
+    final boolean contentChanged = ownCopy || holdsOtherContent(doc, readImage);
     // A record with no identity has nothing to reload, so it never asks for another round: the loop would not settle
     if (!contentChanged || rid == null)
       return false;
+    // #11818: the predicates that selected the record were decided on the content the row read. A concurrent commit that changed
+    // what they read leaves a record the statement no longer selects: writing it would build on that commit, and two concurrent
+    // "MATCH (r {k: $k}) WHERE r.claimed IS NULL SET r.claimed = $me" both claimed the record. The transaction's own copy is what
+    // this transaction wrote, not a concurrent commit: the statement's own writes never unselect a row it already matched.
+    if (!ownCopy)
+      selection.requireStillSelected(rid, result, context);
     if (reloadedRids == null)
       reloadedRids = new HashSet<>();
     return reloadedRids.add(rid);
+  }
+
+  /**
+   * Whether {@code doc}, which {@code modify()} was just called on, holds other content than {@code readImage}, the content the
+   * row read: a lazily loaded record had none to compare, so it counts as changed. Shared with {@link RemoveStep} (issue #11818).
+   */
+  static boolean holdsOtherContent(final Document doc, final Binary readImage) {
+    if (readImage == null)
+      return true;
+    final Binary current = doc instanceof BaseRecord record ? record.getBuffer() : null;
+    return current != readImage && !sameContent(readImage, current);
   }
 
   private static boolean sameContent(final Binary a, final Binary b) {
@@ -435,6 +528,10 @@ public final class SetClauseApplier {
       propertyName = item.getProperty();
 
     final Object value = precomputedValue;
+    // Asked again here, on the record the write lands on: a label written earlier in the clause can have moved it to
+    // another type than the one the check before the writes saw (issue #13227)
+    if (value == null)
+      DocumentValidator.requireNullAllowed(doc.getType(), propertyName, doc);
 
     // Issue #4474: a MERGE action never re-asserts a value the record already holds, because the write would bump
     // the MVCC version and invalidate the record for every concurrent reader that had matched it. The statistic is
@@ -474,6 +571,7 @@ public final class SetClauseApplier {
     final RID savedRid = mutableDoc.getIdentity();
     if (savedRid != null)
       writtenDocs.put(savedRid, mutableDoc);
+    heldCollections.written(mutableDoc);
 
     RowAliases.propagateUpdate(result, doc, mutableDoc);
     // Fallback: ensure the named variable is updated even when doc has no identity yet
@@ -489,6 +587,8 @@ public final class SetClauseApplier {
     final Document doc = resolveLatestDoc(item.getVariable(), result, writtenDocs);
     if (doc == null)
       return;
+    // issue #13227, asked again on the record the write lands on, see applyPropertySet()
+    requireNullsAllowed(doc.getType(), map, doc);
 
     final MutableDocument mutableDoc = doc.modify();
     if (mutableDoc != doc)
@@ -519,6 +619,7 @@ public final class SetClauseApplier {
     final RID savedRid = mutableDoc.getIdentity();
     if (savedRid != null)
       writtenDocs.put(savedRid, mutableDoc);
+    heldCollections.written(mutableDoc);
     RowAliases.propagateUpdate(result, doc, mutableDoc);
     if (doc.getIdentity() == null)
       ((ResultInternal) result).setProperty(item.getVariable(), mutableDoc);
@@ -532,6 +633,8 @@ public final class SetClauseApplier {
     final Document doc = resolveLatestDoc(item.getVariable(), result, writtenDocs);
     if (doc == null)
       return;
+    // issue #13227, asked again on the record the write lands on, see applyPropertySet()
+    requireNullsAllowed(doc.getType(), map, doc);
 
     final MutableDocument mutableDoc = doc.modify();
     if (mutableDoc != doc)
@@ -557,6 +660,7 @@ public final class SetClauseApplier {
     final RID savedRid = mutableDoc.getIdentity();
     if (savedRid != null)
       writtenDocs.put(savedRid, mutableDoc);
+    heldCollections.written(mutableDoc);
     RowAliases.propagateUpdate(result, doc, mutableDoc);
     if (doc.getIdentity() == null)
       ((ResultInternal) result).setProperty(item.getVariable(), mutableDoc);
@@ -676,6 +780,9 @@ public final class SetClauseApplier {
     DeletedEntityMarker.checkNotDeleted(obj);
     if (!(obj instanceof Vertex vertex))
       return;
+    // A virtual node (create.vNode) has no stored type to rewrite under a composite one (issue #12109)
+    if (vertex instanceof VirtualVertex virtual)
+      throw virtual.unsupported("relabelled");
 
     // If this vertex was already replaced on a prior row (row fanout hitting the same node), redirect to the
     // replacement so the idempotency check below reads the current type. The per-row redirect() at the top of

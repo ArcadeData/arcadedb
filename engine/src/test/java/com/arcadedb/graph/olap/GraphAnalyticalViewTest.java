@@ -1868,7 +1868,7 @@ class GraphAnalyticalViewTest extends TestHelper {
         .build();
 
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.wcc() YIELD nodeId, componentId RETURN nodeId, componentId");
+        "CALL algo.wcc() YIELD node, componentId RETURN node, componentId");
 
     final List<Integer> componentIds = new ArrayList<>();
     while (rs.hasNext())
@@ -1902,7 +1902,7 @@ class GraphAnalyticalViewTest extends TestHelper {
         .build();
 
     final ResultSet rs = database.query("opencypher",
-        "CALL algo.triangleCount() YIELD nodeId, triangles RETURN nodeId, triangles");
+        "CALL algo.triangleCount() YIELD node, triangles RETURN node, triangles");
 
     int totalTriangles = 0;
     int nodeCount = 0;
@@ -5664,7 +5664,8 @@ class GraphAnalyticalViewTest extends TestHelper {
   @Test
   void edgePropertiesSQL() {
     database.getSchema().createVertexType("EPNode");
-    database.getSchema().createEdgeType("EPLINK");
+    // a view refuses an edge property the schema does not declare (issue #12177)
+    database.getSchema().createEdgeType("EPLINK").createProperty("weight", Type.DOUBLE);
     database.begin();
     final MutableVertex a = database.newVertex("EPNode").set("name", "A").save();
     final MutableVertex b = database.newVertex("EPNode").set("name", "B").save();

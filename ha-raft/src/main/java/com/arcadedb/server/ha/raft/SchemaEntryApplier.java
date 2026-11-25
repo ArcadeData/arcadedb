@@ -281,14 +281,17 @@ final class SchemaEntryApplier {
       // "Invalid sub-index for index '...' (error=File with id 'NNN' was not found)" over a state that was
       // purely transient, and the old self-repair in LSMTreeIndexMutable.onAfterLoad then tried to DROP
       // the index - a schema write a replica may not perform - which failed the apply and escalated the
-      // whole database to a snapshot resync. Retiring last closes that window: by then page 0 already
-      // names the new file.
-      if (!appliedBefore && decoded.filesToRemove() != null)
-        for (final Map.Entry<Integer, String> fileEntry : decoded.filesToRemove().entrySet()) {
-          db.getPageManager().deleteFile(db, fileEntry.getKey());
-          db.getFileManager().dropFile(fileEntry.getKey());
-          db.getSchema().getEmbedded().removeFile(fileEntry.getKey());
-        }
+      // whole database to a snapshot resync.
+      //
+      // And only AFTER the reload below has published the generation that no longer reads them (issue #12358). The
+      // previous generation stays published for the whole of a full load, so the queries running meanwhile keep
+      // resolving its indexes (issue #7963) - and those indexes read through the files this entry retires. Deleted
+      // first, every lookup on them failed for the length of the load (up to 1.4 s on a database with many vector
+      // indexes) with "File with id NNN was not found". The load leaves them out of the components it builds instead,
+      // as if they were already gone, which keeps #4743 closed.
+      final Set<Integer> retiring = !appliedBefore && decoded.filesToRemove() != null ?
+          decoded.filesToRemove().keySet() :
+          Collections.emptySet();
 
       // Reload schema after WAL pages are on disk so new index files have valid content
       // and are correctly registered (page counts, type links, in-memory structures).
@@ -319,11 +322,21 @@ final class SchemaEntryApplier {
               walTouchedFileIds);
 
         if (refusal != null)
-          loadSchemaInFull(schema, decoded, entryIndex, refusal);
+          loadSchemaInFull(schema, decoded, entryIndex, refusal, retiring);
 
         // The reload read the index and dictionary files again, on the apply thread (issue #11518): a copy that turns up
         // damaged here is quarantined before the next entry is applied to it, as the startup scan does for one found at open
         sm.quarantine.quarantineIfLocalCopyDamaged(decoded.databaseName(), db);
+      }
+
+      // Whichever path published above: the incremental refresh refuses every entry that retires a file (FILE_RETIRED), so a
+      // non-empty set here always follows a full load that left these ids out. A load that throws leaves them in place: the
+      // entry is not applied, so its retry or replay (appliedBefore false) retires them after its own load. Scans of the previous generation
+      // that still read them end with a retryable IndexReplacedException rather than a bad request.
+      for (final Integer fileId : retiring) {
+        db.getPageManager().deleteFile(db, fileId);
+        db.getFileManager().dropFile(fileId);
+        db.getSchema().getEmbedded().removeFile(fileId);
       }
 
     } catch (final IOException e) {
@@ -341,13 +354,13 @@ final class SchemaEntryApplier {
    * ({@code arcadedb.ha.schema.full_load}) are what a dashboard alerts on.
    */
   private void loadSchemaInFull(final LocalSchema schema, final RaftLogEntryCodec.DecodedEntry decoded, final long entryIndex,
-      final IncrementalLoadRefusal refusal) throws IOException {
+      final IncrementalLoadRefusal refusal, final Set<Integer> retiringFileIds) throws IOException {
     final SchemaFullLoadRecorder recorder = sm.schemaFullLoadRecorder;
     // Counted before the load, so one that throws is still seen
     recorder.started(refusal.reason());
 
     final long startNanos = System.nanoTime();
-    schema.load(ComponentFile.MODE.READ_WRITE, true);
+    schema.load(ComponentFile.MODE.READ_WRITE, true, false, retiringFileIds);
     final long elapsedNanos = System.nanoTime() - startNanos;
     recorder.completed(refusal.reason(), elapsedNanos);
 
@@ -540,7 +553,7 @@ final class SchemaEntryApplier {
    * does not hold - for example a rolling upgrade shipping a type this node's build cannot construct - which is a
    * silent, permanent divergence on replicated data against one SEVERE log line.
    */
-  // Package-private rather than private so Issue6839TsSealedBlobRecoveryTest can drive the apply path directly:
+  // Package-private rather than private so SealedBlobRepairAndRefusalTest.EngineRepair can drive the apply path directly:
   // the recovery it pins is entirely inside this method, and a 3-node IT would only add flakiness to prove it.
   void applySealedBlobs(final DatabaseInternal db, final List<RaftLogEntryCodec.TsSealedBlob> blobs)
       throws IOException {
@@ -961,7 +974,8 @@ final class SchemaEntryApplier {
    * for a sealed entry while a range is pending on the leader, which lasts until its next refresh.
    */
   static boolean carriesAContinuousAggregateRecordNotHeldHere(final DatabaseInternal db, final String schemaJson) {
-    if (schemaJson == null || !schemaJson.contains(ArcadeStateMachine.INVALIDATED_FROM_KEY))
+    if (schemaJson == null || !(schemaJson.contains(ContinuousAggregateImpl.INVALIDATED_FROM_KEY)
+        || schemaJson.contains(ContinuousAggregateImpl.LATE_INVALIDATED_FROM_KEY)))
       return false;
     final JSONObject aggregates = new JSONObject(schemaJson).getJSONObject("continuousAggregates", null);
     // the key elsewhere in the document (a property or type named after it) is no record: the entry stays a compaction's
@@ -970,19 +984,38 @@ final class SchemaEntryApplier {
     final Schema schema = db.getSchema();
     for (final String name : aggregates.keySet()) {
       final JSONObject definition = aggregates.getJSONObject(name, null);
-      if (definition == null || !definition.has(ArcadeStateMachine.INVALIDATED_FROM_KEY) || !definition.has(ArcadeStateMachine.INVALIDATED_TO_KEY))
+      if (definition == null)
+        continue;
+      // the keys every build reads, and the ones of the late appends since #13049: the definition holds a range under each pair
+      final boolean carriesDeleted = definition.has(ContinuousAggregateImpl.INVALIDATED_FROM_KEY)
+          && definition.has(ContinuousAggregateImpl.INVALIDATED_TO_KEY);
+      final boolean carriesLate = definition.has(ContinuousAggregateImpl.LATE_INVALIDATED_FROM_KEY)
+          && definition.has(ContinuousAggregateImpl.LATE_INVALIDATED_TO_KEY);
+      if (!carriesDeleted && !carriesLate)
         continue;
       if (!schema.existsContinuousAggregate(name)
           || !(schema.getContinuousAggregate(name) instanceof ContinuousAggregateImpl held))
         return true;
-      final ContinuousAggregateImpl.Invalidation record = held.getInvalidation();
-      if (record == null || record.fromTs() != definition.getLong(ArcadeStateMachine.INVALIDATED_FROM_KEY, Long.MIN_VALUE)
-          || record.toTs() != definition.getLong(ArcadeStateMachine.INVALIDATED_TO_KEY, Long.MIN_VALUE))
+      // the record as this node would write it: compared with the leader's, key by key, so the two spell the same hull
+      final JSONObject heldDefinition = held.toJSON();
+      if (carriesDeleted && differsFromRecordHeld(heldDefinition, definition, ContinuousAggregateImpl.INVALIDATED_FROM_KEY,
+          ContinuousAggregateImpl.INVALIDATED_TO_KEY))
+        return true;
+      if (carriesLate && differsFromRecordHeld(heldDefinition, definition, ContinuousAggregateImpl.LATE_INVALIDATED_FROM_KEY,
+          ContinuousAggregateImpl.LATE_INVALIDATED_TO_KEY))
         return true;
     }
     // A record this node holds and the document does not is left alone: the leader cleared it with a refresh, whose plain schema save
     // is not shipped (issue #10634), and a promoted leader holding it only recomputes those buckets once more
     return false;
+  }
+
+  /** Whether the range {@code definition} holds under {@code fromKey} and {@code toKey} is not the one {@code heldDefinition} holds. */
+  private static boolean differsFromRecordHeld(final JSONObject heldDefinition, final JSONObject definition, final String fromKey,
+      final String toKey) {
+    return !heldDefinition.has(fromKey) || !heldDefinition.has(toKey)
+        || heldDefinition.getLong(fromKey, Long.MIN_VALUE) != definition.getLong(fromKey, Long.MIN_VALUE)
+        || heldDefinition.getLong(toKey, Long.MIN_VALUE) != definition.getLong(toKey, Long.MIN_VALUE);
   }
 
   private static boolean isEmptyMap(final Map<?, ?> map) {
@@ -1002,7 +1035,7 @@ final class SchemaEntryApplier {
    * operator can turn the incremental refresh off on a running server and have the very next applied entry go back
    * to the full rebuild, without a restart.
    */
-  // @VisibleForTesting - Issue6988SchemaIncrementalApplySettingTest pins the "read per entry, never cached" half,
+  // @VisibleForTesting - SchemaIncrementalApplyGateTest pins the "read per entry, never cached" half,
   // which is the half a reader cannot tell from the call site and which HaSchemaDeltaReplicationFullRebuildIT cannot show
   // (it sets the value once, at server start).
   boolean incrementalSchemaApplyEnabled() {

@@ -427,6 +427,8 @@ public class TimeSeriesTypeBuilder {
   protected void validate() {
     if (typeName == null || typeName.isEmpty())
       throw new SchemaException("TimeSeries type name is required");
+    // the name is the first part of the names of the files of the type: judged before anything is looked up or created
+    LocalTimeSeriesType.checkValidName(typeName);
     if (timestampColumn == null)
       throw new SchemaException("TimeSeries type requires a TIMESTAMP column");
 
@@ -514,7 +516,7 @@ public class TimeSeriesTypeBuilder {
     // declared, and two paths depend on it not being rewritten: JsonlImporterFormat rebuilds a type from an
     // export's own column list and then maps each exported sample ARRAY onto the type's current order, so a
     // restore of a type whose FIELD precedes its TAGs would have landed every value in the wrong column; and
-    // Issue7371PromQLDiscoveryProjectionIT builds exactly that layout on purpose, because it is the one that
+    // PromQLLabelDiscoveryIT.DiscoveryProjection builds exactly that layout on purpose, because it is the one that
     // catches a projection indexing bug. toSQL() now preserves the same order rather than regrouping it, so the
     // two paths agree on it instead of one of them having to refuse (issue #7702).
     for (final ColumnDefinition col : columns)

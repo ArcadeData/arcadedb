@@ -53,7 +53,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * {@code Issue9411LeaderStateMachineClosedMidCommitIT}, which ran on the same fixture: three servers, persistent Raft
  * storage, {@code majority} quorum and a 10 s quorum timeout (both the defaults; #9411 set the timeout explicitly, the
  * other two relied on it). The in-place restarts that the HEALTH MONITOR drives live in
- * {@link HaInPlaceRestartRecoveryHealthMonitorIT} (volatile storage) and {@code Issue8900ClosedServerInPlaceRestartIT}
+ * {@link HaInPlaceRestartRecoveryHealthMonitorIT} (volatile storage) and {@code ClosedServerInPlaceRestartIT}
  * (persistent storage).
  * <ul>
  * <li><b>#4839</b>: the restart builds a brand-new {@link ArcadeStateMachine}, and before the fix the recovery path
@@ -64,7 +64,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <li><b>#8901</b>: the signal that holds the stale-term reformat back is armed by the in-place restart and cleared by
  * the first replicated entry the restarted division takes. A node never restarted in place never holds the reformat back
  * (#4741). The dead path itself (the leader's log stream still bound to the closed instance) is timing-dependent (#8898,
- * #8900), so the hold it triggers is covered by {@code Issue8901DeadReplicationPathNoReformatTest}.</li>
+ * #8900), so the hold it triggers is covered by {@code ResyncRecoveryTest.DeadReplicationPathNoReformat}.</li>
  * <li><b>#9411</b>: a leader commit whose leader state machine closes under it. An in-place restart between the
  * registration of the prepared transaction and the dispatch of its entry (the race of #8785) must not publish the entry a
  * second time (the bucket counters would count the record twice); a leader division closed for good keeps its LEADER

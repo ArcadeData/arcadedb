@@ -21,6 +21,7 @@ package com.arcadedb.schema;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.ExistingRecordsCheck;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
@@ -39,7 +40,10 @@ import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.ObjectInUseException;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
@@ -169,6 +173,8 @@ public class LocalDocumentType implements DocumentType {
   protected final RecordEventsRegistry              triggerEvents;
   // The trigger registries a record of this type fires, stamped with the schema's types serial they were computed at
   private volatile TriggerLineage                   triggerLineage;
+  // This type and every type above it, each once, stamped with the schema's types serial it was computed at: see getLineage()
+  private volatile Lineage                          lineage;
   // changed by ALTER TYPE ... CUSTOM and read by toJSON() after the schema lock is released: copy-on-write, an unmodifiable
   // map replaced as a whole, so neither a reader nor a schema reload ever sees it half changed (#9989)
   protected volatile Map<String, Object>            custom                       = Collections.emptyMap();
@@ -349,7 +355,7 @@ public class LocalDocumentType implements DocumentType {
   public void fireAfterCreate(final Record record) {
     checkOwnsBucketOf(record);
     events.onAfterCreate(record);
-    if (hasAfterWriteListenersInLineage())
+    if (hasWriteListenersInLineage())
       for (final RecordEventsRegistry registry : getTriggerLineage())
         registry.onAfterCreate(record);
   }
@@ -358,7 +364,7 @@ public class LocalDocumentType implements DocumentType {
     checkOwnsBucketOf(record);
     if (!events.onBeforeUpdate(record))
       return false;
-    if (hasTriggers())
+    if (hasWriteListenersInLineage())
       for (final RecordEventsRegistry registry : getTriggerLineage())
         if (!registry.onBeforeUpdate(record))
           return false;
@@ -368,7 +374,7 @@ public class LocalDocumentType implements DocumentType {
   public void fireAfterUpdate(final Record record) {
     checkOwnsBucketOf(record);
     events.onAfterUpdate(record);
-    if (hasAfterWriteListenersInLineage())
+    if (hasWriteListenersInLineage())
       for (final RecordEventsRegistry registry : getTriggerLineage())
         registry.onAfterUpdate(record);
   }
@@ -377,7 +383,7 @@ public class LocalDocumentType implements DocumentType {
     checkOwnsBucketOf(record);
     if (!events.onBeforeDelete(record))
       return false;
-    if (hasTriggers())
+    if (hasWriteListenersInLineage())
       for (final RecordEventsRegistry registry : getTriggerLineage())
         if (!registry.onBeforeDelete(record))
           return false;
@@ -387,7 +393,7 @@ public class LocalDocumentType implements DocumentType {
   public void fireAfterDelete(final Record record) {
     checkOwnsBucketOf(record);
     events.onAfterDelete(record);
-    if (hasAfterWriteListenersInLineage())
+    if (hasWriteListenersInLineage())
       for (final RecordEventsRegistry registry : getTriggerLineage())
         registry.onAfterDelete(record);
   }
@@ -471,12 +477,13 @@ public class LocalDocumentType implements DocumentType {
   }
 
   /**
-   * As {@link #hasTriggers()}, for the AFTER CREATE / UPDATE / DELETE events only, which an INCREMENTAL materialized view
-   * listens to on the same registries (issue #10205). Kept apart so that a view adds nothing to the read path. While any such
-   * view exists, an AFTER write on any type walks its lineage (an array cached per type graph, each registry a list that is
-   * empty unless something listens), not only a write on a source type of the view.
+   * As {@link #hasTriggers()}, for the write events an INCREMENTAL materialized view listens to on the same registries: AFTER CREATE
+   * / UPDATE / DELETE (issue #10205), and BEFORE UPDATE / DELETE, for the state a record had before, which a grouped view maintained
+   * by delta takes (issue #11937). Kept apart so that a view adds nothing to the read path. While any such view exists, a write on
+   * any type walks its lineage (an array cached per type graph, each registry a list that is empty unless something listens), not
+   * only a write on a source type of the view.
    */
-  private boolean hasAfterWriteListenersInLineage() {
+  private boolean hasWriteListenersInLineage() {
     return schema != null && (schema.hasTriggerListeners() || schema.hasPolymorphicViewListeners());
   }
 
@@ -496,11 +503,14 @@ public class LocalDocumentType implements DocumentType {
     if (cached != null && cached.serial() == serial)
       return cached.registries();
 
+    // By identity: equals() compares two types' definitions, and two distinct types can be defined alike
+    final Set<LocalDocumentType> seen = Collections.newSetFromMap(new IdentityHashMap<>());
     final List<LocalDocumentType> lineage = new ArrayList<>();
     lineage.add(this);
+    seen.add(this);
     for (int i = 0; i < lineage.size(); i++)
       for (final LocalDocumentType superType : lineage.get(i).superTypes)
-        if (!containsInstance(lineage, superType))
+        if (seen.add(superType))
           lineage.add(superType);
 
     final RecordEventsRegistry[] registries = new RecordEventsRegistry[lineage.size()];
@@ -510,15 +520,82 @@ public class LocalDocumentType implements DocumentType {
     return registries;
   }
 
-  // By identity: equals() compares two types' definitions, and two distinct types can be defined alike
-  private static boolean containsInstance(final List<LocalDocumentType> types, final LocalDocumentType type) {
-    for (final LocalDocumentType t : types)
-      if (t == type)
-        return true;
-    return false;
+  private record TriggerLineage(long serial, RecordEventsRegistry[] registries) {
   }
 
-  private record TriggerLineage(long serial, RecordEventsRegistry[] registries) {
+  /**
+   * This type followed by every type above it, each once, in the order a depth-first walk of the super type lists meets them first
+   * (the order a recursion over those lists lists a type for the first time), so a lookup that takes the first match answers what
+   * the recursion answered. What every polymorphic walk up the hierarchy iterates: a type is visited once, where a recursion over
+   * {@link #superTypes} visits it once per path that leads to it.
+   * <p>
+   * Computed once per change of the type graph, not per call: served only under the schema's types serial it was computed at, which
+   * every super type link and unlink moves. Read before the walk, so an answer computed while a link is landing carries the serial
+   * the link then moves, and is never served again. A lock-free read allocates nothing: the array is published whole through a
+   * volatile field and never changed in place. A type with no super type answers a one-element array it builds on the spot, which
+   * the callers avoid by testing {@link #superTypes} first.
+   */
+  private LocalDocumentType[] getLineage() {
+    if (schema == null)
+      // A TYPE BUILT DETACHED FROM ANY DATABASE (A TEST FIXTURE) HAS NO SERIAL TO STAMP AN ANSWER WITH
+      return collectLineage(this, false);
+
+    final long serial = schema.getTypesChangeSerial();
+    final Lineage cached = lineage;
+    if (cached != null && cached.serial() == serial)
+      return cached.types();
+
+    final LocalDocumentType[] types = collectLineage(this, false);
+    lineage = new Lineage(serial, types);
+    return types;
+  }
+
+  private record Lineage(long serial, LocalDocumentType[] types) {
+  }
+
+  /**
+   * {@code start} followed by every type above it, each once, never from a cached answer: for the schema changes that mutate the
+   * links themselves, which cannot trust an answer stamped before the mutation they are making.
+   *
+   * @param subTypesFirst {@code false} for the order a depth-first walk meets the types first; {@code true} for the reverse of the
+   *                      order it leaves them last, in which every type comes before each of its super types, so that a value derived
+   *                      from the sub types of a type is final by the time the type is reached
+   */
+  private static LocalDocumentType[] collectLineage(final LocalDocumentType start, final boolean subTypesFirst) {
+    if (start.superTypes.isEmpty())
+      return new LocalDocumentType[] { start };
+
+    // By identity: equals() compares two types' definitions, and two distinct types can be defined alike
+    final Set<LocalDocumentType> visited = Collections.newSetFromMap(new IdentityHashMap<>());
+    final List<LocalDocumentType> entered = new ArrayList<>();
+    final List<LocalDocumentType> left = subTypesFirst ? new ArrayList<>() : null;
+    // The super type lists are copy-on-write: each iterator walks the snapshot it was taken from, whatever changes meanwhile
+    final ArrayDeque<LocalDocumentType> path = new ArrayDeque<>();
+    final ArrayDeque<Iterator<LocalDocumentType>> pending = new ArrayDeque<>();
+    visited.add(start);
+    entered.add(start);
+    path.push(start);
+    pending.push(start.superTypes.iterator());
+    while (!pending.isEmpty()) {
+      final Iterator<LocalDocumentType> level = pending.peek();
+      if (!level.hasNext()) {
+        pending.pop();
+        final LocalDocumentType done = path.pop();
+        if (left != null)
+          left.add(done);
+        continue;
+      }
+      final LocalDocumentType next = level.next();
+      if (visited.add(next)) {
+        entered.add(next);
+        path.push(next);
+        pending.push(next.superTypes.iterator());
+      }
+    }
+
+    if (left != null)
+      Collections.reverse(left);
+    return (subTypesFirst ? left : entered).toArray(new LocalDocumentType[0]);
   }
 
   @Override
@@ -528,8 +605,9 @@ public class LocalDocumentType implements DocumentType {
       return own;
 
     final HashSet<String> set = new HashSet<>(own);
-    for (final LocalDocumentType superType : superTypes)
-      set.addAll(superType.getPolymorphicPropertiesWithDefaultDefined());
+    final LocalDocumentType[] lineage = getLineage();
+    for (int i = 1; i < lineage.length; i++)
+      set.addAll(lineage[i].propertiesWithDefaultDefined.get());
     return set;
   }
 
@@ -566,7 +644,9 @@ public class LocalDocumentType implements DocumentType {
   }
 
   /**
-   * Removes a super type from the current type.
+   * Removes a super type from the current type. A {@link SchemaException} is thrown and nothing changes if an index of this type or
+   * of a type below it stands on a property that type would stop inheriting (issue #12038), as {@link #dropProperty} does for the
+   * declaration of that property.
    *
    * @see #removeSuperType(String)
    * @see #addSuperType(DocumentType)
@@ -582,6 +662,17 @@ public class LocalDocumentType implements DocumentType {
         return null;
 
       final LocalDocumentType former = (LocalDocumentType) superType;
+      // issue #12038: decided before the link is touched, as a refusal of a type left alone: a lock-free reader never finds the type
+      // out of its super type for a removal that is refused, and the caches derived from the type graph are not retired for it.
+      // Skipped during DROP TYPE, which detaches the dropped type from its parents and drops its indexes anyway
+      if (!schema.isTypeBeingDropped()) {
+        final List<LocalDocumentType> remaining = new ArrayList<>(superTypes);
+        remaining.remove(former);
+        final String refusal = findIndexOnPropertyNoLongerInherited(former, remaining);
+        if (refusal != null)
+          throw new SchemaException(refusal);
+      }
+
       final int position = superTypes.indexOf(former);
       final int subPosition = former.subTypes.indexOf(this);
       unlinkSuperType(former);
@@ -595,6 +686,8 @@ public class LocalDocumentType implements DocumentType {
           relinkSuperType(former, position, subPosition);
         throw e;
       }
+      // issue #12031: the views reading the former super type lost this subtree's records
+      MaterializedViewRefresher.refreshViewsOverHierarchyChange(schema, this, former);
       return null;
     });
     return this;
@@ -607,6 +700,81 @@ public class LocalDocumentType implements DocumentType {
     superType.rebuildPolymorphicBucketsCache();
     // the inherited properties changed back
     schema.typesChanged();
+  }
+
+  /**
+   * The refusal of {@link #removeSuperType(DocumentType)} when an index of this type or of a type below it stands on a property
+   * that type would stop inheriting with the link severed (issue #12038), the rule {@link #dropProperty} applies to the same
+   * declaration: the index would be left keyed on a property its type no longer declares. A property the type still has, declared by
+   * itself or reached through another super type, does not count, unless it would then resolve to a declaration of another type: the
+   * index is keyed on the type it was built for, and the property would convert every later write to the other one.
+   * <p>
+   * Answered from the super types this type is left with, without touching the link: only this type's list is replaced,
+   * everything below it resolves through this type. {@code null} when nothing is lost.
+   *
+   * @param superTypesAfter this type's super types once the link is severed
+   */
+  private String findIndexOnPropertyNoLongerInherited(final LocalDocumentType formerSuperType,
+      final List<LocalDocumentType> superTypesAfter) {
+    final Set<LocalDocumentType> visited = Collections.newSetFromMap(new IdentityHashMap<>());
+    final List<LocalDocumentType> toVisit = new ArrayList<>();
+    toVisit.add(this);
+    while (!toVisit.isEmpty()) {
+      final LocalDocumentType type = toVisit.removeLast();
+      // a diamond reaches the same sub type through more than one path
+      if (!visited.add(type))
+        continue;
+      toVisit.addAll(type.subTypes);
+
+      for (final TypeIndex index : type.getAllIndexes(false))
+        for (final String indexProperty : index.getPropertyNames()) {
+          final String property = Index.basePropertyName(indexProperty);
+          final Property before = type.getPolymorphicPropertyIfExists(property);
+          if (before == null)
+            continue;
+
+          final Property after = resolvePropertyAfter(type, property, superTypesAfter, Collections.newSetFromMap(new IdentityHashMap<>()));
+          final String consequence;
+          if (after == null)
+            consequence = "would no longer inherit";
+          else if (after != before && (after.getType() != before.getType() || !Objects.equals(after.getOfType(), before.getOfType())))
+            consequence = "would inherit as " + describeDeclaration(after) + " instead of " + describeDeclaration(before)
+                + " from another super type";
+          else
+            continue;
+
+          return "Cannot remove the super type '" + formerSuperType.getName() + "' from the type '" + name + "' because the property '"
+              + property + "' that type '" + type.getName() + "' " + consequence + " is used by index '" + index.getName()
+              + "'. Drop the index first, declare the property on '" + type.getName()
+              + "', or add a super type that provides it before removing '" + formerSuperType.getName() + "'";
+        }
+    }
+    return null;
+  }
+
+  /**
+   * What {@code type} resolves {@code property} to, the way {@link DocumentType#getPolymorphicPropertyIfExists} does (its own
+   * declaration, then its super types in order, depth first), with this type's super types replaced by {@code superTypesAfter}.
+   * {@code visited} keeps a type reached through two paths from being searched twice.
+   */
+  private Property resolvePropertyAfter(final LocalDocumentType type, final String property, final List<LocalDocumentType> superTypesAfter,
+      final Set<LocalDocumentType> visited) {
+    final Property own = type.getPropertyIfExists(property);
+    if (own != null)
+      return own;
+    if (!visited.add(type))
+      return null;
+
+    for (final LocalDocumentType superType : type == this ? superTypesAfter : type.superTypes) {
+      final Property inherited = resolvePropertyAfter(superType, property, superTypesAfter, visited);
+      if (inherited != null)
+        return inherited;
+    }
+    return null;
+  }
+
+  private static String describeDeclaration(final Property property) {
+    return property.getOfType() == null ? property.getType().name() : property.getType().name() + " OF " + property.getOfType();
   }
 
   /**
@@ -771,6 +939,26 @@ public class LocalDocumentType implements DocumentType {
         .executeInWriteLock(() -> schema.typeMap().remove(oldName, this));
   }
 
+  /**
+   * Refused before a file moves (issue #12715): a bucket renamed onto the name of one that exists - a free bucket, one a dropped type
+   * left behind, one of another type - would share its name with it, the file manager and the schema could no longer tell the two
+   * apart, and the next open of the database fails with "Component 'X' was built on file id N but the file registered under that
+   * name has id M". {@code moved} are the buckets the rename gives a name derived from the type name; a bucket attached under a name
+   * of its own is not renamed and so cannot collide.
+   */
+  protected final void checkBucketRenameTargets(final String oldName, final String newName, final Collection<Bucket> moved) {
+    for (final Bucket bucket : moved) {
+      final String target = LocalSchema.rebaseComponentName(bucket.getName(), oldName, newName, schema.getEncoding());
+      if (target == null)
+        continue;
+      final Bucket holder = schema.getBucketByNameIfExists(target);
+      if (holder != null && holder != bucket)
+        throw new AlreadyExistsException(AlreadyExistsException.Kind.BUCKET,
+            "Cannot rename type '" + oldName + "' to '" + newName + "': its bucket '" + bucket.getName() + "' would be named '" + target
+                + "', which is the name of an existing bucket");
+    }
+  }
+
   private void checkInsideRename() {
     if (!renameLock.isHeldByCurrentThread())
       throw new IllegalStateException("The document part of type '" + name + "' can only be renamed from inside a rename "
@@ -816,11 +1004,6 @@ public class LocalDocumentType implements DocumentType {
         schema.bucketMembershipChanged();
         // THE DEPENDANTS FOLLOW THE NEW NAME HERE, UNDER THE WRITE LOCK AND BEFORE THE SESSION SAVES THE SCHEMA (#10096)
         schema.carryTypeRenameToDependants(oldName, newName);
-        // AN EMBEDDED DOCUMENT STORES ITS TYPE AS THE DICTIONARY ID OF THE TYPE'S NAME, WHICH THE CREATION OF A DOCUMENT TYPE
-        // REGISTERS: WITHOUT THE NEW NAME IN THE DICTIONARY NO EMBEDDED DOCUMENT OF THE RENAMED TYPE COULD BE WRITTEN AGAIN
-        // ("Cannot find type ... declared in embedded document", issue #11305)
-        if (!(this instanceof LocalVertexType) && !(this instanceof LocalEdgeType))
-          schema.getDictionary().getIdByName(newName, true);
         final FileManager fileManager = database.getFileManager();
         // The type's files as they are NOW, not only the ones listed before the move: a component attached to the type
         // in between (an index built concurrently) was moved with the others but has no "before" name. Recording a file
@@ -829,6 +1012,12 @@ public class LocalDocumentType implements DocumentType {
           if (!entry.getValue().equals(componentNamesBefore.get(entry.getKey())))
             fileManager.recordRename(entry.getKey(), entry.getValue());
         renamePublished(oldName);
+        // AN EMBEDDED DOCUMENT STORES ITS TYPE AS THE DICTIONARY ID OF THE TYPE'S NAME, WHICH THE CREATION OF A DOCUMENT TYPE
+        // REGISTERS: WITHOUT THE NEW NAME IN THE DICTIONARY NO EMBEDDED DOCUMENT OF THE RENAMED TYPE COULD BE WRITTEN AGAIN
+        // ("Cannot find type ... declared in embedded document", issue #11305). The LAST step of the callback: the registration
+        // commits into the dictionary on its own, and a step after it that refused would leave that page unpublished (#13092)
+        if (!(this instanceof LocalVertexType) && !(this instanceof LocalEdgeType))
+          schema.getDictionary().getIdByName(newName, true);
         return null;
       });
     } catch (final RuntimeException e) {
@@ -923,6 +1112,9 @@ public class LocalDocumentType implements DocumentType {
                 + "', which is the name of an index of type '" + holder.getTypeName() + "'");
     }
 
+    if (!targetIsOwnReservation)
+      checkBucketRenameTargets(oldName, newName, buckets);
+
     final List<Bucket> removedBuckets = new ArrayList<>();
     final List<TypeIndex> renamedIndexes = new ArrayList<>();
     final List<TypeIndex> renamedInheritedIndexes = new ArrayList<>();
@@ -936,7 +1128,7 @@ public class LocalDocumentType implements DocumentType {
           // Bucket attached with addBucket() under a name of its own: it does not follow the type name.
           continue;
 
-        ((LocalBucket) bucket).rename(newBucketName);
+        moveBucketTo(bucket, newBucketName);
 
         removedBuckets.add(bucket);
 
@@ -1031,8 +1223,10 @@ public class LocalDocumentType implements DocumentType {
           if (restoredName == null)
             corrupted = true;
           else
-            ((LocalBucket) bucket).rename(restoredName);
-        } catch (IOException ex) {
+            moveBucketTo(bucket, restoredName);
+        } catch (IOException | RuntimeException ex) {
+          // RuntimeException too: the old name taken by another bucket meanwhile is refused by the claim, and one bucket left
+          // under the new name must not keep the others from going back
           corrupted = true;
         } finally {
           rekeyBucket(bucket, renamedBucketName);
@@ -1081,6 +1275,36 @@ public class LocalDocumentType implements DocumentType {
   }
 
   /**
+   * Moves a bucket of this type under {@code newBucketName}, claiming the name first (issue #12715). The check a rename makes
+   * before anything moves ({@link #checkBucketRenameTargets}) runs outside every lock, and a {@code CREATE BUCKET} of the same name
+   * can land after it: renamed anyway, the bucket would share its name with that one in the file manager and in the schema, and the
+   * next open of the database would fail. The claim is a {@code putIfAbsent} on the schema's bucket map under the database write
+   * lock, the lock {@link LocalSchema#createBucket} registers a new bucket under after checking its name again, so exactly one of
+   * the two gets the name. Only the claim is under the lock: the rename itself waits for the whole database's pages to be flushed.
+   * The claim is given back if the rename fails, and once it succeeded {@link #rekeyBucket} retires the previous key.
+   *
+   * @throws AlreadyExistsException if another bucket holds the name, with nothing moved
+   */
+  protected final void moveBucketTo(final Bucket bucket, final String newBucketName) throws IOException {
+    final LocalBucket localBucket = (LocalBucket) bucket;
+    ((DatabaseInternal) schema.getDatabase()).getWrappedDatabaseInstance().executeInWriteLock(() -> {
+      final LocalBucket holder = schema.bucketMap.putIfAbsent(newBucketName, localBucket);
+      if (holder != null && holder != localBucket)
+        throw new AlreadyExistsException(AlreadyExistsException.Kind.BUCKET,
+            "Cannot rename bucket '" + bucket.getName() + "' to '" + newBucketName + "': a bucket with that name already exists");
+      return null;
+    });
+
+    try {
+      localBucket.rename(newBucketName);
+    } catch (final IOException | RuntimeException e) {
+      if (!newBucketName.equals(bucket.getName()))
+        schema.bucketMap.remove(newBucketName, localBucket);
+      throw e;
+    }
+  }
+
+  /**
    * Returns true if the current type is the same or a subtype of `type` parameter.
    *
    * @param type the type name to check
@@ -1097,8 +1321,13 @@ public class LocalDocumentType implements DocumentType {
     if (aliases.contains(type))
       return true;
 
-    for (final DocumentType t : superTypes) {
-      if (t.instanceOf(type))
+    if (superTypes.isEmpty())
+      return false;
+
+    final LocalDocumentType[] lineage = getLineage();
+    for (int i = 1; i < lineage.length; i++) {
+      final LocalDocumentType t = lineage[i];
+      if (t.name.equals(type) || t.aliases.contains(type))
         return true;
     }
 
@@ -1266,8 +1495,9 @@ public class LocalDocumentType implements DocumentType {
       return getProperties();
 
     final Set<Property> allProperties = new HashSet<>(getProperties());
-    for (final DocumentType p : superTypes)
-      allProperties.addAll(p.getPolymorphicProperties());
+    final LocalDocumentType[] lineage = getLineage();
+    for (int i = 1; i < lineage.length; i++)
+      allProperties.addAll(lineage[i].getProperties());
     return allProperties;
   }
 
@@ -1284,9 +1514,26 @@ public class LocalDocumentType implements DocumentType {
       return getPropertyNames();
 
     final Set<String> allProperties = new HashSet<>(getPropertyNames());
-    for (final DocumentType p : superTypes)
-      allProperties.addAll(p.getPolymorphicPropertyNames());
+    final LocalDocumentType[] lineage = getLineage();
+    for (int i = 1; i < lineage.length; i++)
+      allProperties.addAll(lineage[i].getPropertyNames());
     return allProperties;
+  }
+
+  /** The first declaration of the property along {@link #getLineage()}, which is the one the recursion over the super types found. */
+  @Override
+  public Property getPolymorphicPropertyIfExists(final String propertyName) {
+    final Property own = getPropertyIfExists(propertyName);
+    if (own != null || superTypes.isEmpty())
+      return own;
+
+    final LocalDocumentType[] lineage = getLineage();
+    for (int i = 1; i < lineage.length; i++) {
+      final Property inherited = lineage[i].getPropertyIfExists(propertyName);
+      if (inherited != null)
+        return inherited;
+    }
+    return null;
   }
 
   /**
@@ -1437,12 +1684,8 @@ public class LocalDocumentType implements DocumentType {
     if (type instanceof LocalTimeSeriesType tsType)
       return tsType;
 
-    for (final LocalDocumentType subType : type.subTypes) {
-      final LocalTimeSeriesType found = findTimeSeriesInSubtree(subType);
-      if (found != null)
-        return found;
-    }
-    return null;
+    // Each type once, whatever the number of paths that lead down to it
+    return TypeHierarchy.findInSubTypes(type, subType -> subType instanceof LocalTimeSeriesType tsType ? tsType : null);
   }
 
   /**
@@ -1495,6 +1738,18 @@ public class LocalDocumentType implements DocumentType {
       if (getPolymorphicPropertyNames().contains(propertyName))
         throw new AlreadyExistsException(AlreadyExistsException.Kind.PROPERTY,
             "Cannot create the property '" + propertyName + "' in type '" + name + "' because it was already defined in a super type");
+
+      // The OF type is refused BEFORE the property is built, for the same reason the construction below stays after the checks: the
+      // constructor registers the name in the dictionary, a commit of its own that a refusal after it leaves behind. On a Raft leader
+      // that commit is a page version no other node has, and the refused statement was quarantining the leader (issue #12958)
+      final String resolvedOfType = ofType != null ? LocalProperty.resolveOfType(schema, name, propertyName, propertyType, ofType) : null;
+
+      // ...and the other direction: a type below that declares the name with another type (issue #12732)
+      final Property otherKind = findDeclarationOfAnotherKind(propertyName, propertyType, resolvedOfType, null);
+      if (otherKind != null)
+        throw new AlreadyExistsException(AlreadyExistsException.Kind.PROPERTY,
+            "Cannot create the property '" + propertyName + "' in type '" + name + "' as " + describeKind(propertyType, resolvedOfType)
+                + otherKindReason(otherKind));
 
       // The construction stays HERE, after the checks and inside the callback, although the constructor reaches
       // Dictionary.getIdByName(name, true) - which, for a name the dictionary has not seen, opens and commits a
@@ -1581,8 +1836,27 @@ public class LocalDocumentType implements DocumentType {
       if (p.getType().equals(propertyType) && Objects.equals(p.getOfType(), ofType))
         return p;
 
-      // DIFFERENT TYPE: DROP THE PROPERTY AND CREATE A NEW ONE
-      dropProperty(propertyName);
+      // DIFFERENT TYPE: DROP THE PROPERTY AND CREATE A NEW ONE, in one frame. The replacement is checked against the rest of the
+      // hierarchy BEFORE the drop (issue #12732): refused after it, the call left the type without the property it had
+      checkForSchemaMutation();
+      return recordFileChanges(() -> {
+        // read again under the lock: a concurrent call may have replaced it since
+        final Property current = getPolymorphicPropertyIfExists(propertyName);
+        if (current == null)
+          return createProperty(propertyName, propertyType, ofType);
+        if (current.getType().equals(propertyType) && Objects.equals(current.getOfType(), ofType))
+          return current;
+
+        final String resolvedOfType = ofType != null ? LocalProperty.resolveOfType(schema, name, propertyName, propertyType, ofType) : null;
+        final Property otherKind = findDeclarationOfAnotherKind(propertyName, propertyType, resolvedOfType, current);
+        if (otherKind != null)
+          throw new AlreadyExistsException(AlreadyExistsException.Kind.PROPERTY,
+              "Cannot replace the property '" + propertyName + "' in type '" + name + "' with one of type " + describeKind(propertyType,
+                  resolvedOfType) + otherKindReason(otherKind));
+
+        dropProperty(propertyName);
+        return createProperty(propertyName, propertyType, ofType);
+      });
     }
     return createProperty(propertyName, propertyType, ofType);
   }
@@ -1595,30 +1869,196 @@ public class LocalDocumentType implements DocumentType {
    * otherwise survive a rename or a drop, left pointing at a name the type no longer has under that meaning.
    */
   private TypeIndex findIndexOnProperty(final String propertyName) {
-    for (final TypeIndex index : getAllIndexes(true))
-      if (index.getPropertyNames().contains(propertyName))
-        return index;
-    return findDescendantIndexOnProperty(propertyName);
+    return findIndexOnProperty(propertyName, List.of());
   }
 
-  private TypeIndex findDescendantIndexOnProperty(final String propertyName) {
+  /** As {@link #findIndexOnProperty(String)}, passing over the indexes in {@code ignored}. */
+  private TypeIndex findIndexOnProperty(final String propertyName, final Collection<TypeIndex> ignored) {
+    for (final TypeIndex index : getAllIndexes(true))
+      if (index.getPropertyNames().contains(propertyName) && !ignored.contains(index))
+        return index;
+    for (final TypeIndex index : getSubTypeIndexesOnProperty(propertyName))
+      if (!ignored.contains(index))
+        return index;
+    return null;
+  }
+
+  /**
+   * Every index a SUBTYPE declared on the property {@code propertyName} this type owns, at any depth: the indexes {@link
+   * #getIndexesByProperties} does not list (they belong to the sub types) but {@link #dropProperty} and {@link #renameProperty} refuse
+   * for. {@code DROP PROPERTY ... FORCE} drops them with the type's own (issue #12034). Walks the {@link #subTypes} lists, so it runs
+   * inside a {@link #recordFileChanges} frame (issue #7672).
+   */
+  private List<TypeIndex> getSubTypeIndexesOnProperty(final String propertyName) {
+    final List<TypeIndex> result = new ArrayList<>();
+    collectSubTypeIndexesOnProperty(propertyName, result);
+    return result;
+  }
+
+  private void collectSubTypeIndexesOnProperty(final String propertyName, final List<TypeIndex> result) {
+    collectSubTypeIndexesOnProperty(this, properties.get(propertyName), propertyName, result, Collections.newSetFromMap(new IdentityHashMap<>()));
+  }
+
+  private void collectSubTypeIndexesOnProperty(final LocalDocumentType changed, final Property changedDeclaration, final String propertyName,
+      final List<TypeIndex> result, final Set<LocalDocumentType> visited) {
     for (final LocalDocumentType subType : subTypes) {
-      if (subType.getPropertyIfExists(propertyName) != null)
-        // addSuperType lets a subtype declare its own property under a name a super type already uses - a
-        // conflict it only warns about, never refuses. From here down, propertyName resolves to THIS subtype's
+      if (subType.getPropertyIfExists(propertyName) != null || subType.keepsDeclarationOfTheSameKind(propertyName, changed, changedDeclaration,
+          new HashSet<>()))
+        // addSuperType lets a subtype declare its own property under a name a super type already uses - with the
+        // same type, an overlap it only warns about (another type is refused, issue #12732). From here down, propertyName resolves to THIS subtype's
         // own, independently-declared property, not the one above being renamed or dropped: an index in this
-        // branch belongs to that shadowing property, so it is not a reason to refuse the change higher up.
+        // branch belongs to that shadowing property, so it is not a reason to refuse the change higher up. The same
+        // for a declaration OF THE SAME KIND the subtype reaches through another super type (issue #12732): it keeps
+        // it whatever happens to the one above, and its index keys stay what they are, so a refused CREATE PROPERTY
+        // could not even be undone. A declaration of another kind (a database written before #12732) does not count:
+        // the index would be left keyed by the type of the declaration that went.
+        continue;
+
+      // A type below two of the types walked is walked once
+      if (!visited.add(subType))
         continue;
 
       for (final TypeIndex index : subType.getAllIndexes(false))
-        if (index.getPropertyNames().contains(propertyName))
-          return index;
+        if (index.getPropertyNames().contains(propertyName) && !result.contains(index))
+          result.add(index);
 
-      final TypeIndex foundDeeper = subType.findDescendantIndexOnProperty(propertyName);
-      if (foundDeeper != null)
-        return foundDeeper;
+      subType.collectSubTypeIndexesOnProperty(changed, changedDeclaration, propertyName, result, visited);
+    }
+  }
+
+  private static final int KEPT_SAME_KIND  = 1;
+  private static final int KEPT_OTHER_KIND = 2;
+
+  /**
+   * Whether this type keeps a declaration of {@code propertyName} once {@code declaration}, the one {@code excluded} is changing, is
+   * gone, and every declaration it keeps has its type and OF type ({@code false} when there is no declaration to compare with). Every
+   * kept declaration has to agree, not only one: which of them the type resolves the name to depends on the order of its super types,
+   * and a database written before #12732 can hold some of another kind. Each type is visited once, so a lattice of diamonds costs its
+   * size.
+   */
+  private boolean keepsDeclarationOfTheSameKind(final String propertyName, final LocalDocumentType excluded, final Property declaration,
+      final Set<LocalDocumentType> visited) {
+    return declaration != null && keptDeclarationKinds(propertyName, excluded, declaration, visited) == KEPT_SAME_KIND;
+  }
+
+  /** The kinds of the declarations of {@code propertyName} the super types of this type keep without {@code excluded}, as flags. */
+  private int keptDeclarationKinds(final String propertyName, final LocalDocumentType excluded, final Property declaration,
+      final Set<LocalDocumentType> visited) {
+    if (!visited.add(this))
+      return 0;
+    int kinds = 0;
+    for (final LocalDocumentType superType : superTypes) {
+      // the declaration that goes is passed over, not the types above its owner: what they declare is what the name resolves to
+      // through that path once it is gone
+      final Property declared = superType == excluded ? null : superType.properties.get(propertyName);
+      if (declared != null)
+        kinds |= isOfKind(declared, declaration.getType(), declaration.getOfType()) ? KEPT_SAME_KIND : KEPT_OTHER_KIND;
+      else
+        kinds |= superType.keptDeclarationKinds(propertyName, excluded, declaration, visited);
+    }
+    return kinds;
+  }
+
+  /**
+   * A declaration of {@code propertyName} that a record of this type, or of a type below it, sees and that does not mean what a
+   * declaration of {@code type} and {@code ofType} means, or {@code null} (issue #12732). One name with two types in a hierarchy
+   * has two meanings: an index on the upper declaration is keyed by its type, and the rows of the type below are written into it
+   * under keys of the other one, so lookups miss them, and two encodings that cannot be read as one another corrupt the index file.
+   * <p>
+   * The declarations seen are the ones of this type and of every type below it, and of every type above any of them: a super type
+   * a sub type has besides this one counts too. {@code self}, the declaration being changed, is passed over. Walks the {@link
+   * #subTypes} and {@link #superTypes} lists, so it runs inside a {@link #recordFileChanges} frame (issue #7672). Each type is
+   * visited once per direction, so a lattice of diamonds costs its size and not its number of paths.
+   */
+  Property findDeclarationOfAnotherKind(final String propertyName, final Type type, final String ofType, final Property self) {
+    return findDeclarationOfAnotherKindBelow(propertyName, type, ofType, self, new HashSet<>(), new HashSet<>());
+  }
+
+  private Property findDeclarationOfAnotherKindBelow(final String propertyName, final Type type, final String ofType,
+      final Property self, final Set<LocalDocumentType> visitedBelow, final Set<LocalDocumentType> visitedAbove) {
+    if (!visitedBelow.add(this))
+      return null;
+
+    Property found = findDeclarationOfAnotherKindAbove(propertyName, type, ofType, self, visitedAbove);
+    if (found != null)
+      return found;
+
+    for (final LocalDocumentType subType : subTypes) {
+      found = subType.findDeclarationOfAnotherKindBelow(propertyName, type, ofType, self, visitedBelow, visitedAbove);
+      if (found != null)
+        return found;
     }
     return null;
+  }
+
+  private Property findDeclarationOfAnotherKindAbove(final String propertyName, final Type type, final String ofType,
+      final Property self, final Set<LocalDocumentType> visitedAbove) {
+    if (!visitedAbove.add(this))
+      return null;
+
+    final Property declared = properties.get(propertyName);
+    if (declared != null && declared != self && !isOfKind(declared, type, ofType))
+      return declared;
+
+    for (final LocalDocumentType superType : superTypes) {
+      final Property found = superType.findDeclarationOfAnotherKindAbove(propertyName, type, ofType, self, visitedAbove);
+      if (found != null)
+        return found;
+    }
+    return null;
+  }
+
+  /**
+   * Whether {@code declared} has the type {@code type} and the OF type {@code ofType}. Two OF names that are both names of a type of the
+   * schema are compared by the type they resolve to, so an alias and the type's own name are one kind; the scalar OF of a LIST or a MAP
+   * ({@code LIST OF STRING}) by its name.
+   */
+  private boolean isOfKind(final Property declared, final Type type, final String ofType) {
+    if (declared.getType() != type)
+      return false;
+    final String declaredOfType = declared.getOfType();
+    if (Objects.equals(declaredOfType, ofType))
+      return true;
+    if (declaredOfType == null || ofType == null)
+      return false;
+    // a LIST or a MAP gives a scalar name precedence over a type of that name, as LocalProperty.resolveOfType does
+    if ((type == Type.LIST || type == Type.MAP) && (Type.getTypeByName(declaredOfType) != null || Type.getTypeByName(ofType) != null))
+      return false;
+    final LocalDocumentType declaredOf = schema.getTypeOrNull(declaredOfType);
+    return declaredOf != null && declaredOf == schema.getTypeOrNull(ofType);
+  }
+
+  private static String describeKind(final Type type, final String ofType) {
+    return ofType != null ? type + " OF " + ofType : type.toString();
+  }
+
+  /** The end of a refusal for {@link #findDeclarationOfAnotherKind}'s answer {@code other}. */
+  static String otherKindReason(final Property other) {
+    return " because type '" + ((AbstractProperty) other).owner.getName() + "' declares it as " + describeKind(other.getType(), other.getOfType())
+        + " in the same type hierarchy, and one name cannot have two types there: an index on one declaration would key the records"
+        + " of the other with the wrong type";
+  }
+
+  /**
+   * The refusals of {@link #dropProperty}, asked by {@link #dropPropertyAndItsIndexes} before it drops anything (issue #12034): a
+   * refusal of the property after the indexes were gone left the property in place and its UNIQUE index dropped. The indexes in
+   * {@code droppedWithIt} are the ones dropped with the property, so they are not reasons to refuse.
+   */
+  private void checkPropertyCanBeDropped(final String propertyName, final Collection<TypeIndex> droppedWithIt) {
+    if (this instanceof LocalTimeSeriesType tsType && tsType.isDeclaredColumn(propertyName))
+      // The column stays in the type's tsColumns list whatever happens to the schema property - nothing removes an
+      // entry from it - so the engine would keep storing and returning the column while the type stopped declaring
+      // it. Refusing here keeps the two descriptions of a TIMESERIES type from drifting apart (issue #7567). A
+      // property that is NOT a declared column is still droppable, which is how a database written before that
+      // issue gets rid of the stray one it may already carry.
+      throw new SchemaException("Cannot drop the property '" + propertyName + "' from type '" + name
+          + "' because it is a declared TIMESERIES column: the storage engine keeps reading and writing it. Drop the "
+          + "whole type to remove the column");
+
+    final TypeIndex indexOnProperty = findIndexOnProperty(propertyName, droppedWithIt);
+    if (indexOnProperty != null)
+      throw new SchemaException(
+          "Error on dropping property '" + propertyName + "' because used by index '" + indexOnProperty.getName() + "'");
   }
 
   /**
@@ -1644,38 +2084,77 @@ public class LocalDocumentType implements DocumentType {
     checkForSchemaMutation();
 
     return recordFileChanges(() -> {
-      if (this instanceof LocalTimeSeriesType tsType && tsType.isDeclaredColumn(propertyName))
-        // The column stays in the type's tsColumns list whatever happens to the schema property - nothing removes an
-        // entry from it - so the engine would keep storing and returning the column while the type stopped declaring
-        // it. Refusing here keeps the two descriptions of a TIMESERIES type from drifting apart (issue #7567). A
-        // property that is NOT a declared column is still droppable, which is how a database written before that
-        // issue gets rid of the stray one it may already carry.
-        throw new SchemaException("Cannot drop the property '" + propertyName + "' from type '" + name
-            + "' because it is a declared TIMESERIES column: the storage engine keeps reading and writing it. Drop the "
-            + "whole type to remove the column");
-
-      final TypeIndex indexOnProperty = findIndexOnProperty(propertyName);
-      if (indexOnProperty != null)
-        throw new SchemaException(
-            "Error on dropping property '" + propertyName + "' because used by index '" + indexOnProperty.getName() + "'");
-
-      final Property removed = properties.remove(propertyName);
-      if (removed != null) {
-        schema.typesChanged();
-        // Keep the EXTERNAL counter consistent so hasExternalProperties() stays O(1).
-        if (removed.isExternal())
-          ownExternalPropertyCount.decrementAndGet();
-        // Issue #6799: and the same for the default-property cache. A dropped property must stop participating in
-        // default-value processing at once, or the next record create looks the name up with getPolymorphicProperty()
-        // and fails with "Cannot find property '<name>' in type '<type>'". Only the in-memory view was ever wrong -
-        // schema.json holds the default on the property itself, so a reload rebuilt the set correctly - which is why
-        // the failure looked like it healed on restart.
-        setPropertyHasDefault(propertyName, false);
-      } else
-        // the one way to remove a definition the load could not create (#11301)
-        forgetUnrestorableProperty(propertyName);
-      return removed;
+      checkPropertyCanBeDropped(propertyName, List.of());
+      return removeProperty(propertyName);
     });
+  }
+
+  /**
+   * {@code DROP PROPERTY}, with the indexes on the property, as ONE schema change (issue #12034). The indexes on the property are the
+   * type's own and the ones a SUBTYPE declared on the inherited property (a sub type that declares a property of the same name
+   * shadows it, and its indexes are left alone): {@link #dropProperty} refuses for both.
+   * <p>
+   * Without {@code force} an index on the property refuses the drop with an {@link ObjectInUseException} naming every one of them.
+   * With {@code force} every refusal of the property drop is asked BEFORE the first index goes, then the indexes are dropped and the
+   * property removed. The collection, the checks and the drops run in a single {@link #recordFileChanges} frame, under the database
+   * write lock: the walk of the {@link #subTypes} lists is serialised against {@code linkSuperType}/{@code unlinkSuperType} (issue
+   * #7672), and no concurrent {@code CREATE INDEX} or {@code ALTER TYPE ... SUPERTYPE} can land between the check and the drops. A
+   * refusal found after the indexes were dropped used to leave the property in place and its UNIQUE index gone, so duplicates got in.
+   *
+   * @param propertyName the property to drop
+   * @param force        whether the indexes on the property are dropped with it instead of refusing the drop
+   *
+   * @return the names of the indexes dropped with the property, empty if there were none
+   */
+  public List<String> dropPropertyAndItsIndexes(final String propertyName, final boolean force) {
+    checkForSchemaMutation();
+
+    return recordFileChanges(() -> {
+      final List<TypeIndex> indexes = new ArrayList<>(getIndexesByProperties(propertyName));
+      for (final TypeIndex index : getSubTypeIndexesOnProperty(propertyName))
+        if (!indexes.contains(index))
+          indexes.add(index);
+
+      final List<String> indexNames = new ArrayList<>(indexes.size());
+      for (final TypeIndex index : indexes)
+        indexNames.add(index.getName());
+
+      if (!indexNames.isEmpty()) {
+        if (!force)
+          throw new ObjectInUseException("Property used in indexes (" + String.join(", ", indexNames)
+              + "). Please drop these indexes before removing property or use FORCE parameter.");
+
+        // everything the property drop can refuse for is asked before the first index goes
+        checkPropertyCanBeDropped(propertyName, indexes);
+
+        // One drop: the indexes go together or not at all (issue #10589). A nested frame: the save is left to this one
+        schema.dropIndexes(indexNames);
+      } else
+        checkPropertyCanBeDropped(propertyName, List.of());
+
+      removeProperty(propertyName);
+      return indexNames;
+    });
+  }
+
+  /** Removes the property, once {@link #checkPropertyCanBeDropped} let it go. Runs inside a {@link #recordFileChanges} frame. */
+  private Property removeProperty(final String propertyName) {
+    final Property removed = properties.remove(propertyName);
+    if (removed != null) {
+      schema.typesChanged();
+      // Keep the EXTERNAL counter consistent so hasExternalProperties() stays O(1).
+      if (removed.isExternal())
+        ownExternalPropertyCount.decrementAndGet();
+      // Issue #6799: and the same for the default-property cache. A dropped property must stop participating in
+      // default-value processing at once, or the next record create looks the name up with getPolymorphicProperty()
+      // and fails with "Cannot find property '<name>' in type '<type>'". Only the in-memory view was ever wrong -
+      // schema.json holds the default on the property itself, so a reload rebuilt the set correctly - which is why
+      // the failure looked like it healed on restart.
+      setPropertyHasDefault(propertyName, false);
+    } else
+      // the one way to remove a definition the load could not create (#11301)
+      forgetUnrestorableProperty(propertyName);
+    return removed;
   }
 
   /**
@@ -1761,12 +2240,21 @@ public class LocalDocumentType implements DocumentType {
             "Cannot rename the property '" + propertyName + "' in type '" + name + "' to '" + newPropertyName
                 + "' because it is already defined in a super type");
 
+      // a type below that declares the new name with another type (issue #12732)
+      final Property otherKind = findDeclarationOfAnotherKind(newPropertyName, property.getType(), property.getOfType(), null);
+      if (otherKind != null)
+        throw new AlreadyExistsException(AlreadyExistsException.Kind.PROPERTY,
+            "Cannot rename the property '" + propertyName + "' in type '" + name + "' to '" + newPropertyName + "'" + otherKindReason(
+                otherKind));
+
       final TypeIndex indexOnProperty = findIndexOnProperty(propertyName);
       if (indexOnProperty != null)
         throw new SchemaException("Cannot rename the property '" + propertyName + "' in type '" + name
             + "' because it is used by index '" + indexOnProperty.getName()
             + "'. Drop the index first, rename the property, then recreate the index on the new name");
 
+      // Every refusal is asked above: the copy registers the new name in the dictionary, a commit of its own that a refusal after it
+      // would leave behind, and on a Raft leader that page change quarantined the leader (issues #12958, #13092). Nothing below refuses
       final LocalProperty renamed = property.copyWithName(newPropertyName);
 
       properties.remove(propertyName);
@@ -2313,7 +2801,7 @@ public class LocalDocumentType implements DocumentType {
 
   @Override
   public boolean existsPolymorphicProperty(final String propertyName) {
-    return getPolymorphicPropertyNames().contains(propertyName);
+    return getPolymorphicPropertyIfExists(propertyName) != null;
   }
 
   @Override
@@ -2333,8 +2821,11 @@ public class LocalDocumentType implements DocumentType {
     final Set<TypeIndex> set = new HashSet<>(indexesByProperties.values());
     set.addAll(columnarIndexesByProperties.values());
 
-    for (final DocumentType t : superTypes)
-      set.addAll(t.getAllIndexes(true));
+    final LocalDocumentType[] lineage = getLineage();
+    for (int i = 1; i < lineage.length; i++) {
+      set.addAll(lineage[i].indexesByProperties.values());
+      set.addAll(lineage[i].columnarIndexesByProperties.values());
+    }
 
     return Collections.unmodifiableSet(set);
   }
@@ -2371,8 +2862,18 @@ public class LocalDocumentType implements DocumentType {
     }
 
     final List<IndexInternal> result = r != null ? new ArrayList<>(r) : new ArrayList<>();
-    for (final DocumentType t : superTypes)
-      result.addAll(t.getPolymorphicBucketIndexByBucketId(bucketId, filterByProperties));
+    final LocalDocumentType[] lineage = getLineage();
+    for (int i = 1; i < lineage.length; i++) {
+      final List<IndexInternal> inherited = lineage[i].bucketIndexesByBucket.get(bucketId);
+      if (inherited == null)
+        continue;
+      if (filterByProperties == null)
+        result.addAll(inherited);
+      else
+        for (final IndexInternal idx : inherited)
+          if (idx.getPropertyNames().equals(filterByProperties))
+            result.add(idx);
+    }
 
     return result;
   }
@@ -2385,8 +2886,12 @@ public class LocalDocumentType implements DocumentType {
       return r == null ? Collections.emptyList() : Collections.unmodifiableList(r);
 
     final List<IndexInternal> result = r != null ? new ArrayList<>(r) : new ArrayList<>();
-    for (final DocumentType t : superTypes)
-      result.addAll(t.getPolymorphicBucketIndexMaintainedInTransaction(bucketId));
+    final LocalDocumentType[] lineage = getLineage();
+    for (int i = 1; i < lineage.length; i++) {
+      final List<IndexInternal> inherited = lineage[i].maintainedIndexesByBucket.get(bucketId);
+      if (inherited != null)
+        result.addAll(inherited);
+    }
     return result;
   }
 
@@ -2433,12 +2938,11 @@ public class LocalDocumentType implements DocumentType {
     if (family != Schema.INDEX_TYPE.COLUMNAR)
       return getPolymorphicIndexByProperties(properties);
     TypeIndex idx = columnarIndexesByProperties.get(properties);
-    if (idx == null)
-      for (final LocalDocumentType t : superTypes) {
-        idx = t.getPolymorphicIndexByProperties(properties, family);
-        if (idx != null)
-          break;
-      }
+    if (idx == null && !superTypes.isEmpty()) {
+      final LocalDocumentType[] lineage = getLineage();
+      for (int i = 1; i < lineage.length && idx == null; i++)
+        idx = lineage[i].columnarIndexesByProperties.get(properties);
+    }
     return idx;
   }
 
@@ -2451,12 +2955,11 @@ public class LocalDocumentType implements DocumentType {
   @Override
   public TypeIndex getPolymorphicColumnarIndex(final String property) {
     TypeIndex index = getColumnarIndex(property);
-    if (index == null)
-      for (final LocalDocumentType t : superTypes) {
-        index = t.getPolymorphicColumnarIndex(property);
-        if (index != null)
-          break;
-      }
+    if (index == null && !superTypes.isEmpty()) {
+      final LocalDocumentType[] lineage = getLineage();
+      for (int i = 1; i < lineage.length && index == null; i++)
+        index = lineage[i].getColumnarIndex(property);
+    }
     return index;
   }
 
@@ -2473,6 +2976,20 @@ public class LocalDocumentType implements DocumentType {
     return family == Schema.INDEX_TYPE.COLUMNAR ? base + COLUMNAR_NAME_SUFFIX : base;
   }
 
+  /**
+   * The user-supplied name an index of {@code typeName} on {@code propertyNames} is created under: {@code name} when it differs from
+   * the name {@link #defaultIndexName} derives, {@code null} otherwise. A name that IS the derived one (a REBUILD hands it back, and
+   * a user may spell it out) is no manual name and must not travel in the index metadata: the metadata outlives a rename of the type,
+   * and a copy of it made afterwards (TRUNCATE TYPE re-creating the index) would then compare the stale name with the derived one of
+   * the NEW type name and take it for a manual name (issue #12774).
+   */
+  public static String manualIndexName(final String typeName, final List<String> propertyNames, final Schema.INDEX_TYPE family,
+      final String name) {
+    if (name == null || name.isEmpty() || name.equals(defaultIndexName(typeName, propertyNames, family)))
+      return null;
+    return name;
+  }
+
   @Override
   public TypeIndex getPolymorphicIndexByProperties(final String... properties) {
     return getPolymorphicIndexByProperties(Arrays.asList(properties));
@@ -2482,12 +2999,11 @@ public class LocalDocumentType implements DocumentType {
   public TypeIndex getPolymorphicIndexByProperties(final List<String> properties) {
     TypeIndex idx = indexesByProperties.get(properties);
 
-    if (idx == null)
-      for (final DocumentType t : superTypes) {
-        idx = t.getPolymorphicIndexByProperties(properties);
-        if (idx != null)
-          break;
-      }
+    if (idx == null && !superTypes.isEmpty()) {
+      final LocalDocumentType[] lineage = getLineage();
+      for (int i = 1; i < lineage.length && idx == null; i++)
+        idx = lineage[i].indexesByProperties.get(properties);
+    }
 
     return idx;
   }
@@ -2756,15 +3272,18 @@ public class LocalDocumentType implements DocumentType {
   }
 
   public void removeTypeIndexInternal(final TypeIndex index) {
+    // This type and every type above it, once each, from the links as they are now
+    for (final LocalDocumentType type : collectLineage(this, false))
+      type.removeOwnTypeIndexInternal(index);
+  }
+
+  private void removeOwnTypeIndexInternal(final TypeIndex index) {
     // by identity: TypeIndex.equals() reads the sub-indexes, which a dropped index no longer answers for
     if (removeByIdentity(indexesByProperties, index) || removeByIdentity(columnarIndexesByProperties, index))
       refreshOwnIndexes();
 
     for (final IndexInternal idx : index.getIndexesOnBuckets())
       removeBucketIndexInternal(idx);
-
-    for (final LocalDocumentType superType : superTypes)
-      superType.removeTypeIndexInternal(index);
   }
 
   private static boolean removeByIdentity(final Map<List<String>, TypeIndex> indexes, final TypeIndex index) {
@@ -2791,10 +3310,18 @@ public class LocalDocumentType implements DocumentType {
     }
   }
 
+  /**
+   * Refuses, before the bucket is attached, a bucket this type would take together with others it finds by name when another
+   * type owns one of them. Nothing for a plain document type: its paired bucket is checked when it is adopted.
+   */
+  protected void checkBucketCompanionsAreFree(final Bucket bucket) {
+  }
+
   protected void addBucketInternal(final Bucket bucket) {
     // One lookup in the bucket-owner map rather than a walk of every type, which made each bucket attached cost O(N) and
     // the open of a schema of N types O(N^2) (issue #10247)
     schema.checkBucketIsFree(name, bucket);
+    checkBucketCompanionsAreFree(bucket);
     // The paired bucket is created after the attach below: a page size it cannot have is refused before anything changes, or the
     // type would keep a primary bucket with no pair (issue #10876)
     if (hasExternalProperties() && !externalBucketIdByPrimaryBucketId.containsKey(bucket.getFileId()))
@@ -2828,8 +3355,7 @@ public class LocalDocumentType implements DocumentType {
     if (!superTypes.isEmpty()) {
       final List<Bucket>  addedBuckets   = List.of(bucket);
       final List<Integer> addedBucketIds = List.of(bucket.getFileId());
-      for (final LocalDocumentType s : superTypes)
-        s.updatePolymorphicBucketsCache(true, addedBuckets, addedBucketIds);
+      updateSuperTypesPolymorphicBucketsCache(true, addedBuckets, addedBucketIds);
     }
 
     bucketSelectionStrategy.setType(this);
@@ -2849,6 +3375,13 @@ public class LocalDocumentType implements DocumentType {
       // uncommitted writes into it through a type and the scan has nothing to miss; joining would only cost the build
       // its chunked commit.
       //
+      // OWN, not joined, whatever transaction the statement runs in: an `ALTER TYPE x BUCKET +y` is a statement of a client,
+      // which runs inside one. The header page of the sub-index written into it is published by the commit of that transaction,
+      // which a rollback takes back, and which an HA leader ships AFTER the schema entry that creates the file: a follower
+      // then loads an index file with no header page, and the bucket's index is unavailable there (a UNIQUE one makes it
+      // re-install the whole database from the leader). In its own transaction the page is committed here, and the leader's
+      // schema session ships it inside the entry that creates the file.
+      //
       // A bucket that is not new can hold records, and so a key a UNIQUE index of this type already holds: the attach is
       // then refused and handed back whole, exactly as addSuperType hands back a link (issue #11302). Every component an
       // attempt created is dropped when it fails, before the retry: they outlive the rollback, and a retry that created
@@ -2860,12 +3393,13 @@ public class LocalDocumentType implements DocumentType {
           created.clear();
           for (final TypeIndex idx : existentIndexes)
             created.add(createBucketIndexFor(idx, bucket));
-        }, true, txRetries(database), null, failure -> dropFailedAttempt(created));
+        }, false, txRetries(database), null, failure -> dropFailedAttempt(created));
       } catch (final RuntimeException e) {
         // The refusal is what the caller has to see: a step of the clean-up that fails too travels with it rather than in its
         // place, and does not skip the steps after it (the detach drops the bucket's sub-indexes on its own too)
         final RuntimeException refusal = asDuplicatedKeyIfOne(e);
-        // A joined transaction hands a retryable failure straight back without calling the callback
+        // The failure callback of the transaction already dropped what each attempt created and emptied the list: nothing is left
+        // to drop here but what a failure raised outside an attempt left behind
         runCleanupStep(refusal, () -> dropFailedAttempt(created));
         runCleanupStep(refusal, () -> removeBucketInternal(bucket));
         if (!needsRepartitionBefore)
@@ -2901,8 +3435,11 @@ public class LocalDocumentType implements DocumentType {
   public boolean hasExternalProperties() {
     if (ownExternalPropertyCount.get() > 0)
       return true;
-    for (final LocalDocumentType st : superTypes)
-      if (st.hasExternalProperties())
+    if (superTypes.isEmpty())
+      return false;
+    final LocalDocumentType[] lineage = getLineage();
+    for (int i = 1; i < lineage.length; i++)
+      if (lineage[i].ownExternalPropertyCount.get() > 0)
         return true;
     return false;
   }
@@ -2929,8 +3466,9 @@ public class LocalDocumentType implements DocumentType {
   /** Recurses into subtypes: records of a subtype live in subtype primary buckets, so each needs its own paired ext. */
   public void ensureExternalBucketsRecursive() {
     ensureExternalBuckets();
-    for (final LocalDocumentType sub : subTypes)
-      sub.ensureExternalBucketsRecursive();
+    // Each type once, whatever the number of paths that lead down to it
+    for (final DocumentType sub : TypeHierarchy.allSubTypes(this))
+      ((LocalDocumentType) sub).ensureExternalBuckets();
   }
 
   private void ensureExternalBucketFor(final LocalBucket primary) {
@@ -2957,9 +3495,11 @@ public class LocalDocumentType implements DocumentType {
                   + "': it is already a primary bucket of another user type. The paired external bucket is named"
                   + " <primaryBucketName>_ext, so a primary bucket called '" + extName + "' (or one whose name"
                   + " ends in '_ext' that matches another type's primary bucket) collides with this convention."
-                  + " Resolve by renaming the conflicting primary bucket via 'ALTER BUCKET " + extName
-                  + " NAME ...' so its name no longer ends in '_ext' or no longer collides, then retry the EXTERNAL"
-                  + " property change.");
+                  + " A bucket cannot be renamed (issue #11796): resolve by moving the records of bucket '" + extName
+                  + "' to a bucket with another name (CREATE BUCKET, ALTER TYPE ... BUCKET +<new>, MOVE VERTEX or"
+                  + " INSERT ... SELECT, ALTER TYPE ... BUCKET -" + extName + ", DROP BUCKET " + extName
+                  + "; a copied record gets a new RID, so rewrite the links to the old RIDs before the DROP), then retry the"
+                  + " EXTERNAL property change.");
       } else {
         // External buckets get larger pages (256KB vs 64KB primary), a smaller slot table (256 vs 2048: file-format
         // version EXTERNAL_BUCKET_VERSION), and optional placement on cheaper-storage tier via
@@ -3150,8 +3690,7 @@ public class LocalDocumentType implements DocumentType {
     if (!superTypes.isEmpty()) {
       final List<Bucket>  removedBuckets   = List.of(bucket);
       final List<Integer> removedBucketIds = List.of(bucket.getFileId());
-      for (final LocalDocumentType s : superTypes)
-        s.updatePolymorphicBucketsCache(false, removedBuckets, removedBucketIds);
+      updateSuperTypesPolymorphicBucketsCache(false, removedBuckets, removedBucketIds);
     }
 
     // SYMMETRIC TO addBucketInternal: REBIND THE STRATEGY SO ITS CACHED BUCKET COUNT (E.G. RoundRobinBucketSelectionStrategy.total)
@@ -3185,17 +3724,37 @@ public class LocalDocumentType implements DocumentType {
     return buckets.getFirst().getFileId();
   }
 
+  /**
+   * Whether this type is {@code type} or one of its sub types, {@code type} being the name a statement used: the type's name or one
+   * of its aliases, as {@link #instanceOf(String)} matches. The query filters ask this with the name of their target, and an alias
+   * left out here made every record an index returned for {@code FROM <alias>} fail the filter (issue #12968).
+   */
   @Override
   public boolean isSubTypeOf(final String type) {
     if (type == null)
       return false;
 
+    if (isOrIsAliasedAs(type))
+      return true;
+    if (superTypes.isEmpty())
+      return false;
+    // each type above this one once, whatever the number of paths that lead up to it
+    final LocalDocumentType[] lineage = getLineage();
+    for (int i = 1; i < lineage.length; i++)
+      if (lineage[i].isOrIsAliasedAs(type))
+        return true;
+    return false;
+  }
+
+  private boolean isOrIsAliasedAs(final String type) {
     if (type.equalsIgnoreCase(getName()))
       return true;
-    for (final DocumentType superType : superTypes) {
-      if (superType.isSubTypeOf(type))
-        return true;
-    }
+    // most types have no alias: no iterator for them, this runs once per record a type filter reads
+    final Set<String> aliases = this.aliases;
+    if (!aliases.isEmpty())
+      for (final String alias : aliases)
+        if (type.equalsIgnoreCase(alias))
+          return true;
     return false;
   }
 
@@ -3206,11 +3765,10 @@ public class LocalDocumentType implements DocumentType {
 
     if (type.equalsIgnoreCase(getName()))
       return true;
-    for (final DocumentType subType : subTypes) {
-      if (subType.isSuperTypeOf(type))
-        return true;
-    }
-    return false;
+    if (subTypes.isEmpty())
+      return false;
+    // each type below this one once, whatever the number of paths that lead down to it
+    return TypeHierarchy.anySubType(this, subType -> type.equalsIgnoreCase(subType.getName()));
   }
 
   @Override
@@ -3372,21 +3930,31 @@ public class LocalDocumentType implements DocumentType {
     return schema.recordFileChanges(callback);
   }
 
+  /**
+   * Adds the buckets to, or removes them from, the polymorphic caches of this type and of every type above it, each once. Only the
+   * incoming buckets are forwarded, symmetric with the removal: forwarding the whole cache would hand every ancestor the buckets it
+   * already owns on every single update, which is O(tree) work per bucket and only stays correct because
+   * {@code addAllToUnmodifiableList} deduplicates.
+   */
   private void updatePolymorphicBucketsCache(final boolean add, final List<Bucket> buckets, final List<Integer> bucketIds) {
+    for (final LocalDocumentType type : collectLineage(this, false))
+      type.updateOwnPolymorphicBucketsCache(add, buckets, bucketIds);
+  }
+
+  /** As {@link #updatePolymorphicBucketsCache}, for the types above this one only: this type's own lists are already changed. */
+  private void updateSuperTypesPolymorphicBucketsCache(final boolean add, final List<Bucket> buckets, final List<Integer> bucketIds) {
+    final LocalDocumentType[] lineage = collectLineage(this, false);
+    for (int i = 1; i < lineage.length; i++)
+      lineage[i].updateOwnPolymorphicBucketsCache(add, buckets, bucketIds);
+  }
+
+  private void updateOwnPolymorphicBucketsCache(final boolean add, final List<Bucket> buckets, final List<Integer> bucketIds) {
     if (add) {
       cachedPolymorphicBuckets = CollectionUtils.addAllToUnmodifiableList(cachedPolymorphicBuckets, buckets);
       cachedPolymorphicBucketIds = CollectionUtils.addAllToUnmodifiableList(cachedPolymorphicBucketIds, bucketIds);
-      // ADD ONLY THE INCOMING BUCKETS, SYMMETRIC WITH THE REMOVE BRANCH: FORWARDING THE WHOLE CACHE WOULD HAND EVERY
-      // ANCESTOR THE BUCKETS IT ALREADY OWNS ON EVERY SINGLE UPDATE, WHICH IS O(TREE) WORK PER BUCKET AND ONLY STAYS
-      // CORRECT BECAUSE addAllToUnmodifiableList HAPPENS TO DEDUPLICATE
-      for (LocalDocumentType s : superTypes)
-        s.updatePolymorphicBucketsCache(add, buckets, bucketIds);
     } else {
       cachedPolymorphicBuckets = CollectionUtils.removeAllFromUnmodifiableList(cachedPolymorphicBuckets, buckets);
       cachedPolymorphicBucketIds = CollectionUtils.removeAllFromUnmodifiableList(cachedPolymorphicBucketIds, bucketIds);
-      // REMOVE ONLY THE BUCKETS OF THE REMOVED TYPE
-      for (LocalDocumentType s : superTypes)
-        s.updatePolymorphicBucketsCache(add, buckets, bucketIds);
     }
   }
 
@@ -3417,11 +3985,19 @@ public class LocalDocumentType implements DocumentType {
    * derived from this one. Each list is published as a fresh unmodifiable copy, the same copy-on-write contract the
    * lock-free readers of the two volatile fields rely on (issue #6678).
    * <p>
-   * The order is load-bearing: a type's cache is read by its super types and never by its sub types, so this type is
-   * rebuilt BEFORE the walk goes up, and the sub types' caches it reads are already final because the change that
-   * triggered the rebuild happened above them. Rebuilding a super type first would read this type's stale cache.
+   * The order is load-bearing: a type's cache is read by its super types and never by its sub types, so a type is rebuilt
+   * BEFORE every type above it, and the sub types' caches it reads are already final because the change that triggered the
+   * rebuild happened above them, or, for a sub type that is itself on the way up, because it was rebuilt first. Rebuilding a
+   * super type first would read a stale cache. Each type is rebuilt once, after every one of its sub types that is above this
+   * type: a type reached through more than one of them is not rebuilt once per path.
    */
   private void rebuildPolymorphicBucketsCache() {
+    // This type and every type above it, once each, every type before the types above it
+    for (final LocalDocumentType type : collectLineage(this, true))
+      type.rebuildOwnPolymorphicBucketsCache();
+  }
+
+  private void rebuildOwnPolymorphicBucketsCache() {
     final List<Bucket> polymorphicBuckets = new ArrayList<>(buckets);
     final List<Integer> polymorphicBucketIds = new ArrayList<>(bucketIds);
     // A DIAMOND HANDS THE SAME BUCKET OVER THROUGH MORE THAN ONE SUB TYPE: IT IS LISTED ONCE
@@ -3435,9 +4011,6 @@ public class LocalDocumentType implements DocumentType {
 
     cachedPolymorphicBuckets = Collections.unmodifiableList(polymorphicBuckets);
     cachedPolymorphicBucketIds = Collections.unmodifiableList(polymorphicBucketIds);
-
-    for (final LocalDocumentType superType : superTypes)
-      superType.rebuildPolymorphicBucketsCache();
   }
 
   /**
@@ -3452,7 +4025,17 @@ public class LocalDocumentType implements DocumentType {
    *                   {@link #addSuperType(DocumentType, boolean)})
    */
   void checkCanAddSuperType(final LocalDocumentType superType, final boolean newLinkage) {
+    // FIRST, before anything below walks the hierarchy: a super type that is already this type or one of its sub types would close a
+    // cycle, and every polymorphic walk over a cycle recurses until the stack overflows (issue #12028)
+    checkNoCycle(superType);
+
     checkTimeSeriesHierarchy(superType);
+
+    // A record of the sub type is a record of the super type, so both must store the same kind of record (issue #12029). Skipped for a
+    // linkage that already holds, so a database written before the check still opens. After the time series check, which has a
+    // message of its own for a TIMESERIES type (a document type) put under a vertex or an edge type
+    if (newLinkage)
+      checkSameRecordKind(name, getType(), superType);
 
     // final review C-I2: the super type's COLUMNAR indexes reach every bucket of this type and of its sub types, which must not hold
     // a COLUMNAR column on the same property already (a bucket projection keys its dictionaries by property). Skipped for a linkage
@@ -3479,21 +4062,149 @@ public class LocalDocumentType implements DocumentType {
         if (lightweight != null)
           LocalEdgeType.checkCanBeLightweight(lightweight.getName(), superType);
       }
+
+      // A name the super type declares with another type than this type, or a type below it, does (issue #12732): the super type's
+      // indexes would be propagated over buckets whose records hold the other kind of value. Before the stored records are read
+      checkInheritedPropertiesKeepTheirKind(superType);
+
+      // Last, being the one that reads the records: the stored records of this type and of its sub types must meet what they are about
+      // to inherit, as CREATE PROPERTY and ALTER PROPERTY require of them (issue #12030). It stays after every structural refusal of
+      // this method, a refusal of a link that closes a cycle included: it walks the polymorphic properties of the super type and the
+      // polymorphic buckets of this type, which only an acyclic hierarchy can answer
+      checkStoredRecordsMeetInheritedProperties(superType);
     }
+  }
+
+  /**
+   * Refuses a super type that declares a property with another type (or another OF type) than a declaration this type, or a type below
+   * it, already sees (issue #12732): the super type's indexes would be propagated over buckets whose records hold the other kind of
+   * value, keyed by the super type's declaration, so lookups would miss them, an index kind the other declaration cannot hold (BY KEY,
+   * BY ITEM, GEOSPATIAL) would fail to build or refuse every write, and two encodings that cannot be read as one another would corrupt
+   * the index file. A property this type already sees through another path is nothing new: the re-attachment of a dropped type's sub
+   * types links them to what they already inherit, and must not be refused for an overlap a database written before the check holds.
+   * A same-kind overlap stays accepted, with the warning {@link #addSuperTypeInternal} logs.
+   */
+  private void checkInheritedPropertiesKeepTheirKind(final LocalDocumentType superType) {
+    // By identity: getPolymorphicProperties() is a set by equals, where two declarations of one name and kind are one, and a separate
+    // declaration of the same kind is a new overlap, which a declaration of another kind below this type can still refuse
+    final Set<Property> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+    collectDeclarationsAbove(seen, new HashSet<>());
+    final Set<Property> inheritedDeclarations = Collections.newSetFromMap(new IdentityHashMap<>());
+    superType.collectDeclarationsAbove(inheritedDeclarations, new HashSet<>());
+
+    // A declaration already seen adds nothing, unless the link brings an index on its name this type does not reach yet: that index
+    // is about to be propagated over the buckets of this type and of the types below it, which have to hold its kind
+    final Set<String> newlyIndexedNames = new HashSet<>();
+    final Collection<TypeIndex> reachedAlready = getAllIndexes(true);
+    for (final TypeIndex index : superType.getAllIndexes(true))
+      if (!reachedAlready.contains(index))
+        for (final String indexedName : index.getPropertyNames())
+          newlyIndexedNames.add(Index.basePropertyName(indexedName));
+
+    for (final Property inherited : inheritedDeclarations) {
+      if (seen.contains(inherited) && !newlyIndexedNames.contains(inherited.getName()))
+        continue;
+      final Property otherKind = findDeclarationOfAnotherKind(inherited.getName(), inherited.getType(), inherited.getOfType(), null);
+      if (otherKind != null)
+        throw new SchemaException("Cannot make type '" + name + "' a sub type of '" + superType.getName() + "', which declares the property '"
+            + inherited.getName() + "' as " + describeKind(inherited.getType(), inherited.getOfType()) + otherKindReason(otherKind));
+    }
+  }
+
+  /** Every declaration of this type and of the types above it, each type visited once. */
+  private void collectDeclarationsAbove(final Set<Property> result, final Set<LocalDocumentType> visited) {
+    if (!visited.add(this))
+      return;
+    result.addAll(properties.values());
+    for (final LocalDocumentType superType : superTypes)
+      superType.collectDeclarationsAbove(result, visited);
+  }
+
+  /**
+   * Holds the stored records of this type, and of its sub types, against the properties {@code superType} would add to what they see
+   * (issue #12030). A property this type already sees, declared here or inherited from another super type, is not new to its records:
+   * the write path validates the polymorphic properties as a set, where equal ones (same name, declared type and element type) are one.
+   * A same-name property of another declared type is NOT the same one, both are validated, so it is not skipped.
+   */
+  private void checkStoredRecordsMeetInheritedProperties(final LocalDocumentType superType) {
+    final Collection<? extends Property> seen = getPolymorphicProperties();
+    final List<Property> inherited = new ArrayList<>();
+    for (final Property property : superType.getPolymorphicProperties())
+      if (!seen.contains(property))
+        inherited.add(property);
+    if (!inherited.isEmpty())
+      ExistingRecordsCheck.requireInheritedDeclarations(schema.getDatabase(), this, superType.getName(), inherited);
+  }
+
+  /**
+   * Refuses a link that would close a cycle (issue #12028): {@code superType} is this type itself or already one of its sub types.
+   */
+  private void checkNoCycle(final LocalDocumentType superType) {
+    if (superType.isSameOrSubTypeOf(this))
+      throw new SchemaException("Cannot make type '" + name + "' a sub type of '" + superType.getName() + "': '" + superType.getName()
+          + "' " + (superType == this ? "is the type itself" : "is already a sub type of '" + name + "'")
+          + ", and a type hierarchy cannot have a cycle");
+  }
+
+  /**
+   * Whether {@code ancestor} is this type itself or one of the types above it, answered by the identity of the type and not by its name:
+   * {@link #isSubTypeOf(String)} compares names ignoring the case, and two types whose names differ only by case are two types. Each
+   * type is visited once, so a lattice of diamonds costs its size and not its number of paths, and the walk ends even over a cycle.
+   */
+  boolean isSameOrSubTypeOf(final LocalDocumentType ancestor) {
+    return isSameOrSubTypeOf(ancestor, new HashSet<>());
+  }
+
+  private boolean isSameOrSubTypeOf(final LocalDocumentType ancestor, final Set<LocalDocumentType> visited) {
+    if (this == ancestor)
+      return true;
+    if (!visited.add(this))
+      return false;
+    for (final LocalDocumentType superType : superTypes)
+      if (superType.isSameOrSubTypeOf(ancestor, visited))
+        return true;
+    return false;
+  }
+
+  /**
+   * Refuses a super type that stores another kind of graph record, or a graph super type for a document type (issue #12029): a document
+   * type under a vertex type is scanned as one of its vertices, an edge type under a vertex type the same, and openCypher fails on the
+   * first such record it casts. A DOCUMENT super type stays legal for every kind: schemas use it to share properties (a vertex type
+   * extending a document type), and a vertex or an edge is a document too, so a scan of the super type reads nothing it cannot hold.
+   */
+  private static void checkSameRecordKind(final String typeName, final byte recordKind, final DocumentType superType) {
+    final byte superKind = superType.getType();
+    if (superKind != recordKind && superKind != Document.RECORD_TYPE)
+      throw new SchemaException("Cannot make the " + recordKindName(recordKind) + " type '" + typeName + "' a sub type of the "
+          + recordKindName(superKind) + " type '" + superType.getName()
+          + "': a type can only extend a document type or a type of its own kind");
+  }
+
+  private static String recordKindName(final byte recordKind) {
+    return switch (recordKind) {
+      case Vertex.RECORD_TYPE -> "vertex";
+      case Edge.RECORD_TYPE -> "edge";
+      default -> "document";
+    };
   }
 
   /**
    * The refusals of {@link #checkCanAddSuperType} that a type NOT CREATED YET can already be told, so that {@link TypeBuilder} asks
    * them before it registers anything: a new type has no sub types and is no time series, so what is left is the super type being a
-   * time series or a backing type (issue #11204), and the new type being a LIGHTWEIGHT edge type that would inherit a property it
-   * cannot honour (issue #10394).
+   * time series or a backing type (issue #11204), the super type storing another kind of record than the new type does (issue
+   * #12029), and the new type being a LIGHTWEIGHT edge type that would inherit a property it cannot honour (issue #10394).
    * <p>
    * Public only because the {@code CREATE ... TYPE} statements, in another package, ask the same questions before they create the type;
    * internal to the schema and the statements that build types, not an API for applications.
+   *
+   * @param recordKind the kind of record the new type stores: {@link Document#RECORD_TYPE}, {@link Vertex#RECORD_TYPE} or
+   *                   {@link Edge#RECORD_TYPE}
    */
-  public static void checkSuperTypeOfNewType(final String typeName, final LocalDocumentType superType, final boolean lightweightEdge) {
+  public static void checkSuperTypeOfNewType(final String typeName, final byte recordKind, final LocalDocumentType superType,
+      final boolean lightweightEdge) {
     if (superType instanceof LocalTimeSeriesType)
       throw timeSeriesHierarchyRefusal(typeName, superType.getName(), superType.getName());
+    checkSameRecordKind(typeName, recordKind, superType);
     superType.schema.checkCanExtend(typeName, superType);
     if (lightweightEdge)
       LocalEdgeType.checkCanBeLightweight(typeName, superType);
@@ -3568,6 +4279,8 @@ public class LocalDocumentType implements DocumentType {
       // the super type's (mutable) superTypes lists, which linkSuperType/unlinkSuperType structurally modify, so a
       // walk outside the write lock can raise a ConcurrentModificationException out of an unrelated ALTER TYPE -
       // a spurious failure of a call that was going to succeed (issue #7918, the same exposure createProperty had).
+      // A NEW linkage over a name declared with another type was refused by checkCanAddSuperType above (issue #12732): what is
+      // left to warn about is a same-kind overlap, which is harmless.
       final Set<String> allProperties = getPropertyNames();
       for (final String p : superType.getPolymorphicPropertyNames())
         if (allProperties.contains(p))
@@ -3607,6 +4320,8 @@ public class LocalDocumentType implements DocumentType {
         unlinkSuperType(embeddedSuperType);
         throw e;
       }
+      // issue #12031: the views reading the super type gained this subtree's records
+      MaterializedViewRefresher.refreshViewsOverHierarchyChange(schema, this, embeddedSuperType);
 
       return null;
     });
@@ -3729,9 +4444,9 @@ public class LocalDocumentType implements DocumentType {
     // the caller holds, and does not see the caller's uncommitted writes. Every family can share it since issue #10438,
     // which made the vector ones join; the per-index test is kept so a family that cannot has the place to say so.
     final DatabaseInternal database = (DatabaseInternal) schema.getDatabase();
-    // Asked about THIS type's buckets, the ones createSubIndexesFor builds over: a caller that wrote only elsewhere has
-    // nothing there for the build to see, so the build keeps a transaction of its own (issue #10450).
-    final boolean callerTransactionHasChanges = IndexBuilder.callerTransactionHasChangesIn(database, buckets);
+    // Asked about the buckets createSubIndexesFor builds over, this type's and its sub types': a caller that wrote only elsewhere
+    // has nothing there for the build to see, so the build keeps a transaction of its own (issue #10450).
+    final boolean callerTransactionHasChanges = IndexBuilder.callerTransactionHasChangesIn(database, cachedPolymorphicBuckets);
 
     // Two lists, because "has to be built later" and "has to be taken away if anything goes wrong" are not the same
     // set. An index family that cannot share the caller's transaction is built INLINE during component creation and
@@ -3828,7 +4543,9 @@ public class LocalDocumentType implements DocumentType {
   }
 
   /**
-   * One super-type index, over every bucket of THIS type that does not already carry it.
+   * One super-type index, over every bucket of THIS type and of the types below it that does not already carry it: the whole
+   * subtree joins the super type, so its records are the super type's records from now on (issue #12036). A sub type's
+   * bucket is looked up on the type that owns it, which is the type its sub-indexes are bound to.
    *
    * @param sharesCallerTransaction when true the component is created without an inline build and is appended to
    *                                {@code toBuild}, so the build can join the caller's transaction later and see its
@@ -3836,11 +4553,16 @@ public class LocalDocumentType implements DocumentType {
    */
   private void createSubIndexesFor(final TypeIndex index, final boolean sharesCallerTransaction, final List<Index> created,
       final List<Index> toBuild) {
-    for (int i = 0; i < buckets.size(); i++) {
-      final Bucket bucket = buckets.get(i);
+    // THIS type's buckets and, deduplicated, the ones of every type below it: the list a polymorphic read of this type walks
+    final List<Bucket> subtreeBuckets = cachedPolymorphicBuckets;
+    for (int i = 0; i < subtreeBuckets.size(); i++) {
+      final Bucket bucket = subtreeBuckets.get(i);
+      final LocalDocumentType bucketOwner = schema.getBucketOwner(bucket.getFileId());
+      // The sub-indexes of a sub type's bucket are bound to the sub type, not to this one, so it is the one to ask
+      final LocalDocumentType carrier = bucketOwner != null ? bucketOwner : this;
 
       boolean alreadyCreated = false;
-      for (final IndexInternal idx : getPolymorphicBucketIndexByBucketId(bucket.getFileId(), index.getPropertyNames())) {
+      for (final IndexInternal idx : carrier.getPolymorphicBucketIndexByBucketId(bucket.getFileId(), index.getPropertyNames())) {
         final TypeIndex typeIndex = idx.getTypeIndex();
         if (typeIndex != null && typeIndex.equals(index)) {
           alreadyCreated = true;

@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.exception.ValidationException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.LocalTimeSeriesType;
@@ -383,7 +384,7 @@ class TimeSeriesDeleteTest extends TestHelper {
     database.command("sql", "INSERT INTO W SET ts = 1000, host = 'h', a = 10");
     database.command("sql", "INSERT INTO W SET ts = 2000, host = 'h', a = 999");
 
-    assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY W.a MAX 50").close()).isInstanceOf(CommandExecutionException.class)
+    assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY W.a MAX 50").close()).isInstanceOf(ValidationException.class)
         .hasMessageContaining("timestamp 2000").hasMessageContaining("DELETE FROM W WHERE ts = 2000");
 
     try (final ResultSet rs = database.command("sql", "DELETE FROM W WHERE ts = 2000 AND host = 'h'")) {

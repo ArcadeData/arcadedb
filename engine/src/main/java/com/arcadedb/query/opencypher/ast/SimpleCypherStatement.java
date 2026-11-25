@@ -21,13 +21,16 @@ package com.arcadedb.query.opencypher.ast;
 import com.arcadedb.function.CypherBuiltinFunctions;
 import com.arcadedb.function.CypherFunctionRegistry;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
+import com.arcadedb.query.OperationType;
 import com.arcadedb.query.opencypher.parser.CypherExpressionWalker;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.opencypher.procedures.CypherProcedureRegistry;
 
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 
 /**
  * Simple implementation of CypherStatement for Phase 1.
@@ -55,6 +58,7 @@ public class SimpleCypherStatement implements CypherStatement {
   private final boolean            hasMerge;
   private final boolean            hasDelete;
   private final boolean            hasRemove;
+  private final boolean            hasUnresolvedFunctionCall;
   private final boolean            readOnly;
   private final boolean            hasVariableLengthPath;
   private final boolean            hasUnwindBeforeMatch;
@@ -161,9 +165,9 @@ public class SimpleCypherStatement implements CypherStatement {
     final boolean hasForeach = this.clausesInOrder.stream().anyMatch(c -> c.getType() == ClauseEntry.ClauseType.FOREACH);
     final boolean writeSubquery = anyWriteSubquery(this.clausesInOrder);
     final boolean writeProcedureCall = anyWriteProcedureCall(this.callClauses);
-    final boolean unresolvedFunctionCall = anyUnresolvedFunctionCall(this);
+    this.hasUnresolvedFunctionCall = anyUnresolvedFunctionCall(this);
     this.readOnly = !hasCreate && !hasMerge && !hasDelete && !hasRemove && !hasForeach
-        && (setClause == null || setClause.isEmpty()) && !writeSubquery && !writeProcedureCall && !unresolvedFunctionCall;
+        && (setClause == null || setClause.isEmpty()) && !writeSubquery && !writeProcedureCall && !hasUnresolvedFunctionCall;
 
     // Pre-compute flags used by CypherExecutionPlan.execute() to avoid repeated clause scanning
     this.hasVariableLengthPath = computeHasVariableLengthPath();
@@ -374,6 +378,16 @@ public class SimpleCypherStatement implements CypherStatement {
     return detector.found;
   }
 
+  /**
+   * The same question for one expression that belongs to no clause, such as the {@code WHEN} condition of a conditional query:
+   * true when it calls a function whose write-or-not status cannot be confirmed ({@link #isConfirmedPureFunctionName}).
+   */
+  static boolean callsUnresolvedFunction(final Expression expression) {
+    final UnresolvedFunctionCallDetector detector = new UnresolvedFunctionCallDetector();
+    CypherExpressionWalker.walk(expression, detector);
+    return detector.found;
+  }
+
   private static final class UnresolvedFunctionCallDetector implements CypherExpressionWalker.Visitor {
     private boolean found = false;
 
@@ -390,6 +404,105 @@ public class SimpleCypherStatement implements CypherStatement {
   @Override
   public boolean isReadOnly() {
     return readOnly;
+  }
+
+  /**
+   * A top-level {@code CALL} of a schema-changing procedure, or one inside a {@code CALL { ... }} subquery (issue #11438).
+   * Runs once per analysis of a cached statement, so it is not pre-computed.
+   */
+  @Override
+  public boolean hasSchemaProcedureCall() {
+    for (final CallClause call : callClauses) {
+      final CypherProcedure procedure = call.resolveProcedure();
+      if (procedure != null && procedure.isSchemaProcedure())
+        return true;
+    }
+    for (final ClauseEntry entry : clausesInOrder) {
+      if (entry.getType() != ClauseEntry.ClauseType.SUBQUERY)
+        continue;
+      final SubqueryClause sub = entry.getTypedClause();
+      final CypherStatement inner = sub.getInnerStatement();
+      if (inner != null && inner.hasSchemaProcedureCall())
+        return true;
+    }
+    return false;
+  }
+
+  /**
+   * Every kind of write this statement can run, read from the whole clause tree and not only from the top-level flags: a
+   * {@code CALL { ... }} subquery and a {@code FOREACH} body are walked, nested ones included, because the statement runs what
+   * is written in them whatever the outer clauses are. The same sources that make {@link #isReadOnly()} false are all covered,
+   * so a statement that is not read-only never declares less than it does. The top-level flags are read besides the clauses
+   * in order because a statement built by one of the shorter constructors carries no clause list.
+   * <p>
+   * A write procedure, and a call of a function that may run a body of its own, cannot be narrowed to one kind of write: they
+   * count as every data write. A schema-changing procedure is a schema change, as its SQL statement is (issue #11438).
+   */
+  @Override
+  public void collectWriteOperations(final Set<OperationType> operations) {
+    if (hasCreate)
+      operations.add(OperationType.CREATE);
+    if (hasMerge) {
+      operations.add(OperationType.CREATE);
+      operations.add(OperationType.UPDATE);
+    }
+    if (hasDelete)
+      operations.add(OperationType.DELETE);
+    if (hasRemove || hasSet())
+      operations.add(OperationType.UPDATE);
+    collectWriteOperations(clausesInOrder, operations);
+    for (final CallClause call : callClauses)
+      collectProcedureCallOperations(call, operations);
+    if (hasUnresolvedFunctionCall)
+      addEveryDataWrite(operations);
+  }
+
+  private static void collectWriteOperations(final List<ClauseEntry> entries, final Set<OperationType> operations) {
+    for (final ClauseEntry entry : entries) {
+      switch (entry.getType()) {
+      case CREATE -> operations.add(OperationType.CREATE);
+      case MERGE -> {
+        operations.add(OperationType.CREATE);
+        operations.add(OperationType.UPDATE);
+      }
+      case SET -> {
+        if (!entry.<SetClause>getTypedClause().isEmpty())
+          operations.add(OperationType.UPDATE);
+      }
+      case REMOVE -> operations.add(OperationType.UPDATE);
+      case DELETE -> operations.add(OperationType.DELETE);
+      case FOREACH -> collectWriteOperations(entry.<ForeachClause>getTypedClause().getInnerClauses(), operations);
+      case SUBQUERY -> collectSubqueryOperations(entry.<SubqueryClause>getTypedClause().getInnerStatement(), operations);
+      default -> {
+        // The remaining clauses read, or are the CALL ones, which the instance method asks one by one
+      }
+      }
+    }
+  }
+
+  private static void collectSubqueryOperations(final CypherStatement inner, final Set<OperationType> operations) {
+    if (inner == null)
+      return;
+    final Set<OperationType> innerOperations = EnumSet.noneOf(OperationType.class);
+    inner.collectWriteOperations(innerOperations);
+    // A body that writes (it makes the outer statement not read-only) never declares less than one kind of write
+    if (innerOperations.isEmpty() && !inner.isReadOnly())
+      addEveryDataWrite(innerOperations);
+    operations.addAll(innerOperations);
+  }
+
+  private static void collectProcedureCallOperations(final CallClause call, final Set<OperationType> operations) {
+    final CypherProcedure procedure = call.resolveProcedure();
+    if (procedure != null && procedure.isSchemaProcedure())
+      operations.add(OperationType.SCHEMA);
+    else if (isWriteProcedureCall(call))
+      addEveryDataWrite(operations);
+  }
+
+  static void addEveryDataWrite(final Set<OperationType> operations) {
+    operations.add(OperationType.CREATE);
+    operations.add(OperationType.UPDATE);
+    operations.add(OperationType.DELETE);
   }
 
   @Override

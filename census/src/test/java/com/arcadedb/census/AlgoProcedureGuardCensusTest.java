@@ -84,8 +84,7 @@ class AlgoProcedureGuardCensusTest {
       Map.entry(ALGO + "AlgoSameCommunity", "O(1) lookup of two precomputed community labels"),
       Map.entry(ALGO + "AlgoSCC", "single Tarjan/Kosaraju pass, O(V + E)"),
       Map.entry(ALGO + "AlgoTopologicalSort", "single Kahn's-algorithm pass, O(V + E)"),
-      Map.entry(ALGO + "AlgoTotalNeighbors", "one node's own adjacency plus one other node's own adjacency: O(deg(a) + deg(b))"),
-      Map.entry(ALGO + "AlgoWCC", "single union-find pass over every edge, O(V + E)")));
+      Map.entry(ALGO + "AlgoTotalNeighbors", "one node's own adjacency plus one other node's own adjacency: O(deg(a) + deg(b))")));
 
   @Test
   void everyAlgoProcedureIsEitherGuardedOrAJustifiedSinglePassExemption() throws Exception {

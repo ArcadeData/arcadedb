@@ -29,6 +29,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.mcp.MCPConfiguration;
+import com.arcadedb.mcp.MCPRefusalException;
 import com.arcadedb.mcp.MCPPermissions;
 import com.arcadedb.server.security.ServerSecurityUser;
 
@@ -94,6 +95,13 @@ public class ExecuteCommandTool {
     final QueryEngine.AnalyzedQuery analyzed = engine.analyze(command);
     checkPermission(analyzed.getOperationTypes(), access.permissions());
 
+    // Each call runs in a transaction of its own, so a BEGIN, COMMIT or ROLLBACK would act on that one call alone, be answered OK and
+    // change nothing for the next call (issues #12202, #12232)
+    if (analyzed.isTransactionControl())
+      throw new MCPToolArgumentException("'" + command.trim() + "' cannot run as a command of its own: each execute_command call runs in "
+          + "its own transaction, which it would begin, commit or roll back alone. Send the statements that must commit or roll back "
+          + "together in one call, as one 'sqlscript' command");
+
     final JsonSerializer serializer = JsonSerializer.createJsonSerializer()
         .setIncludeVertexEdges(false)
         .setUseCollectionSize(false)
@@ -145,27 +153,27 @@ public class ExecuteCommandTool {
       switch (op) {
       case CREATE:
         if (!permissions.isAllowInsert())
-          throw new SecurityException("Insert operations are not allowed by MCP configuration");
+          throw new MCPRefusalException("Insert operations are not allowed by MCP configuration");
         break;
       case UPDATE:
         if (!permissions.isAllowUpdate())
-          throw new SecurityException("Update operations are not allowed by MCP configuration");
+          throw new MCPRefusalException("Update operations are not allowed by MCP configuration");
         break;
       case DELETE:
         if (!permissions.isAllowDelete())
-          throw new SecurityException("Delete operations are not allowed by MCP configuration");
+          throw new MCPRefusalException("Delete operations are not allowed by MCP configuration");
         break;
       case SCHEMA:
         if (!permissions.isAllowSchemaChange())
-          throw new SecurityException("Schema change operations are not allowed by MCP configuration");
+          throw new MCPRefusalException("Schema change operations are not allowed by MCP configuration");
         break;
       case ADMIN:
         if (!permissions.isAllowAdmin())
-          throw new SecurityException("Admin operations are not allowed by MCP configuration");
+          throw new MCPRefusalException("Admin operations are not allowed by MCP configuration");
         break;
       case READ:
         if (!permissions.isAllowReads())
-          throw new SecurityException("Read operations are not allowed by MCP configuration");
+          throw new MCPRefusalException("Read operations are not allowed by MCP configuration");
         break;
       }
     }

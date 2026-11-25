@@ -556,7 +556,8 @@ public class MultiValue {
    * Utility function that remove a value from the main object. It takes care about collections/array and single values.
    *
    * @param iObject         MultiValue where to add value(s)
-   * @param iToRemove       Single value, array of values or collections of values. Map are not supported.
+   * @param iToRemove       Single value, array of values or collections of values. A Map is a single value: it is removed
+   *                        as one element of a collection (equal by content) and as one key of a map.
    * @param iAllOccurrences True if the all occurrences must be removed or false of only the first one (Like
    *                        java.util.Collection.remove())
    *
@@ -583,8 +584,11 @@ public class MultiValue {
         final Collection coll = (Collection) iObject;
 
         if (iToRemove instanceof Collection<?>) {
-          // COLLECTION - COLLECTION
-          for (final Object o : (Collection<Object>) iToRemove) {
+          // COLLECTION - COLLECTION. The same collection on both sides (REMOVE tags = tags) is iterated as a snapshot: removing
+          // from the collection being iterated skipped elements or failed with a ConcurrentModificationException (issue #12794)
+          final boolean aliased = iToRemove == iObject; // NOPMD: by identity, only the same instance is mutated while iterated
+          final Collection<Object> toRemove = aliased ? new ArrayList<>(coll) : (Collection<Object>) iToRemove;
+          for (final Object o : toRemove) {
             if (isMultiValue(o))
               remove(coll, o, iAllOccurrences);
             else
@@ -600,10 +604,6 @@ public class MultiValue {
               removeFromCollection(iObject, coll, o, iAllOccurrences);
           }
 
-        } else if (iToRemove instanceof Map<?, ?>) {
-          // MAP
-          for (final Map.Entry<Object, Object> entry : ((Map<Object, Object>) iToRemove).entrySet())
-            coll.remove(entry.getKey());
         } else if (iToRemove instanceof Iterator<?>) {
           // ITERATOR
           if (iToRemove instanceof MultiIterator<?>)
@@ -621,6 +621,8 @@ public class MultiValue {
             }
           }
         } else
+          // A single value, a Map included: a map in a list of maps (or embedded documents) is one element of it, never the
+          // list of its keys, which is how a Map to remove was read before (issue #12085)
           removeFromCollection(iObject, coll, iToRemove, iAllOccurrences);
 
       } else if (iObject.getClass().isArray()) {

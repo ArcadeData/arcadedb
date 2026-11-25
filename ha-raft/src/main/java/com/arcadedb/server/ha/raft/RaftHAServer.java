@@ -93,6 +93,7 @@ import java.util.Set;
 import java.util.SortedMap;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
@@ -102,6 +103,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.BooleanSupplier;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
@@ -379,6 +382,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   final Object                    applyNotifier         = new Object();
   RaftClusterManager        clusterManager;
   final Object                    recoveryLock          = new Object();
+  // Issue #11921: read-held by every commit published outside the log for its whole length (see runPublication), write-held
+  // by an in-place restart while it replaces the state machine. The publication takes the validation lock of the ledger of
+  // the state machine current when it starts, so it must not span the replacement of that ledger.
+  private final ReentrantReadWriteLock publicationGate   = new ReentrantReadWriteLock();
   volatile boolean                   shutdownRequested     = false;
   private volatile Thread                    autoJoinThread        = null;
   private volatile LifeCycle.State           forcedStateForTesting = null;
@@ -1069,9 +1076,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
     final RaftProperties properties = RaftPropertiesBuilder.build(configuration);
 
-    // Read by the leader's log appenders, which Ratis builds itself (issue #11458)
+    // Read by the leader's log appenders, which Ratis builds itself (issue #11458). The budget is resolved over THIS
+    // node's heap: it is what this node applies as a leader and what it advertises as a follower, and a follower is held
+    // to the smaller of the two (issue #11508)
     applyBackPressure = new ApplyBackPressure(ApplyBackPressure.resolveBudgetBytes(configuration, Runtime.getRuntime().maxMemory()),
-        peerCapabilities::freshAppliedIndexOf);
+        peerCapabilities::freshAppliedIndexOf, peerCapabilities::freshApplyBacklogBudgetOf);
     ApplyBackPressure.register(localPeerId.toString(), applyBackPressure);
 
     final File storageDir = storageFiles.getRaftStorageDir();
@@ -2385,7 +2394,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
-   * Closes the current RaftClient and creates a new one with fresh gRPC channels.
+   * Replaces the current RaftClient with a new one with fresh gRPC channels, and closes the old one off the calling
+   * thread.
    * <p>
    * After a network partition, gRPC channels to partitioned peers enter TRANSIENT_FAILURE
    * with exponential backoff (up to ~120 s). Any Raft send on those channels fails with
@@ -2434,15 +2444,37 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       oldBroker.stop();
     }
 
-    if (oldClient != null) {
-      try {
-        oldClient.close();
-      } catch (final IOException e) {
-        LogManager.instance().log(this, Level.WARNING, "Error closing stale RaftClient during refresh", e);
-      }
-    }
+    if (oldClient != null)
+      closeRetiredClient(oldClient);
 
     LogManager.instance().log(this, Level.INFO, "RaftClient refreshed with fresh gRPC channels after leader change");
+  }
+
+  /**
+   * Closes a client {@link #refreshRaftClient} has just replaced, on a thread of its own (issue #12142).
+   * <p>
+   * The refresh runs from {@code notifyLeaderChanged}, which Ratis calls inside {@code ServerState.setLeader} with the
+   * division's monitor held: from the synchronized {@code changeToLeader()} on a new leader, and from the synchronized
+   * block of {@code appendEntries} on a follower. Closing a Ratis gRPC client shuts each channel down gracefully and
+   * waits up to 3 s for the calls still in flight on it (then up to 2 s more after {@code shutdownNow}), and under load
+   * there always are some: group-commit appends and watches, the ReadIndex of a LINEARIZABLE follower read. Closed
+   * inline, that wait held the division for 3 s on every such leader change: the new leader sent no heartbeat and
+   * committed nothing, and a follower answered no append or vote.
+   * <p>
+   * Nothing changes for those calls: {@code RaftClientImpl.close()} marks the client closed before it shuts the
+   * channels down, so a caller still holding it sees it closed at once, and the calls in flight still either finish
+   * within the graceful window or are cancelled. Only the wait has left the Raft thread. A virtual thread, as the group
+   * committer's refresh callback uses: a retired client is rare (one per leader change) and the wait parks on the
+   * channel's {@code CountDownLatch}, which does not pin a carrier.
+   */
+  private void closeRetiredClient(final RaftClient retired) {
+    Thread.ofVirtual().name("arcadedb-raft-client-close").start(() -> {
+      try {
+        retired.close();
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.WARNING, "Error closing stale RaftClient during refresh", e);
+      }
+    });
   }
 
   /**
@@ -2495,6 +2527,67 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   public ArcadeStateMachine getStateMachine() {
     return stateMachine;
+  }
+
+  /**
+   * Runs a commit published outside the log (issue #11921) so that no in-place restart replaces the state machine while it
+   * runs: the publication and every validation it is ordered against then use one ledger. {@code publication} resolves the
+   * state machine itself, under the gate.
+   */
+  <T> T runPublication(final Callable<T> publication) throws Exception {
+    final Lock gate = publicationGate.readLock();
+    gate.lock();
+    try {
+      return publication.call();
+    } finally {
+      gate.unlock();
+    }
+  }
+
+  /**
+   * Builds the state machine of an in-place restart once the publications in flight on the old one have returned (issue
+   * #11921), waiting up to {@code waitMs} ({@code arcadedb.ha.ratisCloseTimeoutMs} for {@link RatisInPlaceRestart}): one that
+   * is still running after that fails the restart, which counts toward {@code arcadedb.ha.ratisRestartMaxRetries} like a
+   * close that does not finish.
+   */
+  void replaceStateMachineBetweenPublications(final long waitMs) throws IOException, InterruptedException {
+    final Lock gate = publicationGate.writeLock();
+    lockPublicationGateForReplacement(gate, waitMs);
+    try {
+      this.stateMachine = createStateMachine();
+    } finally {
+      gate.unlock();
+    }
+  }
+
+  /**
+   * Takes the publication gate for a state machine replacement, waiting up to {@code waitMs} ({@code 0} or less: no bound).
+   *
+   * @throws IOException          when a publication is still running after {@code waitMs}
+   * @throws InterruptedException when the wait is interrupted, with the thread's interrupt flag set again
+   */
+  static void lockPublicationGateForReplacement(final Lock gate, final long waitMs) throws IOException, InterruptedException {
+    final boolean locked;
+    try {
+      if (waitMs <= 0) {
+        gate.lockInterruptibly();
+        locked = true;
+      } else
+        locked = gate.tryLock(waitMs, TimeUnit.MILLISECONDS);
+    } catch (final InterruptedException e) {
+      // The throw cleared the flag, and restartRatis reads the flag to tell an abandoned restart from a failed one: without
+      // it an interrupted restart would count toward arcadedb.ha.ratisRestartMaxRetries
+      Thread.currentThread().interrupt();
+      throw e;
+    }
+    if (!locked)
+      throw new IOException("A commit published outside the Raft log was still running after " + waitMs
+          + "ms; not replacing the state machine under it (issue #11921)");
+  }
+
+  /** Whether {@code thread} waits at the publication gate (issue #11921), for tests that must observe the restart there. */
+  boolean isWaitingAtThePublicationGate(final Thread thread) {
+    return publicationGate.hasQueuedThread(thread);
   }
 
   /**
@@ -2983,6 +3076,54 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   @Override
+  public boolean isRatisCloseStuck() {
+    final Thread closer = stuckRatisClose;
+    return closer != null && closer.isAlive();
+  }
+
+  /**
+   * Why this node's replication has stopped while nothing is recovering it, or {@code null} when it has not (issue
+   * #12552): its StateMachineUpdater thread has terminated, so it applies no committed entry whatever its division
+   * reports; the close of a previous Ratis server never finished, so no in-place restart can run beside it; or the
+   * health monitor that runs those restarts has died or is stuck inside one tick. Each is a node that answered ready for
+   * an hour while out of the cluster. {@code null} while shutting down: the threads read here end on purpose then.
+   * <p>
+   * Read by {@link TrafficReadiness#isReadyForTraffic(long)} and, through {@code RaftHAPlugin}, by the readiness probe
+   * whether or not {@code arcadedb.server.readinessRequiresHA} is on, like a critical halt: the node is not behind, it
+   * has stopped.
+   * <p>
+   * A Raft layer that was stopped is reported as such and nothing else is read: the threads above end on purpose then. On
+   * a server shutting down the probe answers with the server status before it gets here; on a server that stays up, the
+   * one {@code disconnect cluster} leaves behind, this is what keeps it out of the Service.
+   */
+  public String getReplicationFailureReason() {
+    if (shutdownRequested)
+      return "the Raft layer of this node has been stopped: it is no longer a member of the cluster";
+    final String deadUpdater = getDeadStateMachineUpdater();
+    if (deadUpdater != null)
+      return "Raft state machine cannot apply entries: " + deadUpdater;
+    final Thread closer = stuckRatisClose;
+    if (closer != null && closer.isAlive())
+      return "the close of the previous Ratis server is still running on thread '" + closer.getName()
+          + "': the Raft layer cannot be restarted until it ends, and the server stops once "
+          + GlobalConfiguration.HA_RATIS_RESTART_MAX_RETRIES.getKey() + " restart attempts have failed";
+    final HealthMonitor monitor = healthMonitor;
+    return monitor != null ? monitor.describeTickLoopFailure(healthMonitorStallBoundMs()) : null;
+  }
+
+  /**
+   * How long the health monitor may go without ending a tick before it counts as stalled (issue #12552). One tick can
+   * hold an in-place restart, whose close of the old server and swap of the state machine are each bounded by
+   * {@code arcadedb.ha.ratisCloseTimeoutMs}, so the bound covers two of those plus a margin, and never less than ten
+   * tick intervals. A close timeout of 0 (no bound) leaves only the interval floor and a fixed margin.
+   */
+  long healthMonitorStallBoundMs() {
+    final long interval = configuration.getValueAsLong(GlobalConfiguration.HA_HEALTH_CHECK_INTERVAL);
+    final long closeTimeout = Math.max(0L, configuration.getValueAsLong(GlobalConfiguration.HA_RATIS_CLOSE_TIMEOUT_MS));
+    return Math.max(10L * interval, 2L * closeTimeout + 60_000L);
+  }
+
+  @Override
   public boolean hasPersistedCrashLoopEscalation() {
     return storageFiles.crashLoopEscalationMarker().isFile();
   }
@@ -3432,11 +3573,21 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         .setRaftGroup(group)
         .setProperties(properties)
         .setParameters(parameters != null ? parameters : new Parameters())
-        .setRetryPolicy(RetryPolicies.retryUpToMaximumCountWithFixedSleep(60, TimeDuration.valueOf(1, TimeUnit.SECONDS)));
+        .setRetryPolicy(DATA_CLIENT_RETRY_POLICY);
     if (knownLeaderId != null)
       builder.setLeaderId(knownLeaderId);
     return builder.build();
   }
+
+  /**
+   * The per-call retry policy of the shared {@link #raftClient}, the one every group-committed entry goes through:
+   * {@code RetryLimited(60, 1s)}, a data write waiting out an election, wrapped so the committer learns which entries an
+   * earlier attempt of may have reached a log. The refusal of a leader stepping down for a leadership transfer is a
+   * definite outcome only for an entry with no such attempt (issue #11951, see {@code RaftGroupCommitter.refusedBeforeAppend}).
+   * Stateless, so one instance serves every client this node builds.
+   */
+  static final RetryPolicy DATA_CLIENT_RETRY_POLICY = RaftGroupCommitter.recordingResends(
+      RetryPolicies.retryUpToMaximumCountWithFixedSleep(60, TimeDuration.valueOf(1, TimeUnit.SECONDS)));
 
   /**
    * The per-call retry policy of the membership-change client (issues #7539, #7561).
@@ -3677,6 +3828,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     return appliedWaits.fetchReadIndex(expectSelfIsLeader);
   }
 
+  /** As {@link #fetchReadIndex(boolean)}, giving up after {@code timeoutMs} (issue #11739). */
+  public long fetchReadIndex(final boolean expectSelfIsLeader, final long timeoutMs) {
+    return appliedWaits.fetchReadIndex(expectSelfIsLeader, timeoutMs);
+  }
+
   /**
    * Lenient overload (READ_YOUR_WRITES / bookmark wait): on timeout it logs and returns,
    * allowing the read to proceed against possibly-stale local state. Never used by the
@@ -3721,6 +3877,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     appliedWaits.awaitAppliedIndex(databaseName, targetIndex, throwOnTimeout, null);
   }
 
+  /** As {@link #waitForAppliedIndex(long, boolean)}, giving up after {@code timeoutMs} instead of the quorum timeout (issue #11739). */
+  public void waitForAppliedIndex(final long targetIndex, final boolean throwOnTimeout, final long timeoutMs) {
+    appliedWaits.awaitAppliedIndex(null, targetIndex, throwOnTimeout, null, timeoutMs);
+  }
+
   /**
    * The wait of a consistent read: as {@link #waitForAppliedIndex(String, long, boolean)}, strict for
    * {@code LINEARIZABLE} and lenient for {@code READ_YOUR_WRITES}, but refused retryably as soon as this node is no
@@ -3737,6 +3898,19 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   public void waitForAppliedIndexForRead(final String databaseName, final long targetIndex,
       final Database.READ_CONSISTENCY consistency) {
     appliedWaits.awaitAppliedIndex(databaseName, targetIndex, consistency == Database.READ_CONSISTENCY.LINEARIZABLE, consistency);
+  }
+
+  /**
+   * The byte budget this node resolved for its own Raft apply backlog ({@code arcadedb.ha.applyBacklogMax} over its own
+   * heap), which it advertises on the capability poll so its leader does not size the backlog from the leader's heap
+   * (issue #11508). {@code -1} when Raft is not started or the budget is disabled here.
+   */
+  public long getApplyBacklogBudgetBytes() {
+    final ApplyBackPressure backPressure = applyBackPressure;
+    if (backPressure == null)
+      return -1L;
+    final long budget = backPressure.getBudgetBytes();
+    return budget > 0 ? budget : -1L;
   }
 
   @Override
@@ -4053,6 +4227,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
     @Override
     public long triggerSnapshot(final long creationGap) {
+      // The data files are forced here first, on the scheduler's thread (issue #11989): the checkpoint forces them again on
+      // the apply thread, where every commit of the node waits for it, and only what was written in between is left there.
+      // Not when Ratis is going to skip the checkpoint (below the creation gap): that tick stays free
+      final ArcadeStateMachine sm = stateMachine;
+      if (sm != null)
+        sm.syncDataFilesAheadOfCheckpoint(creationGap);
       return takeLocalSnapshot(creationGap);
     }
 
@@ -4386,6 +4566,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   Parameters raftParametersForTest() {
     return transport.raftParametersForTest();
+  }
+
+  /** Package-private test hook: the Raft properties {@code start()} publishes, which {@link #refreshRaftClient} builds from. */
+  void setRaftPropertiesForTest(final RaftProperties properties) {
+    this.raftProperties = properties;
   }
 
   PeerAddressAllowlistFilter allowlistFilterForTest() {

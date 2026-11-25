@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.TimeoutException;
 import de.bwaldvogel.mongo.bson.BsonRegularExpression;
 import de.bwaldvogel.mongo.bson.Document;
+import de.bwaldvogel.mongo.exception.BadValueException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -199,16 +200,37 @@ class MongoFilterTest {
   }
 
   /**
-   * The library compares an {@code $eq} / {@code $ne} / range operand by value and never searches it as a pattern, so a regular
-   * expression there cannot run unbounded. A library that started to do so would hang here, hence the generous timeout.
+   * The matcher compares an {@code $eq} operand by value and never searches it as a pattern, so a regular expression there cannot
+   * run unbounded. A matcher that started to do so would hang here, hence the generous timeout. {@code $ne} and the range operators
+   * refuse a regular expression operand before any record is tested, as mongod does (issue #12594).
    */
   @Test
   @Timeout(60)
-  void aRegexUnderEqualityAndRangeOperatorsIsNeverSearched() {
+  void aRegexUnderEqualityIsNeverSearchedAndNeOrARangeRefusesIt() {
     final BsonRegularExpression pathological = new BsonRegularExpression("(.*a){20}$");
     final Map<String, Object> record = Map.of("s", "a".repeat(40) + "!");
-    for (final String operator : List.of("$eq", "$ne", "$gt", "$gte", "$lt", "$lte"))
-      new MongoFilter(null, new Document("s", new Document(operator, pathological))).matches(record);
+    assertThat(new MongoFilter(null, new Document("s", new Document("$eq", pathological))).matches(record)).isFalse();
+    for (final String operator : List.of("$ne", "$gt", "$gte", "$lt", "$lte"))
+      assertThatThrownBy(() -> new MongoFilter(null, new Document("s", new Document(operator, pathological)))).as(operator)
+          .isInstanceOf(BadValueException.class);
+  }
+
+  /** Issue #12594: two regular expressions are equal with the same pattern and the same options, in any order. */
+  @Test
+  void aRegexIsEqualToTheSamePatternWithTheSameOptionsInAnyOrder() {
+    final BsonRegularExpression im = new BsonRegularExpression("x", "im");
+    assertThat(MongoQueryMatcher.valuesEqual(im, new BsonRegularExpression("x", "mi"))).isTrue();
+    assertThat(MongoQueryMatcher.valuesEqual(im, new BsonRegularExpression("x", "i"))).isFalse();
+    assertThat(MongoQueryMatcher.valuesEqual(im, new BsonRegularExpression("y", "im"))).isFalse();
+    assertThat(MongoQueryMatcher.valuesEqual(new BsonRegularExpression("x", null), new BsonRegularExpression("x", ""))).isTrue();
+    assertThat(MongoQueryMatcher.valuesEqual(new BsonRegularExpression("x", "i"), new BsonRegularExpression("x", "ii"))).isFalse();
+    assertThat(MongoQueryMatcher.valuesEqual(im, "x")).isFalse();
+
+    // a stored regular expression, read back from its tagged form, is matched by an $eq with its options in another order
+    final Map<String, Object> record = Map.of("s", MongoBsonValues.toStored(im));
+    assertThat(new MongoFilter(null, new Document("s", new Document("$eq", new BsonRegularExpression("x", "mi")))).matches(record)).isTrue();
+    assertThat(new MongoFilter(null, new Document("s", new BsonRegularExpression("x", "mi"))).matches(record)).isTrue();
+    assertThat(new MongoFilter(null, new Document("s", new BsonRegularExpression("x", "i"))).matches(record)).isFalse();
   }
 
   @Test
