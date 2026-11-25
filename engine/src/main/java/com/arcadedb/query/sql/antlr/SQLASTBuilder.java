@@ -406,6 +406,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    * map.get('x') = 1}) still parses as the namespaced function {@code map.get}. That ambiguity predates aliases -
    * it applies to any property named {@code map}, {@code ts}, {@code geo}, ... - and is left as is; backtick-quote
    * the alias (or the property, as in {@code `map`.values()}), or pick another name, to address the record instead.
+   * The same holds for an alias called {@code apoc} followed by a longer chain: {@code SELECT FROM Foo apoc WHERE
+   * apoc.name.toUpperCase() = 'X'} parses as the function {@code apoc.name.toUpperCase}, since every multi-part name that
+   * starts with {@code apoc.} is a function call (issue #12086). The same back-ticks address the record.
    *
    * @return {@code expr}, rewritten in place when it was alias-qualified
    */

@@ -144,6 +144,21 @@ class Issue12086SqlMultipartFunctionNameTest extends TestHelper {
     assertThat(single("SELECT `apoc`.text.indexOf('l') AS v FROM Q")).isEqualTo(2);
   }
 
+  /**
+   * The price of reading every {@code apoc.<a>.<b>(...)} as a function: a target alias called {@code apoc} is a function
+   * prefix too, as an alias named after one of the SQL function namespaces already was. Back-ticks address the record.
+   */
+  @Test
+  void targetAliasNamedApocIsAddressedWithBackTicks() {
+    database.getSchema().createDocumentType("R");
+    database.transaction(() -> database.newDocument("R").set("name", "x").save());
+
+    assertThat(single("SELECT name AS v FROM R `apoc` WHERE `apoc`.name.toUpperCase() = 'X'")).isEqualTo("x");
+    assertThat(single("SELECT name AS v FROM R r WHERE r.name.toUpperCase() = 'X'")).isEqualTo("x");
+    assertThatThrownBy(() -> run("SELECT name AS v FROM R apoc WHERE apoc.name.toUpperCase() = 'X'")).hasMessageContaining(
+        "Unknown function").hasMessageContaining("apoc.name.toUpperCase");
+  }
+
   /** An aggregate an application registers under a three-part name. */
   public static class Total extends SQLFunctionAbstract {
     private long total;
