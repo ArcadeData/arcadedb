@@ -53,6 +53,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.Set;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
@@ -472,11 +474,21 @@ class VectorReplicaApplyOracleTest extends TestHelper {
     follower.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_INACTIVITY_REBUILD_TIMEOUT_MS, 300);
     final LSMVectorIndex f = indexes(follower)[0];
 
-    commitAndReplicate(() -> {
-      for (int i = 0; i < 50; i++)
-        buffered.add(insert());
-    });
-    assertThat(f.getStats().get("deltaVectorsCount")).as("the replicated rows wait in the delta buffer").isEqualTo(50L);
+    // The replicated page arms the inactivity rebuild, which folds the delta buffer into the graph. Every rebuild takes a permit of the
+    // JVM-wide semaphore (the small-graph arm re-arms itself when it cannot get one), so holding all the permits keeps the rebuild
+    // from running before the buffered rows are observed, whatever the test thread's scheduling does to the 300 ms window.
+    final Semaphore permits = LSMVectorIndex.rebuildSemaphoreForTesting();
+    assertThat(permits.tryAcquire(30, TimeUnit.SECONDS)).as("a rebuild the setup started returns its permit").isTrue();
+    final int held = 1 + permits.drainPermits();
+    try {
+      commitAndReplicate(() -> {
+        for (int i = 0; i < 50; i++)
+          buffered.add(insert());
+      });
+      assertThat(f.getStats().get("deltaVectorsCount")).as("the replicated rows wait in the delta buffer").isEqualTo(50L);
+    } finally {
+      permits.release(held);
+    }
 
     final long deadline = System.currentTimeMillis() + 60_000;
     while (f.getStats().get("deltaVectorsCount") != 0L && System.currentTimeMillis() < deadline)
