@@ -69,6 +69,9 @@ public class MCPDispatcher {
   // silently shipping a prompt that instructs the model to call something that no longer exists.
   static final Set<String> REGISTERED_TOOL_NAMES;
 
+  /** What a reply says about a value nested too deeply to be written out: the call fails, the transport goes on serving. */
+  static final String NESTING_TOO_DEEP_MESSAGE = "the value is nested too deeply to be processed";
+
   private static final String INSTRUCTIONS =
       """
       You are connected to an ArcadeDB multi-model database server. Follow these rules:
@@ -273,6 +276,10 @@ public class MCPDispatcher {
         case "ping" -> result(id, new JSONObject());
         default -> error(id, -32601, "Method not found: " + method, 200);
       };
+    } catch (final StackOverflowError e) {
+      // The last guard of every method: a message that cannot be processed is answered, and the transport goes on serving
+      LogManager.instance().log(this, Level.WARNING, "MCP[%s] %s -> error: %s", transport, method, NESTING_TOO_DEEP_MESSAGE);
+      return error(id, -32603, "Internal error: " + NESTING_TOO_DEEP_MESSAGE, 200);
     } finally {
       // A tool or resource read binds the authenticated principal onto this thread's DatabaseContext (so the engine
       // permission gates enforce, see MCPToolUtils.bindCurrentUser / GHSA-6x73-v3rc-f57c). This transport runs on a
@@ -344,8 +351,7 @@ public class MCPDispatcher {
       }
       return result(id, MCPResources.read(server, user, config, uri));
     } catch (final SecurityException e) {
-      LogManager.instance().log(this, Level.INFO, "MCP[%s] resources/read -> permission denied: %s", transport, ErrorConcealment.describe(e));
-      return error(id, -32600, ErrorConcealment.describe(e), 200);
+      return error(id, -32600, refusalMessage("resources/read", e), 200);
     } catch (final MCPResourceNotFoundException e) {
       return error(id, -32002, ErrorConcealment.describe(e), 200);
     } catch (final Exception e) {
@@ -377,8 +383,7 @@ public class MCPDispatcher {
 
       return result(id, MCPPrompts.get(config, toolAllowed, name, args));
     } catch (final SecurityException e) {
-      LogManager.instance().log(this, Level.INFO, "MCP[%s] prompts/get -> permission denied: %s", transport, ErrorConcealment.describe(e));
-      return error(id, -32600, ErrorConcealment.describe(e), 200);
+      return error(id, -32600, refusalMessage("prompts/get", e), 200);
     } catch (final IllegalArgumentException | IllegalStateException | UnsupportedOperationException | JSONException e) {
       return error(id, -32602, "Invalid params: " + ErrorConcealment.describe(e), 200);
     } catch (final Exception e) {
@@ -456,7 +461,7 @@ public class MCPDispatcher {
       if (!REGISTERED_TOOL_NAMES.contains(toolName))
         throw new MCPToolArgumentException("Unknown tool: " + toolName);
       if (!profile.allows(toolName))
-        throw new SecurityException(
+        throw new MCPRefusalException(
             "Tool '" + toolName + "' is not available in " + profile.description());
 
       // Two decisions, not one (issue #10928): whether the call waits for a slot, and whether it is listed. Admitted first,
@@ -494,9 +499,7 @@ public class MCPDispatcher {
       return result(id, result);
 
     } catch (final SecurityException e) {
-      LogManager.instance()
-          .log(this, Level.INFO, "MCP[%s] tools/call '%s' -> permission denied: %s", transport, toolName, ErrorConcealment.describe(e));
-      return toolError(id, ErrorConcealment.describe(e));
+      return toolError(id, refusalMessage("tools/call '" + toolName + "'", e));
     } catch (final MCPToolArgumentException e) {
       // The tools' own argument validation ("'database' is required", "Unknown tool"): text this server words about the
       // request, which the caller needs to correct it, so it is kept in every mode. An IllegalArgumentException of any
@@ -506,6 +509,10 @@ public class MCPDispatcher {
       return toolError(id, ErrorConcealment.describe(e));
     } catch (final Exception e) {
       return toolError(id, failureMessage("tools/call '" + toolName + "'", e));
+    } catch (final StackOverflowError e) {
+      // A reply that cannot be written out: the call fails like any other, and the transport goes on serving
+      LogManager.instance().log(this, Level.WARNING, "MCP[%s] tools/call '%s' -> error: %s", transport, toolName, NESTING_TOO_DEEP_MESSAGE);
+      return toolError(id, NESTING_TOO_DEEP_MESSAGE);
     }
   }
 
@@ -517,6 +524,22 @@ public class MCPDispatcher {
    */
   private String clientMessage(final String message, final Throwable cause) {
     return ErrorConcealment.clientMessage(ErrorConcealment.isConcealing(server), this, "MCP[" + transport + "]", message, cause);
+  }
+
+  /**
+   * The text an error answer carries for a refused {@code operation}, logged once. A refusal the MCP layer words itself
+   * ({@link MCPRefusalException}) is kept in every mode: it names no schema object and is what the caller needs to correct the
+   * call. Any other {@link SecurityException} is the engine's refusal of a record or a type, whose text names the schema objects
+   * of the database, so in production mode it is answered with the placeholder every other surface uses and the detail goes to
+   * the log, like every other failure of the engine.
+   */
+  String refusalMessage(final String operation, final SecurityException e) {
+    final String detail = ErrorConcealment.describe(e);
+    if (e instanceof MCPRefusalException || !ErrorConcealment.isConcealing(server)) {
+      LogManager.instance().log(this, Level.INFO, "MCP[%s] %s -> permission denied: %s", transport, operation, detail);
+      return detail;
+    }
+    return clientMessage(operation + " -> permission denied: " + detail, e);
   }
 
   /**

@@ -32,6 +32,12 @@ public class NullSafeEqualsCompareOperator extends SimpleNode implements BinaryC
 
   @Override
   public boolean execute(final DatabaseInternal database, final Object iLeft, final Object iRight) {
+    return execute(database, iLeft, iRight, null);
+  }
+
+  @Override
+  public boolean execute(final DatabaseInternal database, final Object iLeft, final Object iRight,
+      final ConstantOperandConversion rightConversion) {
     if (iLeft == null && iRight == null)
       return true;
 
@@ -41,14 +47,14 @@ public class NullSafeEqualsCompareOperator extends SimpleNode implements BinaryC
       Iterator<?> valueIterator = MultiValue.getMultiValueIterator(iLeft);
       while (valueIterator.hasNext()) {
         Object val = valueIterator.next();
-        if ((val == null && iRight == null) || QueryOperatorEquals.equals(val, iRight)) {
+        if ((val == null && iRight == null) || QueryOperatorEquals.equals(val, iRight, rightConversion)) {
           return true;
         }
       }
       return false;
     }
 
-    return QueryOperatorEquals.equals(iLeft, iRight);
+    return QueryOperatorEquals.equals(iLeft, iRight, rightConversion);
   }
 
   @Override

@@ -18,13 +18,14 @@
  */
 package com.arcadedb.redis;
 
-import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.ConsistentKeyLookup;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.serializer.json.JSONArray;
 
 /**
@@ -70,7 +71,7 @@ public class RedisIndexKeys {
    *
    * @param key the key exactly as the client wrote it, see {@link #parse}
    */
-  public static Identifiable lookup(final Database database, final String indexName, final String key) {
+  public static Identifiable lookup(final DatabaseInternal database, final String indexName, final String key) {
     final Object[] keys = parse(key);
     for (int attempt = 1; ; attempt++) {
       // resolved on every attempt: a DROP and a CREATE replace the index object under the same name, and between the two the
@@ -85,6 +86,7 @@ public class RedisIndexKeys {
         pause(attempt, e);
         continue;
       }
+      requireReadable(database, index);
       try {
         // A name can also resolve to a single index rather than a type index - a manual index, or one bucket's. That one has no
         // sub-indexes a drop could take away one at a time, so its read is whole or fails, and a failure under a concurrent drop
@@ -106,6 +108,17 @@ public class RedisIndexKeys {
         pause(attempt, e);
       }
     }
+  }
+
+  /**
+   * Refuses the user who may not read the records of the type the index belongs to, or of a type under it, before the index is read,
+   * as the walk of their buckets does. The index of a type holds the records of its subtypes too, which may carry an access of their
+   * own, so the buckets of every one of them are asked. An index that belongs to no type has none to ask.
+   */
+  private static void requireReadable(final DatabaseInternal database, final Index index) {
+    final String typeName = index.getTypeName();
+    if (typeName != null)
+      SecurityHelper.checkReadOnTypeAndSubTypes(database, database.getSchema().getTypeOrNull(typeName));
   }
 
   /** A short, growing pause between two attempts: a DDL on the index is usually over in a few milliseconds. */

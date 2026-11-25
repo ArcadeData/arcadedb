@@ -20,6 +20,7 @@ package com.arcadedb.query.facet;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.function.sql.time.SQLFunctionTimeBucket;
 import com.arcadedb.index.columnar.ColumnDefinition;
 import com.arcadedb.index.columnar.ColumnKind;
@@ -101,7 +102,7 @@ public final class HistogramCollector implements FacetCollector {
    * @param database  converts the date literals of BOUNDS on a date column
    * @param extractor the declaring type's extractor: converts BOUNDS as stored values are converted
    *
-   * @throws CommandExecutionException when the column cannot be bucketed by the interval
+   * @throws CommandSQLParsingException when the column cannot be bucketed by the interval
    */
   HistogramCollector(final HistogramFacetSpec spec, final ColumnDefinition column, final long budgetWaitMs, final DatabaseInternal database,
       final ColumnConversion extractor) {
@@ -233,14 +234,14 @@ public final class HistogramCollector implements FacetCollector {
   private void validate() {
     final boolean time = isTimeInterval();
     if (column.kind() != ColumnKind.LONG && column.kind() != ColumnKind.DOUBLE)
-      throw new CommandExecutionException(
+      throw new CommandSQLParsingException(
           "FACETS " + spec.alias() + ": HISTOGRAM needs a number or date property, '" + spec.property() + "' is " + column.propertyType());
     if (time && doubles)
-      throw new CommandExecutionException(
+      throw new CommandSQLParsingException(
           "FACETS " + spec.alias() + ": the time interval '" + spec.interval().text() + "' needs a date or integer property, '" + spec.property()
               + "' is " + column.propertyType());
     if (!time && dateUnit != null)
-      throw new CommandExecutionException(
+      throw new CommandSQLParsingException(
           "FACETS " + spec.alias() + ": FIXED " + spec.interval().text() + " needs a number property, '" + spec.property() + "' is "
               + column.propertyType() + ": use a time interval such as FIXED '1d' or CALENDAR '1M'");
   }
@@ -265,7 +266,8 @@ public final class HistogramCollector implements FacetCollector {
   /**
    * The bucket layout over BOUNDS and the matched values, null when there is neither.
    *
-   * @throws CommandExecutionException above 100,000 buckets even over the matched values alone
+   * @throws CommandSQLParsingException above 100,000 buckets, or buckets beyond the representable range, even over the matched values
+   *                                    alone
    */
   private Layout layout(final Grid grid) {
     final Span span = new Span();
@@ -279,7 +281,8 @@ public final class HistogramCollector implements FacetCollector {
       return null;
     try {
       return layout(grid, span);
-    } catch (final CommandExecutionException e) {
+    } catch (final CommandSQLParsingException e) {
+      // the bucket cap or the representable range: both depend on the span, which the matched values alone may narrow
       if (!fromViews)
         throw e;
       // the views' bounds also cover rows the query did not match, and dead ones: the matched values may need fewer buckets

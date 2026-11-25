@@ -19,8 +19,13 @@
 package com.arcadedb.query.opencypher.query;
 
 import com.arcadedb.database.BasicDatabase;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.opencypher.grammar.Cypher25Lexer;
+import com.arcadedb.query.opencypher.parser.Cypher25AntlrParser;
 import com.arcadedb.query.opencypher.parser.ParserUtils;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.antlr.v4.runtime.CharStreams;
@@ -50,6 +55,11 @@ import java.util.StringJoiner;
  * and the whole of {@code WHERE}, {@code ORDER BY}, {@code SKIP}, {@code LIMIT}, {@code RETURN}, every operator,
  * function and parameter binding comes from the engine and cannot drift from what the same expression means
  * anywhere else in a query.
+ * <p>
+ * The tail of a {@code SHOW} or {@code TERMINATE} command is the clause the grammar defines and nothing else: it is checked
+ * against {@code showCommandYield} before the query is rewritten. A command that starts with {@code CALL} may be followed by
+ * the clauses of any query. The rows the rewritten query produces are held as the table this class answers, and count against
+ * the element cap and the heap budget of the queries.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -57,6 +67,8 @@ public final class ShowCommandTail {
   /** Name of the parameter the rewritten query reads the {@code SHOW} rows from. */
   private static final String ROWS_PARAMETER = "__showRows";
   private static final String ROW_VARIABLE   = "__showRow";
+  /** What the rows of a tail are accounted as, in the message of a limit they exceed. */
+  private static final String OPERATION      = "SHOW command result";
 
   /** The rows of a {@code SHOW} command: the column names, and one list of values per row, positionally aligned. */
   public record Table(List<String> fields, List<List<Object>> rows) {
@@ -70,7 +82,7 @@ public final class ShowCommandTail {
    * for the far more common bare {@code SHOW ...}.
    */
   public static boolean hasTail(final String query) {
-    return tailOf(query) != null;
+    return query != null && tailOf(tokenize(query)) != null;
   }
 
   /**
@@ -87,13 +99,19 @@ public final class ShowCommandTail {
    */
   public static Table apply(final BasicDatabase database, final String query, final List<String> fields,
       final List<List<Object>> rows, final Map<String, Object> parameters) {
-    if (database == null)
+    if (database == null || query == null)
       return new Table(fields, rows);
 
-    final List<Token> tail = tailOf(query);
+    final List<Token> tokens = tokenize(query);
+    final List<Token> tail = tailOf(tokens);
     if (tail == null)
       return new Table(fields, rows);
 
+    // A SHOW or TERMINATE command ends in the YIELD/WHERE clause its grammar defines, and nothing after it. A CALL is the start of
+    // a query, which may go on with the clauses of any other (CALL dbms.components() YIELD versions UNWIND versions AS version
+    // RETURN version)
+    if (!startsWithCall(tokens))
+      new Cypher25AntlrParser(database instanceof Database db ? db : null).checkShowCommandYield(textOf(query, tail));
 
     // The rows travel as a parameter, under a name the client cannot already have bound: putting it in last would
     // silently shadow a client parameter of the same name, and while __showRows is not a name anyone is likely to
@@ -119,6 +137,10 @@ public final class ShowCommandTail {
     List<String> rowFields = null;
     List<String> outFields = rewrite.projected();
 
+    // The rows the engine streams are held here as a table, so they count against the element cap and the heap budget like the
+    // rows any other operation buffers. The charge is given back when the table is handed over: what the caller does with it
+    // is its own to account
+    final OperationHeapLimit limit = heapLimitOf(database);
     try (final ResultSet resultSet = database.query("opencypher", rewrite.query(), effectiveParameters)) {
       while (resultSet.hasNext()) {
         final Result row = resultSet.next();
@@ -135,10 +157,27 @@ public final class ShowCommandTail {
         for (final String field : outFields)
           values.add(row.getProperty(field));
         filtered.add(values);
+        limit.add(filtered.size(), values);
       }
+    } finally {
+      limit.release();
     }
 
     return new Table(outFields != null ? outFields : fields, filtered);
+  }
+
+  /** The element cap and heap budget the rows of a tail are accounted against. */
+  private static OperationHeapLimit heapLimitOf(final BasicDatabase database) {
+    if (!(database instanceof DatabaseInternal internal))
+      return OperationHeapLimit.of((Database) null, OPERATION);
+
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(internal);
+    return OperationHeapLimit.of(context, "rows", OPERATION);
+  }
+
+  private static boolean startsWithCall(final List<Token> tokens) {
+    return !tokens.isEmpty() && tokens.getFirst().getType() == Cypher25Lexer.CALL;
   }
 
   /** The rewritten query and the columns it returns, or null for those a {@code *} leaves to the first row. */
@@ -251,12 +290,7 @@ public final class ShowCommandTail {
    * Found with the openCypher lexer rather than by searching the text, so a {@code WHERE} inside a string literal,
    * a comment or a backquoted name is a value and not a clause.
    */
-  private static List<Token> tailOf(final String query) {
-    if (query == null)
-      return null;
-
-    final List<Token> tokens = tokenize(query);
-
+  private static List<Token> tailOf(final List<Token> tokens) {
     // A UNION is not one command with a tail, it is several commands each with their own - the shape Neo4j Desktop
     // sends to read the schema, "CALL db.labels() YIELD label RETURN ... UNION CALL db.relationshipTypes() ...".
     // Its parts are answered one by one by whoever produced the rows, so there is no single table here for a

@@ -84,6 +84,7 @@ import com.arcadedb.query.sql.parser.WhereClause;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
+import com.arcadedb.schema.TypeHierarchy;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.server.ArcadeDBServer;
@@ -187,8 +188,11 @@ public class PostgresNetworkExecutor extends Thread {
   /** Shared between every path that refuses a statement inside an aborted transaction block (SQLSTATE 25P02). */
   private static final String                                         ABORTED_TRANSACTION_MESSAGE       =
       "current transaction is aborted, commands ignored until end of transaction block";
-  /** Case-insensitive {@code TO} separator for the {@code SET <param> TO <value>} syntax. */
-  private static final Pattern                                        SET_TO_SEPARATOR  = Pattern.compile("(?i)\\s+TO\\s+");
+  /**
+   * Case-insensitive {@code TO} separator for the {@code SET <param> TO <value>} syntax. A separator starts at the first blank of
+   * a run, so a long run of blanks that is not followed by {@code TO} is read once and not once per blank it holds.
+   */
+  private static final Pattern                                        SET_TO_SEPARATOR  = Pattern.compile("(?i)(?<!\\s)\\s++TO\\s++");
   /** Case-insensitive {@code SESSION}/{@code LOCAL} scope modifier leading a {@code SET} command (issue #6701). */
   private static final Pattern                                        SET_SCOPE_MODIFIER = Pattern.compile("(?i)^(SESSION|LOCAL)\\s+");
   private static final Pattern                                        SET_TIME_ZONE      = Pattern.compile("(?i)^TIME\\s+ZONE\\s+");
@@ -202,7 +206,6 @@ public class PostgresNetworkExecutor extends Thread {
    */
   private static final Pattern                                        SET_KEYWORD_FORM   = Pattern.compile(
       "(?is)^(?:(SESSION|LOCAL)\\s+)?(SESSION\\s+AUTHORIZATION|ROLE|NAMES|SCHEMA|SESSION\\s+CHARACTERISTICS\\s+AS\\s+TRANSACTION|TRANSACTION|CONSTRAINTS)\\s+(?!=|TO\\s)(.+)$");
-  private static final Pattern                                        SET_CONSTRAINTS_MODE = Pattern.compile("(?is)^(.+?)\\s+(DEFERRED|IMMEDIATE)$");
   private static final Pattern                                        TRANSACTION_MODE_SEPARATOR = Pattern.compile("[\\s,]+");
 
   private final ArcadeDBServer              server;
@@ -1396,6 +1399,9 @@ public class PostgresNetworkExecutor extends Thread {
    * around a read in it costs nothing that matters.
    */
   private void beginSimpleQueryBlock() {
+    // A simple query interleaved into a pipeline's implicit block joins it, writes of the pipeline included (issue #13222)
+    if (database.isTransactionActive())
+      endImplicitOnceItHoldsEarlierWrites();
     if (!simpleQueryBlockContinues)
       return;
     if (!database.isTransactionActive())
@@ -2546,14 +2552,19 @@ public class PostgresNetworkExecutor extends Thread {
    * {@code HashSet}, whose iteration order would make an exported column order vary from run to run.
    */
   private static void collectDeclaredColumns(final DocumentType docType, final Map<String, PostgresType> columns) {
+    collectOwnDeclaredColumns(docType, columns);
+    // each super type once, whatever the number of paths that lead up to it
+    for (final DocumentType superType : TypeHierarchy.allSuperTypes(docType))
+      collectOwnDeclaredColumns(superType, columns);
+  }
+
+  private static void collectOwnDeclaredColumns(final DocumentType docType, final Map<String, PostgresType> columns) {
     for (final String propName : docType.getPropertyNames()) {
       final Property prop = docType.getProperty(propName);
       columns.putIfAbsent(propName, prop != null && prop.getType() != null
           ? PostgresType.getTypeFromArcade(prop.getType(), prop.getOfType())
           : PostgresType.VARCHAR);
     }
-    for (final DocumentType superType : docType.getSuperTypes())
-      collectDeclaredColumns(superType, columns);
   }
 
   /**
@@ -4192,18 +4203,43 @@ public class PostgresNetworkExecutor extends Thread {
       }
       case "SESSION CHARACTERISTICS AS TRANSACTION" -> transactionModes(query, rest, "default_transaction_isolation");
       case "CONSTRAINTS" -> {
-        final Matcher mode = SET_CONSTRAINTS_MODE.matcher(rest);
-        if (!mode.matches())
+        final String named = constraintsBeforeMode(rest);
+        if (named == null)
           throw syntaxError(query);
-        final String constraints = mode.group(1).trim();
-        if (!"ALL".equalsIgnoreCase(constraints))
+        final String constraints = named.trim();
+        if (!"ALL".equalsIgnoreCase(constraints)) {
           // THIS SERVER HAS NO NAMED CONSTRAINTS FOR A SET CONSTRAINTS TO NAME, SO THE FIRST NAME IS UNDEFINED
+          final int comma = constraints.indexOf(',');
           throw new PostgresSessionSettings.SettingException(
-              "constraint \"" + constraints.split("\\s*,\\s*")[0] + "\" does not exist", "42704"); // undefined_object
+              "constraint \"" + (comma < 0 ? constraints : constraints.substring(0, comma).trim()) + "\" does not exist",
+              "42704"); // undefined_object
+        }
         yield PostgresSessionSettings.Assignment.NO_OP;
       }
       default -> null;
     };
+  }
+
+  /**
+   * What {@code rest} names before the {@code DEFERRED} or {@code IMMEDIATE} that ends it and the blanks in front of that, or null
+   * when it is not {@code <names> <blank> DEFERRED | IMMEDIATE}. Read from its end, so that a long run of blanks inside the names
+   * is passed once and not once per blank it holds.
+   */
+  private static String constraintsBeforeMode(final String rest) {
+    final int length = rest.length();
+    final int mode;
+    if (rest.regionMatches(true, length - 8, "DEFERRED", 0, 8))
+      mode = length - 8;
+    else if (rest.regionMatches(true, length - 9, "IMMEDIATE", 0, 9))
+      mode = length - 9;
+    else
+      return null;
+
+    int end = mode;
+    while (end > 0 && PostgresStatementText.isBlank(rest.charAt(end - 1)))
+      end--;
+    // a blank in front of the keyword, and something in front of the blanks
+    return end == mode || end == 0 ? null : rest.substring(0, end);
   }
 
   /**
@@ -5412,7 +5448,24 @@ public class PostgresNetworkExecutor extends Thread {
       // Opened by this server, not by a client BEGIN: an implicit transaction, where CALL { ... } IN TRANSACTIONS runs
       // (issue #11588). A BEGIN that joins it later declares it the client's, which ends that
       ((DatabaseInternal) database).getTransaction().setImplicit(true);
-    }
+    } else
+      endImplicitOnceItHoldsEarlierWrites();
+  }
+
+  /**
+   * Stops treating the implicit block a statement is about to join as that statement's own transaction once an earlier
+   * statement of the block wrote into it (issue #13222). {@code CALL { ... } IN TRANSACTIONS} commits what its statement wrote
+   * before its first batch (#13172), and in a block shared by several statements that commit took the earlier statements'
+   * writes with it: a later failure in the same pipeline, which PostgreSQL rolls the whole block back for, could no longer
+   * undo them. Such a block is no longer implicit, so the statement is refused before anything runs, as inside a client's
+   * transaction (#11588). A block nothing has written into yet stays implicit: a lone CALL, or one following statements that
+   * wrote nothing - a read, an UPDATE matching no row, an earlier CALL whose batches committed on their own - keeps running.
+   * The block's own commit at Sync, or at the end of a simple query, is unchanged. Released with the transaction.
+   */
+  private void endImplicitOnceItHoldsEarlierWrites() {
+    final TransactionContext tx = ((DatabaseInternal) database).getTransaction();
+    if (tx.isImplicit() && !tx.hasChangedNothing())
+      tx.setImplicit(false);
   }
 
   /**

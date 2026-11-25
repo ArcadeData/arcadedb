@@ -20,6 +20,7 @@ package com.arcadedb.database;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.async.AsyncQuiesce;
+import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.PageManager;
@@ -172,6 +173,17 @@ public interface DatabaseInternal extends Database {
   RecordFactory getRecordFactory();
 
   BinarySerializer getSerializer();
+
+  /**
+   * The dictionary the serializer resolves property names through, refused like {@link #getSchema()} once the database is
+   * closed. Unlike {@link #getSchema()} it does not make sure the calling thread has a transaction context: the serializer
+   * asks for the dictionary on every property it reads, and a property read of a record already loaded needs no context,
+   * while looking it up costs a thread-local and a map read per property (#12356). What a read reaches beyond the record's
+   * own bytes (an external value, a linked record) goes through {@link #getSchema()} or a lookup, which still set it up.
+   */
+  default Dictionary getDictionary() {
+    return getSchema().getDictionary();
+  }
 
   PageManager getPageManager();
 

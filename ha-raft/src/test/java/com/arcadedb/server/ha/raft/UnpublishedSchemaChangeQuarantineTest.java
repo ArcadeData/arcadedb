@@ -209,6 +209,10 @@ class UnpublishedSchemaChangeQuarantineTest {
   /**
    * An instalment carries pages the session already committed here (#6136), so its refusal leaves the same divergence
    * as a refused final entry, even though the exception reaches the session through the engine's commit path.
+   * <p>
+   * The block's transaction committed here before its instalment was refused, so the retry loop reports it as partially
+   * committed (#13251) and raises a non-retryable {@link TransactionException} that carries the refusal. That is cautious
+   * for a FIRST instalment, whose commit the resync drops: issue #13437 keeps such a refusal retryable.
    */
   // Regression for #9555: a schema session runs on its proposer FIRST and ships afterwards.
   @Test
@@ -228,7 +232,8 @@ class UnpublishedSchemaChangeQuarantineTest {
     assertThatThrownBy(() -> replicated.recordFileChanges(() -> {
       replicated.transaction(() -> replicated.newDocument("Filled").set("value", 1L).save());
       return null;
-    })).isInstanceOf(NeedRetryException.class);
+    })).isInstanceOf(TransactionException.class)
+        .satisfies(e -> assertThat(e.getSuppressed()).singleElement().isInstanceOf(NeedRetryException.class));
 
     assertThat(broker.calls("replicateSchemaInstalment")).as("the refusal came from an instalment").isNotEmpty();
     assertThat(stateMachine.quarantineCause(db.getName())).isEqualTo(DivergenceCause.UNPUBLISHED_SCHEMA_CHANGE);

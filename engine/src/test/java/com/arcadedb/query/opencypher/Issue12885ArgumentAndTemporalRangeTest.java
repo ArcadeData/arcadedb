@@ -21,7 +21,6 @@ package com.arcadedb.query.opencypher;
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.ArithmeticErrorException;
 import com.arcadedb.exception.CauseChain;
-import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.query.opencypher.temporal.CypherDate;
 import com.arcadedb.query.opencypher.temporal.CypherDateTime;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -115,13 +114,13 @@ class Issue12885ArgumentAndTemporalRangeTest extends TestHelper {
   }
 
   @Test
-  void fromEpochPastTheInstantRangeIsASemanticError() {
-    assertSemanticError("RETURN datetime.fromepoch(9223372036854775807, 0) AS v", "datetime.fromepoch()",
+  void fromEpochPastTheInstantRangeIsAnArithmeticError() {
+    assertFromEpochError("RETURN datetime.fromepoch(9223372036854775807, 0) AS v", "datetime.fromepoch()",
         "Instant exceeds minimum or maximum instant");
-    assertSemanticError("RETURN datetime.fromepoch(-9223372036854775807, 0) AS v", "datetime.fromepoch()",
+    assertFromEpochError("RETURN datetime.fromepoch(-9223372036854775807, 0) AS v", "datetime.fromepoch()",
         "Instant exceeds minimum or maximum instant");
     // the nanoseconds carried into the seconds overflow a long
-    assertSemanticError("RETURN datetime.fromepoch(9223372036854775807, 2000000000) AS v", "datetime.fromepoch()", "overflow");
+    assertFromEpochError("RETURN datetime.fromepoch(9223372036854775807, 2000000000) AS v", "datetime.fromepoch()", "overflow");
 
     try (final ResultSet rs = database.query("opencypher",
         "RETURN datetime.fromepoch(0, 0) AS a, datetime.fromepochmillis(9223372036854775807) AS b")) {
@@ -151,9 +150,9 @@ class Issue12885ArgumentAndTemporalRangeTest extends TestHelper {
     assertThat(clientError.getMessage()).as(cypher).startsWith("Temporal overflow: ");
   }
 
-  private void assertSemanticError(final String cypher, final String prefix, final String message) {
+  private void assertFromEpochError(final String cypher, final String prefix, final String message) {
     final Throwable error = run(cypher);
-    final CommandSemanticException clientError = CauseChain.find(error, CommandSemanticException.class);
+    final ArithmeticErrorException clientError = CauseChain.find(error, ArithmeticErrorException.class);
     assertThat(clientError).as(cypher + " -> " + error).isNotNull();
     assertThat(clientError.getMessage()).as(cypher).startsWith(prefix).contains(message);
   }

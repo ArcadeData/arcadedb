@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.executor.steps;
 
+import com.arcadedb.database.DocumentValidator;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.opencypher.ast.CypherReferencedVariables;
 import com.arcadedb.query.opencypher.ast.SetClause;
@@ -25,6 +26,7 @@ import com.arcadedb.query.opencypher.executor.CypherValues;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.schema.DocumentType;
 
 import java.util.Collection;
 import java.util.HashSet;
@@ -85,6 +87,36 @@ final class NewNodeSetFolding {
   }
 
   /**
+   * Whether a record of {@code type} is given a default value for a property it is created without. A SET folded into the
+   * first save is applied before the defaults are filled in, so it would keep a default that the same SET applied to the saved
+   * record removes ({@code SET n = map} without the property, {@code SET n.p = null}): for such a type the items are applied
+   * after the first save instead, as the SET step applies them.
+   */
+  static boolean fillsDefaults(final DocumentType type) {
+    return type != null && !type.getPolymorphicPropertiesWithDefaultDefined().isEmpty();
+  }
+
+  /**
+   * Applies {@code items} to a vertex the creating clause is about to save, and saves it. On a type that fills default values
+   * ({@link #fillsDefaults}) the vertex is saved first and the items are applied to the saved record, so the defaults a SET
+   * replaces or removes are gone as they are when the SET step applies it.
+   *
+   * @return the number of properties the items count as set
+   */
+  static int applyAndSave(final List<SetClause.SetItem> items, final MutableVertex vertex, final Result result,
+      final ExpressionEvaluator evaluator, final CommandContext context) {
+    if (!fillsDefaults(vertex.getType())) {
+      final int counted = apply(items, vertex, result, evaluator, context);
+      vertex.save();
+      return counted;
+    }
+    vertex.save();
+    final int counted = apply(items, vertex, result, evaluator, context);
+    vertex.save();
+    return counted;
+  }
+
+  /**
    * Applies {@code items} to a vertex that has not been saved yet, as {@link SetClauseApplier} would apply them to the
    * saved one: every value is evaluated and checked before any is assigned, and the statistic counts what the applier
    * counts: an assignment, the removal of a property the node held, and for {@code SET n = map} every property of the
@@ -94,6 +126,77 @@ final class NewNodeSetFolding {
    */
   static int apply(final List<SetClause.SetItem> items, final MutableVertex vertex, final Result result,
       final ExpressionEvaluator evaluator, final CommandContext context) {
+    return apply(items, vertex.getType(), new PropertyTarget() {
+      @Override
+      public boolean has(final String property) {
+        return vertex.has(property);
+      }
+
+      @Override
+      public void set(final String property, final Object value) {
+        vertex.set(property, value);
+      }
+
+      @Override
+      public void remove(final String property) {
+        vertex.remove(property);
+      }
+
+      @Override
+      public Set<String> names() {
+        return vertex.getPropertyNames();
+      }
+    }, result, evaluator, context);
+  }
+
+  /**
+   * Applies {@code items} to the properties a relationship is about to be created with, as {@link #apply(List, MutableVertex,
+   * Result, ExpressionEvaluator, CommandContext)} applies them to a vertex: the relationship is then created once with all of
+   * them, instead of created with its pattern's properties and written again by the SET.
+   *
+   * @param type       the type of the relationship, whose NOTNULL properties refuse a null (issue #13227)
+   * @param properties the pattern's properties, changed in place
+   *
+   * @return the number of properties the items count as set
+   */
+  static int apply(final List<SetClause.SetItem> items, final DocumentType type, final Map<String, Object> properties,
+      final Result result, final ExpressionEvaluator evaluator, final CommandContext context) {
+    return apply(items, type, new PropertyTarget() {
+      @Override
+      public boolean has(final String property) {
+        return properties.containsKey(property);
+      }
+
+      @Override
+      public void set(final String property, final Object value) {
+        properties.put(property, value);
+      }
+
+      @Override
+      public void remove(final String property) {
+        properties.remove(property);
+      }
+
+      @Override
+      public Set<String> names() {
+        return properties.keySet();
+      }
+    }, result, evaluator, context);
+  }
+
+  /** What a SET writes to: the vertex about to be saved, or the properties a relationship is about to be created with. */
+  private interface PropertyTarget {
+    boolean has(String property);
+
+    void set(String property, Object value);
+
+    void remove(String property);
+
+    Set<String> names();
+  }
+
+  private static int apply(final List<SetClause.SetItem> items, final DocumentType type, final PropertyTarget target,
+      final Result result, final ExpressionEvaluator evaluator, final CommandContext context) {
     final Object[] values = new Object[items.size()];
     for (int i = 0; i < values.length; i++) {
       final SetClause.SetItem item = items.get(i);
@@ -103,56 +206,63 @@ final class NewNodeSetFolding {
         case REPLACE_MAP -> SetClauseApplier.toPropertyMap(value, "=", item.getValueExpression());
         default -> SetClauseApplier.toPropertyMap(value, "+=", item.getValueExpression());
       };
+      // A null written to a NOTNULL property is refused before any item is assigned, as SetClauseApplier refuses it: the
+      // null removes the property or is never stored, so the validator would not see it (issue #13227)
+      if (item.getType() == SetClause.SetType.PROPERTY) {
+        if (values[i] == null)
+          DocumentValidator.requireNullAllowed(type, item.getProperty(), null);
+      } else
+        SetClauseApplier.requireNullsAllowed(type, asPropertyMap(values[i]), null);
     }
 
     int counted = 0;
     for (int i = 0; i < values.length; i++) {
       final SetClause.SetItem item = items.get(i);
       switch (item.getType()) {
-      case PROPERTY -> counted += setOrRemove(vertex, item.getProperty(), values[i]);
-      case REPLACE_MAP -> counted += replaceMap(vertex, asPropertyMap(values[i]));
-      default -> counted += mergeMap(vertex, asPropertyMap(values[i]));
+      case PROPERTY -> counted += setOrRemove(target, item.getProperty(), values[i]);
+      case REPLACE_MAP -> counted += replaceMap(target, asPropertyMap(values[i]));
+      default -> counted += mergeMap(target, asPropertyMap(values[i]));
       }
     }
     return counted;
   }
 
-  private static int setOrRemove(final MutableVertex vertex, final String property, final Object value) {
+  private static int setOrRemove(final PropertyTarget target, final String property, final Object value) {
     if (value != null) {
-      vertex.set(property, value);
+      target.set(property, value);
       return 1;
     }
-    if (!vertex.has(property))
+    if (!target.has(property))
       return 0;
-    vertex.remove(property);
+    target.remove(property);
     return 1;
   }
 
   /** {@code SET n = map}, as {@code SetClauseApplier.applyReplaceMap} writes it. A null map is a no-op. */
-  private static int replaceMap(final MutableVertex vertex, final Map<String, Object> map) {
+  private static int replaceMap(final PropertyTarget target, final Map<String, Object> map) {
     if (map == null)
       return 0;
-    final Set<String> existing = new HashSet<>(vertex.getPropertyNames());
+    final Set<String> existing = new HashSet<>(target.names());
     for (final String property : existing)
       if (!property.startsWith("@"))
-        vertex.remove(property);
+        target.remove(property);
 
     int counted = 0;
     for (final Map.Entry<String, Object> entry : map.entrySet())
       if (entry.getValue() != null) {
-        vertex.set(entry.getKey(), entry.getValue());
+        target.set(entry.getKey(), entry.getValue());
         ++counted;
       }
     return counted + CypherStatisticsHelper.countRemovedProperties(existing, map);
   }
 
   /** {@code SET n += map}, as {@code SetClauseApplier.applyMergeMap} writes it. A null map is a no-op. */
-  private static int mergeMap(final MutableVertex vertex, final Map<String, Object> map) {
+  private static int mergeMap(final PropertyTarget target, final Map<String, Object> map) {
     if (map == null)
       return 0;
     int counted = 0;
     for (final Map.Entry<String, Object> entry : map.entrySet())
-      counted += setOrRemove(vertex, entry.getKey(), entry.getValue());
+      counted += setOrRemove(target, entry.getKey(), entry.getValue());
     return counted;
   }
 

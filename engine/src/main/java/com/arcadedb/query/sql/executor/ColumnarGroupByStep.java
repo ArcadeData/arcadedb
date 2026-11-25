@@ -77,7 +77,7 @@ import java.util.Set;
  * unanswerable while counting (a refused charge, a record value of another type) runs the normal chain, which reads upstream as if the
  * step were not there.
  */
-public class ColumnarGroupByStep extends AbstractExecutionStep {
+public class ColumnarGroupByStep extends AbstractExecutionStep implements RowCapAwareStep {
   static final String DISABLED = "disabled by " + GlobalConfiguration.COLUMNAR_GROUP_BY_ACCELERATION.getKey();
 
   private final ColumnarGroupByPlan   plan;
@@ -465,6 +465,15 @@ public class ColumnarGroupByStep extends AbstractExecutionStep {
   @Override
   public List<ExecutionStep> getSubSteps() {
     return "columnar".equals(lastPath) ? List.of() : fallback.getSteps();
+  }
+
+  /**
+   * The projection answers every group whatever the caller reads of them, so the cap reaches only the fallback, the normal aggregation
+   * an execution that cannot use the projection runs (issue #12016).
+   */
+  @Override
+  public void applyRowCap(final int rowCap) {
+    fallback.applyRowCap(rowCap);
   }
 
   @Override

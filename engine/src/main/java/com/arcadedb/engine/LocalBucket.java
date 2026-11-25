@@ -1279,6 +1279,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         final TransactionContext transaction = database.getTransaction();
         final BasePage page = transaction.getPage(new PageId(database, file.getFileId(), pageId), pageSize);
         final boolean ownImage = transaction.trackScanOfPage(page);
+        // #12575: THE TRANSACTION THAT READ THE PAGE, HANDED TO EVERY RECORD OF IT AS ITS READ MARKER. A CALLBACK THAT COMMITS
+        // MID-PAGE LEAVES THE REST OF THE PAGE MARKED WITH THE TRANSACTION THAT READ IT, WHICH IS WHAT THE MARKER SAYS
+        final long readInTransaction = transaction.getBeginSequence();
         final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
 
         if (recordCountInPage > 0) {
@@ -1301,7 +1304,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
                 final Binary view = page.getImmutableView(recordContentPositionInPage, (int) recordSize);
 
-                if (!callback.onRecord(rid, view, ownImage))
+                if (!callback.onRecord(rid, view, ownImage, readInTransaction))
                   return;
 
               } else if (recordSize == RECORD_PLACEHOLDER_POINTER) {
@@ -1309,14 +1312,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                 final RID placeHolderPointer = new RID(fileId,
                         page.readLong(recordPositionInPage + recordHeaderSize));
                 final Binary view = getRecordInternal(placeHolderPointer, true, false);
-                if (view != null && !callback.onRecord(rid, view, ownImage))
+                if (view != null && !callback.onRecord(rid, view, ownImage, readInTransaction))
                   return;
               } else if (recordSize == FIRST_CHUNK) {
                 // LOAD THE ENTIRE RECORD IN CHUNKS. #6196: FIRST_CHUNK and not isChunkHead() - a scan hands out
                 // records, and the head chunk of a placeholder's CONTENT is not one. Its bytes reach the caller
                 // through the pointer branch above, under the RID the user knows, and exactly once.
                 final Binary view = loadMultiPageRecord(rid, page, recordPositionInPage, recordSize, recordHeaderSize);
-                if (!callback.onRecord(rid, view, ownImage))
+                if (!callback.onRecord(rid, view, ownImage, readInTransaction))
                   return;
               }
 
@@ -5657,6 +5660,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // replay writes the negative size marker back.
         final boolean slotTracked = slotCandidate && !(isPlaceHolder && slotInsertedHere)//
                 && !slotTx.isSlotRebasePagePoisoned(fileId, pageId);
+        // The bytes the slot held, when the pre-image below copied them: what a same-size overwrite is diffed against
+        byte[] storedBody = null;
         if (slotCandidate) {
           // Skip the pre-image + final-image copies on a page that is already poisoned (they would be discarded).
           if (slotTracked) {
@@ -5670,6 +5675,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                       buffer.getContentBeginOffset() + bufferSize);
               final byte[] baseBody = new byte[(int) recordSize[0]];
               page.readByteArray((int) (recordPositionInPage + recordSize[1]), baseBody, 0, baseBody.length);
+              storedBody = baseBody;
               slotTx.trackRebasableUpdate(fileId, pageId, positionInPage, baseBody, finalBody,
                       isPlaceHolder ? TransactionContext.SLOT_KIND_PLACEHOLDER_CONTENT : TransactionContext.SLOT_KIND_RECORD);
             }
@@ -5692,9 +5698,31 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         final boolean packedOverwrite = bufferSize + Binary.getNumberSpace(sizeMarker) == footprintBefore;
         final boolean previousPackedWrite = packedOverwrite && page.beginPackedWrite();
         try {
-          recordSize[1] = page.writeNumber(recordPositionInPage, sizeMarker);
+          // An overwrite of the same footprint that the pre-image above can be compared with writes only the bytes that differ: the
+          // first edge of a vertex changes the 12 bytes of one head pointer of a 4.5 KB record, and the page, the write-ahead log and
+          // the replicas had all been handed the whole record. The size marker is the same value (equal footprints mean equal sizes),
+          // so it is not written either. The page ends up byte for byte what the whole write left, and a record that differs nowhere
+          // is written whole as before.
+          int writeFrom = 0;
+          int writeTo = bufferSize;
+          final byte[] bodyBytes = buffer.getContent();
+          final int bodyBegin = buffer.getContentBeginOffset();
+          if (packedOverwrite && storedBody != null && storedBody.length == bufferSize) {
+            final int first = Arrays.mismatch(storedBody, 0, bufferSize, bodyBytes, bodyBegin, bodyBegin + bufferSize);
+            if (first >= 0) {
+              int last = bufferSize - 1;
+              while (storedBody[last] == bodyBytes[bodyBegin + last])
+                --last;
+              writeFrom = first;
+              writeTo = last + 1;
+            }
+          }
+          if (writeFrom > 0 || writeTo < bufferSize)
+            recordSize[1] = Binary.getNumberSpace(sizeMarker);
+          else
+            recordSize[1] = page.writeNumber(recordPositionInPage, sizeMarker);
           final int recordContentPositionInPage = (int) (recordPositionInPage + recordSize[1]);
-          page.writeByteArray(recordContentPositionInPage, buffer.getContent(), buffer.getContentBeginOffset(), bufferSize);
+          page.writeByteArray(recordContentPositionInPage + writeFrom, bodyBytes, bodyBegin + writeFrom, writeTo - writeFrom);
         } finally {
           if (packedOverwrite)
             page.endPackedWrite(previousPackedWrite);
@@ -6763,6 +6791,17 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /**
+   * What the walk of a multi-page record keeps of a chunk until it assembles the record (issue #12370): the chunk's view as it
+   * is, or a copy of its bytes when the view holds an array more than twice the chunk's size. A view of an
+   * {@link ImmutablePage} shares the whole page array, which the walk would keep reachable until it ends, even once the page
+   * cache has evicted the page: a chain of small chunks on many pages would hold far more memory than the record itself. A
+   * chunk filling at least half of its page, the common case, is kept as a view and copied only once, into the record.
+   */
+  static Binary keptChunk(final Binary view) {
+    return view.getContent().length > 2L * view.size() ? view.copyOfContent() : view;
+  }
+
+  /**
    * Loads a multi-page record, validating that what it assembled is one committed state of the record and not a mix
    * of two.
    * <p>
@@ -6818,8 +6857,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     final PageId firstPageId = firstPage.pageId;
     final int firstChunkSlot = (int) (originalRID.getPosition() % maxRecordsInPage);
     final TransactionContext walkTransaction = database.getTransactionIfExists();
-    final boolean repeatableRead = walkTransaction != null
-            && walkTransaction.getIsolationLevel() == Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ;
+    final boolean repeatableRead = walkTransaction != null && walkTransaction.isRepeatableRead();
     // Whether a retry can read the head chunk from a newer image: under READ_COMMITTED it re-reads it from the page
     // manager, under REPEATABLE_READ only a head this read pinned itself can be released and pinned again.
     final boolean headRefreshable = !repeatableRead || headPinnedByThisRead;
@@ -6868,7 +6906,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       boolean brokenHopRefreshable = false;
 
       boolean chainInconsistent = false;
-      final Binary record = new Binary();
+      // The chunks are kept as views of their pages and copied once, into a buffer of the record's exact size, when the walk
+      // is over (issue #12370). Appended one at a time, the buffer grew half again at each overflow, so a record of a few
+      // pages was allocated and copied about three times over.
+      Binary[] chunkViews = new Binary[8];
+      long recordSize = 0;
       try {
         BasePage page = firstPage;
         int currentSlot = firstChunkSlot;
@@ -6882,7 +6924,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           final Binary chunk = page.getImmutableView(
                   (int) (currentRecordPositionInPage + currentRecordHeaderSize + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE),
                   chunkSize);
-          record.append(chunk);
+          // Refused BEFORE the chunk is counted, so the record assembled after the walk holds exactly the chunks it registered:
+          // the partial record a broken chain is confirmed against, and never a size past 2GB cast to a negative int
+          if (recordSize + chunkSize > Integer.MAX_VALUE)
+            throw new IllegalArgumentException("Binary objects cannot be larger than 2GB");
+          if (chunks == chunkViews.length)
+            chunkViews = Arrays.copyOf(chunkViews, chunks * 2);
+          chunkViews[chunks] = keptChunk(chunk);
+          recordSize += chunkSize;
 
           if (chunks * CHAIN_TRACE_STRIDE == chainTrace.length)
             chainTrace = Arrays.copyOf(chainTrace, chainTrace.length * 2);
@@ -6963,6 +7012,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         brokenChainReason = "error walking the chain: " + e.getMessage();
         brokenChainCause = e;
       }
+
+      final Binary record = new Binary((int) recordSize);
+      for (int i = 0; i < chunks; i++)
+        record.append(chunkViews[i]);
 
       if (brokenChainReason != null) {
         // A CHAIN THAT DOES NOT PARSE IS NOT CONTENTION (#6258). Retrying can only change the answer if the chain the

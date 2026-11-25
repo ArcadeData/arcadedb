@@ -18,7 +18,7 @@
  */
 package com.arcadedb.function.temporal;
 
-import com.arcadedb.exception.CommandSemanticException;
+import com.arcadedb.exception.ArithmeticErrorException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.opencypher.temporal.CypherDateTime;
@@ -56,8 +56,8 @@ public class DateTimeFromEpochFunction implements StatelessFunction {
     try {
       return CypherDateTime.fromEpoch(seconds, nanos);
     } catch (final DateTimeException | ArithmeticException e) {
-      // an instant past the supported range is the caller's error, as it is for the temporal constructors (issue #12885)
-      throw new CommandSemanticException(getName() + "() " + e.getMessage());
+      // an instant past the java.time range: the caller's value, a client error as a datetime() constructor's (issue #12744)
+      throw new ArithmeticErrorException(getName() + "() has no datetime for " + seconds + " seconds and " + nanos + " nanoseconds: " + e.getMessage(), e);
     }
   }
 }
