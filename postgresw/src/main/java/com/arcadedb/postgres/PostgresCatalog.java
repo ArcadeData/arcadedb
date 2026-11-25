@@ -1931,6 +1931,11 @@ public class PostgresCatalog {
     private final Map<Family, List<Row>> rowsByFamily = new EnumMap<>(Family.class);
     private int                          nesting;
     private long                         work;
+    /**
+     * The character reads the text patterns of the statement may make in all: one for every expression of it, and for every
+     * sub-select parsed again for a row of the query around it (see {@link PostgresCatalogExpression.StatementPatterns}).
+     */
+    private final PostgresCatalogExpression.StatementPatterns patterns = new PostgresCatalogExpression.StatementPatterns();
 
     private List<PostgresCatalogIndexes.Info>         indexes;
     private Set<String>                               indexedTypes;
@@ -2077,6 +2082,10 @@ public class PostgresCatalog {
       work += units;
       if (work > WORK_BUDGET)
         throw new PostgresCatalogExpression.BudgetExceeded();
+    }
+
+    PostgresCatalogExpression.StatementPatterns patterns() {
+      return patterns;
     }
 
     Database database() {
@@ -3822,6 +3831,11 @@ public class PostgresCatalog {
     @Override
     public int expansion() {
       return expansion;
+    }
+
+    @Override
+    public PostgresCatalogExpression.StatementPatterns statementPatterns() {
+      return context.patterns();
     }
 
     @Override
