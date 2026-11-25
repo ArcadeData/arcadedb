@@ -451,8 +451,12 @@ public class SelectExecutionPlanner {
 
     optimizeQuery(info, context);
 
-    if (emptyReason == null && handleHardwiredOptimizations(selectExecutionPlan, context))
+    if (emptyReason == null && handleHardwiredOptimizations(selectExecutionPlan, context)) {
+      // the statement passed the cache gate above, so a hardwired count(*), max() or min() is cached too: otherwise each of its
+      // executions pays a cache lookup that always misses on top of the planning (issue #13059)
+      cachePlan(selectExecutionPlan, context, useCache, planningEpoch);
       return selectExecutionPlan;
+    }
 
     handleGlobalLet(selectExecutionPlan, info, context);
 
@@ -501,13 +505,15 @@ public class SelectExecutionPlanner {
       chainTimeout(selectExecutionPlan, info, context);
     }
 
-    if (useCache && !context.isProfiling() && statement.executionPlanCanBeCached() && !planDependsOnInputParameters
-        && selectExecutionPlan.canBeCached())
+    cachePlan(selectExecutionPlan, context, useCache, planningEpoch);
+    return selectExecutionPlan;
+  }
+
+  private void cachePlan(final SelectExecutionPlan plan, final CommandContext context, final boolean useCache, final long planningEpoch) {
+    if (useCache && !context.isProfiling() && statement.executionPlanCanBeCached() && !planDependsOnInputParameters && plan.canBeCached())
       // The planningEpoch re-check happens atomically inside put(), under the same lock as invalidate(), so a DDL
       // racing this call can never be missed the way two separately-locked calls could (#6671).
-      db.getExecutionPlanCache().put(statement.getOriginalStatement(), selectExecutionPlan, planningEpoch);
-
-    return selectExecutionPlan;
+      context.getDatabase().getExecutionPlanCache().put(statement.getOriginalStatement(), plan, planningEpoch);
   }
 
   /**
@@ -908,6 +914,8 @@ public class SelectExecutionPlanner {
       // Check if the target is specified via a positional/named parameter (e.g., SELECT max(p) FROM ?)
       final InputParameter inputParam = info.target.getItem().getInputParam();
       if (inputParam != null) {
+        // the type comes from this execution's parameter: the plan must not answer an execution bound to another type
+        planDependsOnInputParameters = true;
         final Object paramValue = inputParam.getValue(context.getInputParameters());
         if (paramValue instanceof String string)
           targetClass = new Identifier(string);
