@@ -4,17 +4,18 @@
 # central-publishing-maven-plugin uploads its bundle only at the end of the reactor. A Central failure then left a
 # Docker image (and its `latest` tag) for a release whose jars did not exist.
 #
-#   central         deploys to Maven Central and waits until Sonatype reports the deployment PUBLISHED. It builds
-#                   the Docker build context but neither builds nor pushes an image, and pushes nothing to git.
-#   docker-and-tag  runs only once `central` succeeded: builds and pushes the image from that exact context, then
-#                   commits and tags the release and commits the next development version.
+#   central         deploys to Maven Central and waits until Sonatype reports the deployment PUBLISHED. No Docker,
+#                   nothing pushed to git.
+#   docker-and-tag  runs only once `central` succeeded: builds the same release version again with `-Pdocker` and
+#                   pushes the images, then commits and tags the release and commits the next development version.
 #
 # Recovery:
-#   - `central` failed: nothing was published anywhere. Fix and dispatch again. If it failed on the PUBLISHED wait
-#     timeout, check the Central Portal first: the deployment may still publish, and a new dispatch with the same
-#     version is then rejected as a duplicate.
+#   - `central` failed: nothing was published anywhere. Fix and dispatch again. If it failed while waiting for
+#     PUBLISHED (timeout, FAILED status, Portal errors), check the Central Portal first: the deployment may still
+#     publish, and a new dispatch with the same version is then rejected as a duplicate.
 #   - `docker-and-tag` failed: use "Re-run failed jobs" on this run. Never dispatch again, Central would reject the
-#     duplicate version. If the tag was already pushed, a re-run fails on `git tag`; finish the remaining steps by hand.
+#     duplicate version. If the tag was already pushed, a re-run pushes the images again and then fails when pushing
+#     the tag; finish the remaining steps by hand.
 name: release-to-maven-central
 on:
   workflow_dispatch:
@@ -29,6 +30,7 @@ on:
 env:
   RELEASE_VERSION: ${{ github.event.inputs.releaseversion }}
   NEXT_VERSION: ${{ github.event.inputs.nextversion }}
+  MAVEN_OPTS: "--add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.text=ALL-UNNAMED --add-opens=java.desktop/java.awt.font=ALL-UNNAMED"
 
 jobs:
   central:
@@ -71,36 +73,20 @@ jobs:
       # -DwaitUntil=published is the gate `docker-and-tag` relies on: without it the plugin returns once the bundle
       # is VALIDATED, before it is published. It is set here and not in pom.xml so the snapshot deploy does not wait.
       # -DwaitMaxTime=3600 (default 1800 s) keeps a slow Portal from failing a deployment that will still publish.
-      # -Pdocker -Ddocker.skip=true: the profile still copies the Dockerfile into the build context and selects the
-      # multi-arch platforms, but no image is built or pushed in this job.
+      # No -Pdocker: the images are built and pushed by `docker-and-tag`.
       - name: Publish package
-        run: |
-          export MAVEN_OPTS="--add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.text=ALL-UNNAMED --add-opens=java.desktop/java.awt.font=ALL-UNNAMED"
-          ./mvnw -Pdeploy,deploy-central -Pdocker -Ddocker.skip=true -DwaitUntil=published -DwaitMaxTime=3600 --batch-mode --errors --fail-at-end --show-version --file pom.xml -DskipTests=true -pl !e2e -Dmaven.repository.credentialScope=id deploy
+        run: ./mvnw -Pdeploy,deploy-central -DwaitUntil=published -DwaitMaxTime=3600 --batch-mode --errors --fail-at-end --show-version --file pom.xml -DskipTests=true -pl !e2e -Dmaven.repository.credentialScope=id deploy
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MAVEN_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
           MAVEN_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
           MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
 
-      # A tar, not the directory: upload-artifact drops file modes, and bin/*.sh must stay executable in the image.
-      - name: Pack Docker build context
-        run: tar -C package/target -cf docker-context.tar "arcadedb-${RELEASE_VERSION}.dir"
-
-      - name: Upload Docker build context
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: docker-context
-          path: docker-context.tar
-          retention-days: 7
-          if-no-files-found: error
-
   docker-and-tag:
     needs: central
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      packages: write
     steps:
       # Full history: the next-version push merges whatever reached main meanwhile, which needs the merge base.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -126,27 +112,18 @@ jobs:
           java-version: 21
           cache: "maven"
 
-      - name: Download Docker build context
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: docker-context
-          path: ${{ runner.temp }}
-
-      # docker buildx directly, not the docker-maven-plugin: its `build` goal resolves the module's dependencies,
-      # which for a release come from Maven Central, where PUBLISHED does not yet mean downloadable. The image name,
-      # tags and platforms mirror the `docker` profile of package/pom.xml.
-      - name: Build and push Docker image
-        run: |
-          tar -C "${RUNNER_TEMP}" -xf "${RUNNER_TEMP}/docker-context.tar"
-          docker buildx build \
-            --platform linux/amd64,linux/arm64 \
-            --tag arcadedata/arcadedb:latest \
-            --tag "arcadedata/arcadedb:${RELEASE_VERSION}" \
-            --push \
-            "${RUNNER_TEMP}/arcadedb-${RELEASE_VERSION}.dir"
-
       - name: Set release version
         run: .github/scripts/set-release-version.sh "${RELEASE_VERSION}"
+
+      # Builds `package` and the modules it needs from this tree (-am), so nothing is resolved from Maven Central,
+      # where PUBLISHED does not yet mean downloadable. The `docker` profile builds the images in `package` and pushes
+      # them in `deploy`. -DskipPublishing=true: central-publishing-maven-plugin is part of the default build and
+      # would otherwise try to upload the release to Central a second time.
+      - name: Build and push Docker images
+        run: ./mvnw -Pdocker -DskipPublishing=true --batch-mode --errors --show-version -DskipTests=true -pl package -am deploy
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
 
       - name: Tag and commit release version
         run: |

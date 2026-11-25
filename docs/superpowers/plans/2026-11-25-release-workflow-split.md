@@ -12,6 +12,13 @@ then tag + next-version commit). Version edits move into one script both jobs ca
 
 **Spec:** `docs/superpowers/specs/2026-11-25-release-workflow-split-design.md`
 
+> **Revised after review (2026-11-25):** the maintainer asked for the images to stay built by Maven. Job `central`
+> no longer uses `-Pdocker` and no tar/artifact hand-off exists. Job `docker-and-tag` runs
+> `./mvnw -Pdocker -DskipPublishing=true -DskipTests -pl package -am deploy`: `-am` builds the release from the tree,
+> so nothing is resolved from Central, and `-DskipPublishing=true` stops the default-build
+> central-publishing-maven-plugin from uploading a second time. Where Tasks 2 and the constraints below say
+> `docker buildx` or "tar", read this instead.
+
 ## Global Constraints
 
 - Gate: `-DwaitUntil=published -DwaitMaxTime=3600` on the release `deploy` command line only. Not in `pom.xml` (the
