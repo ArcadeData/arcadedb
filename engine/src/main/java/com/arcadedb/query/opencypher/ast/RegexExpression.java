@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.utility.TimeBoundRegex;
@@ -75,8 +76,9 @@ public class RegexExpression implements BooleanExpression {
       try {
         compiled = Pattern.compile(patternStr);
       } catch (final PatternSyntaxException e) {
-        // Invalid regex pattern
-        return false;
+        // A pattern that does not compile is the caller's error, refused as Neo4j refuses it: answering false filtered every
+        // row out silently (issue #11975). A $parameter pattern can only be checked here, where it is compiled
+        throw new CommandSemanticException("Invalid Regex: " + e.getMessage(), e);
       }
       compiledPattern = compiled;
     }

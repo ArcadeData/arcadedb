@@ -30,6 +30,7 @@ import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.SerializationException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.exception.WALVersionGapException;
+import com.arcadedb.graph.olap.GraphAnalyticalViewRegistry;
 import com.arcadedb.index.columnar.ColumnarIndexManager;
 import com.arcadedb.index.fulltext.FullTextCorpusDeltas;
 import com.arcadedb.index.sparsevector.SparsePostingLog;
@@ -232,6 +233,37 @@ public class TransactionManager {
    */
   private final Set<Long>                   recoveryGapWarnedPages = new HashSet<>();
   /**
+   * Per page (see {@link #pageKey}) of the running replay: the version on disk its WAL chain was checked against and the highest
+   * version up to it that the WAL holds no entry of, 0 when it holds them all (#12225). An older entry has a complete chain when it
+   * is at or above that version, so the chain of a page is walked once, not once per entry. Touched by the replay thread only.
+   */
+  private final Map<Long, long[]>           recoveryChainGaps = new HashMap<>();
+  /**
+   * The WAL versions the last crash recovery looked up to tell whether an older entry has a complete chain (#12225). Touched by
+   * the replay thread only, read by tests.
+   */
+  private long                              recoveryChainProbes;
+  /**
+   * Per page (see {@link #pageKey}) of the running crash recovery: the image the #11151 repairs of its older entries built and
+   * nobody wrote yet (#12225). A complete chain ends on the entry at the version on disk, which the same replay reaches next and
+   * applies at an equal version, starting from this image: the page is written once, not once per older entry. What a replay
+   * that stops before that entry leaves here is written when its loop ends ({@link #writePendingRecoveryRepairs}). Touched by
+   * the replay thread only.
+   */
+  private final Map<Long, MutablePage>      recoveryPendingRepairs = new HashMap<>();
+  /** The bytes {@link #recoveryPendingRepairs} holds. Touched by the replay thread only. */
+  private long                              recoveryPendingRepairBytes;
+  /** The pages the last crash recovery wrote to the data files (#12225). Touched by the replay thread only, read by tests. */
+  private long                              recoveryPageWrites;
+  /**
+   * The most {@link #recoveryPendingRepairs} may hold (#12225). A page can wait there from its first older entry to its last one,
+   * as far apart as the WAL is long, so a WAL touching many pages would otherwise hold them all on the heap. Over it, every held
+   * image is written, as each repair did before, and the map starts again: never more writes than one per repair. Not final so a
+   * test can shrink it, as {@link #applyChangesHookForTesting} is set: the replay runs inside the open, before any instance field
+   * could be. Any value is correct, it only decides how often the held images are written, never what is written.
+   */
+  static volatile long                       recoveryPendingRepairsMaxBytes = 64L * 1024 * 1024;
+  /**
    * Held SHARED for the whole of {@link #applyChanges}, and EXCLUSIVELY by the snapshot t0 barrier
    * ({@code PageManager.openSnapshot}, issue #6075). Replicated and crash-recovery replay is the one writer that
    * reaches the data files outside the asynchronous flush pipeline, so parking the flush thread does not park it;
@@ -242,10 +274,15 @@ public class TransactionManager {
   private final ReentrantReadWriteLock       applyLock           = new ReentrantReadWriteLock();
   /**
    * Test-only seam run by {@link #applyChanges}, with the publication open, once the first page of the entry is in the read cache and
-   * before the others (Task 14 of #10662): the twin of {@code PageManager.publishPagesHookForTesting} for the replicated apply, which
-   * does not hold the page-manager lock. Null in production.
+   * the index or bucket it belongs to has taken it in, before the others (Task 14 of #10662): the twin of
+   * {@code PageManager.publishPagesHookForTesting} for the replicated apply, which does not hold the page-manager lock. Null in production.
    */
   static volatile Runnable                   applyChangesHookForTesting;
+  /**
+   * Test-only seam run by {@link #applyChanges} after each page of the entry is applied, the in-memory state of its component
+   * included, and before the next page (issue #13323). Null in production.
+   */
+  static volatile Runnable                   pageAppliedHookForTesting;
 
   /** The relationships committed by a match-or-create since a given sequence (#11482). */
   public MergedEdgeRegistry getMergedEdges() {
@@ -278,22 +315,44 @@ public class TransactionManager {
   }
 
   /**
+   * Why {@link #vertexChangeSince} cannot rule out that the vertex a transaction read alive was replaced under its RID (#11592). A
+   * commit refused for it is retried the same way whatever the cause; the cause only words the refusal, so whoever reads it is pointed
+   * at what happened (#12123).
+   */
+  public enum VertexChange {
+    /** Nothing since the sequence was taken: the vertex is the one the transaction read. */
+    NONE,
+    /** A commit deleted a vertex with this RID, or one sharing its stripe. */
+    DELETED,
+    /** The bucket of the RID is gone, and the vertex with it. */
+    BUCKET_DROPPED,
+    /**
+     * A replicated apply wrote the page of the RID (or one sharing its stripe), or is writing it now. The entry carries page images,
+     * not the records it deleted, so the vertex may be the same one or a new one under its RID: nothing tells the two apart.
+     */
+    PAGE_REPLICATED
+  }
+
+  /**
    * Whether a vertex with this RID (or one sharing its stripe) was deleted by a commit after {@code sequence} was taken, or a
    * replicated apply wrote the page of the RID (or one sharing its stripe) after it or is writing it now. The RID can be holding a
-   * vertex created after the delete, which no image of the record tells apart from the one deleted (#11592).
+   * vertex created after the delete, which no image of the record tells apart from the one deleted (#11592). A delete is reported
+   * before a replicated write, so a vertex both deleted and on a replicated page reads as deleted.
+   *
+   * @return {@link VertexChange#NONE} when neither happened, otherwise which one did
    */
-  public boolean wasVertexDeletedSince(final RID rid, final long sequence) {
+  public VertexChange vertexChangeSince(final RID rid, final long sequence) {
     final AtomicLongArray deletedAt = vertexDeletedAt;
     if (deletedAt != null && deletedAt.get(vertexDeleteStripe(rid.getBucketId(), rid.getPosition())) > sequence)
-      return true;
+      return VertexChange.DELETED;
     final ReplicatedVertexPages replicated = replicatedVertexPages;
     if (replicated == null)
-      return false;
+      return VertexChange.NONE;
     // a bucket that is gone took the vertex with it
     if (!(database.getSchema().getFileByIdIfExists(rid.getBucketId()) instanceof LocalBucket bucket))
-      return true;
+      return VertexChange.BUCKET_DROPPED;
     return replicated.writtenSince(vertexDeleteStripe(rid.getBucketId(), rid.getPosition() / bucket.getMaxRecordsInPage()),
-        sequence);
+        sequence) ? VertexChange.PAGE_REPLICATED : VertexChange.NONE;
   }
 
   /**
@@ -557,6 +616,16 @@ public class TransactionManager {
   void cancelHousekeepingForTesting() {
     if (housekeeping != null)
       housekeeping.cancel(false);
+  }
+
+  /** Test-support hook (issue #12225): the WAL versions the last crash recovery looked up for the chain of older entries. */
+  long getRecoveryChainProbesForTesting() {
+    return recoveryChainProbes;
+  }
+
+  /** Test-support hook (issue #12225): the pages the last crash recovery wrote to the data files. */
+  long getRecoveryPageWritesForTesting() {
+    return recoveryPageWrites;
   }
 
   public void close(final boolean drop) {
@@ -1312,6 +1381,11 @@ public class TransactionManager {
         recoveryPageVersions = collectWALPageVersions(recoveryFiles);
         recoveryAppliedPages.clear();
         recoveryGapWarnedPages.clear();
+        recoveryChainGaps.clear();
+        recoveryPendingRepairs.clear();
+        recoveryPendingRepairBytes = 0;
+        recoveryChainProbes = 0;
+        recoveryPageWrites = 0;
 
         final WALFile.WALTransaction[] walPositions = new WALFile.WALTransaction[recoveryFiles.length];
         for (int i = 0; i < recoveryFiles.length; ++i) {
@@ -1401,6 +1475,10 @@ public class TransactionManager {
           }
           walPositions[lowerTx] = nextTx;
         }
+
+        // #12225: A REPLAY THAT STOPPED BEFORE THE ENTRY ENDING A REPAIRED CHAIN STILL WRITES THE REPAIRS, BEFORE THE FSYNC BELOW
+        // AND BEFORE ITS WAL IS DROPPED OR MOVED ASIDE, EXACTLY AS WHEN EACH REPAIR WROTE THE PAGE ITSELF
+        writePendingRecoveryRepairs();
 
         reportRecoveryReopens(recoveryFiles);
 
@@ -1509,6 +1587,10 @@ public class TransactionManager {
       recoveryPageVersions = null;
       recoveryAppliedPages.clear();
       recoveryGapWarnedPages.clear();
+      recoveryChainGaps.clear();
+      // Not written on an escaping failure: the WAL is kept as it was found, and the next open repairs the pages again
+      recoveryPendingRepairs.clear();
+      recoveryPendingRepairBytes = 0;
       // A replay that did not release its input (an exception escaped first) leaves it exactly as it found it: closed,
       // not deleted, so the next open replays it again.
       if (recoveryFiles != null && !inputReleased)
@@ -1580,21 +1662,50 @@ public class TransactionManager {
    * writer of each byte, exactly as the commits did. An entry followed by a gap would overwrite bytes that a later version,
    * whose WAL file was dropped after a successful fsync (so it is durable), had changed.
    * <br>
-   * Returns the first version after {@code entryVersion}, up to {@code diskVersion}, that the WAL being replayed holds no entry
-   * of for the page: 0 when the chain is complete (the entry is a repair candidate), -1 when the question does not apply (not a
-   * crash recovery replay, or the replay already applied an entry to the page).
+   * Returns a version after {@code entryVersion}, up to {@code diskVersion}, that the WAL being replayed holds no entry of for the
+   * page (the first one while the page has not been warned about yet, see {@link #warnOlderEntryWithGap}): 0 when the chain is
+   * complete (the entry is a repair candidate), -1 when the question does not apply (not a crash recovery replay, or the replay
+   * already applied an entry to the page).
    */
   private long firstMissingChainVersion(final int fileId, final int pageNumber, final long entryVersion, final long diskVersion) {
     final Map<Long, IntHashSet> versions = recoveryPageVersions;
-    if (versions == null || recoveryAppliedPages.contains(pageKey(fileId, pageNumber)))
+    final long key = pageKey(fileId, pageNumber);
+    if (versions == null || recoveryAppliedPages.contains(key))
       return -1;
-    final IntHashSet pageVersions = versions.get(pageKey(fileId, pageNumber));
+    final IntHashSet pageVersions = versions.get(key);
     if (pageVersions == null)
       return -1;
-    for (long v = entryVersion + 1; v <= diskVersion; ++v)
-      if (!pageVersions.contains((int) v))
+
+    // #12225: THE CHAIN OF A PAGE IS THE SAME FOR EVERY ONE OF ITS OLDER ENTRIES, SO IT IS WALKED ONCE, DOWN FROM THE DISK VERSION
+    // TO THE HIGHEST VERSION THE WAL HOLDS NO ENTRY OF (0 WHEN IT HOLDS THEM ALL). WALKING IT AGAIN UP FROM EACH ENTRY COST V^2/2
+    // LOOKUPS FOR A PAGE WITH V VERSIONS IN THE WAL: MINUTES FOR A TIMESERIES SHARD PAGE AFTER 160,000 ONE-ROW COMMITS
+    long[] chain = recoveryChainGaps.get(key);
+    if (chain == null || chain[0] != diskVersion) {
+      long highestMissing = diskVersion;
+      while (highestMissing > 0 && containsChainVersion(pageVersions, highestMissing))
+        --highestMissing;
+      chain = new long[] { diskVersion, highestMissing };
+      recoveryChainGaps.put(key, chain);
+    }
+
+    // EVERY VERSION AFTER THE ENTRY UP TO THE ONE ON DISK IS IN THE WAL
+    if (chain[1] <= entryVersion)
+      return 0;
+
+    // ONLY THE WARNING READS WHICH VERSION IS MISSING, ONCE PER PAGE: AFTER IT ANY MISSING VERSION ABOVE THE ENTRY ANSWERS. THE WALK
+    // UP BELOW THEREFORE RUNS ONCE PER PAGE AND REPLAY, AT MOST AS MANY LOOKUPS AS THE PAGE HAS VERSIONS IN THE WAL: THE CALLER WARNS
+    // ON EVERY RESULT ABOVE 0, AND THE WARNING ADDS THE PAGE TO recoveryGapWarnedPages WHETHER IT LOGS OR NOT
+    if (recoveryGapWarnedPages.contains(key))
+      return chain[1];
+    for (long v = entryVersion + 1; v < chain[1]; ++v)
+      if (!containsChainVersion(pageVersions, v))
         return v;
-    return 0;
+    return chain[1];
+  }
+
+  private boolean containsChainVersion(final IntHashSet pageVersions, final long version) {
+    ++recoveryChainProbes;
+    return pageVersions.contains((int) version);
   }
 
   /**
@@ -1610,6 +1721,55 @@ public class TransactionManager {
               + "v.%d of it is not in the WAL. If it was flushed before its WAL file was dropped this is expected; if the page was torn "
               + "by a power loss, its content can be stale (a per-page checksum, #11157, would tell)", null, entryVersion, pageId,
           diskVersion, missing);
+  }
+
+  /**
+   * Writes the repaired images held back (#12225): those whose chain the replay did not reach the end of (it stopped first, on a
+   * version gap or a corrupt record, every exit of its loop goes through here), or all of them when they exceed
+   * {@link #recoveryPendingRepairsMaxBytes}. The file of a held page existed when the page was repaired; the check only keeps a
+   * file that is gone by now from failing the write.
+   * <br>
+   * A failed write throws a {@link WALException}, which neither {@link #applyChanges} nor the replay loop catches: it escapes
+   * {@link #recoverWALFiles} before the input is released, so the WAL is kept as it was found and the next open repairs the pages
+   * again from it. The images not written yet are dropped then, with the rest of the replay state, in its finally block.
+   */
+  private void writePendingRecoveryRepairs() {
+    if (recoveryPendingRepairs.isEmpty())
+      return;
+    try {
+      for (final MutablePage repaired : recoveryPendingRepairs.values()) {
+        final int fileId = repaired.getPageId().getFileId();
+        if (database.getFileManager().existsFile(fileId))
+          writeRecoveredPage((PaginatedComponentFile) database.getFileManager().getFile(fileId), repaired);
+      }
+    } catch (final IOException e) {
+      throw new WALException("Cannot write the pages repaired by the recovery of database '" + database.getName() + "'", e);
+    }
+    recoveryPendingRepairs.clear();
+    recoveryPendingRepairBytes = 0;
+  }
+
+  /**
+   * Throws what {@link MutablePage#writeByteArray(int, byte[])} would throw for the first segment of an entry that does not fit
+   * the page, before any of them is written (#12225).
+   */
+  private static void checkSegmentsFitThePage(final WALFile.WALTransaction tx, final int firstSegment, final int lastSegment,
+      final int physicalPageSize) {
+    for (int k = firstSegment; k < lastSegment; ++k) {
+      final WALFile.WALPage segment = tx.pages[k];
+      if (segment.changesFrom < 0)
+        throw new IllegalArgumentException("Invalid position " + segment.changesFrom);
+      final long end = (long) segment.changesFrom + segment.currentContent.getContent().length;
+      if (end > physicalPageSize)
+        throw new IllegalArgumentException("Cannot write outside the page space (" + end + ">" + physicalPageSize + ")");
+    }
+  }
+
+  /** Writes a page the crash recovery repaired and publishes its image to the read cache, as the replay does for an applied one. */
+  private void writeRecoveredPage(final PaginatedComponentFile file, final MutablePage page) throws IOException {
+    database.getPageManager().writePageWithLock(file, page);
+    database.getPageManager().putPageInReadCache(new CachedPage(page, true));
+    ++recoveryPageWrites;
   }
 
   /**
@@ -1717,6 +1877,29 @@ public class TransactionManager {
    *                     behaved. The persisted counters are a close-time estimate, not part of the log
    */
   public boolean applyChanges(final WALFile.WALTransaction tx, final Map<Integer, Integer> bucketRecordDelta,
+      final List<FullTextCorpusDeltas.CorpusDelta> corpusDeltas, final boolean ignoreErrors) {
+    final int applied;
+    try {
+      applied = applyChangesUnderLocks(tx, bucketRecordDelta, corpusDeltas, ignoreErrors);
+    } catch (final RuntimeException | Error e) {
+      // The pages of an entry are written one by one, so one that fails part-way may have published some: the views hear of it as of
+      // an entry that advanced a page, which costs one rebuild at most. The failure that propagates is the apply's own
+      try {
+        GraphAnalyticalViewRegistry.onTransactionApplied(database, tx);
+      } catch (final RuntimeException notifyFailure) {
+        e.addSuppressed(notifyFailure);
+      }
+      throw e;
+    }
+    // An entry applied as pages runs no record listener, so the graph analytical views hear of it here: after every lock is
+    // released, and before the caller reports the entry applied (issue #12250). An entry already held changes nothing they serve
+    if ((applied & APPLIED_NEW_CONTENT) != 0)
+      GraphAnalyticalViewRegistry.onTransactionApplied(database, tx);
+    return (applied & APPLIED_PAGES) != 0;
+  }
+
+  /** The apply itself, under the shared apply lock and the locks of the buckets with an unknown counter: what it did, as {@code APPLIED_*} bits. */
+  private int applyChangesUnderLocks(final WALFile.WALTransaction tx, final Map<Integer, Integer> bucketRecordDelta,
       final List<FullTextCorpusDeltas.CorpusDelta> corpusDeltas, final boolean ignoreErrors) {
     applyLock.readLock().lock();
     final Object requester = Thread.currentThread();
@@ -1944,38 +2127,96 @@ public class TransactionManager {
     return applyLock;
   }
 
-  private boolean applyChangesInternal(final WALFile.WALTransaction tx, final Map<Integer, Integer> bucketRecordDelta,
+  // What applyChangesPages() did with an entry: wrote a page, and wrote one at a version newer than the database held
+  private static final int APPLIED_PAGES       = 1;
+  private static final int APPLIED_NEW_CONTENT = 2;
+
+  private int applyChangesInternal(final WALFile.WALTransaction tx, final Map<Integer, Integer> bucketRecordDelta,
       final List<FullTextCorpusDeltas.CorpusDelta> corpusDeltas, final boolean ignoreErrors) {
     // The pages written below become visible before the delta reaches the BM25 counters: a scan overlapping that window must not
     // call its result exact (see FullTextIndexMetadata#commitApplyStarted)
     final List<FullTextIndexMetadata> applying = FullTextCorpusDeltas.replicatedApplyStarted(database.getSchema(), corpusDeltas);
-    // Spec 6.2: the pages the apply reached are marked for the columnar projections once it is done, whether it returns or throws
-    // (a version gap, a failed write): by then they are written, synchronously and outside the flush pipeline, so a pass draining
-    // the marks reads them. One volatile read when the database has no COLUMNAR index and no watched file
-    final ColumnarIndexManager columnar = columnarMarkTarget();
-    final ReachedPages reached = columnar != null ? new ReachedPages(tx.pages.length) : null;
-    // The pages of the entry reach the read cache one by one, outside the page-manager lock: the publication sequence is odd
-    // meanwhile, as for a local commit, so a reader pairing two pages sees the overlap (#10941)
-    final PageManager pageManager = database.getPageManager();
-    pageManager.beginPublication();
+    // The marks taken above and below are ended by the outer finally whatever throws in between (the vector pass, the wait of
+    // beginPublication): one left open would count an apply in flight for the life of the process
+    LSMVectorIndex[] vectorIndexes = null;
     try {
-      // Task 15b of #10662: counted from before the first page is written until the mark landed (the decrement is in the finally
-      // below, after the mark), so an apply pass that read a page by record does not stamp it with a version whose writes no mark
-      // names yet
-      if (columnar != null)
-        columnar.unmarkedApplyStarted();
-      return applyChangesPages(tx, bucketRecordDelta, corpusDeltas, ignoreErrors, reached);
-    } finally {
-      pageManager.endPublication();
+      // Spec 6.2: the pages the apply reached are marked for the columnar projections once it is done, whether it returns or throws
+      // (a version gap, a failed write): by then they are written, synchronously and outside the flush pipeline, so a pass draining
+      // the marks reads them. One volatile read when the database has no COLUMNAR index and no watched file
+      final ColumnarIndexManager columnar = columnarMarkTarget();
+      final ReachedPages reached = columnar != null ? new ReachedPages(tx.pages.length) : null;
+      // The pages of the entry reach the read cache one by one, outside the page-manager lock: the publication sequence is odd
+      // meanwhile, as for a local commit, so a reader pairing two pages sees the overlap (#10941)
+      final PageManager pageManager = database.getPageManager();
+      // The pages of the entry reach the read cache one by one and a vector index learns of its page as that page is applied, so a
+      // search can find a vector whose record page the entry has not written yet, or whose record page it wrote before the page that
+      // removes the vector: marked from before the first page is written to after the last one is published (issue #13369)
+      vectorIndexes = markVectorIndexesApplying(tx);
+      pageManager.beginPublication();
       try {
-        if (reached != null)
-          reached.mark(columnar);
-      } finally {
+        // Task 15b of #10662: counted from before the first page is written until the mark landed (the decrement is in the finally
+        // below, after the mark), so an apply pass that read a page by record does not stamp it with a version whose writes no mark
+        // names yet
         if (columnar != null)
-          columnar.unmarkedApplyEnded();
-        FullTextCorpusDeltas.replicatedApplyFinished(applying);
+          columnar.unmarkedApplyStarted();
+        return applyChangesPages(tx, bucketRecordDelta, corpusDeltas, ignoreErrors, reached);
+      } finally {
+        pageManager.endPublication();
+        try {
+          if (reached != null)
+            reached.mark(columnar);
+        } finally {
+          if (columnar != null)
+            columnar.unmarkedApplyEnded();
+        }
       }
+    } finally {
+      if (vectorIndexes != null)
+        for (final LSMVectorIndex index : vectorIndexes)
+          index.replicatedApplyConcluded();
+      FullTextCorpusDeltas.replicatedApplyFinished(applying);
     }
+  }
+
+  /**
+   * Marks the vector indexes whose pages {@code tx} carries as applying an entry ({@link LSMVectorIndex#replicatedApplyStarted()}),
+   * before the entry writes its first page: a search of such an index reads the record of every row it answers, as it does while a
+   * commit replays into the index on the node that originated it, and a vector whose record the entry has not published (or already
+   * removed) is then no row of the answer instead of a row without properties. Pages of the compacted file are left out: a compaction
+   * adds and removes no vector. The caller ends the marks with {@link LSMVectorIndex#replicatedApplyConcluded()}, after the last page
+   * of the entry is published.
+   *
+   * @return the indexes marked, or null when the entry carries no page of a vector index (the steady state of every other workload,
+   * which allocates nothing)
+   */
+  private LSMVectorIndex[] markVectorIndexesApplying(final WALFile.WALTransaction tx) {
+    if (Thread.currentThread().equals(ownWALReplayThread))
+      // the replay of this database's own WAL runs inside the open, before any search can
+      return null;
+    LSMVectorIndex[] marked = null;
+    int count = 0;
+    for (final WALFile.WALPage page : tx.pages) {
+      if (!(database.getSchema().getFileByIdIfExists(page.fileId) instanceof LSMVectorIndexMutable vectorMutable))
+        continue;
+      final LSMVectorIndex index = vectorMutable.getMainIndex();
+      if (index == null)
+        continue;
+      if (marked == null)
+        marked = new LSMVectorIndex[tx.pages.length];
+      boolean known = false;
+      for (int i = 0; i < count && !known; i++)
+        known = marked[i] == index;
+      if (!known)
+        marked[count++] = index;
+    }
+    if (marked == null)
+      return null;
+    if (count < marked.length)
+      marked = Arrays.copyOf(marked, count);
+    // Marked only once every index is collected: a lookup that throws part-way leaves no mark the caller cannot see to end
+    for (final LSMVectorIndex index : marked)
+      index.replicatedApplyStarted();
+    return marked;
   }
 
   /** The columnar manager of the database when a mark can reach a projection or a watched file, null otherwise. */
@@ -2012,7 +2253,7 @@ public class TransactionManager {
    *                skipped as strictly older too (the mark goes before the skip, spec 6.2: a replay of an entry a crash interrupted
    *                after its pages were written still marks them), as well as a page refused for a version gap
    */
-  private boolean applyChangesPages(final WALFile.WALTransaction tx, final Map<Integer, Integer> bucketRecordDelta,
+  private int applyChangesPages(final WALFile.WALTransaction tx, final Map<Integer, Integer> bucketRecordDelta,
       final List<FullTextCorpusDeltas.CorpusDelta> corpusDeltas, final boolean ignoreErrors, final ReachedPages reached) {
     final boolean recovery = Thread.currentThread().equals(ownWALReplayThread);
     boolean changed = false;
@@ -2027,6 +2268,9 @@ public class TransactionManager {
     boolean versionAdvanced = false;
     boolean involveDictionary = false;
     List<SparsePostingLog> appliedPostingLogs = null;
+    // The pages of a dense vector index and the index each updates, in the order of the entry: decoded once the whole entry is
+    // applied, as the postings are, so a search does not answer a vector before the page of its record is there (issue #13323)
+    List<AppliedVectorPage> appliedVectorPages = null;
 
     final int dictionaryId =
         database.getSchema().getDictionary() != null ? database.getSchema().getDictionary().file.getFileId() : -1;
@@ -2037,6 +2281,7 @@ public class TransactionManager {
     // They are written consecutively, so the run is gathered here and applied to a single page image: the version
     // checks below then run once per page and the page reaches the disk once, exactly as with a single segment.
     Runnable midway = applyChangesHookForTesting;
+    final Runnable pageApplied = pageAppliedHookForTesting;
     for (int s = 0; s < tx.pages.length; ) {
       final WALFile.WALPage txPage = tx.pages[s];
 
@@ -2088,6 +2333,11 @@ public class TransactionManager {
         final ImmutablePage page = database.getPageManager().getImmutablePage(pageId, file.getPageSize(), false, true);
         if (reached != null)
           reached.add(txPage.fileId, txPage.pageNumber);
+        // #12225: THE REPAIRS OF THE OLDER ENTRIES OF THIS PAGE NOT WRITTEN YET. SAME VERSION AND CONTENT SIZE AS THE PAGE ON DISK
+        // (A REPAIR MOVES NEITHER), SO THE CHECKS BELOW READ THE PAGE, AND THE BYTES ARE TAKEN FROM HERE
+        final MutablePage pendingRepair = recovery && !recoveryPendingRepairs.isEmpty() ?
+            recoveryPendingRepairs.get(pageKey(txPage.fileId, txPage.pageNumber)) :
+            null;
 
         LogManager.instance()
             .log(this, Level.FINE, "-- checking page %s versionInLog=%d versionInDB=%d", null, pageId, txPage.currentPageVersion,
@@ -2126,7 +2376,11 @@ public class TransactionManager {
           if (missingVersion == 0) {
             // #11151: THE PAGE MAY BE TORN, SO RE-APPLY THE BYTES THIS VERSION CHANGED. NEITHER THE VERSION NOR THE CONTENT SIZE
             // MOVES: THEY BELONG TO THE LAST ENTRY OF THE CHAIN, WHICH THIS REPLAY REACHES RIGHT AFTER AND APPLIES AT EQUAL VERSION
-            final MutablePage repaired = page.modify();
+            if (pendingRepair != null)
+              // THE HELD IMAGE IS WRITTEN EVEN WHEN THE REPLAY STOPS ON THIS ENTRY, SO NO SEGMENT TOUCHES IT UNLESS EVERY ONE FITS THE
+              // PAGE. A FRESH COPY NEEDS NO CHECK: A SEGMENT THAT THROWS DROPS IT, AS BEFORE #12225
+              checkSegmentsFitThePage(tx, firstSegment, lastSegment, pendingRepair.getPhysicalSize());
+            final MutablePage repaired = pendingRepair != null ? pendingRepair : page.modify();
             for (int k = firstSegment; k < lastSegment; ++k) {
               final WALFile.WALPage segment = tx.pages[k];
               segment.currentContent.rewind();
@@ -2135,11 +2389,18 @@ public class TransactionManager {
             repaired.setContentSize(page.getContentSize());
             repaired.updateMetadata();
 
-            database.getPageManager().writePageWithLock(file, repaired);
-            database.getPageManager().putPageInReadCache(new CachedPage(repaired, true));
-
-            if (file.getFileId() == dictionaryId)
+            if (file.getFileId() == dictionaryId) {
+              // THE DICTIONARY IS RELOADED FROM ITS PAGES RIGHT AFTER THIS ENTRY, SO ITS REPAIR REACHES THE FILE NOW
+              writeRecoveredPage(file, repaired);
               involveDictionary = true;
+            } else if (pendingRepair == null) {
+              // #12225: KEPT FOR THE NEXT ENTRY OF THE PAGE, WHICH WRITES IT. WRITING IT HERE TOO COST ONE PHYSICAL PAGE WRITE PER
+              // OLDER ENTRY: 160,000 FOR A TIMESERIES SHARD PAGE AFTER AS MANY ONE-ROW COMMITS
+              if (recoveryPendingRepairBytes + repaired.getPhysicalSize() > recoveryPendingRepairsMaxBytes)
+                writePendingRecoveryRepairs();
+              recoveryPendingRepairs.put(pageKey(txPage.fileId, txPage.pageNumber), repaired);
+              recoveryPendingRepairBytes += repaired.getPhysicalSize();
+            }
             changed = true;
           } else if (missingVersion > 0)
             warnOlderEntryWithGap(pageId, txPage.currentPageVersion, page.getVersion(), missingVersion);
@@ -2199,8 +2460,14 @@ public class TransactionManager {
         LogManager.instance().log(this, Level.FINE, "Updating page %s versionInLog=%d versionInDB=%d (txId=%d)", null, pageId,
             txPage.currentPageVersion, page.getVersion(), tx.txId);
 
-        // IF VERSION IS THE SAME OR MAJOR, OVERWRITE THE PAGE
-        final MutablePage modifiedPage = page.modify();
+        // IF VERSION IS THE SAME OR MAJOR, OVERWRITE THE PAGE: THE IMAGE THE REPAIRS OF ITS OLDER ENTRIES BUILT, IF ANY (#12225)
+        final MutablePage modifiedPage;
+        if (pendingRepair != null) {
+          // A COPY, ONE PER PAGE AND REPLAY: AN ENTRY THAT FAILS PART-WAY (A SEGMENT OUTSIDE THE PAGE ABORTS THE REPLAY) LEAVES THE
+          // REPAIRS TO BE WRITTEN AS THEY WERE, NOT WITH SOME OF ITS SEGMENTS IN THEM
+          modifiedPage = pendingRepair.copy();
+        } else
+          modifiedPage = page.modify();
         for (int k = firstSegment; k < lastSegment; ++k) {
           final WALFile.WALPage segment = tx.pages[k];
           segment.currentContent.rewind();
@@ -2213,6 +2480,14 @@ public class TransactionManager {
         // Write under the per-page I/O lock so concurrent readers never observe partially-written bytes during
         // replicated/recovery replay (forceApply).
         database.getPageManager().writePageWithLock(file, modifiedPage);
+        if (recovery) {
+          ++recoveryPageWrites;
+          if (pendingRepair != null) {
+            // THE REPAIRS REACHED THE FILE WITH THIS ENTRY
+            recoveryPendingRepairs.remove(pageKey(txPage.fileId, txPage.pageNumber));
+            recoveryPendingRepairBytes -= pendingRepair.getPhysicalSize();
+          }
+        }
 
         // Then publish the applied image to the read cache rather than evicting the page. A reader that loaded the
         // page from disk just before the write caches its image only after releasing the I/O lock: with the page
@@ -2220,11 +2495,6 @@ public class TransactionManager {
         // entry on the page failed with a false WAL version gap. A copy, because the vector index below still reads
         // modifiedPage.
         database.getPageManager().putPageInReadCache(new CachedPage(modifiedPage, true));
-        if (midway != null) {
-          // the first page of the entry is visible, the others are not yet
-          midway.run();
-          midway = null;
-        }
 
         final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileByIdIfExists(txPage.fileId);
         if (component != null) {
@@ -2249,7 +2519,9 @@ public class TransactionManager {
                 (LSMVectorIndexMutable) component;
             final LSMVectorIndex mainIndex = vectorMutable.getMainIndex();
             if (mainIndex != null) {
-              mainIndex.applyReplicatedPageUpdate(modifiedPage, !recovery);
+              if (appliedVectorPages == null)
+                appliedVectorPages = new ArrayList<>(2);
+              appliedVectorPages.add(new AppliedVectorPage(mainIndex, modifiedPage));
             } else {
               LogManager.instance().log(this, Level.WARNING,
                   "LSMVectorIndexMutable has null mainIndex for fileId=%d", null, txPage.fileId);
@@ -2258,10 +2530,21 @@ public class TransactionManager {
             final LSMVectorIndex mainIndex =
                 (LSMVectorIndex) ((LSMVectorIndexCompacted) component).getMainComponent();
             if (mainIndex != null) {
-              mainIndex.applyReplicatedPageUpdate(modifiedPage, !recovery);
+              if (appliedVectorPages == null)
+                appliedVectorPages = new ArrayList<>(2);
+              appliedVectorPages.add(new AppliedVectorPage(mainIndex, modifiedPage));
             }
           }
         }
+
+        if (midway != null) {
+          // the first page of the entry is visible, with what the index it belongs to makes of it: the others are not yet
+          midway.run();
+          midway = null;
+        }
+
+        if (pageApplied != null)
+          pageApplied.run();
 
         if (file.getFileId() == dictionaryId)
           involveDictionary = true;
@@ -2310,6 +2593,10 @@ public class TransactionManager {
       for (final SparsePostingLog postingLog : appliedPostingLogs)
         postingLog.onPagesApplied();
 
+    if (appliedVectorPages != null)
+      for (final AppliedVectorPage applied : appliedVectorPages)
+        applied.index().applyReplicatedPageUpdate(applied.page(), !recovery);
+
     if (involveDictionary) {
       try {
         database.getSchema().getDictionary().reload();
@@ -2321,7 +2608,11 @@ public class TransactionManager {
     // A REPLICATED OR RECOVERED TRANSACTION CHANGES THE FILES WITHOUT GOING THROUGH ANY RECORD PATH (#8400)
     if (changed && database instanceof LocalDatabase localDatabase)
       localDatabase.markModified();
-    return changed;
+    return (changed ? APPLIED_PAGES : 0) | (versionAdvanced ? APPLIED_NEW_CONTENT : 0);
+  }
+
+  /** A page of a dense vector index an entry applied, decoded into the index once the whole entry is applied (issue #13323). */
+  private record AppliedVectorPage(LSMVectorIndex index, MutablePage page) {
   }
 
   public void kill() {

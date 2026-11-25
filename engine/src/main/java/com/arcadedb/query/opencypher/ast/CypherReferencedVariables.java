@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.ast;
 
 import com.arcadedb.query.opencypher.parser.CypherExpressionWalker;
 
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
@@ -125,7 +126,7 @@ public final class CypherReferencedVariables {
     if (statement == null)
       return UNKNOWN;
 
-    final Collector collector = new Collector();
+    final Collector collector = new Collector(false);
     collector.checkShape(statement);
     if (!collector.complete)
       return UNKNOWN;
@@ -143,21 +144,34 @@ public final class CypherReferencedVariables {
    * {@link #referencesAny} reports as "reads everything".
    */
   public static CypherReferencedVariables of(final Expression expression) {
-    return expression == null ? UNKNOWN : collect(collector -> CypherExpressionWalker.walk(expression, collector));
+    return expression == null ? UNKNOWN : collect(new Collector(false), collector -> CypherExpressionWalker.walk(expression, collector));
   }
 
   /** {@link #of(Expression)}, for a predicate: a {@code WHERE} condition. */
   public static CypherReferencedVariables of(final BooleanExpression predicate) {
-    return predicate == null ? UNKNOWN : collect(collector -> CypherExpressionWalker.walk(predicate, collector));
+    return predicate == null ? UNKNOWN : collect(new Collector(false), collector -> CypherExpressionWalker.walk(predicate, collector));
   }
 
   /** {@link #of(Expression)}, for a graph pattern: the names it binds or joins on, and those its inline expressions read. */
   public static CypherReferencedVariables of(final PathPattern pattern) {
-    return pattern == null ? UNKNOWN : collect(collector -> CypherExpressionWalker.walk(pattern, collector));
+    return pattern == null ? UNKNOWN : collect(new Collector(false), collector -> CypherExpressionWalker.walk(pattern, collector));
   }
 
-  private static CypherReferencedVariables collect(final Consumer<Collector> walk) {
-    final Collector collector = new Collector();
+  /**
+   * {@link #of(Expression)} without the names the expression binds for itself, inside the part that sees them: the iterator of a
+   * list comprehension or quantifier, and the accumulator and iterator of a {@code reduce()} (issue #11818). The same name read
+   * outside that part is the row's variable and is collected. A nested statement body is read as {@link #of(Expression)} reads it.
+   */
+  public static CypherReferencedVariables freeOf(final Expression expression) {
+    return expression == null ? UNKNOWN : collect(new Collector(true), collector -> CypherExpressionWalker.walk(expression, collector));
+  }
+
+  /** {@link #freeOf(Expression)}, for a predicate. */
+  public static CypherReferencedVariables freeOf(final BooleanExpression predicate) {
+    return predicate == null ? UNKNOWN : collect(new Collector(true), collector -> CypherExpressionWalker.walk(predicate, collector));
+  }
+
+  private static CypherReferencedVariables collect(final Collector collector, final Consumer<Collector> walk) {
     walk.accept(collector);
     if (!collector.complete)
       return UNKNOWN;
@@ -209,8 +223,8 @@ public final class CypherReferencedVariables {
    * takes from outside: the iteration variable of a list comprehension, an {@code UNWIND ... AS x} alias, a
    * {@code WITH ... AS y} alias. That is deliberate for the question this class exists to answer - a body's
    * {@code MATCH (n:Person)} written under an outer {@code n} <i>is</i> the outer {@code n}, and naming one variable
-   * too many only ever costs the caller its optimization. A caller wanting the free variables of a statement, where
-   * over-collection would be an error rather than a cost, needs a different collector.
+   * too many only ever costs the caller its optimization. {@link #freeOf(Expression)} leaves out the names an expression binds
+   * for itself where it binds them, for a caller where over-collection would be an error rather than a cost.
    */
   public Set<String> getNames() {
     return names;
@@ -231,7 +245,12 @@ public final class CypherReferencedVariables {
    */
   private static final class Collector implements CypherExpressionWalker.Visitor {
     private final Set<String> names    = new HashSet<>();
+    private final boolean     skipLocalBindings;
     private       boolean     complete = true;
+
+    private Collector(final boolean skipLocalBindings) {
+      this.skipLocalBindings = skipLocalBindings;
+    }
 
     @Override
     public void visit(final Expression expression) {
@@ -295,6 +314,12 @@ public final class CypherReferencedVariables {
     public CypherExpressionWalker.Visitor forNestedStatement(final CypherStatement statement) {
       checkShape(statement);
       return this;
+    }
+
+    /** For {@link #freeOf}, a scope that does not collect the names bound there; otherwise they are collected as any other. */
+    @Override
+    public CypherExpressionWalker.Visitor forLocalBindings(final String... variables) {
+      return skipLocalBindings ? new LocalScope(this, new HashSet<>(Arrays.asList(variables))) : this;
     }
 
     private void requireParsedBody(final CypherStatement body) {
@@ -425,6 +450,46 @@ public final class CypherReferencedVariables {
           complete = false;
           return;
         }
+    }
+  }
+
+  /**
+   * The part of an expression that sees names it binds itself (issue #11818): a read of one of them is not a read of the row's
+   * variable of that name. Everything else goes to the collector.
+   */
+  private record LocalScope(Collector collector, Set<String> bound) implements CypherExpressionWalker.Visitor {
+    @Override
+    public void visit(final Expression expression) {
+      final String name = switch (expression) {
+        case VariableExpression variable -> variable.getVariableName();
+        case PropertyAccessExpression property -> property.getVariableName();
+        case MapProjectionExpression projection -> projection.getVariableName();
+        default -> null;
+      };
+      if (name == null || !bound.contains(name))
+        collector.visit(expression);
+    }
+
+    @Override
+    public void visitPredicate(final BooleanExpression predicate) {
+      collector.visitPredicate(predicate);
+    }
+
+    @Override
+    public void visitPattern(final PathPattern pattern) {
+      collector.visitPattern(pattern);
+    }
+
+    @Override
+    public CypherExpressionWalker.Visitor forNestedStatement(final CypherStatement statement) {
+      return collector.forNestedStatement(statement);
+    }
+
+    @Override
+    public CypherExpressionWalker.Visitor forLocalBindings(final String... variables) {
+      final Set<String> inner = new HashSet<>(bound);
+      inner.addAll(Arrays.asList(variables));
+      return new LocalScope(collector, inner);
     }
   }
 }

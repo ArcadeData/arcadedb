@@ -20,9 +20,16 @@ package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.event.BeforeRecordCreateListener;
+import com.arcadedb.event.BeforeRecordDeleteListener;
+import com.arcadedb.event.BeforeRecordUpdateListener;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -275,5 +282,62 @@ class MaterializedViewIncrementalTest extends TestHelper {
     try (final ResultSet rs = database.query("sql", "SELECT FROM SaleSummary")) {
       assertThat(rs.stream().count()).isEqualTo(3);
     }
+  }
+
+  /**
+   * Issue #11937: a commit to the source of a grouped INCREMENTAL view writes the rows of the groups it changed, not every row of the
+   * view (the full pass of the defining query, which also reads the whole source).
+   */
+  @Test
+  void groupedViewCommitWritesOnlyTheRowsOfTheGroupsItChanged() {
+    database.transaction(() -> {
+      final DocumentType type = database.getSchema().createDocumentType("Item");
+      type.createProperty("cat", Type.STRING);
+      type.createProperty("v", Type.INTEGER);
+    });
+    database.transaction(() -> {
+      for (int i = 0; i < 1000; i++)
+        database.newDocument("Item").set("cat", "c" + (i % 5)).set("v", i % 100).save();
+    });
+    final String query = "SELECT cat, count(*) AS n, sum(v) AS s FROM Item GROUP BY cat";
+    database.transaction(() -> database.getSchema().buildMaterializedView().withName("ItemByCat").withQuery(query)
+        .withRefreshMode(MaterializedViewRefreshMode.INCREMENTAL).create());
+    database.transaction(() -> database.newDocument("Item").set("cat", "c1").set("v", 1).save());
+
+    final AtomicInteger rowWrites = new AtomicInteger();
+    final DocumentType backing = database.getSchema().getType("ItemByCat");
+    final BeforeRecordCreateListener onCreate = record -> rowWrites.incrementAndGet() > 0;
+    final BeforeRecordUpdateListener onUpdate = record -> rowWrites.incrementAndGet() > 0;
+    final BeforeRecordDeleteListener onDelete = record -> rowWrites.incrementAndGet() > 0;
+    backing.getEvents().registerListener(onCreate);
+    backing.getEvents().registerListener(onUpdate);
+    backing.getEvents().registerListener(onDelete);
+    try {
+      database.transaction(() -> database.newDocument("Item").set("cat", "c2").set("v", 7).save());
+      assertThat(rowWrites.get()).as("an insert changes one group").isEqualTo(1);
+
+      rowWrites.set(0);
+      database.transaction(() -> database.command("sql", "UPDATE Item SET cat = 'c4' WHERE cat = 'c3' LIMIT 1"));
+      assertThat(rowWrites.get()).as("a record moving between two groups changes two").isEqualTo(2);
+
+      rowWrites.set(0);
+      database.transaction(() -> database.newDocument("Item").set("cat", "new").set("v", 3).save());
+      database.transaction(() -> database.command("sql", "DELETE FROM Item WHERE cat = 'new'"));
+      assertThat(rowWrites.get()).as("a new group's row is created, and deleted with its last member").isEqualTo(2);
+    } finally {
+      backing.getEvents().unregisterListener(onCreate);
+      backing.getEvents().unregisterListener(onUpdate);
+      backing.getEvents().unregisterListener(onDelete);
+    }
+
+    final List<String> viewRows = new ArrayList<>();
+    final List<String> queryRows = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", "SELECT cat, n, s FROM ItemByCat")) {
+      rs.stream().forEach(r -> viewRows.add(r.getProperty("cat") + "/" + r.getProperty("n") + "/" + r.getProperty("s")));
+    }
+    try (final ResultSet rs = database.query("sql", query)) {
+      rs.stream().forEach(r -> queryRows.add(r.getProperty("cat") + "/" + r.getProperty("n") + "/" + r.getProperty("s")));
+    }
+    assertThat(viewRows).containsExactlyInAnyOrderElementsOf(queryRows);
   }
 }

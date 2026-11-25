@@ -30,6 +30,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.LongAdder;
 
 /**
  * In-memory mutable posting store, sorted by (dim, RID). Backs the write path of
@@ -62,6 +63,13 @@ public final class Memtable {
   private final ConcurrentHashMap<Integer, DimPostings> postings       = new ConcurrentHashMap<>();
   private final AtomicLong                              totalPostings  = new AtomicLong();
   private final AtomicLong                              tombstoneCount = new AtomicLong();
+
+  /**
+   * Bumped after every change to WHICH postings are live: an entry added, or an entry turned into a tombstone or back. Not by an
+   * overwrite of a live weight with another, which leaves every document frequency as it was. Two reads that see the same
+   * version, and nothing else about the memtable swapped, saw the same live set (see {@link #liveSetVersion()}).
+   */
+  private final LongAdder liveSetVersion = new LongAdder();
 
   /**
    * Per-dim postings plus the running max live weight. The max is maintained incrementally on every
@@ -141,6 +149,19 @@ public final class Memtable {
 
   public long tombstoneCount() {
     return tombstoneCount.get();
+  }
+
+  /**
+   * Counts the changes to the set of live postings so far. A value computed from the live set (a document frequency) is
+   * current as long as this is the version it was computed under: the bump follows the change it counts, so a reader that
+   * reads the version and THEN reads the postings never pairs a version with postings older than it.
+   * <p>
+   * The counter is a {@link LongAdder} so concurrent writers do not contend on one cache line, and {@code sum()} is not an
+   * atomic snapshot. It does not need to be: the count only grows, so a sum read before another read of it and equal to
+   * it proves nothing was added between the end of the first read and the start of the second.
+   */
+  public long liveSetVersion() {
+    return liveSetVersion.sum();
   }
 
   public boolean isEmpty() {
@@ -235,6 +256,7 @@ public final class Memtable {
     postings.clear();
     totalPostings.set(0L);
     tombstoneCount.set(0L);
+    liveSetVersion.increment();
   }
 
   // ---------- internals ----------
@@ -245,12 +267,16 @@ public final class Memtable {
       totalPostings.incrementAndGet();
       if (isNewTombstone)
         tombstoneCount.incrementAndGet();
+      liveSetVersion.increment();
     } else {
       final boolean wasTombstone = Float.isNaN(previous);
-      if (wasTombstone && !isNewTombstone)
+      if (wasTombstone && !isNewTombstone) {
         tombstoneCount.decrementAndGet();
-      else if (!wasTombstone && isNewTombstone)
+        liveSetVersion.increment();
+      } else if (!wasTombstone && isNewTombstone) {
         tombstoneCount.incrementAndGet();
+        liveSetVersion.increment();
+      }
     }
   }
 

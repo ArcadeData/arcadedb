@@ -20,6 +20,10 @@ package com.arcadedb.query.opencypher.procedures;
 
 import com.arcadedb.function.procedure.ProcedureRegistry;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.opencypher.procedures.db.DbAnalyticalViewCreate;
+import com.arcadedb.query.opencypher.procedures.db.DbAnalyticalViewDrop;
+import com.arcadedb.query.opencypher.procedures.db.DbAnalyticalViewList;
+import com.arcadedb.query.opencypher.procedures.db.DbAnalyticalViewRebuild;
 import com.arcadedb.query.opencypher.procedures.db.DbIndexFulltextQueryNodes;
 import com.arcadedb.query.opencypher.procedures.db.DbIndexFulltextQueryRelationships;
 import com.arcadedb.query.opencypher.procedures.db.DbIndexVectorQueryNodes;
@@ -97,6 +101,8 @@ import com.arcadedb.query.opencypher.procedures.algo.AlgoTopologicalSort;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoTriangleCount;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoVoteRank;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoWCC;
+import com.arcadedb.query.opencypher.procedures.create.CreateVNodeProcedure;
+import com.arcadedb.query.opencypher.procedures.create.CreateVRelationshipProcedure;
 import com.arcadedb.query.opencypher.procedures.control.DoWhen;
 import com.arcadedb.query.opencypher.procedures.merge.MergeNode;
 import com.arcadedb.query.opencypher.procedures.merge.MergeRelationship;
@@ -296,6 +302,8 @@ public final class CypherProcedureRegistry {
   private static void registerBuiltInProcedures() {
     // Merge procedures
     registerMergeProcedures();
+    // Virtual node/relationship procedures (APOC compatibility): the CALL forms of create.vNode / create.vRelationship
+    registerCreateProcedures();
     // Algorithm procedures
     registerAlgorithmProcedures();
     // Path expansion procedures
@@ -313,6 +321,11 @@ public final class CypherProcedureRegistry {
   private static void registerMergeProcedures() {
     register(new MergeRelationship());
     register(new MergeNode());
+  }
+
+  private static void registerCreateProcedures() {
+    register(new CreateVNodeProcedure());
+    register(new CreateVRelationshipProcedure());
   }
 
   private static void registerAlgorithmProcedures() {
@@ -405,6 +418,10 @@ public final class CypherProcedureRegistry {
     register(new DbPropertyKeys());
     register(new DbSchemaVisualization("db.schema"));
     register(new DbSchemaVisualization("db.schema.visualization"));
+    register(new DbAnalyticalViewCreate());
+    register(new DbAnalyticalViewList());
+    register(new DbAnalyticalViewRebuild());
+    register(new DbAnalyticalViewDrop());
   }
 
   private static void registerMetaProcedures() {

@@ -22,7 +22,7 @@ import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.VariableOverlayResult;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -88,34 +88,33 @@ public class AllReduceExpression implements Expression {
     // Iterate over each element, updating the accumulator and checking the predicate.
     // The predicate is only evaluated within each iteration where the iterator variable is bound;
     // an empty list yields vacuous truth (true). Matches Neo4j/Cypher 25 semantics.
+    // One row per evaluation, rebound per element and again with the new accumulator before the predicate: the outer columns
+    // are read through it, not copied (issue #12723). A null item leaves the iterator variable unbound, so it has a row of
+    // its own that binds the accumulator only
+    final VariableOverlayResult iterResult = new VariableOverlayResult(result, iteratorVariable, accumulatorVariable);
+    VariableOverlayResult nullItemResult = null;
     for (final Object item : iterable) {
-      final ResultInternal iterResult = createIterationResult(result, item, accumulator);
+      final VariableOverlayResult row;
+      if (item != null)
+        row = iterResult.bind(item, accumulator);
+      else {
+        if (nullItemResult == null)
+          nullItemResult = new VariableOverlayResult(result, null, accumulatorVariable);
+        row = nullItemResult.bindSecond(accumulator);
+      }
 
       // Evaluate the reduce expression to update accumulator
-      accumulator = OpenCypherQueryEngine.getExpressionEvaluator().evaluate(reduceExpression, iterResult, context);
+      accumulator = OpenCypherQueryEngine.getExpressionEvaluator().evaluate(reduceExpression, row, context);
 
       // Check predicate with new accumulator value
-      final ResultInternal predicateResult = createIterationResult(result, item, accumulator);
-      final Object predicateCheck = OpenCypherQueryEngine.getExpressionEvaluator().evaluate(predicateExpression, predicateResult, context);
+      final Object predicateCheck = OpenCypherQueryEngine.getExpressionEvaluator().evaluate(predicateExpression,
+          row.bindSecond(accumulator), context);
 
-      if (!Boolean.TRUE.equals(predicateCheck))
+      if (!Boolean.TRUE.equals(BooleanCoercionExpression.toPredicate(predicateCheck)))
         return false;
     }
 
     return true;
-  }
-
-  private ResultInternal createIterationResult(final Result baseResult, final Object item, final Object accumulator) {
-    final ResultInternal iterResult = new ResultInternal();
-
-    if (baseResult != null)
-      for (final String prop : baseResult.getPropertyNames())
-        iterResult.setProperty(prop, baseResult.getProperty(prop));
-
-    if (item != null)
-      iterResult.setProperty(iteratorVariable, item);
-    iterResult.setProperty(accumulatorVariable, accumulator);
-    return iterResult;
   }
 
   private List<Object> arrayToList(final Object array) {
@@ -158,6 +157,15 @@ public class AllReduceExpression implements Expression {
     if (predicateExpression.isAggregation())
       return true;
     return false;
+  }
+
+  /**
+   * An aggregate nested in any part makes the expression an aggregation too, as for {@link ReduceExpression} (issue #11770).
+   */
+  @Override
+  public boolean containsAggregation() {
+    return initialValue.containsAggregation() || listExpression.containsAggregation() || reduceExpression.containsAggregation()
+        || predicateExpression.containsAggregation();
   }
 
   @Override

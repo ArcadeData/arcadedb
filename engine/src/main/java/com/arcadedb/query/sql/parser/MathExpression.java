@@ -27,6 +27,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.*;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.DateUtils;
+import com.arcadedb.utility.DurationArithmetic;
 
 import com.arcadedb.query.sql.executor.ResultSet;
 
@@ -34,8 +35,6 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.MathContext;
 import java.math.RoundingMode;
-import java.time.Duration;
-import java.time.temporal.ChronoUnit;
 import java.time.temporal.TemporalAmount;
 import java.util.*;
 import java.util.stream.Collectors;
@@ -172,6 +171,10 @@ public class MathExpression extends SimpleNode {
         if (left == null || right == null) {
           return null;
         }
+        // a duration scaled by a number (issue #12295)
+        final Object duration = DurationArithmetic.multiply(left, right);
+        if (duration != DurationArithmetic.NOT_APPLICABLE)
+          return duration;
         return super.apply(left, right);
       }
     }, SLASH(10) {
@@ -269,6 +272,10 @@ public class MathExpression extends SimpleNode {
         if (left == null || right == null) {
           return null;
         }
+        // a duration divided by a number, or by another duration (issue #12295)
+        final Object duration = DurationArithmetic.divide(left, right);
+        if (duration != DurationArithmetic.NOT_APPLICABLE)
+          return duration;
         return super.apply(left, right);
       }
 
@@ -305,6 +312,9 @@ public class MathExpression extends SimpleNode {
       public Object apply(final Object left, final Object right) {
         if (left == null || right == null)
           return null;
+        final Object duration = DurationArithmetic.remainder(left, right);
+        if (duration != DurationArithmetic.NOT_APPLICABLE)
+          return duration;
         return super.apply(left, right);
       }
 
@@ -348,17 +358,25 @@ public class MathExpression extends SimpleNode {
           return nullAbsorbing(other) ? null : other;
         } else if (left instanceof Number && right instanceof Number)
           return super.apply(left, right);
-        else if (DateUtils.isDate(left) || DateUtils.isDate(right)) {
-          final ChronoUnit highestPrecision = DateUtils.getHigherPrecision(left, right);
-          final Long leftAsLong = DateUtils.dateTimeToTimestamp(left, highestPrecision);
-          final Long rightAsLong = DateUtils.dateTimeToTimestamp(right, highestPrecision);
 
-          final Number r = apply(leftAsLong, rightAsLong);
-          return Duration.of(r.longValue(), highestPrecision);
-        } else if (left instanceof Collection<?> leftColl) {
-          final Collection<Object> coll = copyOf(leftColl);
+        // A duration plus a number of seconds or another duration, a datetime plus a duration or a number of milliseconds. The
+        // datetime used to be summed with the other operand as epoch counts into a duration from 1970, and a duration fell through
+        // to the string concatenation below (issue #12295)
+        if (DurationArithmetic.involves(left, right)) {
+          final Object result = DurationArithmetic.plus(left, right);
+          if (result != DurationArithmetic.NOT_APPLICABLE)
+            return result;
+        }
+
+        // A list stored as ARRAY_OF_LONGS / ARRAY_OF_DOUBLES (a numeric list nested in an HTTP parameter) is a primitive array: it
+        // is the list it holds, on either side, not a value to concatenate as text or add as one element (issue #12896)
+        if (left instanceof Collection<?> || MultiValue.isSequenceArray(left)) {
+          final Collection<Object> coll = left instanceof Collection<?> leftColl ? copyOf(leftColl) :
+              new ArrayList<>(MultiValue.getMultiValueAsList(left));
           if (right instanceof Collection<?> coll2)
             coll.addAll(coll2);
+          else if (MultiValue.isSequenceArray(right))
+            coll.addAll(MultiValue.getMultiValueAsList(right));
           else
             coll.add(right);
           return coll;
@@ -429,20 +447,22 @@ public class MathExpression extends SimpleNode {
         Object result = null;
         if (left instanceof Number number && right instanceof Number number1) {
           result = apply(number, this, number1);
-        } else if (DateUtils.isDate(left) || DateUtils.isDate(right)) {
-          // two date/time values: their exact difference, which no epoch count at nanosecond precision holds past a
-          // 292-year gap (issue #10206)
-          result = DateUtils.difference(left, right);
-          if (result == null) {
-            final ChronoUnit highestPrecision = DateUtils.getHigherPrecision(left, right);
-            final Long leftAsLong = DateUtils.dateTimeToTimestamp(left, highestPrecision);
-            final Long rightAsLong = DateUtils.dateTimeToTimestamp(right, highestPrecision);
-            final Number r = apply(leftAsLong, rightAsLong);
-            result = Duration.of(r.longValue(), highestPrecision);
-          }
-        } else if (left instanceof Collection<?> leftColl) {
-          final Collection<Object> coll = copyOf(leftColl);
-          coll.remove(right);
+        } else if (DurationArithmetic.involves(left, right)) {
+          // two datetimes: their exact difference (issue #10206); a duration minus a number of seconds or another duration, a
+          // datetime minus a duration or a number of milliseconds (issue #12295)
+          result = DurationArithmetic.minus(left, right);
+          if (result == DurationArithmetic.NOT_APPLICABLE)
+            result = null;
+        } else if (left instanceof Collection<?> || MultiValue.isSequenceArray(left)) {
+          // the first item equal under the membership key of remove() and set(): [1L, 2L] - 1 takes the 1 an openCypher list holds
+          // (issue #11774). An ARRAY_OF_LONGS / ARRAY_OF_DOUBLES value is the list it holds (issue #12896)
+          final Collection<Object> coll = left instanceof Collection<?> leftColl ? copyOf(leftColl) :
+              new ArrayList<>(MultiValue.getMultiValueAsList(left));
+          for (final Iterator<Object> it = coll.iterator(); it.hasNext(); )
+            if (MultiValue.sameItem(right, it.next())) {
+              it.remove();
+              break;
+            }
           return coll;
         } else if (left instanceof Map<?, ?> leftMap) {
           final Map<Object, Object> mapLeft = copyOf(leftMap);
@@ -1390,6 +1410,15 @@ public class MathExpression extends SimpleNode {
 
     childExpressions.getFirst().applyRemove(result, context);
   }
+
+  /**
+   * Stores {@code value} where this expression reads from. Answers false, and stores nothing, when it is not the plain read of a
+   * place that can be written (issue #12896, see {@link BaseExpression#writeBack}).
+   */
+  public boolean writeBack(final ResultInternal result, final Object value, final CommandContext context) {
+    return childExpressions.size() == 1 && operators.isEmpty() && childExpressions.getFirst().writeBack(result, value, context);
+  }
+
   @Override
   public Map<String, Object> toJSON() {
     final Map<String, Object> json = super.toJSON();

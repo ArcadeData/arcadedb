@@ -24,24 +24,47 @@ import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.network.binary.ReplicatedEntryTooLargeException;
 import org.apache.ratis.client.RaftClient;
+import org.apache.ratis.client.RaftClientConfigKeys;
+import org.apache.ratis.client.retry.ClientRetryEvent;
+import org.apache.ratis.conf.RaftProperties;
+import org.apache.ratis.protocol.ClientId;
 import org.apache.ratis.protocol.Message;
 import org.apache.ratis.protocol.RaftClientReply;
+import org.apache.ratis.protocol.RaftClientRequest;
+import org.apache.ratis.protocol.RaftGroup;
+import org.apache.ratis.protocol.RaftGroupId;
+import org.apache.ratis.protocol.RaftGroupMemberId;
+import org.apache.ratis.protocol.RaftPeer;
+import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.protocol.exceptions.AlreadyClosedException;
+import org.apache.ratis.protocol.exceptions.LeaderNotReadyException;
+import org.apache.ratis.protocol.exceptions.LeaderSteppingDownException;
+import org.apache.ratis.protocol.exceptions.NotLeaderException;
 import org.apache.ratis.protocol.exceptions.StateMachineException;
+import org.apache.ratis.protocol.exceptions.TimeoutIOException;
+import org.apache.ratis.retry.RetryPolicies;
+import org.apache.ratis.retry.RetryPolicy;
+import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
+import org.apache.ratis.util.TimeDuration;
+import org.apache.ratis.util.Timestamp;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
+import static com.arcadedb.server.StaticBaseServerTest.allocateFreePorts;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.assertj.core.api.Assertions.fail;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -137,7 +160,7 @@ class RaftGroupCommitterTest {
    * <p>
    * Issue #4743 narrowed the cap to the SMALLER of the gRPC frame limit and the Ratis appender byte
    * limit, and made the failure non-retryable - retrying an oversized entry makes every newly elected
-   * leader step down in turn. See {@link Issue4743OversizedRaftEntryTest} for those guarantees.
+   * leader step down in turn. See {@link RaftLogEntryCodecTest.OversizedRaftEntry} for those guarantees.
    */
   @Test
   void oversizeEntryRejectedSynchronouslyWithGuidance() {
@@ -450,6 +473,166 @@ class RaftGroupCommitterTest {
     } finally {
       committer.stop();
     }
+  }
+
+  /**
+   * Issue #11951: while a leadership transfer is pending, the leader refuses every write with
+   * {@link LeaderSteppingDownException}, which Ratis raises before the entry is appended. The Ratis client hands it back as an
+   * exceptional completion of the send future. On the one attempt the client made, nothing of the entry reached any log: a
+   * definite, retryable refusal (HTTP 503 / gRPC ABORTED), not the 500 "outcome unknown" it used to be answered with.
+   */
+  @Test
+  void anEntryRefusedByASteppingDownLeaderIsARetryableRefusal() {
+    final RaftClient client = mock(RaftClient.class, RETURNS_DEEP_STUBS);
+    when(client.async().send(any(Message.class))).thenReturn(CompletableFuture.failedFuture(
+        new CompletionException(new LeaderSteppingDownException("s1@group-ABC is stepping down"))));
+
+    final RaftGroupCommitter committer = new RaftGroupCommitter(client, Quorum.MAJORITY, 2_000);
+    try {
+      assertThatThrownBy(() -> committer.submitAndWait(new byte[] { 1, 2, 3 }))
+          .isInstanceOf(NeedRetryException.class)
+          .isNotInstanceOf(ReplicationDispatchedTimeoutException.class)
+          .hasMessageContaining("stepping down");
+    } finally {
+      committer.stop();
+    }
+  }
+
+  /**
+   * Issue #11951: the stepping-down refusal describes the ATTEMPT it answers. When the Ratis client sent the entry again
+   * after an attempt that may have reached a log - a reply lost past the request timeout, a stream reset, a
+   * {@code NotLeaderException} from a deposed leader that had appended it - that copy may commit, and Ratis checks the
+   * leader state before its retry cache, so even the leader that holds it refuses the re-send. The outcome stays unknown.
+   * The #6965 page conflict keeps its definite verdict on a re-sent copy, as before this change.
+   */
+  @Test
+  void aSteppingDownRefusalOfAReSentEntryStaysAnUnknownOutcome() {
+    final ConcurrentModificationException conflict = new ConcurrentModificationException("Concurrent modification on page 3/0");
+
+    assertThatThrownBy(() -> submitRefusedAfterAnAmbiguousAttempt(new LeaderSteppingDownException("s1@group-ABC is stepping down")))
+        .isInstanceOf(ReplicationDispatchedTimeoutException.class)
+        .hasMessageContaining("re-sent after an attempt that may have reached a log")
+        .hasMessageContaining("outcome unknown");
+
+    assertThatThrownBy(() -> submitRefusedAfterAnAmbiguousAttempt(new StateMachineException(conflict.getMessage(), conflict, false)))
+        .isInstanceOf(ConcurrentModificationException.class)
+        .hasMessageContaining("page 3/0");
+  }
+
+  /** Submits one entry whose only attempt is refused with {@code refusal}, after the client recorded an ambiguous one. */
+  private static void submitRefusedAfterAnAmbiguousAttempt(final Throwable refusal) {
+    final RetryPolicy policy = RaftGroupCommitter.recordingResends(RetryPolicies.retryForeverNoSleep());
+    final RaftClient client = mock(RaftClient.class, RETURNS_DEEP_STUBS);
+    when(client.async().send(any(Message.class))).thenAnswer(invocation -> {
+      // What OrderedAsync does before it sends a call again: it asks the retry policy about the attempt that failed
+      final Message message = invocation.getArgument(0);
+      policy.handleAttemptFailure(new ClientRetryEvent(1, writeRequest(message), 1, new TimeoutIOException("request #1 timeout 10s"),
+          Timestamp.currentTime()));
+      return CompletableFuture.failedFuture(new CompletionException(refusal));
+    });
+
+    final RaftGroupCommitter committer = new RaftGroupCommitter(client, Quorum.MAJORITY, 2_000);
+    try {
+      committer.submitAndWait(new byte[] { 1, 2, 3 });
+    } finally {
+      committer.stop();
+    }
+  }
+
+  /**
+   * The record of a re-send rests on two things the Ratis client does, both pinned here against the shipped Ratis rather than
+   * a mock: it consults the retry policy before sending a call again, and the request it hands the policy carries the very
+   * {@link Message} instance the committer gave it. A real client dialling a port nobody listens on fails every attempt at the
+   * transport, so the entry must come back marked; one the client never sent stays unmarked. The client's dummy first
+   * request is switched off so the entry is the head of the sliding window: a failed head fails every request queued
+   * behind it without sending them.
+   */
+  @Test
+  void theRatisClientMarksTheEntryItSendsAgain() throws Exception {
+    final RaftPeer unreachable = RaftPeer.newBuilder().setId("s1").setAddress("127.0.0.1:" + allocateFreePorts(1)[0]).build();
+    final RaftProperties properties = new RaftProperties();
+    RaftClientConfigKeys.Rpc.setRequestTimeout(properties, TimeDuration.valueOf(2, TimeUnit.SECONDS));
+    RaftClientConfigKeys.Async.Experimental.setSendDummyRequest(properties, false);
+    try (final RaftClient client = RaftClient.newBuilder()
+        .setRaftGroup(RaftGroup.valueOf(RaftGroupId.randomId(), unreachable))
+        .setProperties(properties)
+        .setRetryPolicy(RaftGroupCommitter.recordingResends(
+            RetryPolicies.retryUpToMaximumCountWithFixedSleep(3, TimeDuration.valueOf(10, TimeUnit.MILLISECONDS))))
+        .build()) {
+      final RaftGroupCommitter.EntryMessage sent = new RaftGroupCommitter.EntryMessage(ByteString.copyFromUtf8("sent"));
+      final RaftGroupCommitter.EntryMessage notSent = new RaftGroupCommitter.EntryMessage(ByteString.copyFromUtf8("not sent"));
+
+      final Throwable failure = catchThrowable(() -> client.async().send(sent).get(30, TimeUnit.SECONDS));
+      assertThat(failure).isInstanceOf(ExecutionException.class);
+      assertThat(sent.earlierAttemptMayHaveLanded)
+          .as("the client asked the retry policy before sending the entry again (the call failed with %s)", failure.getCause())
+          .isTrue();
+      assertThat(notSent.earlierAttemptMayHaveLanded).isFalse();
+    }
+  }
+
+  /**
+   * Only an attempt whose failure leaves open whether a leader appended it marks the entry. The two refusals a leadership
+   * change answers most writes with prove the attempt never reached a log: {@code LeaderNotReadyException} (Ratis raises it
+   * only before the append) and a {@code NotLeaderException} that names a suggested leader (the deposed leader's answer to
+   * the entries it had appended names none). Without that distinction a write sent to a leader that was not ready yet, or to
+   * a follower, and then refused by a leader stepping down would be reported as an unknown outcome.
+   */
+  @Test
+  void onlyAnAttemptThatMayHaveBeenAppendedMarksTheEntry() {
+    final RaftGroupMemberId member = RaftGroupMemberId.valueOf(RaftPeerId.valueOf("s1"), RaftGroupId.randomId());
+    final RaftPeer s2 = RaftPeer.newBuilder().setId("s2").setAddress("127.0.0.1:1").build();
+
+    assertThat(RaftGroupCommitter.mayHaveBeenAppended(new LeaderNotReadyException(member))).isFalse();
+    assertThat(RaftGroupCommitter.mayHaveBeenAppended(new CompletionException(new LeaderNotReadyException(member)))).isFalse();
+    assertThat(RaftGroupCommitter.mayHaveBeenAppended(new NotLeaderException(member, s2, List.of(s2))))
+        .as("a follower that knows the leader refused it before the append").isFalse();
+
+    assertThat(RaftGroupCommitter.mayHaveBeenAppended(new NotLeaderException(member, null, List.of(s2))))
+        .as("what a deposed leader answers the entries it had appended").isTrue();
+    assertThat(RaftGroupCommitter.mayHaveBeenAppended(new TimeoutIOException("request #1 timeout 10s"))).isTrue();
+    assertThat(RaftGroupCommitter.mayHaveBeenAppended(new AlreadyClosedException("Stream completed: no reply for async request")))
+        .isTrue();
+
+    final RetryPolicy policy = RaftGroupCommitter.recordingResends(RetryPolicies.retryForeverNoSleep());
+    final RaftGroupCommitter.EntryMessage refusedBeforeAppend = new RaftGroupCommitter.EntryMessage(ByteString.copyFromUtf8("a"));
+    policy.handleAttemptFailure(new ClientRetryEvent(1, writeRequest(refusedBeforeAppend), 1, new LeaderNotReadyException(member),
+        Timestamp.currentTime()));
+    policy.handleAttemptFailure(new ClientRetryEvent(2, writeRequest(refusedBeforeAppend), 1,
+        new NotLeaderException(member, s2, List.of(s2)), Timestamp.currentTime()));
+    assertThat(refusedBeforeAppend.earlierAttemptMayHaveLanded).isFalse();
+
+    final RaftGroupCommitter.EntryMessage deposed = new RaftGroupCommitter.EntryMessage(ByteString.copyFromUtf8("b"));
+    policy.handleAttemptFailure(new ClientRetryEvent(1, writeRequest(deposed), 1, new NotLeaderException(member, null, List.of(s2)),
+        Timestamp.currentTime()));
+    assertThat(deposed.earlierAttemptMayHaveLanded).isTrue();
+  }
+
+  /** The shared client of every node is built with the recording policy, and the wrapper leaves every verdict unchanged. */
+  @Test
+  void theDataClientRetryPolicyRecordsResendsAndKeepsItsVerdicts() {
+    assertThat(RaftHAServer.DATA_CLIENT_RETRY_POLICY).isInstanceOf(RaftGroupCommitter.ResendRecordingRetryPolicy.class);
+
+    final RaftClientRequest request = writeRequest(new RaftGroupCommitter.EntryMessage(ByteString.copyFromUtf8("x")));
+    final TimeoutIOException timeout = new TimeoutIOException("request #1 timeout 10s");
+    final RetryPolicy.Action first = RaftHAServer.DATA_CLIENT_RETRY_POLICY.handleAttemptFailure(
+        new ClientRetryEvent(1, request, 1, timeout, Timestamp.currentTime()));
+    assertThat(first.shouldRetry()).isTrue();
+    assertThat(first.getSleepTime().toLong(TimeUnit.MILLISECONDS)).isEqualTo(1_000L);
+    assertThat(RaftHAServer.DATA_CLIENT_RETRY_POLICY.handleAttemptFailure(
+        new ClientRetryEvent(61, request, 61, timeout, Timestamp.currentTime())).shouldRetry()).isFalse();
+    assertThat(((RaftGroupCommitter.EntryMessage) request.getMessage()).earlierAttemptMayHaveLanded).isTrue();
+  }
+
+  private static RaftClientRequest writeRequest(final Message message) {
+    return RaftClientRequest.newBuilder()
+        .setClientId(ClientId.randomId())
+        .setServerId(RaftPeerId.valueOf("s1"))
+        .setGroupId(RaftGroupId.randomId())
+        .setCallId(1)
+        .setMessage(message)
+        .setType(RaftClientRequest.writeRequestType())
+        .build();
   }
 
   /**

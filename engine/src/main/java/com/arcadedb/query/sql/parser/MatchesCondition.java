@@ -170,13 +170,23 @@ public class MatchesCondition extends BooleanExpression {
     return new Object[] { expression, right, rightExpression, rightParam };
   }
 
+  /**
+   * A side that names no pattern alias answers null (the contract of {@link Expression#getMatchPatternInvolvedAliases()}), which
+   * this method used to copy without a check, so the MATCH planner threw a NullPointerException (issue #11879). Like every other
+   * condition, it answers null itself when neither side names an alias.
+   */
   @Override
   public List<String> getMatchPatternInvolvedAliases() {
-    final List<String> result = new ArrayList<>(expression.getMatchPatternInvolvedAliases());
+    final List<String> result = new ArrayList<>();
+    final List<String> left = expression.getMatchPatternInvolvedAliases();
+    if (left != null)
+      result.addAll(left);
     if (rightExpression != null) {
-      result.addAll(rightExpression.getMatchPatternInvolvedAliases());
+      final List<String> right = rightExpression.getMatchPatternInvolvedAliases();
+      if (right != null)
+        result.addAll(right);
     }
-    return result;
+    return result.isEmpty() ? null : result;
   }
 
   @Override

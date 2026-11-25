@@ -18,7 +18,11 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
+import com.arcadedb.query.OperationType;
+import com.arcadedb.query.opencypher.procedures.CypherProcedure;
+
 import java.util.List;
+import java.util.Set;
 
 /**
  * Base interface for all Cypher AST statements.
@@ -115,6 +119,35 @@ public interface CypherStatement {
    */
   default boolean hasRemove() {
     return false;
+  }
+
+  /**
+   * Returns true if this statement calls a procedure that changes the schema ({@link CypherProcedure#isSchemaProcedure()}),
+   * which makes it a schema change for HA routing and the operation-type gates, as the SQL DDL statement it mirrors (issue
+   * #11438). Defaults to false for non-query (control/admin/DDL/session) statements.
+   *
+   * @return true if it calls a schema-changing procedure
+   */
+  default boolean hasSchemaProcedureCall() {
+    return false;
+  }
+
+  /**
+   * Adds to {@code operations} every kind of write this statement can run, the writes nested in a {@code CALL { ... }}
+   * subquery, a {@code FOREACH} body or a branch of a {@code UNION} or conditional query included. Unlike
+   * {@link #hasCreate()} and its siblings, which answer for the clauses written at the top level of the statement, this one
+   * answers for the whole tree, which is what an operation-type gate needs.
+   * <p>
+   * What cannot be narrowed to one kind of write (a write procedure, a call of a function that may run a body of its own) is
+   * added as every data write: a gate must never read a statement as allowed to do less than it can.
+   * Defaults to nothing for non-query (control/admin/DDL/session) statements. A statement type that can run a write
+   * overrides it: for one that does not, the operation types fall back to every data write only when the statement is not
+   * read-only and declares nothing at all.
+   *
+   * @param operations the set the write operation types are added to
+   */
+  default void collectWriteOperations(final Set<OperationType> operations) {
+    // Nothing to add: a statement that does not run queries has no clause that writes
   }
 
   /**

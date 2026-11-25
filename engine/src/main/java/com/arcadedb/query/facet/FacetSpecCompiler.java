@@ -59,7 +59,6 @@ import java.util.function.Predicate;
 public final class FacetSpecCompiler {
   private static final int  DEFAULT_TOP = 10;
   private static final long DAY_MS      = 86_400_000L;
-  private static final int  MAX_BUCKETS  = 100_000;
 
   private FacetSpecCompiler() {
   }
@@ -371,8 +370,8 @@ public final class FacetSpecCompiler {
     if (interval.calendar() || !(from instanceof Number lo) || !(to instanceof Number hi))
       return;
     final double step = interval.fixedMillis() > 0 ? interval.fixedMillis() : interval.fixedNumber();
-    if ((hi.doubleValue() - lo.doubleValue()) / step > MAX_BUCKETS)
-      throw new CommandSQLParsingException("FACETS " + alias + ": the histogram would have more than " + MAX_BUCKETS + " buckets");
+    if ((hi.doubleValue() - lo.doubleValue()) / step > HistogramCollector.MAX_BUCKETS)
+      throw CalendarBoundaries.tooMany(alias);
   }
 
   private static void validateZoneAndOffset(final String alias, final boolean calendar, final HistogramInterval interval,

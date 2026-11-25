@@ -22,7 +22,7 @@ import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.VariableOverlayResult;
 
 import java.util.List;
 
@@ -73,15 +73,17 @@ public class ListPredicateExpression implements Expression {
     else
       throw new IllegalArgumentException("List predicate requires an iterable, got: " + listValue.getClass().getSimpleName());
 
+    // One row per evaluation, rebound per item: the outer columns are read through it, not copied (issue #12723)
+    final VariableOverlayResult row = whereExpression != null ? new VariableOverlayResult(result, variable) : null;
     switch (predicateType) {
     case ALL:
-      return evaluateAll(iterable, result, context);
+      return evaluateAll(iterable, row, context);
     case ANY:
-      return evaluateAny(iterable, result, context);
+      return evaluateAny(iterable, row, context);
     case NONE:
-      return evaluateNone(iterable, result, context);
+      return evaluateNone(iterable, row, context);
     case SINGLE:
-      return evaluateSingle(iterable, result, context);
+      return evaluateSingle(iterable, row, context);
     default:
       throw new IllegalStateException("Unknown predicate type: " + predicateType);
     }
@@ -91,10 +93,10 @@ public class ListPredicateExpression implements Expression {
    * Evaluates all() with three-valued logic.
    * Returns null if any condition is null and none is false.
    */
-  private Object evaluateAll(final Iterable<?> iterable, final Result result, final CommandContext context) {
+  private Object evaluateAll(final Iterable<?> iterable, final VariableOverlayResult row, final CommandContext context) {
     boolean hasNull = false;
     for (final Object item : iterable) {
-      final Boolean test = testItem(item, result, context);
+      final Boolean test = testItem(item, row, context);
       if (test == null)
         hasNull = true;
       else if (!test)
@@ -107,10 +109,10 @@ public class ListPredicateExpression implements Expression {
    * Evaluates any() with three-valued logic.
    * Returns null if any condition is null and none is true.
    */
-  private Object evaluateAny(final Iterable<?> iterable, final Result result, final CommandContext context) {
+  private Object evaluateAny(final Iterable<?> iterable, final VariableOverlayResult row, final CommandContext context) {
     boolean hasNull = false;
     for (final Object item : iterable) {
-      final Boolean test = testItem(item, result, context);
+      final Boolean test = testItem(item, row, context);
       if (test == null)
         hasNull = true;
       else if (test)
@@ -123,10 +125,10 @@ public class ListPredicateExpression implements Expression {
    * Evaluates none() with three-valued logic.
    * Returns null if any condition is null and none is true.
    */
-  private Object evaluateNone(final Iterable<?> iterable, final Result result, final CommandContext context) {
+  private Object evaluateNone(final Iterable<?> iterable, final VariableOverlayResult row, final CommandContext context) {
     boolean hasNull = false;
     for (final Object item : iterable) {
-      final Boolean test = testItem(item, result, context);
+      final Boolean test = testItem(item, row, context);
       if (test == null)
         hasNull = true;
       else if (test)
@@ -139,11 +141,11 @@ public class ListPredicateExpression implements Expression {
    * Evaluates single() with three-valued logic.
    * Returns null if uncertain due to nulls.
    */
-  private Object evaluateSingle(final Iterable<?> iterable, final Result result, final CommandContext context) {
+  private Object evaluateSingle(final Iterable<?> iterable, final VariableOverlayResult row, final CommandContext context) {
     int trueCount = 0;
     boolean hasNull = false;
     for (final Object item : iterable) {
-      final Boolean test = testItem(item, result, context);
+      final Boolean test = testItem(item, row, context);
       if (test == null)
         hasNull = true;
       else if (test) {
@@ -161,25 +163,16 @@ public class ListPredicateExpression implements Expression {
   }
 
   /**
-   * Tests a single item against the WHERE expression.
+   * Tests a single item against the WHERE expression, on {@code row} with the variable bound to the item.
    * Returns Boolean.TRUE, Boolean.FALSE, or null (for three-valued logic).
    */
-  private Boolean testItem(final Object item, final Result baseResult, final CommandContext context) {
+  private Boolean testItem(final Object item, final VariableOverlayResult row, final CommandContext context) {
     if (whereExpression == null)
       return item != null ? Boolean.TRUE : null;
 
-    final ResultInternal iterResult = new ResultInternal();
-    if (baseResult != null)
-      for (final String prop : baseResult.getPropertyNames())
-        iterResult.setProperty(prop, baseResult.getProperty(prop));
-    iterResult.setProperty(variable, item);
-
-    final Object filterValue = OpenCypherQueryEngine.getExpressionEvaluator().evaluate(whereExpression, iterResult, context);
-    if (filterValue == null)
-      return null;
-    if (filterValue instanceof Boolean)
-      return (Boolean) filterValue;
-    return null;
+    // a non-Boolean WHERE value is a type error, as in every other predicate position (issue #11760)
+    return BooleanCoercionExpression.toPredicate(
+        OpenCypherQueryEngine.getExpressionEvaluator().evaluate(whereExpression, row.bind(item), context));
   }
 
   /**

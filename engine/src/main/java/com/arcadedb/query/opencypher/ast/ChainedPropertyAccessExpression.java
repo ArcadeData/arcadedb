@@ -22,6 +22,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
+import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
 import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
@@ -54,6 +55,10 @@ public class ChainedPropertyAccessExpression implements PropertyReadExpression {
     return baseExpression;
   }
 
+  public String getPropertyName() {
+    return propertyName;
+  }
+
   /** {@code a.link.v} and {@code properties(n).v} read the property {@code v} of the record the base evaluates to. */
   @Override
   public PropertyRead propertyRead(final Result row, final CommandContext context) {
@@ -67,6 +72,7 @@ public class ChainedPropertyAccessExpression implements PropertyReadExpression {
     if (baseValue == null) {
       return null;
     }
+    DeletedEntityMarker.checkNotDeleted(baseValue);
 
     // Handle a persisted node-valued property: ArcadeDB stores a NODE property as a LINK/RID,
     // so once the writing transaction commits, a chained property access (e.g. holder.ref.id)

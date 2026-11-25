@@ -19,6 +19,7 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.LocalDatabase;
+import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.NodeLocalFiles;
 import com.arcadedb.engine.PageSnapshot;
 import com.arcadedb.engine.PaginatedComponent;
@@ -231,10 +232,12 @@ public final class SnapshotManager {
     if (files == null)
       return checksums;
 
+    // KEYED WITHOUT THE DICTIONARY'S LABEL: THE DICTIONARY CAN BE RELABELLED AFTER t0 (ISSUE #12234), AND LOOKED UP UNDER ITS NEW
+    // NAME IT WOULD PASS FOR A PAGE FILE CREATED AFTER t0 AND BE LEFT OUT. THE FILE ID, WHICH THE WINDOW READS BY, NEVER CHANGES
     final Map<String, Integer> snapshotFileIds = new HashMap<>();
     if (snapshot != null)
       for (final PageSnapshot.SnapshotFile file : snapshot.getFiles())
-        snapshotFileIds.put(file.fileName(), file.fileId());
+        snapshotFileIds.put(Dictionary.unlabelledFileName(file.fileName()), file.fileId());
 
     final byte[] buffer = new byte[8192];
     for (final File file : files) {
@@ -242,9 +245,11 @@ public final class SnapshotManager {
       if (isNodeLocalFileName(name))
         continue;
 
-      final Integer snapshotFileId = snapshotFileIds.get(name);
+      // A DICTIONARY IS REPORTED UNDER THE LABEL EVERY BUILD KNOWS, WHICH TWO NODES WITH THE SAME BYTES CAN DISAGREE ON (ISSUE #12234)
+      final String comparableName = Dictionary.comparableFileName(name);
+      final Integer snapshotFileId = snapshotFileIds.get(Dictionary.unlabelledFileName(name));
       if (snapshotFileId != null) {
-        checksums.put(name, snapshot.calculateChecksum(snapshotFileId));
+        checksums.put(comparableName, snapshot.calculateChecksum(snapshotFileId));
         continue;
       }
 
@@ -271,7 +276,7 @@ public final class SnapshotManager {
           unreadableFiles.add(name);
         continue;
       }
-      checksums.put(name, crc.getValue());
+      checksums.put(comparableName, crc.getValue());
     }
 
     return checksums;

@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.ast;
 
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.coll.SizeFunction;
 import com.arcadedb.function.misc.CoalesceFunction;
 import com.arcadedb.query.opencypher.LoadCSVRowContext;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
@@ -56,8 +57,11 @@ public class FunctionCallExpression implements Expression {
    */
   private transient volatile Boolean aggregation;
 
-  /** Set once {@link #finishCoalesce} has checked the argument count, which is a property of the call site. */
-  private transient boolean arityValidated; // plain on purpose: the check is idempotent, so a racing second run is harmless
+  /**
+   * Set once {@link #finishCoalesce} has checked the argument count, which is a property of the call site. Volatile because
+   * the workers of a parallel scan share the call (issue #11873); the check is idempotent, so a racing second run is harmless.
+   */
+  private transient volatile boolean arityValidated;
 
   public FunctionCallExpression(final String functionName, final List<Expression> arguments, final boolean distinct) {
     this.originalFunctionName = functionName;
@@ -102,6 +106,9 @@ public class FunctionCallExpression implements Expression {
               value = arguments.get(i).evaluate(result, context);
             return finishCoalesce(function, value, result, context);
           }
+          final Long size = sizeWithoutList(function, result, context);
+          if (size != null)
+            return size;
           final Object[] args = new Object[arguments.size()];
           for (int i = 0; i < args.length; i++)
             args[i] = arguments.get(i).evaluate(result, context);
@@ -110,6 +117,18 @@ public class FunctionCallExpression implements Expression {
       }
     }
     throw new UnsupportedOperationException("Function evaluation requires StatelessFunction: " + functionName);
+  }
+
+  /**
+   * {@code size([(p)-[:K]->(q) | q])} answered as the degree it is, without building the list (issue #11891), for both
+   * evaluation paths; null when this call is not that, or when the row needs the list built.
+   */
+  public Long sizeWithoutList(final StatelessFunction function, final Result result, final CommandContext context) {
+    if (!(function instanceof SizeFunction) || arguments.size() != 1
+        || !(arguments.getFirst() instanceof PatternComprehensionExpression comprehension))
+      return null;
+    final long count = comprehension.countElements(result, context);
+    return count != OneHopPattern.NOT_ANSWERED ? count : null;
   }
 
   /**

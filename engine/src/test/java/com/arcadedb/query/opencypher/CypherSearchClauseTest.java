@@ -345,7 +345,7 @@ class CypherSearchClauseTest {
       // walk is taken rather than the pre-filter plan; the deadline passes on its first membership test
       final WorkGuard guard = WorkGuard.forDeadline("test", System.currentTimeMillis() + 2_000);
       final int[] tested = new int[1];
-      final Set<RID> slowAllowList = admitNothingAfterTheDeadline(tested);
+      final Set<RID> slowAllowList = admitNothingAfterTheDeadline(tested, index);
 
       assertThatThrownBy(() -> index.findNeighbors(new float[] { 0f, 1f }, 3, -1, 0, slowAllowList, guard))
           .isInstanceOf(TimeoutException.class);
@@ -380,7 +380,7 @@ class CypherSearchClauseTest {
 
       final WorkGuard guard = WorkGuard.forDeadline("test", System.currentTimeMillis() + 2_000);
       final int[] tested = new int[1];
-      final Set<RID> slowAllowList = admitAfterTheDeadline(tested, inTheGraph);
+      final Set<RID> slowAllowList = admitAfterTheDeadline(tested, inTheGraph, index);
 
       assertThatThrownBy(() -> index.findNeighborsFromVectorGrouped(new float[] { 0f, 1f }, 3, 1, -1, slowAllowList,
           RID::getPosition, guard)).isInstanceOf(TimeoutException.class);
@@ -393,7 +393,7 @@ class CypherSearchClauseTest {
 
       final WorkGuard guard = WorkGuard.forDeadline("test", System.currentTimeMillis() + 2_000);
       final int[] tested = new int[2];
-      final Set<RID> slowAllowList = admitAfterTheDeadline(tested, inTheGraph);
+      final Set<RID> slowAllowList = admitAfterTheDeadline(tested, inTheGraph, index);
 
       assertThatThrownBy(() -> index.findNeighbors(new float[] { 0f, 1f }, 3, -1, 0, slowAllowList, guard))
           .isInstanceOf(TimeoutException.class);
@@ -426,17 +426,19 @@ class CypherSearchClauseTest {
       return index;
     }
 
-    /** {@link #admitAfterTheDeadline(int[], Set)} admitting nothing. */
-    private static Set<RID> admitNothingAfterTheDeadline(final int[] tested) {
-      return admitAfterTheDeadline(tested, Set.of());
+    /** {@link #admitAfterTheDeadline(int[], Set, LSMVectorIndex)} admitting nothing. */
+    private static Set<RID> admitNothingAfterTheDeadline(final int[] tested, final LSMVectorIndex index) {
+      return admitAfterTheDeadline(tested, Set.of(), index);
     }
 
     /**
      * Counts its membership tests, sleeps past the deadline on the first one and admits only {@code admitted}, so a search that
-     * needs a record outside it keeps testing until something looks at the deadline. Unbounded in size, so no pre-filter plan is
-     * taken.
+     * needs a record outside it keeps testing until something looks at the deadline. Unbounded in size and in its members of
+     * {@code index}'s bucket (issue #11765: a sub-index counts the members of its own bucket), so no pre-filter plan is taken.
+     * Iterating it tests no membership.
      */
-    private static Set<RID> admitAfterTheDeadline(final int[] tested, final Set<RID> admitted) {
+    private static Set<RID> admitAfterTheDeadline(final int[] tested, final Set<RID> admitted, final LSMVectorIndex index) {
+      final int bucketId = index.getAssociatedBucketId();
       return new AbstractSet<>() {
         @Override
         public boolean contains(final Object o) {
@@ -461,7 +463,19 @@ class CypherSearchClauseTest {
 
         @Override
         public Iterator<RID> iterator() {
-          throw new UnsupportedOperationException();
+          return new Iterator<>() {
+            private long position = 1_000_000_000L;
+
+            @Override
+            public boolean hasNext() {
+              return true;
+            }
+
+            @Override
+            public RID next() {
+              return new RID(bucketId, position++);
+            }
+          };
         }
       };
     }
