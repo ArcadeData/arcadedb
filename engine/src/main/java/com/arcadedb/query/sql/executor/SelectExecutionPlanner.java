@@ -86,6 +86,7 @@ import com.arcadedb.query.sql.parser.LikeOperator;
 import com.arcadedb.query.sql.parser.LtOperator;
 import com.arcadedb.query.sql.parser.MathExpression;
 import com.arcadedb.query.sql.parser.MethodCall;
+import com.arcadedb.query.sql.parser.Modifier;
 import com.arcadedb.query.sql.parser.NeOperator;
 import com.arcadedb.query.sql.parser.NeqOperator;
 import com.arcadedb.query.sql.parser.Node;
@@ -4322,7 +4323,8 @@ public class SelectExecutionPlanner {
 
     final String timestampColumn = tsType.getTimestampColumn();
     for (final ProjectionItem item : projection.getItems()) {
-      final FunctionCall funcCall = extractFunctionCall(item.expression);
+      // ts.last(v, ts).asString() still needs the newest row only: the method reshapes the aggregated value (#12799)
+      final FunctionCall funcCall = extractFunctionCallWithValueModifier(item.expression, context);
       if (funcCall == null || !SQLFunctionTsLast.NAME.equalsIgnoreCase(funcCall.getName().getStringValue()))
         return false;
       final List<Expression> params = funcCall.getParams();
@@ -4820,18 +4822,48 @@ public class SelectExecutionPlanner {
 
   /**
    * Extracts a FunctionCall from an Expression if it's a simple function call.
-   * Returns null if the expression is not a simple function call.
+   * Returns null if the expression is not a simple function call, including a call followed by a
+   * modifier ({@code .method()}, {@code [index]}, {@code .field}): its value is not the call's value (#12799).
    */
   private static FunctionCall extractFunctionCall(final Expression expr) {
+    final BaseExpression base = functionCallBase(expr);
+    return base == null || base.modifier != null ? null : base.identifier.levelZero.functionCall;
+  }
+
+  /**
+   * Same as {@link #extractFunctionCall(Expression)}, but also accepts a call followed by a modifier that only reshapes the
+   * call's value: a chain of {@code .field} suffixes and of method calls whose arguments are record-free and hold no aggregate
+   * ({@code .asString()}, {@code .format('HH')}). Such a modifier is applied to the aggregated value after the aggregation, so it
+   * cannot change which rows the aggregate needs (#12799). Anything else (an index or range selector, a filter, a nested
+   * projection, an argument that reads the record or aggregates) declines.
+   */
+  private static FunctionCall extractFunctionCallWithValueModifier(final Expression expr, final CommandContext context) {
+    final BaseExpression base = functionCallBase(expr);
+    if (base == null)
+      return null;
+    for (Modifier m = base.modifier; m != null; m = m.next) {
+      if (m.squareBrackets || m.nestedProjection != null)
+        return null;
+      if (m.methodCall != null) {
+        if (!m.methodCall.isEarlyCalculated(context))
+          return null;
+        for (final Expression param : m.methodCall.params)
+          if (param.isAggregate(context))
+            return null;
+      } else if (m.suffix == null)
+        return null;
+    }
+    return base.identifier.levelZero.functionCall;
+  }
+
+  private static BaseExpression functionCallBase(final Expression expr) {
     if (expr == null || expr.mathExpression == null)
       return null;
     if (!(expr.mathExpression instanceof BaseExpression base))
       return null;
-    if (base.identifier == null)
+    if (base.identifier == null || base.identifier.levelZero == null || base.identifier.levelZero.functionCall == null)
       return null;
-    if (base.identifier.levelZero != null && base.identifier.levelZero.functionCall != null)
-      return base.identifier.levelZero.functionCall;
-    return null;
+    return base;
   }
 
   /**
