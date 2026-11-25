@@ -50,6 +50,8 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.RidHashSet;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Iterator;
@@ -81,6 +83,7 @@ import java.util.function.UnaryOperator;
  */
 public class SubqueryStep extends AbstractExecutionStep {
   private static final String STAR_SCOPE = "*";
+  private static final BigDecimal MAX_BATCH_SIZE = BigDecimal.valueOf(Integer.MAX_VALUE);
 
   private final SubqueryClause subqueryClause;
   private final DatabaseInternal database;
@@ -617,6 +620,12 @@ public class SubqueryStep extends AbstractExecutionStep {
         if (d != Math.rint(d) || Double.isInfinite(d))
           throw invalidBatchSize(value);
         size = (long) d;
+      } else if (number instanceof BigInteger || number instanceof BigDecimal) {
+        // longValue() drops the fraction of a BigDecimal and keeps the low 64 bits of either: read the value itself
+        final BigDecimal exact = number instanceof BigInteger big ? new BigDecimal(big) : (BigDecimal) number;
+        if (exact.signum() < 1 || exact.stripTrailingZeros().scale() > 0)
+          throw invalidBatchSize(value);
+        return exact.compareTo(MAX_BATCH_SIZE) > 0 ? Integer.MAX_VALUE : exact.intValue();
       } else
         size = number.longValue();
       if (size >= 1)

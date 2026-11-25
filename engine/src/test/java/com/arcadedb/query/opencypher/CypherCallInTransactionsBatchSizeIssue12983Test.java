@@ -25,6 +25,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -77,5 +79,28 @@ class CypherCallInTransactionsBatchSizeIssue12983Test extends TestHelper {
       assertThat(rs.next().<Number>getProperty("batches").longValue()).isEqualTo(1L);
     }
     assertThat(countX()).isEqualTo(5L);
+  }
+
+  /** A BigDecimal parameter keeps its fraction and a BigInteger its size: {@code longValue()} dropped the one and wrapped the other. */
+  @Test
+  void aBigNumberParameterIsReadByItsValueNotItsLow64Bits() {
+    assertThatThrownBy(() -> database.command("opencypher", PREFIX + "$size ROWS", Map.of("size", new BigDecimal("1.5"))).close())
+        .isInstanceOf(CommandParsingException.class).hasMessageContaining("batch size");
+    for (final Object size : new Object[] { new BigInteger("-9223372036854775809"), new BigInteger("-18446744073709551615"),
+        new BigDecimal("0"), new BigDecimal("-2") })
+      assertThatThrownBy(() -> database.command("opencypher", PREFIX + "$size ROWS", Map.of("size", size)).close())
+          .isInstanceOf(CommandParsingException.class).hasMessageContaining("batch size");
+    assertThat(countX()).as("a refused statement wrote nothing").isZero();
+
+    // an integral BigDecimal and a BigInteger past the long range are sizes: 2^64 + 1 is one batch of everything, not a batch of 1
+    for (final Object size : new Object[] { new BigDecimal("2"), new BigDecimal("2.0"), new BigInteger("9223372036854775808"),
+        new BigInteger("18446744073709551617"), new BigDecimal("1E+30") }) {
+      try (final ResultSet rs = database.command("opencypher", PREFIX + "$size ROWS ON ERROR CONTINUE REPORT STATUS AS s "
+          + "RETURN count(DISTINCT s.transactionId) AS batches", Map.of("size", size))) {
+        final long batches = rs.next().<Number>getProperty("batches").longValue();
+        assertThat(batches).as("batches of " + size).isEqualTo(size instanceof BigDecimal d && d.intValue() == 2 ? 3L : 1L);
+      }
+    }
+    assertThat(countX()).isEqualTo(25L);
   }
 }
