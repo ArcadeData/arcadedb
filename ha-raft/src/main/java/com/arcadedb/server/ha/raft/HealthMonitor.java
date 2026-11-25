@@ -23,6 +23,7 @@ import org.apache.ratis.util.LifeCycle;
 
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.function.LongSupplier;
 import java.util.logging.Level;
@@ -284,6 +285,16 @@ public final class HealthMonitor {
      */
     default void trackLeaderReachSinceRestart() {
     }
+
+    /**
+     * Whether the close of a previous Ratis server outlived its bound and is still running (issue #9561). While it runs
+     * an in-place restart cannot proceed: it fails at once and counts toward {@code arcadedb.ha.ratisRestartMaxRetries},
+     * which stops the server once it is spent (issue #12552). Implementations must return {@code false} when it cannot
+     * be read.
+     */
+    default boolean isRatisCloseStuck() {
+      return false;
+    }
   }
 
   // How long (as a multiple of the recovery duration) the follower must look healthy before a prior
@@ -350,6 +361,12 @@ public final class HealthMonitor {
   // restart on every unhealthy tick forever).
   private final    int                      crashLoopRestartThreshold;
   private volatile ScheduledExecutorService executor;
+  // The scheduled tick loop, and when it was started and when its last tick ended, by the monitor's clock (issue #12552):
+  // one throwable escaping a run of scheduleWithFixedDelay cancels every later run without a word, and a tick that blocks
+  // stops the loop the same way, so the readiness probe reads these to tell a working loop from a dead or stalled one.
+  private volatile ScheduledFuture<?>       tickLoop;
+  private volatile long                     tickLoopStartedMs           = -1;
+  private volatile long                     lastTickEndedMs             = -1;
   // Wall-clock time (ms) when the current uninterrupted lag streak was first observed; -1 = not lagging.
   private          long                     lagObservedSinceMs          = -1;
   // Wall-clock time (ms) when the current uninterrupted stuck-divergence streak was first observed; -1 = not stuck.
@@ -468,7 +485,7 @@ public final class HealthMonitor {
                 + "intervention is required (a term-inverted log or snapshot served by the leader needs a "
                 + "coordinated full-cluster Raft-storage reformat). Delete the '<raft-storage-dir>.%s' file next to "
                 + "the Raft storage directory to re-arm the automatic recovery (issues #5291, #7736, #8380)",
-            RaftHAServer.CRASH_LOOP_ESCALATION_MARKER);
+            RaftStorageFiles.CRASH_LOOP_ESCALATION_MARKER);
       }
     }
   }
@@ -488,16 +505,48 @@ public final class HealthMonitor {
       t.setDaemon(true);
       return t;
     });
+    tickLoopStartedMs = clock.getAsLong();
     // Startup grace period: skip the first 2*intervalMs while Ratis completes its initial election.
-    executor.scheduleWithFixedDelay(this::tickSafely, intervalMs * 2, intervalMs, TimeUnit.MILLISECONDS);
+    tickLoop = executor.scheduleWithFixedDelay(this::tickSafely, intervalMs * 2, intervalMs, TimeUnit.MILLISECONDS);
   }
 
   public void stop() {
     final ScheduledExecutorService current = executor;
     if (current != null) {
-      current.shutdownNow();
       executor = null;
+      tickLoop = null;
+      current.shutdownNow();
     }
+  }
+
+  /**
+   * Why the tick loop of this monitor is not doing its job, or {@code null} while it is, while it is not running (never
+   * started, disabled, or stopped) and during its startup grace period (issue #12552). The loop is the only thing that
+   * recovers this node's Raft layer in place, so a node whose loop has died or is stuck inside one tick has no automatic
+   * recovery left and must not advertise itself as ready.
+   * <p>
+   * Stalled means no tick has ended for longer than {@code stallBoundMs} since the last one did (or since the first one
+   * was due). The bound must be generous: one tick can legitimately take as long as an in-place restart, whose waits are
+   * each bounded by {@code arcadedb.ha.ratisCloseTimeoutMs}.
+   */
+  String describeTickLoopFailure(final long stallBoundMs) {
+    final ScheduledFuture<?> loop = tickLoop;
+    if (loop == null || executor == null)
+      return null;
+    if (loop.isDone())
+      return "the HA health monitor's tick loop has stopped: no further in-place recovery of the Raft layer will run";
+    final long lastEnded = lastTickEndedMs;
+    final long since = lastEnded >= 0 ? lastEnded : tickLoopStartedMs + intervalMs * 2;
+    final long elapsed = clock.getAsLong() - since;
+    if (elapsed > stallBoundMs)
+      return "the HA health monitor has completed no tick for " + elapsed + "ms (bound " + stallBoundMs
+          + "ms): no in-place recovery of the Raft layer is running";
+    return null;
+  }
+
+  /** When the last tick of the scheduled loop ended, by the monitor's clock, or -1 when none has. Package-private: tests. */
+  long getLastTickEndedMs() {
+    return lastTickEndedMs;
   }
 
   /**
@@ -671,6 +720,19 @@ public final class HealthMonitor {
    * restarts, preserving the pre-#5291 behaviour.
    */
   private void handleUnhealthyState(final LifeCycle.State state) {
+    // Issue #12552: the close of a previous Ratis server never finished. No restart, and so no step of the crash-loop
+    // ladder below (a reformat is a restart too), can run beside it: every attempt fails at once. Each one is counted by
+    // the restart itself toward arcadedb.ha.ratisRestartMaxRetries, and once that budget is spent the restart stops the
+    // server so a process supervisor can start it again. The ladder must not take these attempts: its give-up parks the
+    // node for good, which is the right end for a restart that does not stick and the wrong one for a restart that
+    // cannot run at all - that node stayed half-alive, out of the cluster, until an operator restarted it by hand.
+    if (target.isRatisCloseStuck()) {
+      crashLoopRecordHealthySinceMs = -1;
+      target.restartRatisIfNeeded();
+      resetStreaksAfterRestart();
+      return;
+    }
+
     crashRestartStreak++;
     crashLoopRecordHealthySinceMs = -1;
 
@@ -1020,11 +1082,25 @@ public final class HealthMonitor {
     return stuckConfirmed;
   }
 
-  private void tickSafely() {
+  /**
+   * One run of the scheduled loop. Nothing may escape it (issue #12552): a throwable that leaves a run of
+   * {@code scheduleWithFixedDelay} cancels every later run without a word, and the monitor is the only thing that
+   * recovers this node's Raft layer. That includes a second error raised while reporting the first one - an
+   * {@code OutOfMemoryError} is typically thrown again by the logging that tries to report it, which is how a node
+   * logged "recovery failed (attempt 1/10)" and then nothing for an hour. Package-private: tests.
+   */
+  void tickSafely() {
     try {
       tick();
     } catch (final Throwable t) {
-      LogManager.instance().log(this, Level.SEVERE, "Error in HealthMonitor tick: %s", t, t.getMessage());
+      try {
+        LogManager.instance().log(this, Level.SEVERE, "Error in HealthMonitor tick: %s", t, t.getMessage());
+      } catch (final Throwable reportFailure) {
+        // Nothing safe is left to do with it: reporting failed too, typically for the same lack of heap. The next tick
+        // runs anyway, and the readiness probe reads the tick loop's progress rather than this log.
+      }
+    } finally {
+      lastTickEndedMs = clock.getAsLong();
     }
   }
 }

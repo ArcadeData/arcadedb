@@ -34,7 +34,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * The fail-open branches of {@link ReplicatedSecurityFingerprintRepository}, which
- * {@code Issue7693FirstReplicatedSecurityEntryTest} exercises only on the happy path (code review on PR #7748).
+ * {@code ReplicatedSecurityEntryTest.FirstReplicatedEntry} exercises only on the happy path (code review on PR #7748).
  * <p>
  * Both of them are log-and-swallow, so nothing downstream would notice if they stopped behaving: a load that
  * threw would take the server down over a marker file, and a save that threw would fail a committed security

@@ -33,6 +33,10 @@ public class ParenthesisBlock extends BooleanExpression {
   public ParenthesisBlock() {
   }
 
+  public BooleanExpression getSubElement() {
+    return subElement;
+  }
+
   @Override
   public Boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
     return subElement.evaluate(currentRecord, context);
@@ -52,6 +56,11 @@ public class ParenthesisBlock extends BooleanExpression {
   @Override
   public boolean setsScore(final CommandContext context) {
     return subElement.setsScore(context);
+  }
+
+  @Override
+  public boolean setsSimilarity(final CommandContext context) {
+    return subElement.setsSimilarity(context);
   }
 
   @Override

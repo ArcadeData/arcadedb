@@ -19,6 +19,7 @@
 package com.arcadedb.server.ha.raft.ratis;
 
 import com.arcadedb.exception.NeedRetryException;
+import org.apache.ratis.protocol.exceptions.LeaderSteppingDownException;
 import org.apache.ratis.protocol.exceptions.StateMachineException;
 
 import java.util.logging.Filter;
@@ -40,9 +41,14 @@ import java.util.logging.LogRecord;
  * many times a second, and each occurrence is neither a failure of the transport nor of the leader, so the Ratis
  * record is noise that would bury the genuine send failures the same logger reports.
  *
- * <p>Only a record whose attached throwable carries a {@link StateMachineException} caused by a
- * {@link NeedRetryException} is dropped; every other failure of that logger stays visible. See
- * {@link RatisLogRecordFilter} for what the muting relies on.
+ * <p>Since issue #11951 the same holds for a {@link LeaderSteppingDownException}: while a leadership transfer is pending
+ * the leader refuses every write with it, in {@code RaftServerImpl.checkLeaderState}, before the entry is appended. A
+ * planned transfer (a rolling restart moves leadership off every node in turn) refuses every write that arrives in the
+ * window, and each refusal used to log a SEVERE with a full stack trace.
+ *
+ * <p>Only a record whose attached throwable carries one of those two refusals is dropped: a {@link StateMachineException}
+ * caused by a {@link NeedRetryException}, or a {@link LeaderSteppingDownException}. Every other failure of that logger
+ * stays visible. See {@link RatisLogRecordFilter} for what the muting relies on.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -64,20 +70,50 @@ public final class RatisRefusedEntryErrorFilter extends RatisLogRecordFilter {
 
   @Override
   protected boolean drops(final LogRecord record) {
-    return refusedBeforeAppend(record.getThrown()) != null;
+    return refusalIn(record.getThrown()) != null;
   }
 
   /**
-   * The retryable conflict the leader refused an entry with BEFORE appending it, found by walking the cause chain of
+   * The retryable refusal the leader turned an entry away with BEFORE appending it, found by walking the cause chain of
    * what the Ratis client reported, or {@code null} when the failure is something else. Shared with the group
    * committer, which maps the same refusal to a definite outcome, so the two never drift apart.
+   * <p>
+   * Two refusals qualify. The page-version conflict of issue #6965 is returned as the engine conflict the leader threw
+   * (Ratis rebuilds it on the client side from its class name and message). A {@link LeaderSteppingDownException}
+   * (issue #11951) becomes a {@link NeedRetryException} naming it: Ratis 3.3 raises it only in
+   * {@code RaftServerImpl.checkLeaderState}, which {@code writeAsyncImpl} and {@code appendTransaction} call before
+   * {@code state.appendLog}, so the attempt it answers never reached the log.
+   * <p>
+   * Both say what happened to ONE ATTEMPT. Whether the CALL had an earlier attempt that a leader did append is the
+   * caller's to know: {@code checkLeaderState} runs before the retry cache is consulted, so a re-send of an entry this
+   * very leader already appended is refused the same way. The group committer trusts the stepping-down refusal only for
+   * an entry no earlier attempt of which may have reached a log.
    */
   public static NeedRetryException refusedBeforeAppend(final Throwable thrown) {
+    final Throwable refusal = refusalIn(thrown);
+    if (refusal instanceof NeedRetryException conflict)
+      return conflict;
+    if (refusal != null)
+      return new NeedRetryException(
+          "The Raft leader refused the entry before appending it because it is stepping down for a leadership transfer ("
+              + refusal.getMessage() + "); nothing was written, retry once the new leader is elected");
+    return null;
+  }
+
+  /**
+   * The throwable along the cause chain that is a refusal before append: the engine conflict a
+   * {@link StateMachineException} carries, or the {@link LeaderSteppingDownException} itself. Allocates nothing, so the
+   * log filter can ask it about every record.
+   */
+  private static Throwable refusalIn(final Throwable thrown) {
     // Bounded walk: a throwable chain can be cyclic, and a depth cap needs no identity comparison.
     Throwable t = thrown;
-    for (int depth = 0; t != null && depth < MAX_CAUSE_DEPTH; depth++, t = t.getCause())
+    for (int depth = 0; t != null && depth < MAX_CAUSE_DEPTH; depth++, t = t.getCause()) {
       if (t instanceof StateMachineException refusal && refusal.getCause() instanceof NeedRetryException conflict)
         return conflict;
+      if (t instanceof LeaderSteppingDownException)
+        return t;
+    }
     return null;
   }
 }

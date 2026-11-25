@@ -78,6 +78,15 @@ public class ConvertToJson extends AbstractConvertFunction {
     if (MultiValue.isSequenceArray(value))
       return new JSONArray(MultiValue.getMultiValueAsList(value));
 
+    // A byte[] (BINARY) is the JSON array of its signed bytes, as it already is nested in a map, not the Java identity
+    // string "[B@..." (issue #12780)
+    if (value instanceof byte[] bytes) {
+      final JSONArray array = new JSONArray(bytes.length);
+      for (final byte b : bytes)
+        array.put(b);
+      return array;
+    }
+
     if (value instanceof Document) {
       return ((Document) value).toJSON();
     }

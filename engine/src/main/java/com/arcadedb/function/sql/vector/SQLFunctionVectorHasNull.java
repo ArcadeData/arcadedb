@@ -19,7 +19,6 @@
 package com.arcadedb.function.sql.vector;
 
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.List;
@@ -44,10 +43,19 @@ public class SQLFunctionVectorHasNull extends SQLFunctionVectorAbstract {
   }
 
   @Override
+  public int getMinArgs() {
+    return 1;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 1;
+  }
+
+  @Override
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
-    if (params == null || params.length != 1)
-      throw new CommandSQLParsingException(getSyntax());
+    checkArity(params);
 
     final Object vectorObj = params[0];
     if (vectorObj == null)

@@ -53,7 +53,8 @@ import java.util.concurrent.TimeUnit;
  * DATE or DATETIME column also accepts the numbers and strings {@code DateUtils} converts, and a {@code Date} and a
  * {@code LocalDateTime} of the same instant merge into one long; a DOUBLE column keeps a double, so integers above 2^53 that GROUP BY
  * keeps apart can merge; a LocalDate in a DATETIME_NANOS column saturates; a Float NaN in an ORDINAL column is refused where GROUP BY
- * keys it. A DOUBLE column stores -0.0 as 0.0, as GROUP BY keys both as Long 0.
+ * keys it. A DOUBLE column keeps -0.0 as it is, so MIN, MAX and STATS see the sign of a zero extreme; the TERMS and DISTINCT facets
+ * still key -0.0 and 0.0 as one value, and a DOUBLE column is never a GROUP BY key of the projection.
  * <p>
  * A sink must not call {@code extract} re-entrantly on the same thread: the ordinal buffer is per thread.
  * <p>
@@ -385,8 +386,7 @@ public final class ColumnarValueExtractor {
       if (!(raw instanceof Number number))
         return failed(sink);
       final double value = raw instanceof Float f ? Type.widenFloat(f) : number.doubleValue();
-      // -0.0 and 0.0 are one GROUP BY key (Long 0)
-      sink.doubleValue(value == 0d ? 0d : value);
+      sink.doubleValue(value);
       return 0;
     }
     default -> throw new IllegalStateException("Unknown column kind " + column.kind());

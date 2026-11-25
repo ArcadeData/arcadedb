@@ -68,10 +68,19 @@ public class SQLFunctionVectorBoost extends SQLFunctionVectorAbstract {
   }
 
   @Override
+  public int getMinArgs() {
+    return 2;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 2;
+  }
+
+  @Override
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
-    if (params == null || params.length != 2)
-      throw new CommandSQLParsingException(getSyntax());
+    checkArity(params);
 
     final Object source = params[0];
     if (!(params[1] instanceof Map<?, ?> rawOpts))
@@ -81,14 +90,18 @@ public class SQLFunctionVectorBoost extends SQLFunctionVectorAbstract {
     final List<?> rawBoosts = opts.getList("boosts");
     if (rawBoosts == null || rawBoosts.isEmpty())
       throw new CommandSQLParsingException(NAME + " 'boosts' option is required and must be non-empty");
-    final int limit = opts.getInt("limit", -1);
+    // Absent (or null) is no cap; 0 is a cap of no row and a negative one is refused
+    final int limit = opts.getNonNegativeInt("limit", Integer.MAX_VALUE);
 
     final Boost[] boosts = parseBoosts(rawBoosts);
 
     final List<Scored> scored = materialize(source, boosts);
+    // A limit of 0 returns here, after the source was validated, without sorting what it would drop
+    if (limit == 0)
+      return new ArrayList<>(0);
     scored.sort((a, b) -> Float.compare(b.boostedScore(), a.boostedScore()));
 
-    final int targetSize = limit > 0 ? Math.min(limit, scored.size()) : scored.size();
+    final int targetSize = Math.min(limit, scored.size());
     final ArrayList<Object> out = new ArrayList<>(targetSize);
     for (int i = 0; i < targetSize; i++) {
       final Scored s = scored.get(i);

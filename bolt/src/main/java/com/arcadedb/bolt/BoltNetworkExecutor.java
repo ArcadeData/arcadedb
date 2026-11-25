@@ -50,7 +50,10 @@ import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.EquivalentIndexException;
 import com.arcadedb.exception.ErrorCategory;
+import com.arcadedb.exception.ExternalResourceException;
+import com.arcadedb.exception.ImplicitTransactionRequiredException;
 import com.arcadedb.exception.InvalidPropertyTypeException;
+import com.arcadedb.exception.ObjectInUseException;
 import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryAdmissionException;
@@ -61,6 +64,8 @@ import com.arcadedb.exception.ValidationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.RunningQuery;
+import com.arcadedb.query.opencypher.ast.CypherDDLStatement;
+import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.query.CypherSchemaCommands;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.opencypher.query.ShowCommandTail;
@@ -70,6 +75,7 @@ import com.arcadedb.query.sql.executor.ExecutionStep;
 import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ErrorConcealment;
@@ -99,6 +105,8 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -140,6 +148,8 @@ public class BoltNetworkExecutor extends Thread {
   }
 
   private final ArcadeDBServer      server;
+  // The readiness gates ROUTE reads (issue #12551), built on the first ROUTE of this connection. Connection thread only.
+  private ServerControlPlane        controlPlane;
   private volatile Socket           socket; // Reassigned to the SSLSocket once TLS negotiation completes
   private final BoltSslHelper       sslHelper;
   /**
@@ -194,6 +204,12 @@ public class BoltNetworkExecutor extends Thread {
    * rather than quietly act on whichever stream happens to be current.
    */
   private static final long OMITTED_QID = -1;
+  /** What an empty query is analyzed as: a read. */
+  private static final CypherStatement EMPTY_STATEMENT = () -> true;
+  /** The prefixes that ask for a plan, each with the space that follows it: the engine strips them before it parses. */
+  private static final String PLAN_PREFIX_EXPLAIN = "EXPLAIN ";
+  private static final String PLAN_PREFIX_PROFILE = "PROFILE ";
+  private static final int    PLAN_PREFIX_LENGTH  = PLAN_PREFIX_EXPLAIN.length();
   /** What a COMMIT or a RUN past the explicit transaction's tx_timeout is refused with (issue #11392). */
   private static final String TRANSACTION_TIMED_OUT_MESSAGE =
       "The transaction has been terminated because it ran longer than the timeout it was begun with (tx_timeout)";
@@ -253,7 +269,19 @@ public class BoltNetworkExecutor extends Thread {
       // Main message loop
       while (state != State.DISCONNECTED) {
         try {
-          final byte[] messageData = input.readMessage();
+          final byte[] messageData;
+          try {
+            messageData = input.readMessage();
+          } catch (final EOFException | SocketException | SocketTimeoutException e) {
+            // The peer went away, or the bounded pre-authentication wait ran out: the clauses below already end the connection
+            // for these, without a reply
+            throw e;
+          } catch (final IOException e) {
+            // The read stopped part way through a message (a size limit, a malformed frame, a broken transport), so the next
+            // byte on the stream is not the start of a request and there is no way to find where one starts: end the connection
+            closeAfterUnreadableMessage(e);
+            break;
+          }
           if (messageData.length == 0) {
             continue;
           }
@@ -328,6 +356,27 @@ public class BoltNetworkExecutor extends Thread {
       releasePreAuthTicket();
       cleanup();
     }
+  }
+
+  /**
+   * Ends the connection after {@link BoltChunkedInput#readMessage()} failed with something other than the peer going away.
+   * The failure leaves the stream anywhere inside the message (a chunk or a frame refused for its declared size is not even
+   * read), so what follows it is not framed as a request. Reading on, or reading the rest of the message to get back in step,
+   * would take bytes the peer chose for the start of the next request, or read without a bound. The peer is told once, best
+   * effort, and the caller leaves the loop, which closes the socket.
+   */
+  private void closeAfterUnreadableMessage(final IOException cause) {
+    final String reason = Objects.requireNonNullElse(cause.getMessage(), "the message is not readable");
+    if (isPreAuthentication())
+      logPeerError("BOLT closing the connection: an incoming message could not be read: %s", reason);
+    else
+      LogManager.instance().log(this, Level.WARNING, "BOLT closing the connection: an incoming message could not be read: %s", reason);
+    try {
+      sendFailure(BoltException.PROTOCOL_ERROR, loggedClientMessage(reason));
+    } catch (final IOException e) {
+      // The peer is gone or not reading: nobody left to tell
+    }
+    state = State.DISCONNECTED;
   }
 
   /**
@@ -847,10 +896,6 @@ public class BoltNetworkExecutor extends Thread {
     resolveRequestDatabase(db);
 
     final String query = message.getQuery();
-    final Map<String, Object> params = message.getParameters();
-
-    if (debug)
-      LogManager.instance().log(this, Level.FINE, "BOLT executing: %s with params %s (db=%s)", query, params, databaseName);
 
     final BoltQueryStream stream = new BoltQueryStream(nextQid);
 
@@ -861,6 +906,13 @@ public class BoltNetworkExecutor extends Thread {
     // connection's GQL session to the thread context, which the engine reads for SESSION statements.
     if (!ensureDatabase())
       return;
+
+    // The first read of the parameters turns them into the values the engine binds: only a RUN that every check above let
+    // through pays for it. It comes before the time budget below is taken, so the conversion is part of what the budget spent
+    final Map<String, Object> params = message.getParameters();
+
+    if (debug)
+      LogManager.instance().log(this, Level.FINE, "BOLT executing: %s with params %s (db=%s)", query, params, databaseName);
 
     // The time this statement may run (issue #11392): what is left of the explicit transaction's timeout, or the auto-commit
     // query's own tx_timeout. A transaction already past its timeout runs nothing more
@@ -879,20 +931,20 @@ public class BoltNetworkExecutor extends Thread {
       // issue #7946, so SHOW DATABASES WHERE name = $dbName - Neo4j's bootstrap existence check - answered with
       // every database on the server no matter what was bound.
       try {
-        applySystemQueryTail(query, params, stream);
+        applySystemQueryTail(query, params, stream, statementTimeoutMs);
       } catch (final CommandParsingException e) {
         stream.close(this, "RUN failure");
         // Through the category, which keeps a genuine parsing failure's own title (classifyParsingError) and lets a failure that
         // outranks parsing, wrapped by this exception, say what it is: a held database is not a syntax error (issue #10553)
         sendExecutionFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR),
-            clientMessage(e.getMessage() != null ? e.getMessage() : "Query parsing error", e), e);
+            clientMessage(failureText(e, "Query parsing error"), e), e);
         state = State.FAILED;
         return;
       } catch (final Exception e) {
         stream.close(this, "RUN failure");
         LogManager.instance().log(this, Level.WARNING, "BOLT system query error", e);
         sendExecutionFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR),
-            loggedClientMessage(e.getMessage() != null ? e.getMessage() : "Database error"), e);
+            loggedClientMessage(failureText(e, "Database error")), e);
         state = State.FAILED;
         return;
       }
@@ -912,8 +964,9 @@ public class BoltNetworkExecutor extends Thread {
     final boolean readAccessMode = explicitTransaction ? transactionReadOnly : isReadAccessMode(message.getExtra());
     try {
       // Determine if this is a write query using the query analyzer: one it cannot analyze counts as a write, to be safe
-      final Boolean writeQuery = classifyWriteQuery(query);
-      stream.writeOperation = writeQuery == null || writeQuery;
+      final CypherStatement statement = analyzeStatement(query);
+      final Boolean writeQuery = statement == null ? null : !statement.isReadOnly();
+      final boolean runAsWrite = writeQuery == null || writeQuery;
 
       // Detect EXPLAIN / PROFILE prefix so we can later surface the execution plan
       // in PULL SUCCESS metadata (consumed by Neo4j drivers as ResultSummary#plan / #profile).
@@ -921,9 +974,16 @@ public class BoltNetworkExecutor extends Thread {
       // was present here to choose between record-streaming (PROFILE) and plan-only (EXPLAIN)
       // and to pick the correct metadata key.
       final String trimmedQuery = query == null ? "" : query.trim();
-      final String upperQuery = trimmedQuery.toUpperCase(Locale.ROOT);
-      final boolean explainMode = upperQuery.startsWith("EXPLAIN ");
-      final boolean profileMode = !explainMode && upperQuery.startsWith("PROFILE ");
+      final boolean explainMode = trimmedQuery.regionMatches(true, 0, PLAN_PREFIX_EXPLAIN, 0, PLAN_PREFIX_LENGTH);
+      final boolean profileMode = !explainMode && trimmedQuery.regionMatches(true, 0, PLAN_PREFIX_PROFILE, 0, PLAN_PREFIX_LENGTH);
+
+      // The summary's query type is the one of the statement an EXPLAIN or a PROFILE wraps, as Neo4j reports it (issue #11972).
+      // The grammar does not parse the prefix, so the analysis above fails for them and reads as a write: what to run, and in
+      // which access mode, stays decided by it, but a PROFILE of a read must not report a write
+      final CypherStatement typedStatement =
+          explainMode || profileMode ? analyzeStatement(trimmedQuery.substring(PLAN_PREFIX_LENGTH).trim()) : statement;
+      stream.writeOperation = typedStatement == null || !typedStatement.isReadOnly();
+      stream.schemaOperation = typedStatement instanceof CypherDDLStatement;
 
       // A write in READ access mode is refused before it runs, as Neo4j refuses it (issue #11392): session.executeRead used
       // to write. An EXPLAIN executes nothing, so it is not a write whatever it explains
@@ -950,10 +1010,7 @@ public class BoltNetworkExecutor extends Thread {
       // The budget the engine enforces on the statement (arcadedb.command.timeout), published right before the statement's
       // context is built - after the admission wait, which is not the statement's - so the rows a later PULL reads run against
       // the same deadline. The earlier of the two wins, as for Postgres statement_timeout
-      if (statementTimeoutMs > 0) {
-        final long databaseTimeout = database.getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_TIMEOUT);
-        CommandTimeoutOverride.set(databaseTimeout > 0 ? Math.min(databaseTimeout, statementTimeoutMs) : statementTimeoutMs);
-      }
+      publishStatementTimeout(statementTimeoutMs);
 
       // Use command() for writes, query() for reads.
       // An AUTO-COMMIT write commits here, at RUN, not at the end of its stream as the Bolt specification has it: a RESET or a
@@ -963,7 +1020,7 @@ public class BoltNetworkExecutor extends Thread {
       // only a raw client that resets or drops in between sees the difference; an explicit transaction is unaffected
       // In READ access mode a statement the analyzer could not classify runs as a read: query() reports what is wrong with it,
       // and refuses it if it does write (QueryNotIdempotentException, answered as the access-mode refusal below)
-      if (stream.writeOperation && !(readAccessMode && writeQuery == null)) {
+      if (runAsWrite && !(readAccessMode && writeQuery == null)) {
         stream.resultSet = database.command("opencypher", query, params);
       } else {
         stream.resultSet = database.query("opencypher", query, params);
@@ -1014,7 +1071,7 @@ public class BoltNetworkExecutor extends Thread {
 
     } catch (final CommandParsingException e) {
       stream.close(this, "RUN failure");
-      final String parseMsg = e.getMessage() != null ? e.getMessage() : "Query parsing error";
+      final String parseMsg = failureText(e, "Query parsing error");
       // Through the category, as the system-query catch does (issue #10553)
       sendExecutionFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR), clientMessage(parseMsg, e), e);
       state = State.FAILED;
@@ -1030,7 +1087,7 @@ public class BoltNetworkExecutor extends Thread {
       // so log them at FINE to avoid flooding WARNING with normal, recoverable flow; genuine errors stay WARNING.
       stream.close(this, "RUN failure");
       LogManager.instance().log(this, isRetryableConflict(e) ? Level.FINE : Level.WARNING, "BOLT query error", e);
-      final String errorMsg = e.getMessage() != null ? e.getMessage() : "Database error";
+      final String errorMsg = failureText(e, "Database error");
       sendExecutionFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR), loggedClientMessage(errorMsg), e);
       state = State.FAILED;
     } finally {
@@ -1128,7 +1185,7 @@ public class BoltNetworkExecutor extends Thread {
       // MVCC conflicts (incl. those raised by an implicit auto-commit here) are expected and auto-retried
       // by the driver, so log at FINE to avoid flooding WARNING with recoverable flow; real errors stay WARNING.
       LogManager.instance().log(this, isRetryableConflict(e) ? Level.FINE : Level.WARNING, "BOLT PULL error", e);
-      final String errorMsg = e.getMessage() != null ? e.getMessage() : "Error fetching records";
+      final String errorMsg = failureText(e, "Error fetching records");
       sendExecutionFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR), loggedClientMessage(errorMsg), e);
       // The failed stream can neither be pulled nor discarded any more: released now, with its admission slot (issue #9518),
       // rather than held until the client RESETs or disconnects
@@ -1173,7 +1230,7 @@ public class BoltNetworkExecutor extends Thread {
       // ANSWERED AS A FAILED PULL IS (issue #11392): A TIMEOUT OR A RETRYABLE CONFLICT MET WHILE SKIPPING ROWS KEEPS ITS CODE, AND THE
       // STREAM AND ITS ADMISSION SLOT (ISSUE #9518) GO NOW, NOT AT THE CLIENT'S RESET
       LogManager.instance().log(this, isRetryableConflict(e) ? Level.FINE : Level.WARNING, "BOLT DISCARD error", e);
-      final String errorMsg = e.getMessage() != null ? e.getMessage() : "Error discarding records";
+      final String errorMsg = failureText(e, "Error discarding records");
       sendExecutionFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR), loggedClientMessage(errorMsg), e);
       closeStream(stream, "DISCARD failure");
       state = State.FAILED;
@@ -1194,8 +1251,7 @@ public class BoltNetworkExecutor extends Thread {
    */
   private Map<String, Object> completeStream(final BoltQueryStream stream, final String phase) {
     final Map<String, Object> metadata = new LinkedHashMap<>();
-    // r=read, w=write (for simplicity, we use binary classification)
-    metadata.put("type", stream.writeOperation ? "w" : "r");
+    metadata.put("type", queryType(stream));
     metadata.put("t_last", (System.nanoTime() - stream.queryStartTime) / 1_000_000);
     if (stream.planMetadata != null && stream.planMetadataKey != null)
       metadata.put(stream.planMetadataKey, stream.planMetadata);
@@ -1244,7 +1300,7 @@ public class BoltNetworkExecutor extends Thread {
       } catch (final Exception rollbackError) {
         LogManager.instance().log(this, Level.WARNING, "Failed to rollback after BEGIN error", rollbackError);
       }
-      final String errorMsg = e.getMessage() != null ? e.getMessage() : "Transaction error";
+      final String errorMsg = failureText(e, "Transaction error");
       // Through the classifier, exactly as handleCommit does, with TRANSACTION_ERROR kept as the unclassified
       // fallback: opening a transaction can fail on an MVCC conflict, a lock timeout, a deadline or a security
       // refusal, and hand-coding TransactionNotFound for all of them told a driver's retry predicate that a
@@ -1288,7 +1344,7 @@ public class BoltNetworkExecutor extends Thread {
       state = State.READY;
 
     } catch (final Exception e) {
-      final String message = e.getMessage() != null ? e.getMessage() : "Commit error";
+      final String message = failureText(e, "Commit error");
       sendExecutionFailure(classifyExecutionError(e, BoltErrorCodes.TRANSACTION_ERROR), clientMessage(message, e), e);
       state = State.FAILED;
     }
@@ -1309,7 +1365,7 @@ public class BoltNetworkExecutor extends Thread {
       state = State.READY;
 
     } catch (final Exception e) {
-      final String message = e.getMessage() != null ? e.getMessage() : "Rollback error";
+      final String message = failureText(e, "Rollback error");
       // The third of the three transaction handlers, routed through the one classifier for the same reason the
       // other two are (issue #7915): closeAllStreams() and rollback() both raise engine exceptions, and a
       // timeout or a security refusal reported as TransactionNotFound is a diagnosis the caller cannot act on.
@@ -1322,6 +1378,18 @@ public class BoltNetworkExecutor extends Thread {
    * Handle ROUTE message - return routing table for cluster-aware drivers.
    */
   private void handleRoute(final RouteMessage message) throws IOException {
+    // Issue #12551: a node of a cluster that cannot take traffic yet (still starting, its HA layer not registered, out of
+    // the cluster, its replication stopped) refuses the table instead of describing one. Before, a starting node had no
+    // HA plugin yet and took the single-node branch below, naming ITSELF as the writer, and a driver that refreshed its
+    // table there sent its writes to a node that had not caught up. A transient error is not fatal to discovery: the
+    // driver asks the next router it knows.
+    final String refusal = routeRefusalReason();
+    if (refusal != null) {
+      sendFailure(BoltErrorCodes.DATABASE_UNAVAILABLE_ERROR, "This node cannot serve a routing table: " + refusal);
+      state = State.FAILED;
+      return;
+    }
+
     final Map<String, Object> rt = new LinkedHashMap<>();
     rt.put("ttl", server.getConfiguration().getValueAsLong(GlobalConfiguration.BOLT_ROUTING_TTL));
     rt.put("db", message.getDatabase() != null ? message.getDatabase() : helloDatabaseName);
@@ -1369,6 +1437,24 @@ public class BoltNetworkExecutor extends Thread {
     rt.put("servers", servers);
 
     sendSuccess(CollectionUtils.singletonMap("rt", rt));
+  }
+
+  /**
+   * Why this node must not answer ROUTE, or {@code null} when it may (issue #12551). Only a node configured for high
+   * availability refuses: other routers can answer for it, and the readiness it reads is the one {@code /api/v1/ready}
+   * reads, so a node out of the Service is not a router either. HA is decided by the configuration, not by the plugin
+   * being registered, because the plugin registers itself after the Bolt listener starts accepting connections. A
+   * standalone server is the only router its clients have, so it keeps answering.
+   */
+  private String routeRefusalReason() {
+    if (!server.isHARequested())
+      return null;
+    if (server.getHA() == null)
+      return "high availability is configured but not active on this node yet";
+    ServerControlPlane plane = controlPlane;
+    if (plane == null)
+      controlPlane = plane = new ServerControlPlane(server);
+    return plane.notReadyReason();
   }
 
   /**
@@ -1593,21 +1679,44 @@ public class BoltNetworkExecutor extends Thread {
    * (see {@link ShowCommandTail}), including the client's own parameters.
    * <p>
    * A command with no tail - by far the common case - costs one lexer pass and nothing else.
+   * <p>
+   * A tail is a query of the engine, so it runs as the statements of the normal path do: after the admission gate, listed
+   * with the running statements where it can be terminated, and under the time budget of the statement.
    */
-  private void applySystemQueryTail(final String query, final Map<String, Object> params, final BoltQueryStream stream) {
-    if (stream.syntheticResults == null || stream.fields == null)
+  private void applySystemQueryTail(final String query, final Map<String, Object> params, final BoltQueryStream stream,
+      final long statementTimeoutMs) {
+    if (stream.syntheticResults == null || stream.fields == null || !ShowCommandTail.hasTail(query))
       return;
 
-    // apply() answers with the table unchanged when the command has no tail, so it is called unconditionally
-    // rather than after a hasTail() that would tokenize the query a second time.
-    final ShowCommandTail.Table table = ShowCommandTail.apply(database, query, stream.fields, stream.syntheticResults,
-        params);
-    if (table.rows() == stream.syntheticResults && table.fields() == stream.fields)
-      return;
+    final ShowCommandTail.Table table;
+    try (final QueryAdmissionGate.Ticket admission = QueryAdmissionGate.getInstance().admit();
+        final RunningQuery runningQuery = server.getRunningQueries().open(database.getName(), user != null ? user.getName() : null,
+            "bolt", null, null, RunningQuery.Client.of(connectionId, socket.getRemoteSocketAddress()))) {
+      runningQuery.setStatement("opencypher", query);
+      try (final RunningQuery.Binding binding = runningQuery.bind()) {
+        publishStatementTimeout(statementTimeoutMs);
+        table = ShowCommandTail.apply(database, query, stream.fields, stream.syntheticResults, params);
+      } finally {
+        CommandTimeoutOverride.clear();
+      }
+    }
 
     stream.fields = table.fields();
     // Copied into a list PULL may consume destructively: it removes each row as it sends it.
     stream.syntheticResults = new ArrayList<>(table.rows());
+  }
+
+  /**
+   * Publishes the budget the statement about to run may take, on this thread, for the engine to enforce on it: the earlier of
+   * the statement's own ({@code tx_timeout}, or what is left of the explicit transaction's) and the database's
+   * {@code arcadedb.command.timeout}, as for Postgres statement_timeout. Does nothing for a statement with no budget of its own.
+   * The caller clears it when the statement's work is over.
+   */
+  private void publishStatementTimeout(final long statementTimeoutMs) {
+    if (statementTimeoutMs > 0) {
+      final long databaseTimeout = database.getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_TIMEOUT);
+      CommandTimeoutOverride.set(databaseTimeout > 0 ? Math.min(databaseTimeout, statementTimeoutMs) : statementTimeoutMs);
+    }
   }
 
   /**
@@ -1811,14 +1920,24 @@ public class BoltNetworkExecutor extends Thread {
    * For element results (e.g., RETURN n where n is a vertex), the whole element
    * is returned as a single value, converted to BoltNode/BoltRelationship.
    */
-  private List<Object> extractRecordValues(final Result result, final List<String> fields) {
-    final List<Object> values = new ArrayList<>();
+  // Package-private and static for Issue12582BoltOnePassPropertiesTest: it reads no state of the executor
+  static List<Object> extractRecordValues(final Result result, final List<String> fields) {
+    final List<Object> values = new ArrayList<>(fields.size());
 
     // Check if this is an unwrapped element result
     // (single vertex/edge returned directly from RETURN clause)
     if (result.isElement() && result.getMetadata(PROJECTION_NAME_METADATA) != null) {
       // Return the element as a single value
       values.add(BoltStructureMapper.toPackStreamValue(result.getElement().orElse(null)));
+    } else if (result.isElement()) {
+      // A row backed by a record: its properties are read in one pass, not one walk of the record per field (issue #12582)
+      // A field the map does not hold that names an attribute (@in, @out of an edge) is not a property the record stores:
+      // the row answers it as it always did
+      final Map<String, Object> properties = ResultInternal.propertiesOf(result);
+      for (final String field : fields) {
+        final Object value = properties.containsKey(field) || !field.startsWith("@") ? properties.get(field) : result.getProperty(field);
+        values.add(BoltStructureMapper.toPackStreamValue(value));
+      }
     } else {
       // Standard projection result - extract each field
       for (final String field : fields) {
@@ -1831,19 +1950,17 @@ public class BoltNetworkExecutor extends Thread {
   }
 
   /**
-   * Determine if a Cypher query contains write operations, using ArcadeDB's query analyzer: {@code TRUE} for a write,
-   * {@code FALSE} for a read, and {@code null} when the analysis itself failed (a statement that does not parse, for one),
-   * which the caller runs as a write to be safe - except in READ access mode, where it is run as a read so the engine reports
-   * what is wrong with it rather than a write refusal it may not deserve (issue #11392).
+   * The parsed statement, read from the statement cache the execution that follows uses too, or {@code null} when the analysis
+   * itself failed (a statement that does not parse, for one), which the caller runs as a write to be safe - except in READ access
+   * mode, where it is run as a read so the engine reports what is wrong with it rather than a write refusal it may not deserve
+   * (issue #11392). An empty query is a read.
    */
-  private Boolean classifyWriteQuery(final String query) {
+  private CypherStatement analyzeStatement(final String query) {
     if (query == null || query.isEmpty())
-      return Boolean.FALSE;
+      return EMPTY_STATEMENT;
 
     try {
-      // Use the statement cache directly to avoid creating an AnalyzedQuery wrapper object.
-      // The statement cache returns the parsed CypherStatement with isReadOnly() already computed.
-      return !((DatabaseInternal) database).getCypherStatementCache().isIdempotent(query);
+      return ((DatabaseInternal) database).getCypherStatementCache().getParameterized(query).statement().statement();
     } catch (final Exception e) {
       // Log at FINE level to avoid spam for complex but valid queries
       LogManager.instance().log(this, Level.FINE,
@@ -1851,6 +1968,20 @@ public class BoltNetworkExecutor extends Thread {
               " - assuming write operation", e);
       return null;
     }
+  }
+
+  /**
+   * The summary's query type, as Neo4j's planner answers it (issue #11972): {@code s} for a schema statement (index and constraint
+   * DDL), {@code r} for a statement that writes nothing, and for a write {@code rw} when it returns columns and {@code w} when it
+   * returns none. The columns are the ones announced to the client, which a zero-row result takes from the statement's RETURN
+   * or YIELD, so a write whose MATCH found nothing is still {@code rw}.
+   */
+  private static String queryType(final BoltQueryStream stream) {
+    if (stream.schemaOperation)
+      return "s";
+    if (!stream.writeOperation)
+      return "r";
+    return stream.fields != null && !stream.fields.isEmpty() ? "rw" : "w";
   }
 
   /**
@@ -2119,6 +2250,33 @@ public class BoltNetworkExecutor extends Thread {
   }
 
   /**
+   * What a FAILURE says about {@code error} (issue #11973): the failure its code is classified from, with that failure's own causes
+   * ({@link ErrorConcealment#detailChain}), which is what the HTTP API answers as the {@code detail} of the same statement. A query
+   * engine wraps every failure of a statement ("Error executing Cypher command: &lt;statement&gt;"), and the wrapper's message
+   * only repeats the statement: the reason - a duplicated key, a constraint that exists, an index that does not - never reached a
+   * driver. A parsing failure is the innermost one of the chain, the analysis failure a wrapper of the analyzer hides (issue
+   * #11785). A failure no rule classifies is the whole chain, as HTTP answers it. {@code fallback} when there is no failure.
+   */
+  static String failureText(final Throwable error, final String fallback) {
+    if (error == null)
+      return fallback;
+    Throwable source = ErrorCategory.of(error) == ErrorCategory.PARSING ? innermostParsingFailure(error) : null;
+    if (source == null)
+      source = ErrorCategory.classifiedCause(error);
+    return ErrorConcealment.detailChain(source != null ? source : error);
+  }
+
+  /** The innermost {@link CommandParsingException} of the cause chain of {@code error}, or null when it has none. */
+  static CommandParsingException innermostParsingFailure(final Throwable error) {
+    CommandParsingException innermost = null;
+    final Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
+    for (Throwable current = error; current != null && visited.add(current); current = current.getCause())
+      if (current instanceof CommandParsingException parsing)
+        innermost = parsing;
+    return innermost;
+  }
+
+  /**
    * Classify a query/transaction execution error into a Bolt status code.
    * <p>
    * The classification itself is {@link ErrorCategory}, the one place ArcadeDB's exception hierarchy is read, so
@@ -2160,11 +2318,25 @@ public class BoltNetworkExecutor extends Thread {
     if (category == ErrorCategory.VALIDATION && CauseChain.contains(error, TypeMismatchException.class))
       return BoltErrorCodes.TYPE_ERROR;
 
+    // CALL { ... } IN TRANSACTIONS in a BEGIN or managed transaction: Neo4j's TransactionStartFailed, where the category alone
+    // says ArgumentError (issue #12161)
+    if (category == ErrorCategory.VALIDATION && CauseChain.contains(error, ImplicitTransactionRequiredException.class))
+      return BoltErrorCodes.TRANSACTION_START_FAILED_ERROR;
+
     // A value a constraint the schema declares refuses - NOT NULL, a MIN, a REGEXP, a property type: what Neo4j answers for a
     // violated property existence or type constraint, where the category alone says ArgumentError (issue #11314)
     if (category == ErrorCategory.VALIDATION && CauseChain.find(error, ValidationException.class) instanceof ValidationException refused
         && refused.getKind() != null && refused.getKind().isDeclaredConstraint())
       return BoltErrorCodes.CONSTRAINT_VIOLATION_ERROR;
+
+    // A delete refused for what the database holds - a node that still has relationships (openCypher's DeleteConnectedNode): Neo4j's
+    // ConstraintValidationFailed, where the category alone says ArgumentError (issue #11974)
+    if (category == ErrorCategory.VALIDATION && CauseChain.contains(error, ObjectInUseException.class))
+      return BoltErrorCodes.CONSTRAINT_VIOLATION_ERROR;
+
+    // A LOAD CSV URL that cannot be opened or read: Neo4j's ExternalResourceFailed (issue #11974)
+    if (category == ErrorCategory.VALIDATION && CauseChain.contains(error, ExternalResourceException.class))
+      return BoltErrorCodes.EXTERNAL_RESOURCE_FAILED_ERROR;
 
     // A CALL of a procedure nothing answers: Neo4j's ProcedureNotFound, where the category alone says SyntaxError, the title of
     // a FUNCTION nothing answers (issue #11384)
@@ -2193,7 +2365,8 @@ public class BoltNetworkExecutor extends Thread {
       case SCHEMA -> BoltErrorCodes.SEMANTIC_ERROR;
       case SECURITY -> BoltErrorCodes.FORBIDDEN_ERROR;
       case VALIDATION -> BoltErrorCodes.ARGUMENT_ERROR;
-      case PARSING -> classifyParsingError(CauseChain.find(error, CommandParsingException.class));
+      // the innermost parsing failure of the chain: an analyzer that wraps the one it hit must not relabel it (issue #11785)
+      case PARSING -> classifyParsingError(innermostParsingFailure(error));
       // A query/statement deadline, not the retryable LockTimeoutException contention RETRY already took. NOT
       // Transaction.Terminated, which means "explicitly killed by the user" and is excluded from driver retry
       // predicates for exactly that reason (issue #7123).

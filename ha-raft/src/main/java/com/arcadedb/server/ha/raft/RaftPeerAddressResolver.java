@@ -159,7 +159,7 @@ final class RaftPeerAddressResolver {
    * the {@code httpsAddresses} map only when an HTTPS port is given. Both are keyed by the
    * {@link RaftPeerId} of each peer. The HTTPS port is optional: when omitted, a homogeneous cluster
    * can still transfer snapshots over HTTPS because the address is derived from this node's local
-   * HTTPS listening port (see {@code RaftHAServer#resolveHttpsAddress}).
+   * HTTPS listening port (see {@code PeerEndpoints#resolveHttpsAddress}).
    * <p>
    * Priority is used for Raft leader election: the node with the highest priority is preferred as leader.
    * This is a soft preference - if the preferred leader is unavailable, another node will take over.
@@ -584,7 +584,7 @@ final class RaftPeerAddressResolver {
     // Match the server name against the host component of each peer's Raft address. Covers the
     // plain "host:raftPort:httpPort" (or bare-IP) server list where the node is named after its host.
     for (final RaftPeer peer : peers)
-      if (serverName.equals(RaftHAServer.extractHost(peer.getAddress())))
+      if (serverName.equals(PeerEndpoints.extractHost(peer.getAddress())))
         return peer.getId();
 
     final int separatorIdx;
@@ -594,7 +594,7 @@ final class RaftPeerAddressResolver {
       final List<String> configuredNames = peerNames != null ? new ArrayList<>(peerNames.values()) : List.of();
       final List<String> peerHosts = new ArrayList<>(peers.size());
       for (final RaftPeer peer : peers)
-        peerHosts.add(RaftHAServer.extractHost(peer.getAddress()));
+        peerHosts.add(PeerEndpoints.extractHost(peer.getAddress()));
       throw new IllegalArgumentException(
           "Cannot determine which cluster peer this node is: server name '" + serverName
               + "' does not match any configured peer name"

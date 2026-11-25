@@ -18,10 +18,11 @@
  */
 package com.arcadedb.query.sql.method.geo;
 
-import org.locationtech.spatial4j.shape.SpatialRelation;
+import com.arcadedb.function.sql.geo.GeoUtils;
+import org.locationtech.spatial4j.shape.Shape;
 
 /**
- * Returns true if a shape is inside another shape
+ * Returns true if a shape is inside another shape, a shape being inside itself (see {@link GeoUtils#within}).
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -34,8 +35,8 @@ public class SQLMethodIsWithin extends AbstractSQLGeoRelationMethod {
   }
 
   @Override
-  protected boolean matches(final SpatialRelation relation) {
-    return relation == SpatialRelation.WITHIN;
+  protected boolean matches(final Shape value, final Shape shape) {
+    return GeoUtils.within(value, shape);
   }
 
   @Override

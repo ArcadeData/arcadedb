@@ -59,7 +59,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * (plan 3 contract: a snapshot install always leads to a {@code snapshot_install} rebuild), not {@code missing}.
  * <p>
  * Drives the real {@code acquireNewDatabase} with a local HTTP server standing in for the leader's snapshot endpoint, as
- * {@code Issue7650AcquireExistsDatabaseRaceOwnershipTest} does.
+ * {@code AcquireExistsDatabaseRaceOwnershipTest} does.
  */
 class ColumnarAcquireNewDatabaseRebuildTest {
   private static final String DB_NAME  = "acquireColumnar";

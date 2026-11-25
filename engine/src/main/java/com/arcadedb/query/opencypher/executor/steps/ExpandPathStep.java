@@ -190,7 +190,11 @@ public class ExpandPathStep extends AbstractExecutionStep implements DistinctEnd
       final Result row = input.next();
       if (!(row.getProperty(sourceVariable) instanceof Vertex source))
         continue;
-      final Vertex boundTarget = row.getProperty(targetVariable) instanceof Vertex vertex ? vertex : null;
+      final Object boundTargetValue = row.getProperty(targetVariable);
+      // A target an earlier OPTIONAL MATCH left null is bound, and a null vertex cannot be reached (#12728)
+      if (boundTargetValue == null && row.hasProperty(targetVariable))
+        continue;
+      final Vertex boundTarget = boundTargetValue instanceof Vertex vertex ? vertex : null;
       final boolean boundPath = GraphTraverser.isBoundRelationshipList(row, relationshipVariable);
       final boolean byView = viewTraverser != null && countableByView && boundTarget == null && !boundPath;
 
@@ -373,11 +377,13 @@ public class ExpandPathStep extends AbstractExecutionStep implements DistinctEnd
             lastResult = prevResults.next();
             final Object sourceObj = lastResult.getProperty(sourceVariable);
 
-            // Check if target variable is already bound (e.g., from a previous MATCH)
+            // Check if target variable is already bound (e.g., from a previous MATCH). A target an earlier OPTIONAL MATCH left
+            // null is bound too, and a null vertex cannot be reached (#12728)
             final Object targetObj = lastResult.getProperty(targetVariable);
             boundTarget = targetObj instanceof Vertex vertex ? vertex : null;
+            final boolean nullBoundTarget = targetObj == null && lastResult.hasProperty(targetVariable);
 
-            if (sourceObj instanceof Vertex) {
+            if (sourceObj instanceof Vertex && !nullBoundTarget) {
               final Vertex sourceVertex = (Vertex) sourceObj;
               // A relationship list an earlier clause bound to this variable is the whole path: expanding the
               // graph instead ignored the binding and returned every walk the pattern allows (issue #9828)
@@ -535,20 +541,13 @@ public class ExpandPathStep extends AbstractExecutionStep implements DistinctEnd
 
     final List<String> labels = new ArrayList<>(staticLabels.size() + targetNodePattern.getDynamicLabels().size());
     labels.addAll(staticLabels);
+    // (n:A|$([])) is A OR the empty conjunction: every node (issue #12338). Every operand is still evaluated, so a value that
+    // is not a label is the same type error whatever the order of the operands
+    boolean emptyDisjunct = false;
     for (final Expression dynamicLabel : targetNodePattern.getDynamicLabels())
-      appendResolvedLabels(labels, dynamicLabelEvaluator.evaluate(dynamicLabel, currentResult, context));
-    return labels;
-  }
-
-  private static void appendResolvedLabels(final List<String> labels, final Object resolved) {
-    if (resolved == null)
-      return;
-    if (resolved instanceof Iterable) {
-      for (final Object item : (Iterable<?>) resolved)
-        if (item != null)
-          labels.add(item.toString());
-    } else
-      labels.add(resolved.toString());
+      if (!Labels.appendDynamicMatchLabels(labels, dynamicLabelEvaluator.evaluate(dynamicLabel, currentResult, context)))
+        emptyDisjunct = true;
+    return emptyDisjunct && targetNodePattern.isLabelDisjunction() ? List.of() : labels;
   }
 
   private boolean matchesTargetProperties(final Vertex vertex, final Result currentResult) {

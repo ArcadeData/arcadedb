@@ -31,7 +31,6 @@ import com.arcadedb.exception.ValueOutOfRangeException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.opencypher.temporal.CypherDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
-import com.arcadedb.query.opencypher.temporal.CypherLocalTime;
 import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
 import com.arcadedb.query.opencypher.temporal.CypherTime;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
@@ -543,6 +542,30 @@ public enum Type {
   }
 
   /**
+   * {@link #canBeIndexLookupKey(Database, Object, Class)} for a key of the binary type {@code keyType}, which also holds the
+   * collection key types to it (issue #12792): a LIST key is only read from a collection or an array, a MAP key only from a map.
+   * Any other value was left as it was (or serialized) and cast by the key comparison, while it matches no row without the index.
+   */
+  public static boolean canBeIndexLookupKey(final Database database, final Object value, final byte keyType) {
+    return canBeCollectionIndexKey(value, keyType) && canBeIndexLookupKey(database, value, BinaryTypes.getClassFromType(keyType));
+  }
+
+  /** {@link #isReadAsIndexKey(Object, Object, Class)} for a key of the binary type {@code keyType}, collection key types included. */
+  public static boolean isReadAsIndexKey(final Object original, final Object converted, final byte keyType) {
+    return canBeCollectionIndexKey(original, keyType) && isReadAsIndexKey(original, converted, BinaryTypes.getClassFromType(keyType));
+  }
+
+  private static boolean canBeCollectionIndexKey(final Object value, final byte keyType) {
+    if (value == null)
+      return true;
+    return switch (keyType) {
+      case BinaryTypes.TYPE_LIST -> value instanceof Collection || value.getClass().isArray();
+      case BinaryTypes.TYPE_MAP -> value instanceof Map;
+      default -> true;
+    };
+  }
+
+  /**
    * Whether {@code targetClass} is one of the scalar key classes the index lookup checks hold to: string, boolean, numbers and
    * temporals.
    */
@@ -602,7 +625,13 @@ public enum Type {
   private static boolean isDateTimeTarget(final Class<?> targetClass) {
     return targetClass.equals(Date.class) || targetClass.equals(Calendar.class) || targetClass.equals(LocalDate.class)
         || targetClass.equals(LocalDateTime.class) || targetClass.equals(ZonedDateTime.class)
-        || targetClass.equals(Instant.class);
+        || targetClass.equals(Instant.class) || targetClass.equals(OffsetTime.class) || targetClass.equals(LocalTime.class)
+        || targetClass.equals(CypherDuration.class);
+  }
+
+  /** The time of day {@code time} names, read on the UTC clock: the reading a LOCAL_TIME gives a time that carries an offset. */
+  private static LocalTime utcWallClock(final OffsetTime time) {
+    return time.withOffsetSameInstant(ZoneOffset.UTC).toLocalTime();
   }
 
   /**
@@ -814,13 +843,18 @@ public enum Type {
 
     try {
       if (targetClass.equals(String.class)) {
-        // An array's toString() is its class code and identity hash ("[B@72e34f77"): not the content, not stable, and
-        // not reversible. Refuse it rather than store that (issue #9041).
-        if (property != null && valueClass.isArray())
+        // A value read from text whose type the client left unspecified is that text as a STRING (issue #12711)
+        if (value instanceof SourceText source)
+          return source.sourceText();
+        // An array's toString() is its class code and identity hash ("[B@72e34f77"): not the content, not stable, and not
+        // reversible. Refuse it rather than store that (issue #9041), except the two arrays an HTTP request leaves in a value
+        // (see unwrapNestedPrimitiveArrays): a list nested in a map parameter arrives as a long[] / double[] and is stored as
+        // "[1, 2]", the text the same list has (issue #12896)
+        if (property != null && valueClass.isArray() && valueClass != long[].class && valueClass != double[].class)
           throw inconvertible(value, "STRING", property);
-        // Without a property - an index key of an undeclared property, whose key type is STRING - the content is the text, the
-        // one a list of the same elements has: the identity text was a key no seek found and no update or delete removed
-        // (issue #11578). A collection is written the same way, so an array nested in it is its content too.
+        // Without a property - an index key of an undeclared property, whose key type is STRING - the identity text was a key no
+        // seek found and no update or delete removed: the text of the content is the key (issue #11578). A collection is written
+        // the same way, so an array nested in it is its content too.
         if (valueClass.isArray() || property == null && value instanceof Collection)
           return elementsText(value, false);
         // A zoned datetime keeps the text form Cypher gave it before it had a native type (issue #8572)
@@ -1096,14 +1130,82 @@ public enum Type {
               "Cannot convert object of type '" + value.getClass().getName() + "' into an EmbeddedDocument");
 
       } else if (targetClass.equals(OffsetTime.class)) {
-        if (value instanceof String text)
+        // A time of day keeps its offset; one without (a local time, a local datetime, the text with no offset) is at UTC, and a
+        // datetime keeps its time of day, as a DATE keeps the date of one. Anything else is refused below, never kept as it came
+        // (issue #12296)
+        final Object temporal = TemporalUtil.toCoreJavaType(value);
+        switch (temporal) {
+        case OffsetTime time -> {
+          return time;
+        }
+        case String text -> {
           return CypherTime.parse(text).getValue();
+        }
+        case LocalTime time -> {
+          return time.atOffset(ZoneOffset.UTC);
+        }
+        case OffsetDateTime offset -> {
+          return offset.toOffsetTime();
+        }
+        case ZonedDateTime zoned -> {
+          return zoned.toOffsetDateTime().toOffsetTime();
+        }
+        case LocalDateTime local -> {
+          return local.toLocalTime().atOffset(ZoneOffset.UTC);
+        }
+        case Instant instant -> {
+          return instant.atOffset(ZoneOffset.UTC).toOffsetTime();
+        }
+        default -> {
+        }
+        }
       } else if (targetClass.equals(LocalTime.class)) {
-        if (value instanceof String text)
-          return CypherLocalTime.parse(text).getValue();
+        // The UTC wall clock of a value that carries an offset, as a DATETIME reads one (issue #10489); a datetime keeps its time
+        // of day. Anything else is refused below, never kept as it came (issue #12296)
+        final Object temporal = TemporalUtil.toCoreJavaType(value);
+        switch (temporal) {
+        case LocalTime time -> {
+          return time;
+        }
+        case String text -> {
+          return utcWallClock(CypherTime.parse(text).getValue());
+        }
+        case OffsetTime time -> {
+          return utcWallClock(time);
+        }
+        case LocalDateTime local -> {
+          return local.toLocalTime();
+        }
+        case OffsetDateTime offset -> {
+          return offset.atZoneSameInstant(ZoneOffset.UTC).toLocalTime();
+        }
+        case ZonedDateTime zoned -> {
+          return zoned.withZoneSameInstant(ZoneOffset.UTC).toLocalTime();
+        }
+        case Instant instant -> {
+          return instant.atOffset(ZoneOffset.UTC).toLocalTime();
+        }
+        default -> {
+        }
+        }
       } else if (targetClass.equals(CypherDuration.class)) {
-        if (value instanceof String text)
+        // Only an amount of time is a duration: a point in time or a time of day is refused below (issue #12296)
+        switch (value) {
+        case CypherDuration duration -> {
+          return duration;
+        }
+        case String text -> {
           return CypherDuration.parse(text);
+        }
+        case Duration duration -> {
+          return new CypherDuration(0, 0, duration.getSeconds(), duration.getNano());
+        }
+        case Period period -> {
+          return new CypherDuration(period.toTotalMonths(), period.getDays(), 0, 0);
+        }
+        default -> {
+        }
+        }
       } else if (targetClass.equals(Date.class)) {
         return convertToDate(database, value, property);
       } else if (targetClass.equals(Calendar.class)) {
@@ -1223,11 +1325,22 @@ public enum Type {
               // The declared type keeps the zone the text names, a region included (issue #8572)
               try {
                 return CypherDateTime.parse(valueAsString).getValue();
+              } catch (final TemporalUtil.InvalidTemporalTextException e) {
+                // An offset the zone does not have there: the general parse would keep the zone and replace the offset,
+                // storing another instant than the text states (issue #12298)
+                throw new IllegalArgumentException(e.getMessage(), e);
               } catch (final RuntimeException e) {
                 // not Cypher datetime text: the general parse below decides
               }
             }
-            return truncateToPropertyPrecision(DateUtils.parseZonedDateTime(database, valueAsString), property);
+            try {
+              // The general parse keeps the zone of a text that names one and treats its offset as a preference: a
+              // contradiction is refused here too (issue #12298)
+              return truncateToPropertyPrecision(
+                  TemporalUtil.requireOffsetMatchesZone(valueAsString, DateUtils.parseZonedDateTime(database, valueAsString)), property);
+            } catch (final TemporalUtil.InvalidTemporalTextException e) {
+              throw new IllegalArgumentException(e.getMessage(), e);
+            }
         }
       } else if (targetClass.equals(Instant.class)) {
         switch (value) {
@@ -1425,6 +1538,7 @@ public enum Type {
   private static boolean mustBeInstanceOfTarget(final Class<?> targetClass) {
     return targetClass.equals(BigDecimal.class) || targetClass.equals(LocalDate.class) || targetClass.equals(LocalDateTime.class)
         || targetClass.equals(ZonedDateTime.class) || targetClass.equals(Instant.class) || targetClass.equals(byte[].class)
+        || targetClass.equals(OffsetTime.class) || targetClass.equals(LocalTime.class) || targetClass.equals(CypherDuration.class)
         || isArrayOfNumbers(targetClass);
   }
 
@@ -2120,6 +2234,15 @@ public enum Type {
   }
 
   /**
+   * The {@code double} a decimal is compared with once the other operand is an infinity or NaN, which has no decimal form: the
+   * decimal itself, or the largest double of its sign when it lies past the double range, so it still orders below an infinity.
+   */
+  public static double finiteDoubleValue(final BigDecimal value) {
+    final double converted = value.doubleValue();
+    return Double.isFinite(converted) ? converted : value.signum() < 0 ? -Double.MAX_VALUE : Double.MAX_VALUE;
+  }
+
+  /**
    * Builds the {@link BigDecimal} that reads the same in decimal as the given floating point operand, so an
    * integral operand too large for {@code double} can be compared against it exactly. A {@code Float} goes through
    * {@link #floatToBigDecimal} and everything else through {@code BigDecimal.valueOf(double)}, both of which read
@@ -2267,7 +2390,8 @@ public enum Type {
       else if (right instanceof BigDecimal)
         left = new BigDecimal(left.intValue());
       else if (right instanceof Byte)
-        left = left.byteValue();
+        // the byte widens: narrowing the short to a byte wraps every value outside -128..127 (issue #12681)
+        right = right.shortValue();
       else if (right instanceof BigInteger bigInteger1) {
         // Mirrors the BigDecimal arm above: a BigInteger on the right has no narrower common type, so both
         // operands promote to BigDecimal (issue #7669).
@@ -2333,9 +2457,14 @@ public enum Type {
       // FLOAT
       if (right instanceof Double)
         left = widenFloat(left.floatValue());
-      else if (right instanceof BigDecimal)
-        left = floatToBigDecimal(left.floatValue());
-      else if (right instanceof Byte || right instanceof Short)
+      else if (right instanceof BigDecimal bigDecimal) {
+        if (isFinite(left))
+          left = floatToBigDecimal(left.floatValue());
+        else {
+          left = left.doubleValue();
+          right = finiteDoubleValue(bigDecimal);
+        }
+      } else if (right instanceof Byte || right instanceof Short)
         right = right.floatValue();
       else if (right instanceof Integer) {
         // Symmetric case of the INTEGER branch above: narrowing the integral operand to float would lose
@@ -2368,9 +2497,12 @@ public enum Type {
 
     } else if (left instanceof Double) {
       // DOUBLE
-      if (right instanceof BigDecimal)
-        left = BigDecimal.valueOf(left.doubleValue());
-      else if (right instanceof Float float1)
+      if (right instanceof BigDecimal bigDecimal) {
+        if (isFinite(left))
+          left = BigDecimal.valueOf(left.doubleValue());
+        else
+          right = finiteDoubleValue(bigDecimal);
+      } else if (right instanceof Float float1)
         right = widenFloat(float1);
       else if (right instanceof Long long1) {
         // Symmetric case of the LONG branch above (issue #7628)
@@ -2430,7 +2562,7 @@ public enum Type {
       } else if (right instanceof BigDecimal)
         left = new BigDecimal(bigInteger);
 
-    } else if (left instanceof BigDecimal) {
+    } else if (left instanceof BigDecimal bigDecimal) {
       // DOUBLE
       if (right instanceof Integer integer)
         right = new BigDecimal(integer);
@@ -2438,11 +2570,20 @@ public enum Type {
         // The Long case was missing, so the couple came back as (BigDecimal, Long) and the caller's compareTo()
         // threw ClassCastException - `WHERE decimalProperty > 3000000000` crashed rather than answered (issue #7609).
         right = new BigDecimal(long1);
-      else if (right instanceof Float float1)
-        right = floatToBigDecimal(float1);
-      else if (right instanceof Double double1)
-        right = BigDecimal.valueOf(double1);
-      else if (right instanceof Short short1)
+      else if (right instanceof Float float1) {
+        if (isFinite(float1))
+          right = floatToBigDecimal(float1);
+        else {
+          // an infinity or NaN has no decimal form: both meet at double, the decimal clamped so it still orders below an infinity (issue #12694)
+          left = finiteDoubleValue(bigDecimal);
+          right = float1.doubleValue();
+        }
+      } else if (right instanceof Double double1) {
+        if (Double.isFinite(double1))
+          right = BigDecimal.valueOf(double1);
+        else
+          left = finiteDoubleValue(bigDecimal);
+      } else if (right instanceof Short short1)
         right = new BigDecimal(short1);
       else if (right instanceof Byte byte1)
         right = new BigDecimal(byte1);

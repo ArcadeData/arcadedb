@@ -32,6 +32,7 @@ import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.LockTimeoutException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TransactionException;
@@ -85,6 +86,17 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  * Javadoc of each).
  */
 public class TransactionRetryAndRollbackTest {
+  /**
+   * Issue #13251: the conflict a retry loop refuses to replay reaches the caller as a failure no layer retries, with the conflict
+   * suppressed under it, and not as the retryable conflict, which a client or a load balancer would retry anyway.
+   */
+  public static void assertNotReplayable(final Throwable failure) {
+    assertThat(failure).isInstanceOf(TransactionException.class).isNotInstanceOf(NeedRetryException.class);
+    assertThat(failure.getCause()).as("a cause would be looked through to the retryable conflict").isNull();
+    assertThat(failure.getSuppressed()).hasAtLeastOneElementOfType(ConcurrentModificationException.class);
+    assertThat(ErrorCategory.of(failure)).isNotEqualTo(ErrorCategory.RETRY);
+  }
+
   /**
    * Regression test for #5587: before this fix, every {@code database.transaction(...)} retry slept a flat
    * {@code U(1, TX_RETRY_DELAY)} interval no matter how many times the transaction had already lost, so a
@@ -1524,7 +1536,7 @@ public class TransactionRetryAndRollbackTest {
         database.command("sql", "UPDATE " + ROWS + " SET seq = seq + 1 BATCH 10");
         // ... and then the block fails, the way a genuine MVCC conflict on a later statement would.
         throw new ConcurrentModificationException("simulated conflict after the batch boundary");
-      }, true, 3, okCalls::incrementAndGet, null)).isInstanceOf(NeedRetryException.class);
+      }, true, 3, okCalls::incrementAndGet, null)).satisfies(TransactionRetryAndRollbackTest::assertNotReplayable);
 
       assertThat(attempts.get()).as("the block must be run ONCE: its durable half cannot be replayed").isEqualTo(1);
       assertThat(okCalls.get()).as("and a block that failed must not report success").isZero();
@@ -1532,6 +1544,44 @@ public class TransactionRetryAndRollbackTest {
       // The 20 rows the batch published are incremented exactly once; the remaining 5 were rolled back.
       assertThat(countRowsWithSeq(1)).isEqualTo(20);
       assertThat(countRowsWithSeq(0)).isEqualTo(5);
+      assertThat(countRowsWithSeq(2)).as("no row may be incremented twice").isZero();
+    }
+
+    /** Issue #13251: the error callback is told the failure the caller gets, not the retryable conflict under it. */
+    @Test
+    void theErrorCallbackIsToldTheBlockIsNotReplayable() {
+      final AtomicReference<Throwable> told = new AtomicReference<>();
+
+      assertThatThrownBy(() -> database.transaction(() -> {
+        database.command("sql", "UPDATE " + ROWS + " SET seq = seq + 1 BATCH 10");
+        throw new ConcurrentModificationException("simulated conflict after the batch boundary");
+      }, true, 3, null, told::set)).satisfies(TransactionRetryAndRollbackTest::assertNotReplayable);
+
+      assertNotReplayable(told.get());
+    }
+
+    /**
+     * Issue #13251: a block that joined the caller's transaction is not retried by this call, and its conflict goes to the caller
+     * as it is - unless the block committed part of its work, which the caller must not replay either.
+     */
+    @Test
+    void aJoinedBlockThatCommittedPartOfItsWorkReachesTheCallerAsNotReplayable() {
+      database.begin();
+      try {
+        assertThatThrownBy(() -> database.transaction(() -> {
+          database.command("sql", "UPDATE " + ROWS + " SET seq = seq + 1 BATCH 10");
+          throw new ConcurrentModificationException("simulated conflict after the batch boundary");
+        }, true, 3, null, null)).satisfies(TransactionRetryAndRollbackTest::assertNotReplayable);
+
+        assertThatThrownBy(() -> database.transaction(() -> {
+          throw new ConcurrentModificationException("simulated conflict with nothing published");
+        }, true, 3, null, null)).as("nothing committed: the conflict reaches the caller as it is")
+            .isInstanceOf(ConcurrentModificationException.class);
+      } finally {
+        if (database.isTransactionActive())
+          database.rollback();
+      }
+
       assertThat(countRowsWithSeq(2)).as("no row may be incremented twice").isZero();
     }
 
@@ -1569,7 +1619,7 @@ public class TransactionRetryAndRollbackTest {
         attempts.incrementAndGet();
         database.command("sql", "DELETE FROM " + ROWS + " BATCH 10");
         throw new ConcurrentModificationException("simulated conflict after the batch boundary");
-      }, true, 3, null, null)).isInstanceOf(NeedRetryException.class);
+      }, true, 3, null, null)).satisfies(TransactionRetryAndRollbackTest::assertNotReplayable);
 
       assertThat(attempts.get()).isEqualTo(1);
       // 20 rows are durably gone, the last 5 deletes were rolled back.
@@ -1636,7 +1686,7 @@ public class TransactionRetryAndRollbackTest {
       database.async().waitCompletion();
 
       assertThat(attempts.get()).as("the block must be run ONCE: its durable half cannot be replayed").isEqualTo(1);
-      assertThat(failure.get()).isInstanceOf(NeedRetryException.class);
+      assertNotReplayable(failure.get());
 
       assertThat(countRowsWithSeq(1)).isEqualTo(20);
       assertThat(countRowsWithSeq(0)).isEqualTo(5);
@@ -1913,6 +1963,60 @@ public class TransactionRetryAndRollbackTest {
       });
 
       assertThat(countRecords()).isZero();
+    }
+  }
+
+  /**
+   * Issue #12635: a write another node committed for the block - a statement a replica forwarded to the leader - is never replayed
+   * by a retry loop, at any nesting depth. The HA layer reports it through {@link DatabaseContext.DatabaseContextTL}; here the
+   * report is made directly, where the forward would be.
+   */
+  @Nested
+  class WriteCommittedByAnotherNode extends TestHelper {
+
+    @Test
+    void theBlockIsNotReplayed() {
+      final AtomicInteger attempts = new AtomicInteger();
+
+      assertThatThrownBy(() -> database.transaction(() -> {
+        attempts.incrementAndGet();
+        reportForwardedWrite();
+        throw new ConcurrentModificationException("a conflict after the forward (issue #12635 test)");
+      }, false, 3)).satisfies(TransactionRetryAndRollbackTest::assertNotReplayable);
+
+      assertThat(attempts.get()).isEqualTo(1);
+    }
+
+    @Test
+    void theBlockIsNotReplayedWhenTheForwardRanInATransactionTheBlockOpenedAndCommitted() {
+      final AtomicInteger attempts = new AtomicInteger();
+
+      assertThatThrownBy(() -> database.transaction(() -> {
+        attempts.incrementAndGet();
+        // The forward runs one level down, and the commit pops the context it reported on before the loop looks
+        database.begin();
+        reportForwardedWrite();
+        database.commit();
+        throw new ConcurrentModificationException("a conflict after the nested commit (issue #12635 test)");
+      }, false, 3)).satisfies(TransactionRetryAndRollbackTest::assertNotReplayable);
+
+      assertThat(attempts.get()).isEqualTo(1);
+    }
+
+    @Test
+    void aBlockThatReportedNothingIsStillRetried() {
+      final AtomicInteger attempts = new AtomicInteger();
+
+      database.transaction(() -> {
+        if (attempts.incrementAndGet() < 3)
+          throw new ConcurrentModificationException("forced retry");
+      }, false, 3);
+
+      assertThat(attempts.get()).isEqualTo(3);
+    }
+
+    private void reportForwardedWrite() {
+      DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath()).reportWriteCommittedByAnotherNode();
     }
   }
 }

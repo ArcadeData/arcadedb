@@ -254,6 +254,17 @@ public class SQLFunctionSearchIndexMore extends SQLFunctionAbstract {
     return result;
   }
 
+  /** Sets {@code $score} and {@code $similarity} on every record it is evaluated on, 0 for one it does not match (#11773). */
+  @Override
+  public boolean setsScore() {
+    return true;
+  }
+
+  @Override
+  public boolean setsSimilarity() {
+    return true;
+  }
+
   @Override
   public String getSyntax() {
     return "SEARCH_INDEX_MORE(<index-name>, <source-rids>, [<metadata>])";

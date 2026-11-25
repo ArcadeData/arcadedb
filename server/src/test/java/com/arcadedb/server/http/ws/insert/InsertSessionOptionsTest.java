@@ -20,7 +20,6 @@ package com.arcadedb.server.http.ws.insert;
 
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
-
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -86,14 +85,6 @@ class InsertSessionOptionsTest {
         .hasMessageContaining("per_stream")
         .hasMessageContaining("per_batch")
         .hasMessageContaining("per_row");
-  }
-
-  /** {@code none} means "the caller manages the transaction", which a /ws session cannot name yet (#7403). */
-  @Test
-  void transactionModeNoneIsRefusedWithThePointerToItsIssue() {
-    assertThatThrownBy(() -> InsertSessionOptions.parse(new JSONObject().put("transactionMode", "none")))
-        .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("#7403");
   }
 
   /**
@@ -178,5 +169,89 @@ class InsertSessionOptionsTest {
     assertThat(parsed.targetType).isEqualTo("Person");
     assertThat(parsed.conflictMode).isEqualTo(InsertSessionOptions.ConflictMode.ERROR);
     assertThat(parsed.keyColumns).isEmpty();
+  }
+
+  /*
+   * The {@code transactionMode: "none"} half of issue #7403 at the parsing layer: the mode and the presence of a
+   * {@code transactionId} on the {@code start} frame have to agree, and neither half may be quietly coerced into
+   * the other.
+   */
+
+  // Regression: #7403 transactionMode "none" and a transactionId on the start frame must agree
+  @Test
+  void noneIsAcceptedOnlyWhenAnExternalTransactionIsNamed() {
+    final InsertSessionOptions options =
+        InsertSessionOptions.parse(new JSONObject().put("transactionMode", "none"), true);
+    assertThat(options.transactionMode).isEqualTo(InsertSessionOptions.TransactionMode.NONE);
+    assertThat(options.transactionModeName()).isEqualTo("none");
+  }
+
+  // Regression: #7403 transactionMode "none" and a transactionId on the start frame must agree
+  /**
+   * The refusal still names this issue, which is what the pre-existing
+   * {@code InsertSessionOptionsTest.transactionModeNoneIsRefusedWithThePointerToItsIssue} pins - but it now
+   * names the field that resolves it instead of saying the feature does not exist.
+   */
+  @Test
+  void noneWithoutAnExternalTransactionIsRefusedAndNamesTheFieldThatResolvesIt() {
+    assertThatThrownBy(() -> InsertSessionOptions.parse(new JSONObject().put("transactionMode", "none"), false))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("#7403")
+        .hasMessageContaining("transactionId");
+  }
+
+  // Regression: #7403 transactionMode "none" and a transactionId on the start frame must agree
+  /**
+   * A {@code transactionId} with any server-managed mode is refused rather than having one of the two win: the
+   * session would either ignore the transaction the caller asked it to write into, or run under a commit policy
+   * the caller did not ask for.
+   */
+  @Test
+  void anExternalTransactionWithAServerManagedModeIsRefused() {
+    for (final String mode : new String[] { "per_stream", "per_request", "per_batch", "per_row" })
+      assertThatThrownBy(() -> InsertSessionOptions.parse(new JSONObject().put("transactionMode", mode), true))
+          .as("mode '%s' with a transactionId", mode)
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("transactionId");
+  }
+
+  // Regression: #7403 transactionMode "none" and a transactionId on the start frame must agree
+  /** The default is per_stream, so a transactionId with NO mode at all is the same contradiction. */
+  @Test
+  void anExternalTransactionWithNoModeAtAllIsRefused() {
+    assertThatThrownBy(() -> InsertSessionOptions.parse(new JSONObject(), true))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("transactionId");
+
+    assertThatThrownBy(() -> InsertSessionOptions.parse(null, true))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("transactionId");
+  }
+
+  // Regression: #7403 transactionMode "none" and a transactionId on the start frame must agree
+  /** The single-argument form is the no-external-transaction case, which is what every other caller wants. */
+  @Test
+  void theSingleArgumentFormStillMeansNoExternalTransaction() {
+    assertThat(InsertSessionOptions.parse(new JSONObject().put("transactionMode", "per_batch")).transactionMode)
+        .isEqualTo(InsertSessionOptions.TransactionMode.PER_BATCH);
+
+    assertThatThrownBy(() -> InsertSessionOptions.parse(new JSONObject().put("transactionMode", "none")))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("#7403");
+  }
+
+  // Regression: #7403 transactionMode "none" and a transactionId on the start frame must agree
+  /** The conflict options are orthogonal to the transaction mode and keep working under {@code none}. */
+  @Test
+  void theConflictOptionsAreStillHonouredUnderNone() {
+    final JSONObject json = new JSONObject()
+        .put("transactionMode", "none")
+        .put("conflictMode", "CONFLICT_UPDATE")
+        .put("keyColumns", new com.arcadedb.serializer.json.JSONArray().put("id"));
+
+    final InsertSessionOptions options = InsertSessionOptions.parse(json, true);
+    assertThat(options.transactionMode).isEqualTo(InsertSessionOptions.TransactionMode.NONE);
+    assertThat(options.conflictMode).isEqualTo(InsertSessionOptions.ConflictMode.UPDATE);
+    assertThat(options.keyColumns).containsExactly("id");
   }
 }
