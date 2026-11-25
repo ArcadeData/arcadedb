@@ -327,7 +327,9 @@ class SQLStringMethodsRegressionTest {
     @Test
     void splitByAnEmojiKeepsTheEmptyTrailingPieceLikeOpenCypher() {
       assertThat(sql("SELECT :s.split(:c) AS v", "s", "a" + P, "c", P)).isEqualTo(List.of("a", ""));
-      assertThat(sql("SELECT text.split(:s, :c) AS v", "s", "a" + P, "c", P)).isEqualTo(List.of("a", ""));
+      // text.split() is apoc.text.split() (issue #12104): its default limit 0 drops the trailing empty piece, -1 keeps it
+      assertThat(sql("SELECT text.split(:s, :c) AS v", "s", "a" + P, "c", P)).isEqualTo(List.of("a"));
+      assertThat(sql("SELECT text.split(:s, :c, -1) AS v", "s", "a" + P, "c", P)).isEqualTo(List.of("a", ""));
       assertThat(cypher("RETURN split($s, $c) AS v", "s", "a" + P, "c", P)).isEqualTo(List.of("a", ""));
     }
 
@@ -379,14 +381,19 @@ class SQLStringMethodsRegressionTest {
       assertThat(sql("SELECT 'abc'.replace('b', '') AS v")).isEqualTo("ac");
     }
 
-    /** The two languages, and the function and the method of each, answer one way. */
+    /**
+     * The two languages, and the function and the method of each, answer one way. text.split() is apoc.text.split() (issue #12104): it
+     * keeps the trailing empty pieces with the limit -1, and the empty regex matches at the end too, so it is asked without a limit.
+     */
     @Test
     void sqlAndOpenCypherAgree() {
       for (final String s : new String[] { "", "a", "a,", ",a", "a" + P, P + P, "a" + P + "b" + Q + "c" }) {
         for (final String d : new String[] { "", ",", P, "b" }) {
           final Object cypher = cypher("RETURN split($s, $d) AS v", "s", s, "d", d);
+          final String limit = d.isEmpty() ? "" : ", -1";
           assertThat(sql("SELECT :s.split(:d) AS v", "s", s, "d", d)).as("method split '%s' by '%s'", s, d).isEqualTo(cypher);
-          assertThat(sql("SELECT text.split(:s, :d) AS v", "s", s, "d", d)).as("text.split '%s' by '%s'", s, d).isEqualTo(cypher);
+          assertThat(sql("SELECT text.split(:s, :d" + limit + ") AS v", "s", s, "d", d)).as("text.split '%s' by '%s'", s, d)
+              .isEqualTo(cypher);
           assertThat(new SplitFunction().execute(new Object[] { s, d }, null)).as("split() '%s' by '%s'", s, d).isEqualTo(cypher);
           assertThat(sql("SELECT :s.replace(:d, '-') AS v", "s", s, "d", d)).as("method replace '%s' by '%s'", s, d)
               .isEqualTo(cypher("RETURN replace($s, $d, '-') AS v", "s", s, "d", d));

@@ -19,13 +19,17 @@
 package com.arcadedb.function.sql.text;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.fulltext.FullTextRecordScorer;
+import com.arcadedb.index.fulltext.FullTextPostingsReuse;
 import com.arcadedb.index.fulltext.FullTextSearch;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.IndexedFunctionPushdown;
@@ -39,10 +43,13 @@ import com.arcadedb.schema.DocumentType;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.IntPredicate;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
@@ -57,16 +64,23 @@ import java.util.function.Supplier;
  * The matches are cached in the command context for the statement, under a key the query string is part of: the opaque
  * cache rather than the variable namespace, which reads a '.' in a key as a nested {@code $var.field} path (issue #4734).
  * A second key holds a SUBSET of the matches with the scores the complete search gives them: the best ones a pushed-down
- * limit kept, or those a RID filter let through. A record among them matches without running the complete search.
+ * limit kept, or those a RID filter let through. A record among them matches without running the complete search. A
+ * third key holds the search prepared to score a record from its own values (issue #11683), which answers the rows of a
+ * target far smaller than the matches without the complete search either.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 final class FullTextFunctionSearch {
+  // Test-only: how many times a statement computed every match of a search (issue #11683). Nothing in production reads it; a
+  // JVM-wide counter is safe to assert on because this module's tests run sequentially in one fork.
+  private static final AtomicLong completeSearches = new AtomicLong();
+
   private final List<TypeIndex> indexes;
   private final String       query;
   private final List<String> restrictedFields;
   private final String       cacheKey;
   private final String       subsetCacheKey;
+  private final String       recordsCacheKey;
 
   /**
    * @param restrictedFields the properties the query's unqualified clauses are searched in, or null for every property of
@@ -91,10 +105,16 @@ final class FullTextFunctionSearch {
     if (restrictedFields == null) {
       this.cacheKey = "search_index:" + name + ":" + query;
       this.subsetCacheKey = "search_index_best:" + name + ":" + query;
+      this.recordsCacheKey = "search_index_records:" + name + ":" + query;
     } else {
       this.cacheKey = "search_fields:" + name + ":" + restrictedFields + ":" + query;
       this.subsetCacheKey = "search_fields_best:" + name + ":" + restrictedFields + ":" + query;
+      this.recordsCacheKey = "search_fields_records:" + name + ":" + restrictedFields + ":" + query;
     }
+  }
+
+  static long getCompleteSearchesForTesting() {
+    return completeSearches.get();
   }
 
   /**
@@ -116,6 +136,15 @@ final class FullTextFunctionSearch {
       if (score != null) {
         context.setVariable("$score", score);
         return true;
+      }
+
+      // A record whose postings the search can derive from its own values is answered from them, with the score the complete
+      // search gives it: the rows the condition is evaluated on can be far fewer than the matches (issue #11683)
+      final float ownScore = scoreOnItsOwn(currentRecord, context);
+      if (!Float.isNaN(ownScore)) {
+        final boolean matches = ownScore != FullTextRecordScorer.NO_MATCH;
+        context.setVariable("$score", matches ? ownScore : 0f);
+        return matches;
       }
     }
 
@@ -167,10 +196,15 @@ final class FullTextFunctionSearch {
     final RIDFilter recordFilter = ridFilter != null && ridFilter.hasRecordPredicate() ? ridFilter : null;
     final IndexedFunctionPushdown.Order order = pushdown.order();
     final int limit = order == IndexedFunctionPushdown.Order.FUNCTION ? pushdown.limit() : -1;
+    // The postings the limited search reads, for the complete search that continues it: both belong to this fetch, so a write
+    // between two statements of a script is never missed. Kept only when a filter follows the fetch, which is what pulls the plan
+    // past its limit: without one the postings would stay referenced for the iteration for a continuation that a record gone since
+    // the index was read is the only reason for
+    final FullTextPostingsReuse reuse = pushdown.filtered() ? new FullTextPostingsReuse() : null;
     final Supplier<Map<RID, Float>> complete = () -> {
       @SuppressWarnings("unchecked")
       final Map<RID, Float> allResults = (Map<RID, Float>) context.getCachedValue(cacheKey);
-      return allResults != null ? allResults : completeSearch(context);
+      return allResults != null ? allResults : completeSearch(context, reuse);
     };
 
     // The Iterable builds a fresh heap on every iterator() call: a plan pulls it once, and re-iterating it re-orders the same
@@ -188,7 +222,7 @@ final class FullTextFunctionSearch {
       return new AllMatches(database, accepted, null, recordFilter, order, guard);
     }
 
-    final Map<RID, Float> best = searchAll(limit, guard, ridFilter);
+    final Map<RID, Float> best = searchAll(limit, guard, ridFilter, reuse);
     // The map holds each bucket's best matches, so up to buckets x limit entries: their union contains the global best
     // `limit`, which is the prefix the iteration trusts
     rememberSubset(context, best);
@@ -210,21 +244,132 @@ final class FullTextFunctionSearch {
 
   /** The matches of every index, each searched with the limit and the filter; a limit of -1 is unbounded. */
   private Map<RID, Float> searchAll(final int limit, final WorkGuard guard, final RIDFilter ridFilter) {
+    return searchAll(limit, guard, ridFilter, null);
+  }
+
+  /**
+   * With {@code reuse}, not null, the postings the limited search of this fetch read are scored again by its continuation, with the
+   * corpus statistics it scored them with, instead of read again.
+   */
+  private Map<RID, Float> searchAll(final int limit, final WorkGuard guard, final RIDFilter ridFilter,
+      final FullTextPostingsReuse reuse) {
     if (indexes.size() == 1)
-      return FullTextSearch.search(indexes.getFirst(), query, limit, guard, restrictedFields, ridFilter);
+      return FullTextSearch.search(indexes.getFirst(), query, limit, guard, restrictedFields, ridFilter, reuse);
     // a record belongs to one type, so no two indexes match the same RID and putAll never overwrites; each index brings up to `limit`
     // matches, so the plan's own limit trims the union (the best `limit` of it contain the global best)
     final Map<RID, Float> merged = new HashMap<>();
     for (final TypeIndex index : indexes)
-      merged.putAll(FullTextSearch.search(index, query, limit, guard, restrictedFields, ridFilter));
+      merged.putAll(FullTextSearch.search(index, query, limit, guard, restrictedFields, ridFilter, reuse));
     return merged;
   }
 
   /** Every match with its score, cached for the statement. Stops when the statement is terminated or past its deadline. */
   private Map<RID, Float> completeSearch(final CommandContext context) {
-    final Map<RID, Float> allResults = searchAll(-1, WorkGuard.forCommandDeadline(context), null);
+    return completeSearch(context, null);
+  }
+
+  /** As {@link #completeSearch(CommandContext)}, scoring the postings in {@code reuse}, if any, where the limited search left them. */
+  private Map<RID, Float> completeSearch(final CommandContext context, final FullTextPostingsReuse reuse) {
+    completeSearches.incrementAndGet();
+    final Map<RID, Float> allResults = searchAll(-1, WorkGuard.forCommandDeadline(context), null, reuse);
     context.setCachedValue(cacheKey, allResults);
     return allResults;
+  }
+
+  /**
+   * The score of {@code currentRecord} computed from the record itself, {@link FullTextRecordScorer#NO_MATCH} when it does not
+   * match, or NaN when the complete search has to answer for it (issue #11683). The statement prepares the per-record search once,
+   * on its first row, which counts the document frequencies of the query's tokens: the complete search reads every one of those
+   * postings at least twice and collects, scores and orders the matches. The rows are then answered from their records for as long
+   * as what they analyze (their tokens and their postings) stays below half of those document frequencies; past that the complete
+   * search, computed once, is the cheaper answer for the rows still to come, and it gives the rows already answered the same scores.
+   */
+  private float scoreOnItsOwn(final Identifiable currentRecord, final CommandContext context) {
+    RecordScoring scoring = (RecordScoring) context.getCachedValue(recordsCacheKey);
+    if (scoring == null) {
+      scoring = RecordScoring.prepare(indexes, query, restrictedFields, WorkGuard.forCommandDeadline(context));
+      context.setCachedValue(recordsCacheKey, scoring);
+    }
+    return scoring.score(currentRecord);
+  }
+
+  /** The per-record answer of one search in one statement (see {@link #scoreOnItsOwn}). */
+  private static final class RecordScoring {
+    /** One per index searched, or null once the complete search answers. */
+    private List<FullTextRecordScorer> scorers;
+    /** How many more postings rows may analyze before the complete search is the cheaper answer. */
+    private long                       budget;
+    private final long[]               analyzed = new long[1];
+
+    private RecordScoring(final List<FullTextRecordScorer> scorers, final long budget) {
+      this.scorers = scorers;
+      this.budget = budget;
+    }
+
+    private static RecordScoring prepare(final List<TypeIndex> indexes, final String query, final List<String> restrictedFields,
+        final WorkGuard guard) {
+      final List<FullTextRecordScorer> scorers = new ArrayList<>(indexes.size());
+      long documentFrequencies = 0L;
+      for (final TypeIndex index : indexes) {
+        final FullTextRecordScorer scorer = FullTextRecordScorer.prepare(index, query, restrictedFields, guard);
+        if (scorer == null)
+          return new RecordScoring(null, 0L);
+        scorers.add(scorer);
+        documentFrequencies += scorer.getDocumentFrequencies();
+      }
+      return new RecordScoring(scorers, documentFrequencies / 2);
+    }
+
+    private float score(final Identifiable currentRecord) {
+      if (scorers == null)
+        return Float.NaN;
+      if (analyzed[0] >= budget) {
+        scorers = null;
+        return Float.NaN;
+      }
+      final RID rid = currentRecord.getIdentity();
+      if (rid == null)
+        return Float.NaN;
+
+      // The complete search merges the matches of the indexes in order, a later one replacing an earlier one's score for a RID
+      float score = FullTextRecordScorer.NO_MATCH;
+      Document document = null;
+      for (final FullTextRecordScorer scorer : scorers) {
+        if (!scorer.covers(rid))
+          continue;
+        if (document == null) {
+          document = indexedValues(currentRecord);
+          if (document == null)
+            return Float.NaN;
+        }
+        // every row counts, so that rows without postings still use the budget up
+        ++analyzed[0];
+        final float own = scorer.score(document, analyzed);
+        if (Float.isNaN(own))
+          return Float.NaN;
+        if (own != FullTextRecordScorer.NO_MATCH)
+          score = own;
+      }
+      return score;
+    }
+
+    /**
+     * The record whose values the index holds postings for, or null when they may not be: a document changed in memory and not
+     * saved yet, or no document.
+     */
+    private static Document indexedValues(final Identifiable currentRecord) {
+      final Record record;
+      try {
+        record = currentRecord instanceof final Record loaded ? loaded : currentRecord.getRecord(true);
+      } catch (final RecordNotFoundException e) {
+        return null;
+      }
+      if (!(record instanceof final Document document))
+        return null;
+      if (document instanceof final MutableDocument mutable && mutable.isDirty())
+        return null;
+      return document;
+    }
   }
 
   /**
@@ -307,8 +452,9 @@ final class FullTextFunctionSearch {
    * costs a logarithmic pop, and a match is held as one reference and, best first, one primitive.
    * <p>
    * When the matches are only the best ones of a search with a limit, the first {@code trustedPrefix} of them are the first
-   * of the complete order. Past that point the iteration switches to the complete search and skips the rows already served,
-   * which the shared order (score, then RID) makes exactly the same rows.
+   * of the complete order. Past that point the iteration switches to the complete search and leaves out the rows already served
+   * (by RID, see {@link #continueWithCompleteSearch}), which the shared order (score, then RID) makes the rows it would have
+   * skipped by count, and keeps each row answered once when it is not.
    */
   private static final class MatchingRecords implements Iterator<Record> {
     private final DatabaseInternal              database;
@@ -340,7 +486,7 @@ final class FullTextFunctionSearch {
       this.complete = complete;
       this.continuationFilter = continuationFilter;
       this.recordFilter = recordFilter;
-      buildHeap(matches, filter);
+      buildHeap(matches, filter, null);
     }
 
     @Override
@@ -381,22 +527,24 @@ final class FullTextFunctionSearch {
     }
 
     /**
-     * The best matches are used up and more rows are pulled: continue in the order of the complete search. Skipping the
-     * {@code served} first rows of it is exact only because the order is total - equal scores are broken by RID - so the
-     * best matches' heap and the complete one put every shared row in the same position.
+     * The best matches are used up and more rows are pulled: continue in the order of the complete search, without the rows
+     * already served. Those are skipped by RID, not by count: when the complete search puts the rest in the order the best matches
+     * would have given it (equal scores are broken by RID, so the order is total) both are the same rows, but a commit between the
+     * two searches, or a query shape the complete search reads again, can order the rest differently, and a count would then repeat
+     * some rows and drop others.
      */
     private void continueWithCompleteSearch() {
       final Supplier<Map<RID, Float>> search = complete;
       complete = null;
       trustedPrefix = -1;
-      buildHeap(search.get(), continuationFilter);
-      for (int i = 0; i < served && size > 0; i++) {
-        guard.checkPeriodically(++ticks);
-        pop();
-      }
+      // pop() leaves the rows it served behind the heap, in the tail of its array
+      final Set<RID> done = HashSet.newHashSet(Math.max(12, served));
+      for (int i = size; i < size + served; i++)
+        done.add(rids[i]);
+      buildHeap(search.get(), continuationFilter, done);
     }
 
-    private void buildHeap(final Map<RID, Float> matches, final RIDFilter filter) {
+    private void buildHeap(final Map<RID, Float> matches, final RIDFilter filter, final Set<RID> skip) {
       final boolean byScore = order == IndexedFunctionPushdown.Order.FUNCTION;
       rids = new RID[matches.size()];
       scores = byScore ? new float[rids.length] : null;
@@ -404,7 +552,7 @@ final class FullTextFunctionSearch {
       for (final Map.Entry<RID, Float> entry : matches.entrySet()) {
         guard.checkPeriodically(++ticks);
         final RID rid = entry.getKey();
-        if (filter != null && !filter.accepts(rid))
+        if (filter != null && !filter.accepts(rid) || skip != null && skip.contains(rid))
           continue;
         rids[size] = rid;
         if (byScore)
@@ -421,7 +569,8 @@ final class FullTextFunctionSearch {
       final RID first = rids[0];
       --size;
       rids[0] = rids[size];
-      rids[size] = null;
+      // the row served stays behind the heap, where the continuation reads which rows it must not answer again
+      rids[size] = first;
       if (scores != null)
         scores[0] = scores[size];
       if (size > 1)

@@ -87,7 +87,15 @@ public class LetQueryStep extends AbstractExecutionStep {
       public Result next() {
         final Result result = source.next();
         if (result != null) {
-          calculate(result, context);
+          // THE SUBQUERY READS THIS ROW AS $parent.$current, AS IT DOES IN PLACE IN A PROJECTION: NOT EVERY FETCH STEP SETS
+          // IT (A RID TARGET DOES NOT), SO A SUBQUERY LIFTED OUT OF THE PROJECTION WOULD READ NO ROW THERE (ISSUE #13179)
+          final Object oldCurrent = context.getVariable("current");
+          context.setVariable("current", result);
+          try {
+            calculate(result, context);
+          } finally {
+            context.setVariable("current", oldCurrent);
+          }
         }
         return result;
       }
@@ -96,6 +104,9 @@ public class LetQueryStep extends AbstractExecutionStep {
         final long beginTime = System.nanoTime();
         // THE PREVIOUS ROW TOOK ITS VALUE DOWNSTREAM
         releaseValue();
+        // THE SUBQUERY READS THIS ROW AS $parent.$current: AN UPSTREAM STEP MAY HAVE LEFT SOMETHING ELSE THERE, AS THE INDEX
+        // FETCH LEAVES ITS (key, rid) ENTRY (ISSUE #12287)
+        context.setVariable("current", result);
 
         final DatabaseInternal database = context.getDatabase();
         final CorrelatedSubQueryCache cache = getResultCache(database);

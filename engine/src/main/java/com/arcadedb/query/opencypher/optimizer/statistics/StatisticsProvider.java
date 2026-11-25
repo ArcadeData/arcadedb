@@ -96,8 +96,9 @@ public class StatisticsProvider {
       if (type == null)
         continue;
 
-      // Collect type cardinality using cached O(1) count
-      final long recordCount = database.countType(typeName, false);
+      // Polymorphic, as MATCH (n:Label) is: a supertype whose records all live in its subtypes is not an empty label, and a free
+      // scan of it used to be chosen as the outer side of a join (issue #12280)
+      final long recordCount = database.countType(typeName, true);
       final boolean isVertexType = type instanceof VertexType;
 
       final TypeStatistics typeStats = new TypeStatistics(typeName, recordCount, isVertexType);
@@ -133,7 +134,10 @@ public class StatisticsProvider {
             index.isUnique(),
             index.getName(),
             SelectExecutionPlanner.holdsFoldedKeys(index),
-            index.supportsOrderedIterations()
+            // a range over the leading column of a composite index whose other columns can leave a record without an entry
+            // (one indexed BY ITEM, or null in an index that skips nulls) misses it: such an index answers its whole key only,
+            // as a hash index does (issue #11576)
+            index.supportsOrderedIterations() && index.prefixReachesEveryRecord(1)
         ));
       } catch (final IndexException e) {
         // dropped or rebuilt by a concurrent DDL while being read: not a candidate (issue #8918)
@@ -309,7 +313,7 @@ public class StatisticsProvider {
 
     final double avgDegree;
     if (isEdgeType && graphStatisticsCache != null) {
-      final long currentEdgeCount = database.countType(relationshipType, false);
+      final long currentEdgeCount = database.countType(relationshipType, true);
       final long currentSourceCount = currentVertexTypeCount(sourceVertexLabel);
       final long currentTargetCount = currentVertexTypeCount(targetVertexLabel);
       final Double cached = graphStatisticsCache.getAverageDegree(cacheKey, currentEdgeCount, currentSourceCount, currentTargetCount);
@@ -341,7 +345,7 @@ public class StatisticsProvider {
     if (!(schema.getTypeOrNull(relationshipType) instanceof EdgeType))
       return 10.0; // Fallback: no edge type found
 
-    final long edgeCount = database.countType(relationshipType, false);
+    final long edgeCount = database.countType(relationshipType, true);
     if (edgeCount == 0) {
       return 0.0; // No edges exist
     }
@@ -366,7 +370,8 @@ public class StatisticsProvider {
 
     // If no vertex labels provided, estimate using all vertices
     if (sourceVertexCount == 0 && targetVertexCount == 0) {
-      // Collect all vertex type counts
+      // Collect all vertex type counts. A sum over EVERY vertex type, so each one is counted on its own buckets: a polymorphic
+      // count here would charge the vertices of a subtype once more for each of its ancestors
       long totalVertexCount = 0;
       for (final DocumentType type : schema.getTypes()) {
         if (type instanceof VertexType) {
@@ -424,7 +429,7 @@ public class StatisticsProvider {
 
     final double mean;
     if (isEdgeType && graphStatisticsCache != null) {
-      final long currentEdgeCount = database.countType(edgeType, false);
+      final long currentEdgeCount = database.countType(edgeType, true);
       final Double cached = graphStatisticsCache.getMeanEdgesPerConnectedPair(edgeType, currentEdgeCount);
       if (cached != null) {
         mean = cached;
@@ -453,7 +458,7 @@ public class StatisticsProvider {
     final Schema schema = database.getSchema();
     if (!(schema.getTypeOrNull(vertexLabel) instanceof VertexType))
       return 0;
-    return database.countType(vertexLabel, false);
+    return database.countType(vertexLabel, true);
   }
 
   /**
@@ -473,8 +478,8 @@ public class StatisticsProvider {
    * Calculates mean edges per connected pair by sampling edges of the type and counting how many
    * distinct (out, in) pairs they resolve to.
    * <p>
-   * The sample is the first {@value #MULTIPLICITY_SAMPLE_LIMIT} edges in storage order, not a
-   * uniform or reservoir sample - edges for one pair are often created (and therefore stored)
+   * The sample is the first {@value #MULTIPLICITY_SAMPLE_LIMIT} edges in storage order (the type's own buckets, then its
+   * subtypes'), not a uniform or reservoir sample - edges for one pair are often created (and therefore stored)
    * together, so a prefix can over- or under-represent multiplicity depending on where the cut
    * falls relative to that clustering. Acceptable for a cost-model heuristic; not a statistically
    * unbiased estimator.
@@ -487,7 +492,9 @@ public class StatisticsProvider {
     final Set<Map.Entry<RID, RID>> distinctPairs = new HashSet<>();
     long sampledEdges = 0;
 
-    for (final Iterator<Edge> it = database.<Edge>iterateType(edgeType, false); it.hasNext(); ) {
+    // Polymorphic, as [:E] is and as the edge count this estimate is cached under: an edge supertype whose edges all live in its
+    // subtypes has an empty sample otherwise, and answers the 1.0 of a simple graph for a multigraph (issue #12280)
+    for (final Iterator<Edge> it = database.<Edge>iterateType(edgeType, true); it.hasNext(); ) {
       final Edge edge = it.next();
       distinctPairs.add(Map.entry(edge.getOut(), edge.getIn()));
       if (++sampledEdges >= MULTIPLICITY_SAMPLE_LIMIT)

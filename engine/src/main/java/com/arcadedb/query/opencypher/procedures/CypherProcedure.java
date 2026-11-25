@@ -47,6 +47,14 @@ import com.arcadedb.function.procedure.Procedure;
  * @see com.arcadedb.function.procedure.ProcedureRegistry
  */
 public interface CypherProcedure extends Procedure {
-  // All methods inherited from Procedure
-  // Implementations remain compatible - no changes needed
+  /**
+   * Whether this procedure changes the schema, as a SQL DDL statement does (issue #11438: the {@code db.analyticalView.*}
+   * write procedures). A statement that calls one is analyzed as DDL with the {@link com.arcadedb.query.OperationType#SCHEMA}
+   * operation type, exactly as its SQL counterpart: an HA replica forwards it to the leader even inside a client transaction
+   * (a replica cannot write the schema), and an operation-type gate asks for the schema permission. Implies
+   * {@link #isWriteProcedure()}.
+   */
+  default boolean isSchemaProcedure() {
+    return false;
+  }
 }

@@ -25,6 +25,7 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.InputParameter;
 import com.arcadedb.query.sql.parser.Json;
 import com.arcadedb.query.sql.parser.JsonArray;
+import com.arcadedb.query.sql.parser.UpdateOperations;
 
 import java.util.List;
 import java.util.Map;
@@ -52,6 +53,26 @@ public class UpdateContentStep extends AbstractExecutionStep {
   public UpdateContentStep(final InputParameter inputParameter, final CommandContext context) {
     super(context);
     this.inputParameter = inputParameter;
+  }
+
+  /**
+   * Builds the step for a {@code CONTENT} operation from whichever payload form it was written with: a JSON object, a JSON
+   * array or an input parameter. The single definition every statement taking {@code CONTENT} goes through, so a payload form
+   * cannot be honoured by one statement and dropped by another (issue #12326: {@code MOVE VERTEX ... CONTENT :param} read only the
+   * JSON object and ignored the parameter).
+   *
+   * @param statement the statement name, for the error message
+   *
+   * @throws CommandExecutionException if the operation carries no payload
+   */
+  public static UpdateContentStep of(final UpdateOperations op, final String statement, final CommandContext context) {
+    if (op.getJson() != null)
+      return new UpdateContentStep(op.getJson(), context);
+    if (op.getJsonArray() != null)
+      return new UpdateContentStep(op.getJsonArray(), context);
+    if (op.getInputParam() != null)
+      return new UpdateContentStep(op.getInputParam(), context);
+    throw new CommandExecutionException("Missing payload for " + statement + " ... CONTENT: " + op);
   }
 
   @Override
@@ -133,6 +154,8 @@ public class UpdateContentStep extends AbstractExecutionStep {
     result.append("  ");
     if (json != null)
       result.append(json);
+    else if (jsonArray != null)
+      result.append(jsonArray);
     else
       result.append(inputParameter);
     return result.toString();

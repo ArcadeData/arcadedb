@@ -24,16 +24,17 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.server.grpc.FacetProtocol;
 import com.arcadedb.server.grpc.GrpcRecord;
 import com.arcadedb.server.grpc.QueryResult;
-import com.arcadedb.remote.grpc.utils.ProtoUtils;
 import io.grpc.stub.BlockingClientCall;
 import com.arcadedb.log.LogManager;
 import java.util.logging.Level;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.NoSuchElementException;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -88,7 +89,7 @@ class StreamingResultSet implements ResultSet {
         // FACETS queries: the server attaches the facets to the terminal batch only, which may carry no records
         if (queryResult.hasFacets())
           // the values decoded as the rows' are
-          facets = FacetProtocol.fromProto(queryResult.getFacets(), ProtoUtils::fromGrpcValue);
+          facets = FacetProtocol.fromProto(queryResult.getFacets(), db::grpcValueToObject);
 
         if (queryResult.getRecordsCount() == 0) {
           if (queryResult.getIsLastBatch()) {
@@ -120,10 +121,11 @@ class StreamingResultSet implements ResultSet {
    */
   protected Iterator<Result> convertBatchToResults(QueryResult queryResult) {
     List<Result> results = new ArrayList<>(queryResult.getRecordsCount());
+    final Set<String> absentTypes = new HashSet<>();
 
     for (GrpcRecord grpcRecord : queryResult.getRecordsList()) {
       // Use the existing grpcRecordToResult method from RemoteGrpcDatabase
-      Result result = db.grpcRecordToResult(grpcRecord);
+      Result result = db.grpcRecordToResult(grpcRecord, absentTypes);
       results.add(result);
     }
 

@@ -113,6 +113,29 @@ public final class StringRidHashMap {
   }
 
   /**
+   * Associates {@code key} with the given pair only when the key is not stored yet, like {@code HashMap.putIfAbsent}, in
+   * one probe and with no allocation.
+   *
+   * @return {@code true} when the key was added, {@code false} when it was already there (its value is left untouched)
+   */
+  public boolean putIfAbsent(final String key, final int bucketId, final long position) {
+    final int keyLength = encode(key);
+
+    int idx = hash(scratch, 0, keyLength) & mask;
+    while (addresses[idx] != EMPTY) {
+      if (keyEquals(addresses[idx], keyLength))
+        return false;
+      idx = (idx + 1) & mask;
+    }
+
+    addresses[idx] = store(keyLength, bucketId, position);
+
+    if (++size >= threshold)
+      resize();
+    return true;
+  }
+
+  /**
    * Returns the RID associated with {@code key}, or {@code null} when the key was never stored. The returned RID is
    * a fresh object: this map holds only the two primitives it is made of.
    */

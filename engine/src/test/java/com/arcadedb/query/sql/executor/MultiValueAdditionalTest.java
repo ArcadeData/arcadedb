@@ -515,11 +515,12 @@ class MultiValueAdditionalTest {
 
   @Test
   void removeMapFromCollection() {
-    final List<Object> list = new ArrayList<>(List.of("a", "b"));
+    // a map is one element of the collection, not the list of its keys (issue #12085)
     final Map<String, String> toRemove = new HashMap<>();
     toRemove.put("a", "val");
+    final List<Object> list = new ArrayList<>(List.of("a", "b", Map.of("a", "val")));
     MultiValue.remove(list, toRemove, false);
-    assertThat(list).containsExactly("b");
+    assertThat(list).containsExactly("a", "b");
   }
 
   @Test

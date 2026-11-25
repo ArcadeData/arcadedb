@@ -24,8 +24,8 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.async.AsyncResultsetCallback;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.ResultRowCapScope;
 import com.arcadedb.query.facet.FacetResults;
-import com.arcadedb.query.sql.antlr.SQLASTBuilder;
 import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
@@ -39,6 +39,7 @@ import com.arcadedb.query.sql.parser.Statement;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ForwardedRequestIdContext;
+import com.arcadedb.server.StandaloneTransactionControl;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.RequestRefusedBeforeExecutionException;
 import com.arcadedb.server.monitor.QueryProfile;
@@ -52,12 +53,8 @@ import java.lang.reflect.Array;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
-import java.util.regex.Pattern;
 
 public class PostCommandHandler extends AbstractQueryHandler {
-
-  // Precompiled once: recompiling the line-break pattern on every command carrying an explicit LIMIT is wasteful.
-  private static final Pattern LINE_BREAK = Pattern.compile("\\R");
 
   public PostCommandHandler(final HttpServer httpServer) {
     super(httpServer);
@@ -117,118 +114,88 @@ public class PostCommandHandler extends AbstractQueryHandler {
     }
   }
 
-  /**
-   * Tells whether the given command needs an automatic trailing {@code LIMIT} pushed down, i.e. whether it is a
-   * SELECT/MATCH SQL command that states no LIMIT of its own. A command that already carries one has expressed
-   * the caller's own expectation, and that expectation - not the default cap - decides how many rows are
-   * serialized, so the text is left exactly as it arrived.
-   * <p>
-   * The historical heuristic is preserved while avoiding a full-command {@code toLowerCase} copy per request:
-   * the command is expected to be already trimmed, only case-insensitive prefix/substring probes are used, and
-   * the last line is lowercased only when an explicit LIMIT may already be present.
-   * <p>
-   * A {@code sqlscript} is pushed down only when its LAST statement is a {@code SELECT} or a {@code MATCH}. The
-   * LIMIT is appended to the end of the text, which in a script is the end of whatever the caller wrote last, not of
-   * the statement the text starts with: a script that opens with a {@code SELECT} and ends with a {@code DELETE} or
-   * an {@code UPDATE} used to have that write silently cut at the cap, and one ending with {@code INSERT ... SET}
-   * failed to parse (issue #8429). The last statement is also the one whose rows the script returns, so bounding it
-   * when it is a query is still the push-down this method exists for. No textual probe can find where the last
-   * statement starts, because the script grammar makes the separating semicolon optional, so the script is parsed -
-   * only once every cheaper check above has already said yes. Any other script is left as written: the rows it
-   * returns are still bounded by the serializer's cap.
-   *
-   * @param database the database the command runs against, used only to parse a {@code sqlscript} with its own
-   *                 parser configuration; {@code null} parses with the defaults
-   */
-  static boolean requiresAutomaticLimit(final String command, final String language, final int limit,
-      final Database database) {
-    // A non-positive cap means unlimited, exactly as it does in the serializer: pushing 'limit 0' down would
-    // instead return no row at all, which is what the previous asymmetry did with a request carrying limit=0.
-    if (limit <= 0)
-      return false;
-    if (!"sql".equalsIgnoreCase(language) && !"sqlScript".equalsIgnoreCase(language))
-      return false;
-
-    final boolean isSelect = command.regionMatches(true, 0, "select", 0, 6);
-    final boolean isMatch = command.regionMatches(true, 0, "match", 0, 5);
-    if ((!isSelect && !isMatch) || command.endsWith(";"))
-      return false;
-
-    if (StringUtils.containsIgnoreCase(command, " limit ") || StringUtils.containsIgnoreCase(command, "\nlimit ")) {
-      // Both words in the text decide nothing on their own (a property, a literal or a subquery can carry them): only the parsed
-      // statement tells a SELECT with a FACETS clause, the one shape the last-line heuristic below can get wrong.
-      if (StringUtils.containsIgnoreCase(command, " facets ") || StringUtils.containsIgnoreCase(command, "\nfacets ")) {
-        final Boolean facetsQuery = autoLimitOfAFacetsQuery(command, database);
-        if (facetsQuery != null)
-          return facetsQuery;
-      }
-      // An explicit LIMIT may already be present somewhere: only the last line decides whether to append.
-      final String[] lines = LINE_BREAK.split(command);
-      final String[] words = lines[lines.length - 1].toLowerCase(Locale.ENGLISH).split(" ");
-      if (words.length <= 1 //
-          || "limit".equals(words[words.length - 2]) //
-          || (words.length >= 5 && "limit".equals(words[words.length - 4])))
-        return false;
-    }
-
-    return !"sqlScript".equalsIgnoreCase(language) || scriptEndsWithAQuery(command, database);
+  @Override
+  protected void refuseOutsideSession(final DatabaseInternal database, final JSONObject payload) {
+    if (payload != null)
+      StandaloneTransactionControl.refuse(database, payload.getString("language", null), payload.getString("command", null));
   }
 
   /**
-   * The auto-limit decision for a {@code SELECT ... FACETS} query, read on the parsed statement; null for any other text, which the
-   * caller's heuristic decides as it always did (a text that does not parse falls through too: the engine reports its error).
-   * <ul>
-   * <li>a FACETS clause written after SKIP or LIMIT is left as written, so the caller gets the parser's "FACETS must come before
-   * SKIP and LIMIT" instead of a syntax error about a second, appended LIMIT;</li>
-   * <li>otherwise a LIMIT is appended exactly when the statement has none of its own: FACETS then precedes it, as it must.</li>
-   * </ul>
-   * Called only when the text contains both words, so every other request pays no parse.
+   * Tells whether the response cap bounds the rows of the given command in the engine: it is a SELECT or a MATCH that states no LIMIT of
+   * its own, or a script whose last statement is one. A command that already carries a LIMIT has expressed the caller's own
+   * expectation, and that expectation - not the default cap - decides how many rows are serialized, so the engine is told nothing.
+   * <p>
+   * The cap is handed to the engine as what it is, a bound on the rows the caller reads ({@link ResultRowCapScope}), and not written
+   * into the text of the statement as a LIMIT (issue #12016): a LIMIT in the text cannot be told from one the caller wrote, so every
+   * planner decision that must respect a real LIMIT was taken against the cap too (a DISTINCT stayed serial, a GROUP BY lost its
+   * columnar projection), and the text it was cached under was not the one the caller sent.
+   * <p>
+   * Read on the parsed statement, from the statement cache the execution takes it from next, so a text no heuristic can read (a
+   * LIMIT inside a literal, a comment or a subquery, a trailing TIMEOUT or PARALLEL clause) is read as the parser does. A text that
+   * does not parse is left to the execution, which reports its error. A script is parsed only when it holds the word of a query: it
+   * has no statement cache, and the statements of a bulk script are the engine's to parse once.
+   *
+   * @param command  the command, already trimmed as in {@link #execute}
+   * @param database the database the command runs against, used only to parse a script with its own parser configuration;
+   *                 {@code null} parses with the defaults
    */
-  private static Boolean autoLimitOfAFacetsQuery(final String command, final Database database) {
+  static boolean appliesRowCap(final String command, final String language, final int limit,
+      final Database database) {
+    // A non-positive cap means unlimited, exactly as it does in the serializer
+    if (limit <= 0)
+      return false;
+
+    if ("sqlScript".equalsIgnoreCase(language))
+      return (StringUtils.containsIgnoreCase(command, "select") || StringUtils.containsIgnoreCase(command, "match"))
+          && scriptEndsWithAQueryWithoutLimit(command, database);
+
+    if (!"sql".equalsIgnoreCase(language))
+      return false;
+    if (!command.regionMatches(true, 0, "select", 0, 6) && !command.regionMatches(true, 0, "match", 0, 5))
+      return false;
+
     final Statement statement;
     try {
       statement = database instanceof DatabaseInternal internal ?
-          internal.getStatementCache().get(command) :
+          internal.getStatementCache().getParameterized(command).statement() :
           new SQLAntlrParser(database).parse(command);
     } catch (final CommandSQLParsingException e) {
-      return e.getMessage() != null && e.getMessage().contains(SQLASTBuilder.FACETS_AFTER_LIMIT_MESSAGE) ? Boolean.FALSE : null;
+      return false;
     }
-    if (statement instanceof SelectStatement select && select.getFacets() != null)
-      return select.getLimit() == null;
-    return null;
+    return hasNoLimit(statement);
+  }
+
+  /** Whether the statement is a SELECT or a MATCH with no LIMIT of its own. */
+  private static boolean hasNoLimit(final Statement statement) {
+    return (statement instanceof SelectStatement || statement instanceof MatchStatement) && statement.getLimit() == null;
   }
 
   /**
-   * Tells whether the script's last statement is a {@code SELECT} or a {@code MATCH}, i.e. the statement a trailing
-   * LIMIT lands on is a query. A script that does not parse is reported as not ending with one: it is then executed
-   * as written and fails with an error that quotes the caller's own text, not one with a LIMIT appended by this
-   * handler. Only the top-level statement list is inspected: a script ending with an {@code IF}, {@code WHILE} or
-   * {@code FOREACH} block is not one ending with a query, even when the block's body ends with a {@code SELECT},
-   * because the appended LIMIT would land after the closing brace, not inside it.
+   * Tells whether the script's last statement is a {@code SELECT} or a {@code MATCH} with no LIMIT of its own, i.e. the statement the
+   * query engine bounds by the cap is the one whose rows the script returns (issue #8429). A script that does not parse is reported as
+   * not ending with one: it is executed as written and fails with the error of its own text. Only the top-level statement list is
+   * inspected: a script ending with an {@code IF}, {@code WHILE} or {@code FOREACH} block is not one ending with a query, even when
+   * the block's body ends with a {@code SELECT}.
    */
-  static boolean scriptEndsWithAQuery(final String script, final Database database) {
+  static boolean scriptEndsWithAQueryWithoutLimit(final String script, final Database database) {
     final List<Statement> statements;
     try {
       statements = new SQLAntlrParser(database).parseScript(script);
     } catch (final CommandSQLParsingException e) {
       return false;
     }
-    if (statements == null || statements.isEmpty())
-      return false;
-    final Statement last = statements.getLast();
-    return last instanceof SelectStatement || last instanceof MatchStatement;
+    return statements != null && !statements.isEmpty() && hasNoLimit(statements.getLast());
   }
 
   /**
-   * LIMIT to push down into a command that carries none, one row above the cap the response will honor: the
-   * extra row never reaches the client and is what lets the serializer tell a result that ends exactly at the
-   * cap from one that was cut short (issue #5711). A non-positive cap means unlimited and is pushed down
-   * unchanged, and a cap of {@link Integer#MAX_VALUE} saturates instead of overflowing.
+   * The rows the engine is told the caller reads at most, one above the cap the response will honor: the extra row is never
+   * serialized, it is what lets the serializer tell a result that ends exactly at the cap from one that was cut short (issue #5711).
+   * A non-positive cap means unlimited and is passed unchanged, and a cap of {@link Integer#MAX_VALUE} saturates instead of
+   * overflowing.
    */
   static int truncationProbeLimit(final int limit) {
     return limit > 0 && limit < Integer.MAX_VALUE ? limit + 1 : limit;
   }
-
 
   /**
    * Returns the value of a request field that must be a JSON string, or {@code null} when absent. A present
@@ -373,23 +340,19 @@ public class PostCommandHandler extends AbstractQueryHandler {
     // and downgraded to HTTP 500.
     paramMap = AbstractQueryHandler.decodeTypedJsonMarkers(paramMap);
 
-    // The cap used to push a LIMIT down into a command that states none: the caller's own 'limit' when
-    // present, the configured default otherwise. A command that already carries a LIMIT is left untouched and
-    // its own value decides the response size, resolved from the execution plan after execution.
+    // The cap handed to the engine for a command that states no LIMIT of its own: the caller's own 'limit' when present, the configured
+    // default otherwise. A command that already carries a LIMIT is left untouched and its own value decides the response size,
+    // resolved from the execution plan after execution.
     //
-    // Bounded by the hard ceiling before it is pushed down, not only when the rows are serialized: an
-    // unlimited 'limit' used to push nothing down at all, so the whole result reached the handler - and with
-    // 'profileExecution: detailed' it was materialized in full by materializeResultSet before any cap could
-    // look at it. With the ceiling in the pushed-down LIMIT the engine stops one row past it (issue #5719).
+    // Bounded by the hard ceiling before it is handed over, not only when the rows are serialized: an unlimited 'limit' used to bound
+    // nothing, so the whole result reached the handler - and with 'profileExecution: detailed' it was materialized in full by
+    // materializeResultSet before any cap could look at it. With the ceiling in the cap the engine stops one row past it (issue #5719).
     // Only the caller's own value needs clamping here: getDefaultRowLimit() is already bounded by the ceiling.
     final int maxResultRows = getMaxResultRows();
-    final int autoLimit = requestLimit != null ? applyMaxResultRows(requestLimit, maxResultRows) : getDefaultRowLimit();
-    final boolean autoLimited = requiresAutomaticLimit(command, language, autoLimit, database);
-    // Kept for the log: a warning must show the operator the query the caller sent, not the rewritten one.
+    final int responseCap = requestLimit != null ? applyMaxResultRows(requestLimit, maxResultRows) : getDefaultRowLimit();
+    final boolean rowCapped = appliesRowCap(command, language, responseCap, database);
+    // The text as it came, for the log and the running query (the script gets its closing semicolon below)
     final String originalCommand = command;
-    if (autoLimited)
-      // One row above the cap: the extra row is never serialized, it only makes truncation detectable.
-      command = command + " limit " + truncationProbeLimit(autoLimit);
 
     if ("sqlScript".equalsIgnoreCase(language) && !command.endsWith(";"))
       command += ";";
@@ -397,7 +360,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
     if ("detailed".equalsIgnoreCase(profileExecution))
       paramMap.put("$profileExecution", true);
 
-    // The text the caller sent, not the one rewritten with a LIMIT: it is what the caller will recognize (issue #9680)
+    // The text the caller sent: it is what the caller will recognize (issue #9680)
     describeRunningQuery(language, originalCommand);
 
     boolean awaitResponse = true;
@@ -417,7 +380,12 @@ public class PostCommandHandler extends AbstractQueryHandler {
       // The statement run as the whole request, and the body it came in: a follower that forwards exactly this statement
       // posts that body to the leader, which answers it in the rendering this request asks for (issue #8359).
       ForwardedRequestIdContext.declareWholeRequestCommand(language, command, exchange.getAttachment(RAW_PAYLOAD));
-      ResultSet qResult = executeCommand(database, language, command, paramMap);
+      ResultSet qResult;
+      // One row above the cap: the extra row is never serialized, it only makes truncation detectable. Handed over as a bound on the
+      // rows the caller reads, which changes nothing about the plan (issue #12016)
+      try (final ResultRowCapScope ignored = ResultRowCapScope.open(rowCapped ? truncationProbeLimit(responseCap) : 0)) {
+        qResult = executeCommand(database, language, command, paramMap);
+      }
 
       // The leader answered this request's own body: that answer, not what this node would render again from the rows
       // it parsed back out of it, is the one the client asked for, and the one a retry sent straight to the leader is
@@ -435,10 +403,11 @@ public class PostCommandHandler extends AbstractQueryHandler {
         response.put("user", user != null ? user.getName() : null);
 
         // How many rows the response may carry, in decreasing order of explicitness: the request 'limit', the
-        // LIMIT the command carries (read back from the execution plan, and ignored when it is the one this
-        // handler pushed down itself), the configured default. Only the last one can drop rows the caller
-        // never asked to drop, and that is exactly what 'truncated' reports below (issue #5711).
-        final int planLimit = autoLimited ? 0 : getPlanLimit(qResult);
+        // LIMIT the command carries (read back from the execution plan, and ignored when the command states none: what
+        // the plan reports then is the quota of the user's group, which is a limit of the statement and no wish of the
+        // caller), the configured default. Only the last one can drop rows the caller never asked to drop, and that is
+        // exactly what 'truncated' reports below (issue #5711).
+        final int planLimit = rowCapped ? 0 : getPlanLimit(qResult);
         final int limit = resolveLimit(requestLimit, planLimit);
         final SerializationOutcome outcome;
 
@@ -574,6 +543,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
         rows.add(source.next());
 
       final Optional<ExecutionPlan> plan = source.getExecutionPlan();
+      final int statementLimit = source.getStatementLimit();
       final Optional<QueryStatistics> stats = source.getStatistics();
       // Before the source is closed: the facets count the matches the drain above did not reach as well
       final FacetResults facets = source.getFacets();
@@ -581,6 +551,11 @@ public class PostCommandHandler extends AbstractQueryHandler {
         @Override
         public Optional<ExecutionPlan> getExecutionPlan() {
           return plan;
+        }
+
+        @Override
+        public int getStatementLimit() {
+          return statementLimit;
         }
       };
       stats.ifPresent(materialized::setStatistics);

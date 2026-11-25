@@ -36,7 +36,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>
  * That is not a gap in what a remote client can do: {@code IMPORT DATABASE '<url>'} is a SQL statement, which a
  * remote connection issues like any other command and the server runs against its own embedded instance
- * ({@code Issue7701RemoteTimeSeriesLogicalRestoreIT} drives that whole round trip). The refusal has to NAME that,
+ * ({@code RemoteTimeSeriesIT.LogicalRestore} drives that whole round trip). The refusal has to NAME that,
  * because a bare {@code ClassCastException} - which is what the unchecked cast here used to raise - names a class
  * the caller never mentioned and no alternative at all.
  *

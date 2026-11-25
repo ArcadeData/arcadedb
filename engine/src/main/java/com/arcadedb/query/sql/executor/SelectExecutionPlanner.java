@@ -28,9 +28,11 @@ import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionS
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
+import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.RangeIndex;
 import com.arcadedb.index.TypeIndex;
@@ -51,8 +53,12 @@ import com.arcadedb.query.sql.parser.BinaryCondition;
 import com.arcadedb.query.sql.parser.BetweenCondition;
 import com.arcadedb.query.sql.parser.BooleanExpression;
 import com.arcadedb.query.sql.parser.Bucket;
+import com.arcadedb.query.sql.parser.ContainsAllCondition;
+import com.arcadedb.query.sql.parser.ContainsAnyCondition;
 import com.arcadedb.query.sql.parser.ContainsCondition;
+import com.arcadedb.query.sql.parser.ContainsKeyOperator;
 import com.arcadedb.query.sql.parser.ContainsTextCondition;
+import com.arcadedb.query.sql.parser.ContainsValueCondition;
 import com.arcadedb.query.sql.parser.EqualsCompareOperator;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.FacetItem;
@@ -79,12 +85,15 @@ import com.arcadedb.query.sql.parser.Limit;
 import com.arcadedb.query.sql.parser.LikeOperator;
 import com.arcadedb.query.sql.parser.LtOperator;
 import com.arcadedb.query.sql.parser.MathExpression;
+import com.arcadedb.query.sql.parser.MethodCall;
 import com.arcadedb.query.sql.parser.NeOperator;
 import com.arcadedb.query.sql.parser.NeqOperator;
 import com.arcadedb.query.sql.parser.Node;
+import com.arcadedb.query.sql.parser.NotBlock;
 import com.arcadedb.query.sql.parser.OrBlock;
 import com.arcadedb.query.sql.parser.OrderBy;
 import com.arcadedb.query.sql.parser.OrderByItem;
+import com.arcadedb.query.sql.parser.ParenthesisBlock;
 import com.arcadedb.query.sql.parser.ParenthesisExpression;
 import com.arcadedb.query.sql.parser.PInteger;
 import com.arcadedb.query.sql.parser.Projection;
@@ -108,6 +117,7 @@ import com.arcadedb.engine.timeseries.TagFilter;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
+import com.arcadedb.function.sql.math.SQLFunctionEval;
 import com.arcadedb.function.sql.time.SQLFunctionTimeBucket;
 import com.arcadedb.function.sql.time.SQLFunctionTsLast;
 import com.arcadedb.function.sql.vector.RecordPredicateRidSet;
@@ -122,6 +132,7 @@ import com.arcadedb.schema.TypeIndexBuilder;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityHelper;
+import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.Pair;
@@ -175,6 +186,8 @@ public class SelectExecutionPlanner {
    */
   private              String            rangeMinMaxSource;
   private              String            rangeMinMaxAlias;
+  /** The statement's own LIMIT of a rewritten range min()/max(), applied to the one row the fetch gives back (issue #11871). */
+  private              Limit             rangeMinMaxOuterLimit;
   /**
    * Set for the last attempt of a statement whose index kept going away while it was planned and read (issue #9615): the plan
    * then reads the types it targets without their key indexes, which a concurrent DDL cannot take away under it.
@@ -205,6 +218,7 @@ public class SelectExecutionPlanner {
     info = new QueryPlanningInfo();
     rangeMinMaxSource = null;
     rangeMinMaxAlias = null;
+    rangeMinMaxOuterLimit = null;
     info.projection = this.statement.getProjection() == null ? null : this.statement.getProjection().copy();
     info.projection = translateDistinct(info.projection);
     info.distinct = info.projection != null && info.projection.isDistinct();
@@ -330,7 +344,7 @@ public class SelectExecutionPlanner {
         // a bucket named by an input parameter (FROM bucket:?) is resolved as the fetch resolves it, and the plan depends on it
         if (bucket.getInputParam() != null)
           planDependsOnInputParameters = true;
-        final String bucketName = resolveBucketName(bucket, context);
+        final String bucketName = bucket.resolveName(context.getInputParameters());
         if (bucketName == null && bucket.getBucketNumber() == null)
           throw new CommandExecutionException("FACETS: the target bucket " + bucket + " cannot be resolved");
         targetBuckets[i] = bucketName != null ? db.getSchema().getBucketByName(bucketName).getFileId() : bucket.getBucketNumber();
@@ -475,8 +489,11 @@ public class SelectExecutionPlanner {
 
       handleProjectionsBlock(selectExecutionPlan, info, context);
 
-      if (rangeMinMaxSource != null)
+      if (rangeMinMaxSource != null) {
         selectExecutionPlan.chain(new FirstRowValueStep(rangeMinMaxSource, rangeMinMaxAlias, context));
+        if (rangeMinMaxOuterLimit != null)
+          selectExecutionPlan.chain(new LimitExecutionStep(rangeMinMaxOuterLimit, context));
+      }
 
       chainTimeout(selectExecutionPlan, info, context);
     }
@@ -949,15 +966,19 @@ public class SelectExecutionPlanner {
    * <p>
    * Only the shape where the rewrite is the same query is taken: one {@code min}/{@code max} of a plain property that
    * has an ordered index, nothing but a conjunction of range comparisons of that very property against values that need
-   * no record, and none of the clauses that would see the difference (GROUP BY, ORDER BY, SKIP, LIMIT, LET, UNWIND,
-   * DISTINCT, TIMEOUT). A range excludes null by itself, which is why no null can come first, as it would for an
-   * unranged {@code ORDER BY}.
+   * no record, and none of the clauses that would see the difference (GROUP BY, ORDER BY, SKIP, LET, UNWIND, DISTINCT).
+   * A range excludes null by itself, which is why no null can come first, as it would for an unranged {@code ORDER BY}.
+   * <p>
+   * A LIMIT and a TIMEOUT are kept (issue #11871): the HTTP endpoints append a LIMIT to every SELECT, and clients stamp a
+   * TIMEOUT on their reads, so refusing them left the rewrite unreachable over HTTP. The aggregate gives one row, so the
+   * statement's LIMIT is applied to that row after the {@link FirstRowValueStep} (LIMIT 0 still answers nothing), and a
+   * TIMEOUT only bounds a plan that now ends sooner.
    */
   private void rewriteRangeMinMaxAsOrderedFetch(final CommandContext context) {
     // the ordered fetch stops at the first row, the facets need every match
     if (info.facets != null || info.whereClause == null || info.projection == null || info.target == null || info.distinct || info.expand
-        || info.groupBy != null || info.orderBy != null || info.skip != null || info.limit != null || info.unwind != null
-        || info.perRecordLetClause != null || info.timeout != null || statement.getLetClause() != null)
+        || info.groupBy != null || info.orderBy != null || info.skip != null || info.unwind != null
+        || info.perRecordLetClause != null || statement.getLetClause() != null)
       return;
 
     final Identifier targetClass = info.target.getItem().getIdentifier();
@@ -1021,6 +1042,7 @@ public class SelectExecutionPlanner {
 
     info.projection = projection;
     info.orderBy = orderBy;
+    rangeMinMaxOuterLimit = info.limit;
     info.limit = limit;
     rangeMinMaxSource = propertyName;
     rangeMinMaxAlias = alias;
@@ -1199,8 +1221,16 @@ public class SelectExecutionPlanner {
           }
         }
 
-        result.chain(new AggregateProjectionCalculationStep(info.aggregateProjection, info.groupBy, aggregationLimit, context,
-            info.timeout != null ? info.timeout.getVal().longValue() : -1));
+        final AggregateProjectionCalculationStep aggregation = new AggregateProjectionCalculationStep(info.aggregateProjection,
+            info.groupBy, aggregationLimit, context, info.timeout != null ? info.timeout.getVal().longValue() : -1);
+        // The groups a caller that reads only a window of them is given are the first ones met, as for the LIMIT above, and under the
+        // same condition: the cap does not bound a statement that sorts or deduplicates its groups (issue #12016). The plan of an
+        // aggregation is kept in the plan cache under the text of the statement, so the SKIP it is bounded by must be the one the text
+        // says: a SKIP given as a parameter is another value for the next execution
+        // An expand() or an UNWIND after it can drop a group, so the first groups would not be the rows the caller reads
+        if (info.orderBy == null && !info.distinct && !info.expand && info.unwind == null && (info.skip == null || info.skip.num != null))
+          aggregation.boundByRowCap(rowCapSkip(info, context));
+        result.chain(aggregation);
         if (info.groupBy == null && hasAggregateItem(info.aggregateProjection, context)) {
           result.chain(new GuaranteeEmptyCountStep(info.aggregateProjection, info.preAggregateProjection, context));
         }
@@ -1332,17 +1362,34 @@ public class SelectExecutionPlanner {
       return;
 
     final OrderBy newOrderBy = info.orderBy.copy();
-    final List<ProjectionItem> additionalOrderByProjections = calculateAdditionalOrderByProjections(info.projection.getAllAliases(),
-        newOrderBy);
+    // an excluded item (`!secret`) does not project its alias: sorting on it needs a generated alias like any other
+    // non-projected key, or the sort reads the excluded column as null on every row (#12453)
+    final List<String> projectedAliases = new ArrayList<>();
+    for (final ProjectionItem item : info.projection.getItems())
+      if (!item.exclude)
+        projectedAliases.add(item.getProjectionAliasAsString());
+    final List<ProjectionItem> additionalOrderByProjections = calculateAdditionalOrderByProjections(projectedAliases, newOrderBy);
     if (additionalOrderByProjections.size() > 0) {
       info.orderBy = newOrderBy;//the ORDER BY has changed
     }
     if (additionalOrderByProjections.size() > 0) {
       info.projectionAfterOrderBy = new Projection();
       info.projectionAfterOrderBy.setItems(new ArrayList<>());
-      for (final String alias : info.projection.getAllAliases()) {
-        info.projectionAfterOrderBy.getItems().add(projectionFromAlias(new Identifier(alias)));
+      boolean keepsAll = false;
+      for (final ProjectionItem item : info.projection.getItems()) {
+        final ProjectionItem after = projectionFromAlias(new Identifier(item.getProjectionAliasAsString()));
+        // an excluded column stays excluded, rather than coming back as a null column (#12453)
+        after.exclude = item.exclude;
+        keepsAll |= item.isAll();
+        info.projectionAfterOrderBy.getItems().add(after);
       }
+      if (keepsAll)
+        // `*` copies every column of the row, so the columns generated for the ORDER BY are excluded by name (#12453)
+        for (final ProjectionItem item : additionalOrderByProjections) {
+          final ProjectionItem excluded = projectionFromAlias(item.getAlias());
+          excluded.exclude = true;
+          info.projectionAfterOrderBy.getItems().add(excluded);
+        }
 
       for (final ProjectionItem item : additionalOrderByProjections) {
         if (info.aggregateProjection != null && isAggregate(item, context)) {
@@ -1819,11 +1866,31 @@ public class SelectExecutionPlanner {
     for (final Map.Entry<Identifier, Statement> entry : collector.getSubQueries().entrySet()) {
       final Identifier alias = entry.getKey();
       final Statement query = entry.getValue();
-      if (query.refersToParent())
+      if (query.refersToParent() || readsAPerRecordLet(query, info))
         addRecordLevelLet(info, alias, query, -1);
       else
         addGlobalLet(info, alias, query, -1);
     }
+  }
+
+  /**
+   * Whether a subquery lifted out of the WHERE, the projection, the ORDER BY or the GROUP BY reads a variable this
+   * statement's per-record LET computes ({@code SELECT FROM P LET $a = year WHERE year = (SELECT ... WHERE x = $a)}).
+   * Such a subquery is correlated without naming {@code $parent}: evaluated in place it saw each row's value, and a
+   * global LET would run it once, before any row set the variable (issue #13179). Read from the rendered statement, so
+   * the answer can only be too generous, which costs the once-per-execution evaluation and never a row.
+   */
+  private static boolean readsAPerRecordLet(final Statement query, final QueryPlanningInfo info) {
+    final LetClause letClause = info.perRecordLetClause;
+    if (letClause == null || letClause.getItems() == null || letClause.getItems().isEmpty())
+      return false;
+
+    for (final String name : variableNamesIn(query.toString()))
+      for (final LetItem item : letClause.getItems())
+        if (name.equals(withoutSigil(item.getVarName().getStringValue())))
+          return true;
+
+    return false;
   }
 
   private static void addGlobalLet(final QueryPlanningInfo info, final Identifier alias, final Expression exp) {
@@ -2130,6 +2197,24 @@ public class SelectExecutionPlanner {
         || operator instanceof GeOperator;
   }
 
+  /**
+   * An element of a bound collection target as a record. A RID string, as a remote driver binds one, names its record here as a
+   * single bound RID string does (issue #11767). Any other element, including a string that only looks like a RID and does not
+   * parse (such as "#1:2-3"), refuses the collection as a target.
+   */
+  static Identifiable collectionTargetElement(final Object element, final Object collection, final CommandContext context) {
+    if (element instanceof String string && RID.is(string)) {
+      try {
+        return context.getDatabase().newRID(string);
+      } catch (final NumberFormatException e) {
+        throw new CommandExecutionException("Cannot use collection as target: " + collection, e);
+      }
+    }
+    if (element instanceof Identifiable identifiable)
+      return identifiable;
+    throw new CommandExecutionException("Cannot use collection as target: " + collection);
+  }
+
   private void handleInputParamAsTarget(final SelectExecutionPlan result, final Set<String> filterClusters,
       final QueryPlanningInfo info, final InputParameter inputParam, final CommandContext context) {
     Object paramValue = inputParam.getValue(context.getInputParameters());
@@ -2174,10 +2259,7 @@ public class SelectExecutionPlanner {
       //try list of RIDs
       final List<Rid> rids = new ArrayList<>();
       for (final Object x : iterable) {
-        if (!(x instanceof Identifiable)) {
-          throw new CommandExecutionException("Cannot use collection as target: " + paramValue);
-        }
-        final RID orid = ((Identifiable) x).getIdentity();
+        final RID orid = SelectExecutionPlanner.collectionTargetElement(x, paramValue, context).getIdentity();
         final Rid rid = new Rid();
         final PInteger bucket = new PInteger();
         bucket.setValue(orid.getBucketId());
@@ -2246,12 +2328,15 @@ public class SelectExecutionPlanner {
     case INDEX:
       BooleanExpression keyCondition = null;
       BooleanExpression ridCondition = null;
+      // A condition an index target cannot answer is the statement's error, not the server's: refused as such (a 400 over HTTP)
+      // and naming the condition, read here because the WHERE clause is cleared once it is handed to the index (issue #11850)
+      final String unsupportedCondition = "Index queries with this kind of condition are not supported yet: " + info.whereClause
+          + ". A query on the index " + indexName + " takes a condition on key (=, IN, BETWEEN, a range), optionally AND one on rid";
       if (info.flattenedWhereClause == null || info.flattenedWhereClause.size() == 0) {
-        if (!index.supportsOrderedIterations()) {
-          throw new CommandExecutionException("Index " + indexName + " does not allow iteration without a condition");
-        }
+        if (!index.supportsOrderedIterations())
+          throw new CommandSemanticException("Index " + indexName + " does not allow iteration without a condition");
       } else if (info.flattenedWhereClause.size() > 1) {
-        throw new CommandExecutionException("Index queries with this kind of condition are not supported yet: " + info.whereClause);
+        throw new CommandSemanticException(unsupportedCondition);
       } else {
         final AndBlock andBlock = info.flattenedWhereClause.getFirst();
         if (andBlock.getSubBlocks().size() == 1) {
@@ -2259,23 +2344,17 @@ public class SelectExecutionPlanner {
           info.whereClause = null;//The WHERE clause won't be used anymore, the index does all the filtering
           info.flattenedWhereClause = null;
           keyCondition = getKeyCondition(andBlock);
-          if (keyCondition == null) {
-            throw new CommandExecutionException(
-                "Index queries with this kind of condition are not supported yet: " + info.whereClause);
-          }
+          if (keyCondition == null)
+            throw new CommandSemanticException(unsupportedCondition);
         } else if (andBlock.getSubBlocks().size() == 2) {
           info.whereClause = null;//The WHERE clause won't be used anymore, the index does all the filtering
           info.flattenedWhereClause = null;
           keyCondition = getKeyCondition(andBlock);
           ridCondition = getRidCondition(andBlock);
-          if (keyCondition == null || ridCondition == null) {
-            throw new CommandExecutionException(
-                "Index queries with this kind of condition are not supported yet: " + info.whereClause);
-          }
-        } else {
-          throw new CommandExecutionException(
-              "Index queries with this kind of condition are not supported yet: " + info.whereClause);
-        }
+          if (keyCondition == null || ridCondition == null)
+            throw new CommandSemanticException(unsupportedCondition);
+        } else
+          throw new CommandSemanticException(unsupportedCondition);
       }
       result.chain(new FetchFromIndexStep(index, keyCondition, null, context));
       if (ridCondition != null) {
@@ -2487,15 +2566,35 @@ public class SelectExecutionPlanner {
     }
   }
 
+  /**
+   * The SKIP the rows of a caller's row cap are counted after (see {@link com.arcadedb.query.ResultRowCapScope}, issue #12016), which
+   * is what a step marked for the cap adds to the cap itself; {@code -1} when no cap can bound the rows of the step asking, which
+   * is when the statement has a LIMIT of its own (the cap never lowers one: it is what the caller asked to read) or when its SKIP is
+   * not known at planning (a variable, an expression): the step then keeps every row, as it does for a caller with no cap.
+   * <p>
+   * Only a bound that cannot change the answer reads this. A decision that picks the shape of the plan - a DISTINCT as a GROUP BY, the
+   * columnar projection of a GROUP BY, an index walk for an ORDER BY - must not: it takes {@code info.limit}, and the cap is not one.
+   */
+  static int rowCapSkip(final QueryPlanningInfo info, final CommandContext context) {
+    if (info.limit != null)
+      return -1;
+    if (info.skip == null)
+      return 0;
+    try {
+      final int skip = info.skip.getValue(context);
+      return skip < 0 ? -1 : skip;
+    } catch (final RuntimeException e) {
+      // SKIP depends on runtime state: the bound is not known, so there is none
+      return -1;
+    }
+  }
+
   public static void handleOrderBy(final SelectExecutionPlan plan, final QueryPlanningInfo info, final CommandContext context) {
     int skipSize = 0;
     int limitSize = -1;
 
     try {
       skipSize = info.skip == null ? 0 : info.skip.getValue(context);
-      if (skipSize < 0)
-        throw new CommandExecutionException("Cannot execute a query with a negative SKIP");
-
       limitSize = info.limit == null ? -1 : info.limit.getValue(context);
     } catch (final Exception e) {
       // Limit/skip value depends on runtime context (e.g., LET variables)
@@ -2514,8 +2613,15 @@ public class SelectExecutionPlanner {
     if (info.expand || info.unwind != null || info.distinct)
       maxResults = null;
 
-    if (!info.orderApplied && info.orderBy != null && info.orderBy.getItems() != null && !info.orderBy.getItems().isEmpty())
-      plan.chain(new OrderByStep(info.orderBy, maxResults, context, info.timeout != null ? info.timeout.getVal().longValue() : -1));
+    if (!info.orderApplied && info.orderBy != null && info.orderBy.getItems() != null && !info.orderBy.getItems().isEmpty()) {
+      final OrderByStep sort = new OrderByStep(info.orderBy, maxResults, context,
+          info.timeout != null ? info.timeout.getVal().longValue() : -1);
+      // The same rows the sort keeps for a LIMIT, for the caller that reads only a window of them: nothing downstream may drop
+      // one, as for the LIMIT above (issue #12016)
+      if (maxResults == null && !info.expand && info.unwind == null && !info.distinct)
+        sort.boundByRowCap(rowCapSkip(info, context));
+      plan.chain(sort);
+    }
 
     // The projection that drops the aliases generated for the ORDER BY keys runs even when an index already ordered the rows
     // (#8811): the generated columns are in the rows either way
@@ -2587,6 +2693,8 @@ public class SelectExecutionPlanner {
       final int descendingLimit = timeSeriesDescendingScanLimit(tsType, info, context);
       if (descendingLimit >= 0) {
         final FetchFromTimeSeriesStep fetch = new FetchFromTimeSeriesStep(tsType, fromTs, toTs, tagFilter, true, descendingLimit, context);
+        if (descendingLimit == 0)
+          fetch.boundByRowCap(timeSeriesRowCapSkip(tsType, info, context, true));
         consumeTimeSeriesWhereIfPushedDown(tsType, info, context, false);
         fuseTimeSeriesProjection(fetch, tsType, info);
         plan.chain(fetch);
@@ -2604,6 +2712,8 @@ public class SelectExecutionPlanner {
       final FieldFilter pushedFieldFilter = ascendingLimit > 0 ? null : fieldFilter;
       final FetchFromTimeSeriesStep fetch = new FetchFromTimeSeriesStep(tsType, fromTs, toTs, tagFilter, pushedFieldFilter, false,
           ascendingLimit, context);
+      if (ascendingLimit == 0)
+        fetch.boundByRowCap(timeSeriesRowCapSkip(tsType, info, context, false));
       consumeTimeSeriesWhereIfPushedDown(tsType, info, context, pushedFieldFilter != null);
       fuseTimeSeriesProjection(fetch, tsType, info);
       plan.chain(fetch);
@@ -4088,6 +4198,34 @@ public class SelectExecutionPlanner {
   }
 
   /**
+   * Issue #12016: the SKIP the rows of the row cap of a caller (see {@link com.arcadedb.query.ResultRowCapScope}) are counted after,
+   * for a fetch that stops at none of its own, or {@code -1} when the cap cannot bound it. The conditions are the ones under which
+   * the scan takes the statement's own LIMIT ({@link #timeSeriesDescendingScanLimit}, {@link #timeSeriesAscendingScanLimit}): the
+   * statement has none of its own, and nothing between the engine and the caller can add, drop or reorder a row. The fetch reads the
+   * whole series otherwise: a descending scan with no bound lists every row of it in memory.
+   */
+  private int timeSeriesRowCapSkip(final LocalTimeSeriesType tsType, final QueryPlanningInfo info, final CommandContext context,
+      final boolean descending) {
+    final int skip = rowCapSkip(info, context);
+    if (skip < 0 || info.facets != null || info.distinct || info.groupBy != null || info.aggregateProjection != null)
+      return -1;
+    if (!descending) {
+      if (info.expand || info.unwind != null || info.perRecordLetClause != null || info.globalLetPresent)
+        return -1;
+      // An ORDER BY re-orders the WHOLE result, unless the clause asks for exactly the ascending timestamp order the fetch produces
+      if (info.orderBy != null && !isTimeSeriesTimestampOrderByAsc(tsType, info))
+        return -1;
+    }
+    try {
+      // The residual FilterStep must not be able to discard a row the engine counted against the bound (issue #5414)
+      return isTimeSeriesWhereFullyPushedDown(tsType, info, context) ? skip : -1;
+    } catch (final RuntimeException e) {
+      // a predicate would not evaluate against a null record: a bound is an optimisation, it must never be why a query fails
+      return -1;
+    }
+  }
+
+  /**
    * Returns true when the ORDER BY is a single ASCENDING clause on the time-series timestamp column that the
    * fetch order alone already satisfies - the ascending mirror of {@link #isTimeSeriesTimestampOrderByDesc}, and
    * subject to the same caveats: the clause is applied after the projection, so it is only about the raw
@@ -4834,13 +4972,19 @@ public class SelectExecutionPlanner {
         // of its rows the LIMIT will take (issue #9895) - unless the branches are merged by score (issue #10022): a record
         // among the best n of the merge is among the best n of the branch that gives it its score, since every record ranked
         // above it there is ranked above it in the merge too
-        final int functionLimit =
-            (info.flattenedWhereClause.size() == 1 || mergeByScore) && coversWholeHierarchy(filterClusters, typez, info,
-                ridConditions, context) ?
-                indexedFunctionRowLimit(blockCandidateFunction, block, recordConditions, info, order, context) :
-                -1;
+        final boolean limitable = (info.flattenedWhereClause.size() == 1 || mergeByScore) && coversWholeHierarchy(filterClusters, typez,
+            info, ridConditions, context);
+        final int functionLimit = limitable ?
+            indexedFunctionRowLimit(blockCandidateFunction, block, recordConditions, info, order, context) :
+            -1;
+        // A condition besides the function's own can reject rows the limit counted: the plan may then pull past the limit
         final FetchFromIndexedFunctionStep step = new FetchFromIndexedFunctionStep(blockCandidateFunction, info.target,
-            functionLimit, ridConditions, recordConditions, order, context);
+            functionLimit, ridConditions, recordConditions, order,
+            functionLimit > -1 && hasConditionBesides(block, blockCandidateFunction), context);
+        // A caller that reads only a window of the rows (issue #12016) takes the rows of the first branch of its function only: the
+        // branches of an OR are concatenated and deduplicated, so none of them alone knows how many of its rows the window takes
+        if (limitable && functionLimit == -1 && info.flattenedWhereClause.size() == 1)
+          step.boundByRowCap(indexedFunctionRowCapSkip(blockCandidateFunction, block, recordConditions, info, order, context));
         if (order != IndexedFunctionPushdown.Order.FUNCTION)
           // The function answers in the RID order the ORDER BY asks for, and nothing after the fetch reorders the rows
           info.orderApplied = true;
@@ -4993,9 +5137,13 @@ public class SelectExecutionPlanner {
    * excludes something that can drop, add or reorder a row between the fetch and the LIMIT:
    * <ul>
    *   <li>a residual filter other than the function's own condition, which the plan evaluates again on each row and which
-   *       holds for every row the function returns - a filter could reject a row the limit counted. The exception is a
+   *       holds for every row the function returns - a filter could reject a row the limit counted. The exceptions are a
    *       property equality the function was handed to decide before the load ({@code recordConditions}, issue #11069): it
-   *       keeps a match to the limit only when an index decided it, and leaves every other match to the filter;</li>
+   *       keeps a match to the limit only when an index decided it, and leaves every other match to the filter; and any filter
+   *       when the function {@link IndexableSQLFunction#continuesPastLimit() answers past its limit} (issue #12535), where the
+   *       limit is only the start of its answer and the rows the filter rejects are replaced from past it, in the same order -
+   *       unless the filter, or a per-record LET under an ORDER BY the fetch order replaces, may set {@code $score} itself
+   *       ({@link #mayChangeScore}), which would give the rows another order than the function answers them in;</li>
    *   <li>UNWIND and expand, which turn one row into any number; DISTINCT, GROUP BY and aggregates, which fold rows;</li>
    *   <li>an ORDER BY other than {@code $score DESC}, the order the function produces its rows in, or than the
    *       {@code @rid} order it was asked to produce them in (issue #9909);</li>
@@ -5009,16 +5157,18 @@ public class SelectExecutionPlanner {
   private static int indexedFunctionRowLimit(final BinaryCondition function, final AndBlock residual,
       final List<BinaryCondition> recordConditions, final QueryPlanningInfo info, final IndexedFunctionPushdown.Order order,
       final CommandContext context) {
-    if (info.limit == null || info.deferredLetWhereClause != null)
-      return -1;
-    if (info.expand || info.unwind != null || info.distinct || info.groupBy != null || info.aggregateProjection != null)
+    if (info.limit == null || !rowsKeepTheirOrderAfterTheFetch(info, order))
       return -1;
     // By identity: the residual is the planner's own block, or a copy of it made only to remove the function (and then
-    // empty), so the function's condition is the very instance the block holds
+    // empty), so the function's condition is the very instance the block holds. A function that answers past its limit takes
+    // the limit as where its answer starts: the filter can reject rows and the rows after them still come, in order.
     for (final BooleanExpression condition : residual.getSubBlocks())
-      if (condition != function && !containsInstance(recordConditions, condition))
+      if (condition != function && !containsInstance(recordConditions, condition)
+          && (!function.indexedFunctionContinuesPastLimit(context) || mayChangeScore(condition, context)))
+        // a condition that sets $score itself would give the rows another order than the one the function answers them in
         return -1;
-    if (info.orderBy != null && order == IndexedFunctionPushdown.Order.FUNCTION && !isOrderByScoreDescending(info))
+    // the fetch order replaces the ORDER BY $score DESC sort: nothing after the fetch may leave $score at another value
+    if (info.orderBy != null && order == IndexedFunctionPushdown.Order.FUNCTION && mayRescoreRows(info, context))
       return -1;
 
     try {
@@ -5034,6 +5184,116 @@ public class SelectExecutionPlanner {
       // SKIP/LIMIT depend on runtime state, or overflow: the function produces every row, as without a limit
       return -1;
     }
+  }
+
+  /** Whether {@code block} holds a condition other than {@code function}, by identity: a filter that follows the fetch. */
+  private static boolean hasConditionBesides(final AndBlock block, final BinaryCondition function) {
+    for (final BooleanExpression condition : block.getSubBlocks())
+      if (condition != function)
+        return true;
+    return false;
+  }
+
+  /** Whether evaluating {@code condition} on a row may set {@code $score}, see {@link #mayRunScoringCall}. */
+  private static boolean mayChangeScore(final BooleanExpression condition, final CommandContext context) {
+    return condition.setsScore(context) || mayRunScoringCall(condition, context, true);
+  }
+
+  /**
+   * Whether the per-record LET items or the projection, evaluated on every row after the fetch, may leave {@code $score} at
+   * another value than the one the function gave the row: a LET that assigns {@code $score} itself, whatever its expression, or an
+   * expression that may run a scoring call ({@link #mayRunScoringCall}). It matters when the fetch order replaces the sort: the
+   * rows would then not be in the order of the {@code $score} the statement reads. A subquery of a LET or of the projection runs in
+   * a context of its own, which {@code $score} never leaves, so it does not count as such (a scoring call inside it still does:
+   * the walk cannot skip it, and the answer only costs the limit).
+   */
+  private static boolean mayRescoreRows(final QueryPlanningInfo info, final CommandContext context) {
+    if (info.perRecordLetClause != null && info.perRecordLetClause.getItems() != null)
+      for (final LetItem item : info.perRecordLetClause.getItems())
+        if (withoutSigil(SCORE_VARIABLE).equals(withoutSigil(item.getVarName().getStringValue()))
+            || (item.getExpression() != null && mayRunScoringCall(item.getExpression(), context, false)))
+          return true;
+    // the whole item, not only its expression: the items of a nested projection (x:{...}) are evaluated on every row as well
+    if (info.projection != null && info.projection.getItems() != null)
+      for (final ProjectionItem projected : info.projection.getItems())
+        if (mayRunScoringCall(projected, context, false))
+          return true;
+    return false;
+  }
+
+  /**
+   * Whether evaluating the expression or condition {@code root} on a row may set {@code $score}: a call that sets it anywhere
+   * under it, not only at its top ({@code ifnull(SEARCH_INDEX(...), false) = true} runs the search too), or one the planner cannot
+   * tell does not: a function or method the engine does not ship, {@code eval()}, whose condition is parsed only at run time,
+   * {@code transform()}, which resolves the method it applies from its arguments at run time (so an application's method is
+   * reached through it), or a nested statement ({@code statementsMayScore}). Answering "may" costs the limit, never a row, so every
+   * doubt is one.
+   */
+  private static boolean mayRunScoringCall(final Object root, final CommandContext context, final boolean statementsMayScore) {
+    return !SqlAstInspector.allNodesMatch(root, node -> {
+      if (node instanceof Statement)
+        return !statementsMayScore;
+      if (node instanceof MethodCall call)
+        return CorrelatedSubQueryCache.isTrustedMethod(call);
+      if (!(node instanceof FunctionCall call))
+        return true;
+      if (call.getName() == null)
+        return false;
+      final String name = call.getName().getStringValue().toLowerCase(Locale.ENGLISH);
+      if (!DefaultSQLFunctionFactory.getInstance().isBuiltIn(name) || SQLFunctionEval.NAME.equals(name))
+        return false;
+      try {
+        final SQLFunction function = call.getSQLFunction(context);
+        return function != null && !function.setsScore();
+      } catch (final RuntimeException e) {
+        // a function that cannot be built from its call (a wrong argument count, say) fails when the statement runs: the planner
+        // keeps the old plan, whose evaluation raises it, instead of vouching for a call it cannot read
+        return false;
+      }
+    });
+  }
+
+  /**
+   * Issue #12016: the SKIP the rows of the row cap of a caller (see {@link com.arcadedb.query.ResultRowCapScope}) are counted after,
+   * for an indexed function fetch the statement's own LIMIT does not bound, or {@code -1} when the cap cannot bound it: the statement
+   * has a LIMIT of its own or a FACETS clause, or something between the fetch and the caller can drop, add or reorder a row (see
+   * {@link #indexedFunctionRowLimit}). An {@code ORDER BY $score DESC} stays a sort of the rows the function produces: only a LIMIT
+   * makes the fetch itself the order, and the plan does not depend on the cap.
+   */
+  private static int indexedFunctionRowCapSkip(final BinaryCondition function, final AndBlock residual,
+      final List<BinaryCondition> recordConditions, final QueryPlanningInfo info, final IndexedFunctionPushdown.Order order,
+      final CommandContext context) {
+    if (info.facets != null || !rowsOfFunctionAreTheFirstOnesTheCallerTakes(function, residual, recordConditions, info, order))
+      return -1;
+    return rowCapSkip(info, context);
+  }
+
+  /**
+   * Whether nothing between an indexed function fetch and the caller can drop, add or reorder a row, so that the rows the caller takes
+   * are the first ones the function produces: the conditions {@link #indexedFunctionRowLimit} lists.
+   */
+  private static boolean rowsOfFunctionAreTheFirstOnesTheCallerTakes(final BinaryCondition function, final AndBlock residual,
+      final List<BinaryCondition> recordConditions, final QueryPlanningInfo info, final IndexedFunctionPushdown.Order order) {
+    if (!rowsKeepTheirOrderAfterTheFetch(info, order))
+      return false;
+    // By identity: the residual is the planner's own block, or a copy of it made only to remove the function (and then
+    // empty), so the function's condition is the very instance the block holds
+    for (final BooleanExpression condition : residual.getSubBlocks())
+      if (condition != function && !containsInstance(recordConditions, condition))
+        return false;
+    return true;
+  }
+
+  /**
+   * Whether the statement adds, folds or reorders no row between an indexed function fetch and its caller: no UNWIND, expand,
+   * DISTINCT, GROUP BY or aggregate, no WHERE left for after a LET, and an ORDER BY (if any) that is the order the fetch answers in.
+   */
+  private static boolean rowsKeepTheirOrderAfterTheFetch(final QueryPlanningInfo info, final IndexedFunctionPushdown.Order order) {
+    if (info.deferredLetWhereClause != null)
+      return false;
+    if (info.expand || info.unwind != null || info.distinct || info.groupBy != null || info.aggregateProjection != null)
+      return false;
+    return info.orderBy == null || order != IndexedFunctionPushdown.Order.FUNCTION || isOrderByScoreDescending(info);
   }
 
   /**
@@ -5235,12 +5495,51 @@ public class SelectExecutionPlanner {
     if (subBlocks == null || letClause == null || letClause.getItems() == null || letClause.getItems().isEmpty())
       return false;
 
-    for (final BooleanExpression exp : subBlocks)
-      for (final String name : variableNamesIn(exp.toString()))
+    for (final BooleanExpression exp : subBlocks) {
+      final String rendered = exp.toString();
+      for (final LetItem item : letClause.getItems()) {
+        final String varName = item.getVarName().getStringValue();
+        // A lifted sub-query's alias (_$$$SUBQUERY$$$_0) carries no leading sigil, so variableNamesIn() never reads it
+        // whole: look for it as a word of its own, so that _$$$SUBQUERY$$$_1 is not found in _$$$SUBQUERY$$$_10 (issue #12287)
+        if (SubQueryCollector.isGeneratedAlias(varName) && (mentionsWord(rendered, varName) || rendersLiftedSubquery(rendered, item)))
+          return true;
+      }
+      for (final String name : variableNamesIn(rendered))
         for (final LetItem item : letClause.getItems())
           if (name.equals(withoutSigil(item.getVarName().getStringValue())))
             return true;
+    }
 
+    return false;
+  }
+
+  /**
+   * Whether {@code rendered} holds the sub-query a generated LET alias was lifted from, written in place. A sub-query read
+   * by {@code =}, {@code <}, a method such as {@code .size()} or a projection stays in the condition as itself and only
+   * reads the alias when it runs (issue #13179), so the alias is never in the rendered text: a filter on
+   * {@code (SELECT ... $parent.$current ...).size() > 0} was planned inside the index fetch, ahead of the LET computing it,
+   * and read no value for every row (issue #12287). The text can only match too generously, which defers a filter behind
+   * the LET: a plan, never a row.
+   */
+  private static boolean rendersLiftedSubquery(final String rendered, final LetItem item) {
+    final Statement query = item.getQuery();
+    return query != null && rendered.contains("(" + query + ")");
+  }
+
+  /**
+   * Whether {@code word} occurs in {@code rendered} as a word of its own: neither the character before nor the one after
+   * it can be part of an identifier. Quoted runs are not skipped: a literal that spells a generated alias is not
+   * something a user writes, and reading one as a reference only defers a filter behind the LET (a plan, never a row).
+   */
+  static boolean mentionsWord(final String rendered, final String word) {
+    int from = rendered.indexOf(word);
+    while (from >= 0) {
+      final int end = from + word.length();
+      if ((from == 0 || !Character.isJavaIdentifierPart(rendered.charAt(from - 1)))
+          && (end == rendered.length() || !Character.isJavaIdentifierPart(rendered.charAt(end))))
+        return true;
+      from = rendered.indexOf(word, from + 1);
+    }
     return false;
   }
 
@@ -5374,6 +5673,11 @@ public class SelectExecutionPlanner {
         logSkippedIndex(idx, e);
         continue;
       }
+      // A BY ITEM/KEY/VALUE property holds one entry per element and none for an empty collection: walked in order, the index
+      // repeats the records with several elements and misses those with none, whichever of its properties is sorted on, and
+      // the null sub-plan below only adds the records whose properties are all null (issue #12518)
+      if (hasExpandedProperty(indexFields))
+        continue;
       if (indexFields.size() < info.orderBy.getItems().size()) {
         continue;
       }
@@ -5494,7 +5798,10 @@ public class SelectExecutionPlanner {
    * considered: both fall back to the null sub-plan, which is always correct.
    */
   private static boolean cannotHoldNull(final DocumentType type, final String propertyName, final QueryPlanningInfo info) {
-    final Property property = type.getPropertyIfExists(propertyName);
+    // Polymorphic: a subtype inherits the MANDATORY NOTNULL property of its supertype, whose index then holds every one of
+    // its records too. Looking only at the subtype's own properties sent ORDER BY k ASC on the subtype to a scan of it for
+    // null keys that cannot exist (#11701)
+    final Property property = type.getPolymorphicPropertyIfExists(propertyName);
     // NOTNULL alone only rejects an explicit null: a record that never sets the property is legal and is not in the index
     // either (#8701). Only NOTNULL together with MANDATORY rules out both cases the index does not hold.
     if (property != null && property.isNotNull() && property.isMandatory())
@@ -5530,6 +5837,148 @@ public class SelectExecutionPlanner {
 
   private static boolean isPropertyReference(final Expression expression, final String propertyName) {
     return expression != null && expression.isBaseIdentifier() && propertyName.equals(expression.getDefaultAlias().getStringValue());
+  }
+
+  /**
+   * The condition {@code exp} written the way an index answers it, the indexed property on the left, or null when it is already
+   * written so or has no such form (issue #12281). Only a form that selects the very records {@code exp} does is returned:
+   * <ul>
+   *   <li>{@code NOT (id <> 5)} is {@code id = 5}: {@code <>} is the negation of {@code =} and the property keeps the left side, so
+   *   the two are the same function, and a comparison with a null operand is unknown and stays unknown under NOT;</li>
+   *   <li>{@code NOT (NOT (id < 3))} is {@code id < 3}, in the same three-valued logic;</li>
+   *   <li>{@code 5 = id} is {@code id = 5} and {@code :lo < id} is {@code id > :lo}, and {@code NOT (id >= 3)} is {@code id < 3}, but
+   *   only when the value has the property's type. A comparison converts its right operand to the type of its left one, so with a
+   *   value of another type the spellings compare differently: {@code '10' > id} compares text where {@code id < '10'} compares
+   *   numbers, {@code 9 = s} reads the text "09" as 9 where {@code s = 9} looks for the key "9", and a value the comparison
+   *   cannot convert makes a range and its complement both false.</li>
+   * </ul>
+   */
+  private static BooleanExpression indexKeyForm(final BooleanExpression exp, final IndexSearchInfo info, final DocumentType clazz) {
+    boolean negated = false;
+    BooleanExpression unwrapped = exp;
+    while (true) {
+      if (unwrapped instanceof NotBlock not && not.sub != null) {
+        if (not.negate)
+          negated = !negated;
+        unwrapped = not.sub;
+      } else if (unwrapped instanceof ParenthesisBlock parenthesis && parenthesis.getSubElement() != null)
+        unwrapped = parenthesis.getSubElement();
+      else
+        break;
+    }
+    if (!(unwrapped instanceof BinaryCondition condition))
+      return null;
+
+    final boolean propertyLeft = isPropertyReference(condition.getLeft(), info.getField());
+    final boolean propertyRight = !propertyLeft && isPropertyReference(condition.getRight(), info.getField());
+    // a plain comparison with the property first is what isIndexAware has already judged
+    if (!propertyLeft && !propertyRight || propertyLeft && unwrapped == exp)
+      return null;
+
+    BinaryCompareOperator operator = condition.getOperator();
+    if (negated)
+      operator = complementOf(operator);
+    if (operator != null && propertyRight)
+      operator = mirrorOf(operator);
+    if (operator == null)
+      return null;
+
+    // The operands change sides, or a range is complemented: each of them compares as the original only when the value is of the
+    // property's type. An equality that keeps its operands (NOT (id <> v), a double negation) is the same function either way.
+    final Expression value = propertyLeft ? condition.getRight() : condition.getLeft();
+    if ((propertyRight || negated && operator.isRangeOperator()) && !valueHasPropertyType(value, info, clazz))
+      return null;
+
+    final BinaryCondition keyForm = new BinaryCondition();
+    keyForm.setLeft((propertyLeft ? condition.getLeft() : condition.getRight()).copy());
+    keyForm.setOperator(operator);
+    keyForm.setRight(value.copy());
+    return keyForm;
+  }
+
+  /** {@code a op b} reads {@code b mirror a}, or null for an operator this planner does not turn round. */
+  private static BinaryCompareOperator mirrorOf(final BinaryCompareOperator operator) {
+    return switch (operator) {
+      case EqualsCompareOperator equals -> equals;
+      case LtOperator ignored -> new GtOperator();
+      case GtOperator ignored -> new LtOperator();
+      case LeOperator ignored -> new GeOperator();
+      case GeOperator ignored -> new LeOperator();
+      default -> null;
+    };
+  }
+
+  /** The operator of {@code NOT (a op b)} written without the NOT, when it is one an index answers, else null. */
+  private static BinaryCompareOperator complementOf(final BinaryCompareOperator operator) {
+    return switch (operator) {
+      case NeOperator ignored -> new EqualsCompareOperator();
+      case NeqOperator ignored -> new EqualsCompareOperator();
+      case LtOperator ignored -> new GeOperator();
+      case GeOperator ignored -> new LtOperator();
+      case GtOperator ignored -> new LeOperator();
+      case LeOperator ignored -> new GtOperator();
+      default -> null;
+    };
+  }
+
+  /**
+   * Whether {@code value}, computed with no record, has the type the property holds (a number for a numeric property, a string for
+   * a STRING one): then a comparison converts nothing either way round. A parameter's value decides it, so the plan holds for that
+   * binding only.
+   * <p>
+   * The value is read while planning only when it is a literal or a bound parameter, or arithmetic over them. Any other expression
+   * that needs no record (a function call, {@code uuid()}, {@code sysdate()}, a user function) is {@link Expression#isEarlyCalculated}
+   * too, and reading it here would invoke it once more than the statement asks for (issue #6179): such a value keeps the scan.
+   */
+  private static boolean valueHasPropertyType(final Expression value, final IndexSearchInfo info, final DocumentType clazz) {
+    if (!value.isLiteral(true))
+      return false;
+    final Property property = clazz.getPolymorphicPropertyIfExists(info.getField());
+    if (property == null || property.getType() == null)
+      return false;
+    if (!value.isLiteral())
+      info.setPlanDependsOnValue();
+    final Object v;
+    try {
+      v = value.execute((Result) null, info.getContext());
+    } catch (final RuntimeException e) {
+      // a value that cannot be computed (a missing parameter, a division by zero) is reported by the scan, as it always was
+      return false;
+    }
+    return switch (property.getType()) {
+      case BYTE, SHORT, INTEGER, LONG, FLOAT, DOUBLE, DECIMAL -> v instanceof Number;
+      case STRING -> v instanceof String;
+      default -> false;
+    };
+  }
+
+  /**
+   * True when every condition the index search leaves to the filter is on {@code sortKey} itself (a comparison, a BETWEEN, an IS
+   * NOT NULL): the conditions an ordered walk of the sort key's index answers with its range, so it filters only on the equality.
+   */
+  private static boolean residualOnlyConstrainsSortKey(final BooleanExpression remaining, final String sortKey) {
+    if (remaining == null)
+      return true;
+    if (remaining instanceof AndBlock and) {
+      for (final BooleanExpression conjunct : and.getSubBlocks())
+        if (!constrainsOnly(conjunct, sortKey))
+          return false;
+      return true;
+    }
+    return constrainsOnly(remaining, sortKey);
+  }
+
+  private static boolean constrainsOnly(final BooleanExpression condition, final String property) {
+    final Expression subject;
+    if (condition instanceof BinaryCondition binary)
+      subject = binary.getLeft();
+    else if (condition instanceof BetweenCondition between)
+      subject = between.getFirst();
+    else if (condition instanceof IsNotNullCondition notNull)
+      subject = notNull.expression;
+    else
+      return false;
+    return isPropertyReference(subject, property);
   }
 
   private boolean handleTypeAsTargetWithIndex(final SelectExecutionPlan plan, final Identifier targetType,
@@ -5663,11 +6112,254 @@ public class SelectExecutionPlanner {
     if (indexSearchDescriptors.contains(null))
       return null; // some blocks could not be managed with an index, fall back to full scan
 
+    // A keyset page (WHERE e = ? AND k > :after ORDER BY k LIMIT n) can cost less walking k's index in order (issue #11700)
+    if (allowDeferredLetFilter && indexSearchDescriptors.size() == 1) {
+      final IndexSearchDescriptor orderedWalk = cheaperOrderedWalk(indexSearchDescriptors.getFirst(), indexes,
+          info.flattenedWhereClause.getFirst(), typez, info, context);
+      if (orderedWalk == WALK_WHOLE_ORDER_INDEX)
+        // No condition on the sort key reaches its index: handleClassWithIndexForSortOnly() walks the whole index in order and
+        // handleWhere() filters what it returns
+        return null;
+      if (orderedWalk != null)
+        indexSearchDescriptors = List.of(orderedWalk);
+    }
+
     List<IndexSearchDescriptor> optimumIndexSearchDescriptors =
         commonFactor(indexSearchDescriptors);
 
     return executionStepFromIndexes(filterBuckets, typez, info, context, optimumIndexSearchDescriptors,
         allowDeferredLetFilter);
+  }
+
+  /** What {@link #cheaperOrderedWalk} answers when the whole index of the sort key is to be walked in order. */
+  private static final IndexSearchDescriptor WALK_WHOLE_ORDER_INDEX = new IndexSearchDescriptor();
+
+  /**
+   * Weighs the index search {@code chosen} against walking the index of the sort key in order, for a statement that keeps the first
+   * rows of a single sort key: {@code WHERE e = ? AND k > :after ORDER BY k LIMIT n}, the page of a keyset walk (issue #11700).
+   * <p>
+   * The search reads the m entries the equality matches, then sorts them to keep n. The ordered walk needs no sort and stops at the
+   * n-th row that passes the equality: at its selectivity m / N, in a type of N records, it reads about n * N / m entries. It is
+   * chosen only when that is under half of m. The margin covers two things the entry counts leave out: the search loads its rows in
+   * physical order and in parallel (see GetValueFromIndexEntryStep), which costs less per row than the walk's loads in key order,
+   * and the estimate assumes that the matches spread evenly along the sort key. A walk whose matches gather at the far end of the
+   * range reads up to all of it, where the search never reads more than m. Taken together the walk wins when m * m &gt; 2 * n * N,
+   * so the matches are counted only up to one past that point: about sqrt(2 * n * N) index entries, and no record, per planning.
+   * <p>
+   * The current plan is kept without a LIMIT, with several sort keys or a sort on an expression, with an aggregation, when the search
+   * already returns the rows in order (a composite index on (e, k)), when no index leads with the sort key, and when the matches
+   * of the search cannot be counted from the statement (anything but equalities, or one IN, on literals and bound parameters).
+   *
+   * @return the search on the sort key's index, {@link #WALK_WHOLE_ORDER_INDEX} when no condition on the sort key reaches its
+   * index, or null to keep {@code chosen}
+   */
+  private IndexSearchDescriptor cheaperOrderedWalk(final IndexSearchDescriptor chosen, final List<TypeIndex> indexes,
+      final AndBlock block, final DocumentType type, final QueryPlanningInfo info, final CommandContext context) {
+    final String sortKey = singleSortKey(info);
+    if (sortKey == null)
+      return null;
+    try {
+      if (chosen.keyCondition instanceof AndBlock key && fullySorted(info, key, chosen.getIndex()))
+        return null;
+    } catch (final IndexException e) {
+      logSkippedIndex(chosen.getIndex(), e);
+      return null;
+    }
+    // The estimate below counts only the entries of the equality: a residual condition on anything but the sort key filters the
+    // walk further, by a fraction the planner does not know, and can make it read up to the whole index for one page
+    if (!residualOnlyConstrainsSortKey(chosen.getRemainingCondition(), sortKey))
+      return null;
+
+    final long rows = rowsToReturn(info, context);
+    if (rows <= 0)
+      return null;
+
+    IndexSearchDescriptor walk = null;
+    int walkProperties = 0;
+    boolean leadingIndexFound = false;
+    boolean nullsIndexed = true;
+    boolean expandedLeadingIndex = false;
+    for (final TypeIndex index : indexes) {
+      try {
+        if (!index.supportsOrderedIterations() || holdsFoldedKeys(index))
+          continue;
+        final List<String> properties = index.getPropertyNames();
+        if (!sortKey.equals(properties.getFirst()))
+          continue;
+        // A BY ITEM/KEY/VALUE property holds one entry per element and none for an empty collection: walked, the index repeats
+        // records and misses others. The whole-index walk could pick it, so its presence keeps the current plan there too
+        if (hasExpandedProperty(properties)) {
+          expandedLeadingIndex = true;
+          continue;
+        }
+        leadingIndexFound = true;
+        if (index.getNullStrategy() != LSMTreeIndexAbstract.NULL_STRATEGY.INDEX)
+          nullsIndexed = false;
+        final IndexSearchDescriptor candidate = buildIndexSearchDescriptor(context, index, block, type);
+        if (candidate == null || !(candidate.keyCondition instanceof AndBlock key) || key.getSubBlocks().size() != 1
+            || candidate.requiresMultipleIndexLookups() || !fullySorted(info, key, index))
+          continue;
+        // the fewer properties the index holds, the more entries a page fits in
+        if (walk == null || properties.size() < walkProperties) {
+          walk = candidate;
+          walkProperties = properties.size();
+        }
+      } catch (final IndexException e) {
+        logSkippedIndex(index, e);
+      }
+    }
+    // A walk of the whole index also scans the type for the records the index does not hold, unless none can be returned
+    if (walk == null && (!leadingIndexFound || expandedLeadingIndex || !(nullsIndexed || cannotHoldNull(type, sortKey, info))))
+      return null;
+
+    // The choice reads the size of the data and the values bound to the statement: like rewriteDistinctAsGroupBy(), the plan is
+    // made again for every execution, so that a type that grows or a parameter bound to another value is weighed again
+    planDependsOnInputParameters = true;
+
+    final long typeRecords = context.getDatabase().countType(type.getName(), true);
+    final double breakEven = Math.sqrt(2.0 * rows * typeRecords);
+    if (breakEven >= typeRecords)
+      // the search cannot match more records than the type holds
+      return null;
+
+    final long matches = countMatchingEntries(chosen, (long) breakEven + 1, context);
+    if (matches <= 0)
+      return null;
+    // the walk reads about rows * typeRecords / matches entries and is taken when that is less than half the matches, so when
+    // matches * matches > 2 * rows * typeRecords: compared unrounded, since a count stopped at the cap is just past the break-even
+    // and a walk estimate rounded up reached half of it
+    if (2.0 * rows * typeRecords >= (double) matches * matches)
+      return null;
+    return walk != null ? walk : WALK_WHOLE_ORDER_INDEX;
+  }
+
+  /**
+   * The property of the only ORDER BY item of a statement whose first rows are its answer, or null: no LIMIT, an ORDER BY of
+   * several items or on anything but a property, or rows that are aggregated, deduplicated or multiplied before the ORDER BY.
+   */
+  private static String singleSortKey(final QueryPlanningInfo info) {
+    if (info.orderApplied || info.limit == null || info.orderBy == null || info.orderBy.getItems() == null
+        || info.orderBy.getItems().size() != 1)
+      return null;
+    if (info.aggregateProjection != null || info.groupBy != null || info.distinct || info.expand || info.unwind != null)
+      return null;
+    return resolveOrderByProperty(info.orderBy.getItems().getFirst(), info);
+  }
+
+  /** The rows the statement reads before its LIMIT stops it (SKIP included), or -1 when that is not known at planning time. */
+  private static long rowsToReturn(final QueryPlanningInfo info, final CommandContext context) {
+    try {
+      final int limit = info.limit.getValue(context);
+      final int skip = info.skip != null ? info.skip.getValue(context) : 0;
+      return limit <= 0 ? -1 : (long) limit + Math.max(0, skip);
+    } catch (final RuntimeException e) {
+      // a LIMIT or SKIP read from a variable is not known yet
+      return -1;
+    }
+  }
+
+  /**
+   * How many entries the index search reads, counted up to {@code cap}, or -1 when the statement does not tell: its key has to be
+   * made of equalities on literals and bound parameters, or of one IN on a literal list or a bound parameter.
+   */
+  private static long countMatchingEntries(final IndexSearchDescriptor search, final long cap, final CommandContext context) {
+    if (search.additionalRangeCondition != null || !(search.getIndex() instanceof TypeIndex index))
+      return -1;
+
+    final List<BooleanExpression> blocks = search.getSubBlocks();
+    final List<Object[]> keys = new ArrayList<>();
+    try {
+      final List<String> properties = index.getPropertyNames();
+      if (hasExpandedProperty(properties))
+        return -1;
+
+      if (blocks.size() == 1 && properties.size() == 1 && blocks.getFirst() instanceof InCondition in) {
+        if (in.getRightParam() == null && (in.getRightMathExpression() == null || !in.getRightMathExpression().isLiteral(true)))
+          return -1;
+        if (!(in.evaluateRight((Result) null, context) instanceof Collection<?> values))
+          return -1;
+        // A repeated value, or two values the index reads as one key (IN (9, '9')), is one seek at execution
+        // (FetchFromIndexStep.sortSeeksInIndexOrder drops the repeats): counted once
+        final byte[] keyTypes = index.getBinaryKeyTypes();
+        final DatabaseInternal database = (DatabaseInternal) context.getDatabase();
+        final BinaryComparator comparator = database.getSerializer().getComparator();
+        for (final Object value : values) {
+          if (value == null)
+            return -1;
+          keys.add(FetchFromIndexStep.normaliseToIndexKey(database, new Object[] { value }, keyTypes, index.getMetadata()));
+        }
+        try {
+          keys.sort((a, b) -> comparator.compare(a[0], keyTypes[0], b[0], keyTypes[0]));
+        } catch (final IllegalArgumentException e) {
+          // values of types the index cannot compare: no estimate
+          return -1;
+        }
+        int distinct = 0;
+        for (final Object[] key : keys)
+          if (distinct == 0 || comparator.compare(keys.get(distinct - 1)[0], keyTypes[0], key[0], keyTypes[0]) != 0)
+            keys.set(distinct++, key);
+        keys.subList(distinct, keys.size()).clear();
+      } else {
+        final Object[] key = new Object[blocks.size()];
+        for (int i = 0; i < key.length; i++) {
+          if (!(blocks.get(i) instanceof BinaryCondition condition) || !(condition.getOperator() instanceof EqualsCompareOperator))
+            return -1;
+          final Expression right = condition.getRight();
+          if (!right.isLiteral() && !isBareInputParameter(right))
+            return -1;
+          key[i] = right.execute((Result) null, context);
+          if (key[i] == null || MultiValue.isMultiValue(key[i]))
+            return -1;
+        }
+        keys.add(key);
+      }
+
+      final boolean fullKey = blocks.size() == properties.size();
+      long entries = 0;
+      for (final Object[] key : keys) {
+        if (fullKey) {
+          // A record lives in one bucket, so the sub-indexes of the buckets hold disjoint entries: counted one by one, they spare
+          // the set TypeIndex.get() merges them into
+          for (final Index bucketIndex : index.getIndexesByKeys(key)) {
+            entries += countUpTo(bucketIndex.get(key, (int) Math.min(Integer.MAX_VALUE, cap - entries)), cap - entries);
+            if (entries >= cap)
+              return entries;
+          }
+        } else {
+          entries += countUpTo(index.range(true, key, true, key, true), cap - entries);
+          if (entries >= cap)
+            return entries;
+        }
+      }
+      return entries;
+    } catch (final IndexException e) {
+      // dropped or rebuilt while counting: no estimate
+      return -1;
+    } catch (final RuntimeException e) {
+      // the same, read as the page manager's "File with id n was not found" when a drop deletes the files under the cursor
+      if (TypeIndex.isStaleRead(index, e))
+        return -1;
+      throw e;
+    }
+  }
+
+  /** Whether an index property is a BY ITEM, BY KEY or BY VALUE expansion of a collection, which holds one entry per element. */
+  private static boolean hasExpandedProperty(final List<String> indexProperties) {
+    for (final String property : indexProperties)
+      if (!Index.basePropertyName(property).equals(property))
+        return true;
+    return false;
+  }
+
+  private static long countUpTo(final IndexCursor cursor, final long max) {
+    try (cursor) {
+      long entries = 0;
+      while (entries < max && cursor.hasNext()) {
+        cursor.next();
+        ++entries;
+      }
+      return entries;
+    }
   }
 
   private List<ExecutionStepInternal> executionStepFromIndexes(final Set<String> filterClusters, final DocumentType clazz,
@@ -5693,7 +6385,8 @@ public class SelectExecutionPlanner {
       final boolean indexOrderApplied =
           orderAsc != null && info.orderBy != null && fullySorted(info, (AndBlock) desc.keyCondition, desc.getIndex());
       result.add(new GetValueFromIndexEntryStep(context, filterClusterIds,
-          indexOrderApplied ? null : scanFallbackFor(desc, clazz, filterClusters, info, context)));
+          indexOrderApplied ? null : scanFallbackFor(desc, clazz, filterClusters, info, context),
+          readsEveryEntry(info, indexOrderApplied) ? planIndexIntersection(desc, clazz, info, context) : null));
       if (desc.requiresDistinctStep()) {
         result.add(new DistinctExecutionStep(context));
       }
@@ -5735,6 +6428,81 @@ public class SelectExecutionPlanner {
       }
     }
     return result;
+  }
+
+  /**
+   * Whether the statement reads every entry of its index search, whatever rows it returns: it has no LIMIT, or its rows are consumed
+   * whole before the LIMIT applies, by an aggregation or by a sort the order of the index does not spare. Only then is an
+   * {@link IndexIntersection} planned: reading other indexes whole for a search that a LIMIT stops after its first rows could cost
+   * more than the records it spares.
+   */
+  private static boolean readsEveryEntry(final QueryPlanningInfo info, final boolean indexOrderApplied) {
+    if (info.limit == null || info.aggregateProjection != null || info.groupBy != null)
+      return true;
+    return info.orderBy != null && !indexOrderApplied && !info.orderApplied;
+  }
+
+  /**
+   * The other indexes of the type that answer conditions the index search {@code desc} leaves to the filter, for the search to load
+   * only the records they all name (issue #13289): {@code WHERE updated_at = ? AND id > ?} with an index on each property loaded
+   * every record of one index to evaluate the other condition on it. Each index is picked as the search itself is, among the indexes
+   * not taken yet and on the conditions not answered yet, until no condition is left that an index answers. The conditions stay in
+   * the filter: the intersection only spares the load of records that cannot pass it, and decides at execution time whether each
+   * index is worth reading (see {@link IndexIntersection}).
+   *
+   * @return null when no other index answers a condition left, the search is a lookup of whole keys of a unique index (one record
+   * per key), or a full-text search
+   */
+  private IndexIntersection planIndexIntersection(final IndexSearchDescriptor desc, final DocumentType type, final QueryPlanningInfo info,
+      final CommandContext context) {
+    if (isUniqueKeyLookup(desc) || isFullText(desc.getIndex()))
+      return null;
+    // commonFactor() hands the residual on as an OR of the residuals of the branches it merged: with several, a record passes when
+    // any of them holds, which the indexes of one cannot decide
+    BooleanExpression residual = desc.getRemainingCondition();
+    if (residual instanceof OrBlock or && or.getSubBlocks().size() == 1)
+      residual = or.getSubBlocks().getFirst();
+    if (!(residual instanceof AndBlock remaining))
+      return null;
+
+    final List<TypeIndex> indexes = plannableIndexes(type.getAllIndexes(true));
+    final Set<String> taken = new HashSet<>();
+    taken.add(desc.getIndex().getName());
+    final List<FetchFromIndexStep> searches = new ArrayList<>(2);
+    AndBlock left = remaining;
+    while (!left.getSubBlocks().isEmpty()) {
+      final List<IndexSearchDescriptor> candidates = new ArrayList<>();
+      for (final TypeIndex index : indexes) {
+        if (taken.contains(index.getName()))
+          continue;
+        final IndexSearchDescriptor candidate = buildIndexSearchDescriptor(context, index, left, type);
+        if (candidate == null || candidate.keyCondition == null || candidate.getSubBlocks().isEmpty())
+          continue;
+        // a key read before the records are loaded cannot use what the per-record LET computes for each of them
+        final List<BooleanExpression> key = new ArrayList<>(candidate.getSubBlocks());
+        if (candidate.additionalRangeCondition != null)
+          key.add(candidate.additionalRangeCondition);
+        if (!refersToLet(key, info.perRecordLetClause))
+          candidates.add(candidate);
+      }
+      if (candidates.isEmpty())
+        break;
+
+      final IndexSearchDescriptor best;
+      try {
+        best = pickBestDescriptor(context, candidates);
+      } catch (final IndexException e) {
+        // dropped or rebuilt while it was ranked: the intersection keeps the indexes taken so far
+        LogManager.instance().log(this, Level.FINE, "Index intersection stopped while planning: %s", e.getMessage());
+        break;
+      }
+      taken.add(best.getIndex().getName());
+      searches.add(new FetchFromIndexStep(best.index, best.keyCondition, best.additionalRangeCondition, context));
+      if (!(best.getRemainingCondition() instanceof AndBlock next))
+        break;
+      left = next;
+    }
+    return searches.isEmpty() ? null : new IndexIntersection(searches);
   }
 
   /**
@@ -6221,6 +6989,31 @@ public class SelectExecutionPlanner {
         descriptors = fullKeyDescriptors;
     }
 
+    // A lookup of whole keys of a UNIQUE index - an equality or an IN list on each of its properties - answers at most one
+    // record per key, which no other index covering as many conditions can beat. It is decided here, ahead of the cost ranking
+    // below: nothing records query statistics (QueryStats.get() answers a shared instance that does not, issue #9173), so every
+    // candidate costs Integer.MAX_VALUE and the ranking cannot tell them apart. The first index the type lists then won, which
+    // could be a NOTUNIQUE index on a tenant-like property shared by most records (issue #11963)
+    if (descriptors.size() > 1) {
+      final List<IndexSearchDescriptor> uniqueKeyDescriptors = descriptors.stream()
+          .filter(SelectExecutionPlanner::isUniqueKeyLookup)
+          .toList();
+      if (!uniqueKeyDescriptors.isEmpty() && uniqueKeyDescriptors.size() < descriptors.size())
+        descriptors = uniqueKeyDescriptors;
+    }
+
+    // A lookup of keys - equalities, IN lists, CONTAINS... - reads the entries of the keys it names; a range reads every entry
+    // between its bounds, and an open one (score > 1) up to the whole index. Among indexes covering as many conditions, the
+    // lookup is preferred before the cost ranking below, whose statistics are not recorded: every candidate then costs the same
+    // and the first index the type listed won, so `cat = 'rare' AND score > 1` read the whole range of score (issue #12282)
+    if (descriptors.size() > 1) {
+      final List<IndexSearchDescriptor> keyLookupDescriptors = descriptors.stream()
+          .filter(SelectExecutionPlanner::isKeyLookup)
+          .toList();
+      if (!keyLookupDescriptors.isEmpty() && keyLookupDescriptors.size() < descriptors.size())
+        descriptors = keyLookupDescriptors;
+    }
+
     // If there are multiple indexes covering the same number of conditions,
     // select based on cost (lower is better)
     if (descriptors.size() > 1) {
@@ -6239,6 +7032,38 @@ public class SelectExecutionPlanner {
 
     // Return the first descriptor (all remaining have same subBlocks size and cost)
     return descriptors.getFirst();
+  }
+
+  /** Whether {@code desc} looks up whole keys of a UNIQUE index: an equality or an IN list on every property of the index. */
+  private static boolean isUniqueKeyLookup(final IndexSearchDescriptor desc) {
+    if (!desc.getIndex().isUnique() || desc.additionalRangeCondition != null
+        || desc.getSubBlocks().size() != desc.getIndex().getPropertyNames().size())
+      return false;
+    for (final BooleanExpression block : desc.getSubBlocks())
+      if (!(block instanceof InCondition)
+          && !(block instanceof BinaryCondition condition && condition.getOperator() instanceof EqualsCompareOperator))
+        return false;
+    return true;
+  }
+
+  /**
+   * Whether {@code desc} looks up whole keys: every condition of its key names the values to find (an equality, an IN list, a
+   * CONTAINS family condition or an IS NULL) and none of them is a range. Anything else, a condition added later included, counts
+   * as a range, so a new shape of condition can never win over a lookup by mistake.
+   */
+  private static boolean isKeyLookup(final IndexSearchDescriptor desc) {
+    if (desc.additionalRangeCondition != null)
+      return false;
+    for (final BooleanExpression block : desc.getSubBlocks()) {
+      if (block instanceof BinaryCondition condition) {
+        final BinaryCompareOperator operator = condition.getOperator();
+        if (!(operator instanceof EqualsCompareOperator) && !(operator instanceof ContainsKeyOperator))
+          return false;
+      } else if (!(block instanceof InCondition) && !(block instanceof ContainsCondition) && !(block instanceof ContainsAnyCondition)
+          && !(block instanceof ContainsAllCondition) && !(block instanceof ContainsValueCondition) && !(block instanceof IsNullCondition))
+        return false;
+    }
+    return true;
   }
 
   /**
@@ -6457,7 +7282,16 @@ public class SelectExecutionPlanner {
       boolean rangeOp = false;
       while (blockIterator.hasNext()) {
         BooleanExpression singleExp = blockIterator.next();
-        if (singleExp.isIndexAware(info) && !hasLossyDecimalLiteralBound(singleExp, clazz, baseFieldName, context)) {
+        // 5 = id, :lo < id, NOT (id <> 5): the index answers the same condition written with the property on the left (issue #12281)
+        boolean indexAware = singleExp.isIndexAware(info);
+        if (!indexAware) {
+          final BooleanExpression keyForm = indexKeyForm(singleExp, info, clazz);
+          if (keyForm != null && keyForm.isIndexAware(info)) {
+            singleExp = keyForm;
+            indexAware = true;
+          }
+        }
+        if (indexAware && !hasLossyDecimalLiteralBound(singleExp, clazz, baseFieldName, context)) {
           indexFieldFound = true;
           final BooleanExpression keyExp = singleExp.copy();
           indexKeyValue.getSubBlocks().add(keyExp);
@@ -6485,7 +7319,10 @@ public class SelectExecutionPlanner {
             // look for the opposite condition, on the same field, for range queries (the other
             // side of the range)
             while (blockIterator.hasNext()) {
-              BooleanExpression next = blockIterator.next();
+              final BooleanExpression written = blockIterator.next();
+              // the other side may be written with the value first too (id > 3 AND 10 > id), issue #12281
+              final BooleanExpression keyForm = written.isIndexAware(info) ? null : indexKeyForm(written, info, clazz);
+              final BooleanExpression next = keyForm != null ? keyForm : written;
               // The other side of a range over field.toLowerCase() is probed lower-cased too, so it must already be.
               // The other side becomes a key the index scan computes with no record, so it must pass the same
               // isIndexAware test as the first side: a bound that reads the record (u <= id, u <= w * 100) is not
@@ -6517,6 +7354,12 @@ public class SelectExecutionPlanner {
       if (!index.supportsOrderedIterations()) {
         return null;
       }
+      // A record whose BY ITEM / BY KEY / BY VALUE collection has no element has no entry at all, so a lookup that leaves such a
+      // column unbound would miss it although the conditions on the bound columns match it: `m1 CONTAINSKEY 'k'` on
+      // (m1 BY KEY, m2 BY VALUE) with an empty m2, `name = 'x'` on (name, tags BY ITEM) with no tags (issue #12444)
+      for (int i = indexKeyValue.getSubBlocks().size(); i < indexFields.size(); ++i)
+        if (!Index.basePropertyName(indexFields.get(i)).equals(indexFields.get(i)))
+          return null;
     }
 
     if (found) {
@@ -6873,7 +7716,12 @@ public class SelectExecutionPlanner {
     final Set<String> bucketNames = new HashSet<>();
 
     for (final Bucket parserBucket : buckets) {
-      String name = resolveBucketName(parserBucket, context);
+      // a bucket named by an input parameter (FROM bucket::name, FROM bucket:?) is resolved into the plan for this execution's
+      // bindings only: a plan kept for the next execution of the same text would read the bucket of the first one (#12480)
+      if (parserBucket.getInputParam() != null)
+        planDependsOnInputParameters = true;
+
+      String name = parserBucket.resolveName(context.getInputParameters());
       Integer bucketId = parserBucket.getBucketNumber();
       // #5636: null-tolerant, matching the name arm below. This method is an index-optimisation PROBE: every other
       // way of failing to resolve a bucket here sets tryByIndex = false and falls through to the ordinary fetch,
@@ -6938,7 +7786,7 @@ public class SelectExecutionPlanner {
 
       Integer bucketId = parserBucket.getBucketNumber();
       if (bucketId == null) {
-        final String resolvedName = resolveBucketName(parserBucket, context);
+        final String resolvedName = parserBucket.resolveName(context.getInputParameters());
         if (resolvedName != null) {
           final com.arcadedb.engine.Bucket bucket = db.getSchema().getBucketByNameIfExists(resolvedName);
           if (bucket != null)
@@ -6962,7 +7810,7 @@ public class SelectExecutionPlanner {
 
         Integer bucketId = parserBucket.getBucketNumber();
         if (bucketId == null) {
-          final String resolvedName = resolveBucketName(parserBucket, context);
+          final String resolvedName = parserBucket.resolveName(context.getInputParameters());
           if (resolvedName != null) {
             final com.arcadedb.engine.Bucket bucket = db.getSchema().getBucketByNameIfExists(resolvedName);
             if (bucket != null)
@@ -6978,31 +7826,6 @@ public class SelectExecutionPlanner {
       final FetchFromClustersExecutionStep step = new FetchFromClustersExecutionStep(bucketIds, context, orderByRidAsc);
       plan.chain(step);
     }
-  }
-
-  /**
-   * Resolves the bucket name from a Bucket object, handling parameterized bucket names.
-   * If the bucket has an inputParam, it resolves the parameter value from the context.
-   *
-   * @param parserBucket the bucket object to resolve
-   * @param context      the command context containing input parameters
-   * @return the resolved bucket name, or null if it cannot be resolved
-   */
-  private String resolveBucketName(final Bucket parserBucket, final CommandContext context) {
-    // First check for literal bucket name
-    if (parserBucket.getBucketName() != null) {
-      return parserBucket.getBucketName();
-    }
-
-    // Check for input parameter
-    if (parserBucket.getInputParam() != null) {
-      final Object paramValue = parserBucket.getInputParam().getValue(context.getInputParameters());
-      if (paramValue != null) {
-        return paramValue.toString();
-      }
-    }
-
-    return null;
   }
 
   private void handleSubqueryAsTarget(final SelectExecutionPlan plan, final Statement subQuery, final CommandContext context) {

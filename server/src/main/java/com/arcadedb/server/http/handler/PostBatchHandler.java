@@ -22,12 +22,16 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.QueryAdmissionException;
+import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.exception.SchemaException;
+import com.arcadedb.exception.TransactionOutcomeUnknownException;
 import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.network.SilenceBoundedInputStream;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.HAServerPlugin;
@@ -79,6 +83,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import java.util.logging.Level;
+
+import javax.net.ssl.SSLHandshakeException;
 
 /**
  * High-performance HTTP handler for bulk-loading vertices and edges using the GraphBatch API.
@@ -561,13 +567,13 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       final long expectedRecords = parseExpectedRecords(exchange);
 
       if (streaming)
-        return streamRecordsAsNdJson(exchange, databaseName, isCsv, builder, inputStream, vertexRefs,
+        return streamRecordsAsNdJson(exchange, databaseName, isCsv, database.getSchema(), builder, inputStream, vertexRefs,
             vertexBatchSize, expectedRecords, haDb);
 
       try {
         // No mapping sink: the buffered encoding has nowhere to put a chunk of it before the end, so it keeps
         // echoing the whole mapping in the terminal object under the MAX_ID_MAPPING_IN_RESPONSE cap.
-        return streamRecords(exchange, databaseName, isCsv, builder, inputStream, vertexRefs,
+        return streamRecords(exchange, databaseName, isCsv, database.getSchema(), builder, inputStream, vertexRefs,
             System.currentTimeMillis(), vertexBatchSize, expectedRecords, BatchProgressSink.NONE, null);
       } finally {
         emitCommitIndexBookmark(exchange, haDb);
@@ -595,7 +601,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    *                 difference
    */
   private ExecutionResponse streamRecords(final HttpServerExchange exchange, final String databaseName,
-      final boolean isCsv, final GraphBatch.Builder builder, final CountingInputStream inputStream,
+      final boolean isCsv, final Schema schema, final GraphBatch.Builder builder, final CountingInputStream inputStream,
       final VertexRefResolver vertexRefs, final long startTime, final int vertexBatchSize,
       final long expectedRecords, final BatchProgressSink progress,
       final VertexRefResolver.EntryConsumer mappingSink) throws Exception {
@@ -607,7 +613,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     // failed has to report how much of the payload it had read just as precisely as one that succeeded, which is
     // the whole point of counting the lines (issue #5618).
     final BatchRecordStream stream = isCsv
-        ? new CsvBatchRecordStream(inputStream)
+        ? new CsvBatchRecordStream(inputStream, schema)
         : new JsonlBatchRecordStream(inputStream);
 
     try (stream; final GraphBatch batch = builder.build()) {
@@ -701,15 +707,16 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       }
 
       // batch.close() is called by try-with-resources: flushes edges, connects incoming edges
-    } catch (final IllegalArgumentException e) {
-      // Client-input failure mid-stream (malformed line, unknown temporary id, bad RID): a batch load
+    } catch (final IllegalArgumentException | SchemaException e) {
+      // Client-input failure mid-stream (malformed line, unknown temporary id, bad RID, an edge or vertex type the schema
+      // does not have - a SchemaException since issue #11633, still the caller's 400): a batch load
       // is NOT atomic - GraphBatch commits every commitEvery records, so records handled before the
       // failure may already be durable on disk. Surface how many vertices and edges were attempted so
       // far (plus a partialCommit flag) so a client can reconcile rather than blindly re-POSTing the
       // whole payload - a retry would duplicate the already-committed vertices, whose temporary @id
       // values are not keys (issue #5036).
       //
-      // Only IllegalArgumentException (HTTP 400) is enriched here. Engine/cluster exceptions
+      // Only IllegalArgumentException and SchemaException (HTTP 400) are enriched here. Engine/cluster exceptions
       // (DuplicatedKeyException -> 409, TransactionCommittedRemotelyException -> 409,
       // NeedRetryException -> 503, security -> 403, RecordNotFoundException -> 404, ...) are left to
       // propagate so AbstractServerHttpHandler keeps its status mapping and logs the full stack trace.
@@ -895,7 +902,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    *         reads as "the handler sent it itself", the same contract the SSE paths use
    */
   private ExecutionResponse streamRecordsAsNdJson(final HttpServerExchange exchange, final String databaseName,
-      final boolean isCsv, final GraphBatch.Builder builder, final CountingInputStream inputStream,
+      final boolean isCsv, final Schema schema, final GraphBatch.Builder builder, final CountingInputStream inputStream,
       final VertexRefResolver vertexRefs, final int vertexBatchSize, final long expectedRecords,
       final HAReplicatedDatabase haDb) throws Exception {
 
@@ -916,7 +923,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
         : (ref, rid) -> pendingMapping[0].put(ref, rid.toString());
 
     try {
-      final ExecutionResponse unary = streamRecords(exchange, databaseName, isCsv, builder, inputStream, vertexRefs,
+      final ExecutionResponse unary = streamRecords(exchange, databaseName, isCsv, schema, builder, inputStream, vertexRefs,
           System.currentTimeMillis(), vertexBatchSize, expectedRecords,
           (phase, verticesCreated, edgesCreated, stream, refs, in) -> {
             final JSONObject event = new JSONObject();
@@ -1574,7 +1581,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
      * whatever the POOL last left in it - for a connection whose first read filled it, the request head and the very
      * records already loaded. The next read is then served from that buffer without touching the channel, and the
      * parser is handed a replay of the payload: on a type with a unique index it surfaces as a 409 duplicate key
-     * ({@code Issue5470BatchStreamStallIT} on {@code main}), and on one without it as silently duplicated rows and a
+     * ({@code PostBatchStreamStallIT} on {@code main}), and on one without it as silently duplicated rows and a
      * 200 (issue #6176).
      * <p>
      * So the failure is recorded here rather than raised: the probe answers -1, which is exactly the "the body is
@@ -1644,7 +1651,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
      * client that still owes bytes ends this at once with {@link BufferedDrain#EXHAUSTED}. Undertow reports a
      * finished body as -1 available rather than 0, which is the end-of-body signal both callers are looking for;
      * that is Undertow's own convention, not the {@link InputStream} contract (which says >= 0). An upgrade that
-     * changed it would not go unnoticed - {@code Issue5470BatchErrorDeliveryIT}'s
+     * changed it would not go unnoticed - {@code PostBatchErrorDeliveryIT}'s
      * {@code aRecordCutInHalfIsStillReportedAsATruncatedUpload} and
      * {@code aRejectedButCompletePayloadKeepsItsConnection} both fail when it reports 0 at end of body (verified by
      * mutation) - and if it ever does, the degradation is a worse diagnosis, never a wrong answer.
@@ -1845,7 +1852,29 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       final int lineNumber) {
     final RID srcRID = resolveRef(rec.fromRef, vertexRefs, lineNumber);
     final RID dstRID = resolveRef(rec.toRef, vertexRefs, lineNumber);
+    requireExistingVertex(batch, rec.fromRef, srcRID, lineNumber);
+    requireExistingVertex(batch, rec.toRef, dstRID, lineNumber);
     batch.newEdge(srcRID, rec.typeName, dstRID, rec.copyEdgeProperties());
+  }
+
+  /**
+   * An endpoint given as a RID comes from the client and is taken on trust by {@link GraphBatch#newEdge}: one that does not
+   * exist, or is not a vertex, used to surface at the close of the batch as a 404 or a 500 after the edge records were
+   * written, with no vertex leading to them (issue #12895). Refused here, on the line that names it, like a malformed RID.
+   * The endpoints given as temporary ids are vertices of this payload and need no check.
+   * <p>
+   * A missing record is re-raised as an {@link IllegalArgumentException} without it as the cause: the record is data of the
+   * payload, not the resource the request addresses, so it is a 400 like the rest of the payload's mistakes and not the 404 of a
+   * missing record (a cause is read by the error classification, which would answer it as one).
+   */
+  private static void requireExistingVertex(final GraphBatch batch, final String ref, final RID rid, final int lineNumber) {
+    if (ref.charAt(0) != '#')
+      return;
+    try {
+      batch.requireVertex(rid);
+    } catch (final IllegalArgumentException | RecordNotFoundException e) {
+      throw new IllegalArgumentException("Edge endpoint '" + ref + "' at line " + lineNumber + ": " + e.getMessage());
+    }
   }
 
   private RID resolveRef(final String ref, final VertexRefResolver vertexRefs, final int lineNumber) {
@@ -2081,7 +2110,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
         // Sent full duplex (issue #9216): the upload goes out on a thread of its own and the leader's answer is handed
         // back as soon as its headers arrive, so the client sees the leader's progress lines while it is still
         // uploading, as it does on the leader. The JDK client (21, 25, 27) hands back an HTTP/1.1 answer only once the
-        // relayed upload has been published whole (pinned by Issue8674StreamedRelayBodyCapTerminalLineTest), which is
+        // relayed upload has been published whole (pinned by LeaderForwardStreamedRelayTest.StreamedRelayBodyCapTerminalLine), which is
         // why it is not used here.
         //
         // The wait for the answer is counted from the last byte the upload relayed, not from the send (issue #8719): an
@@ -2158,17 +2187,45 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
           " of the last byte of the upload relayed to it: either the leader stopped taking the upload or the client "
               + "stopped sending it" :
           "";
-      return new ExecutionResponse(504, new JSONObject()
-          .put("error", "The leader at " + url + " did not answer within " + deadlineMs + "ms" + since)
+      return outcomeUnknown("The leader at " + url + " did not answer within " + deadlineMs + "ms" + since);
+    } catch (final SSLHandshakeException e) {
+      // No byte of the load leaves this node before the handshake completes: nothing reached the leader
+      LogManager.instance().log(this, Level.WARNING, "Error forwarding /batch to leader at %s: %s", url, e.getMessage());
+      return new ExecutionResponse(503, new JSONObject()
+          .put("error", "Error forwarding batch to leader: " + e.getMessage())
           .toString());
-    } catch (final Exception e) {
+    } catch (final IOException e) {
       // This node's own body cap tripped mid-relay (issue #8161): the JDK wraps the refusal in a plain IOException.
+      rethrowIfRefusedOverCap(body, databaseName);
+      // The connection to the leader was lost after it was established - the leader died, or reset it, while the load
+      // was in flight. The leader may have committed all of the load, or the chunks it reached, before it went away. It
+      // was an untyped 503, which tells a client the load was refused before running (RemoteHttpComponent rebuilds an
+      // untyped 503 as a NeedRetryException): measured with a killed leader, 6 of 2,792 batches answered so were stored
+      // whole (issue #11899). Answered as the outcome-unknown 504 a forwarded SQL write gets (issue #11887)
+      LogManager.instance().log(this, Level.WARNING, "Lost the connection to the leader at %s while forwarding /batch: %s", url,
+          e.toString());
+      return outcomeUnknown("The connection to the leader at " + url + " was lost before it answered (" + e + ")");
+    } catch (final Exception e) {
       rethrowIfRefusedOverCap(body, databaseName);
       LogManager.instance().log(this, Level.WARNING, "Error forwarding /batch to leader at %s: %s", url, e.getMessage());
       return new ExecutionResponse(503, new JSONObject()
           .put("error", "Error forwarding batch to leader: " + e.getMessage())
           .toString());
     }
+  }
+
+  /**
+   * The answer to a forwarded load whose outcome this node could not learn (issue #11899): the leader may have applied all
+   * of it, part of it (it commits every {@code commitEvery} records) or none. 504 with
+   * {@code TransactionOutcomeUnknownException}, as a forwarded SQL write is answered (issue #11887): neither the 503 a
+   * client retries, which loads the records again whenever they did land, nor a 500 server fault.
+   */
+  private static ExecutionResponse outcomeUnknown(final String what) {
+    return new ExecutionResponse(504, new JSONObject()
+        .put("error", what + ". Transaction outcome unknown: the batch may have been applied, in whole or in part, check "
+            + "before retrying it")
+        .put("exception", TransactionOutcomeUnknownException.class.getName())
+        .toString());
   }
 
   /**

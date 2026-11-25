@@ -26,8 +26,10 @@ import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphEngine;
+import com.arcadedb.graph.LightEdge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableLightEdge;
 import com.arcadedb.graph.Vertex;
@@ -131,7 +133,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
                 if (existingEdge.getIn().equals(currentTo)) {
                   currentTo = null;
                   currentBatch++;
-                  return new UpdatableResult(forUpsert(existingEdge.modify()));
+                  return new UpdatableResult(existingEdgeAsResult(existingEdge));
                 }
               }
             }
@@ -179,7 +181,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
               // The check above read an edge list a concurrent CREATE EDGE ... IF NOT EXISTS may be appending the same edge to (#11482)
               final TransactionContext tx = context.getDatabase().getTransactionIfExists();
               if (tx != null)
-                tx.addMergedEdge(currentFrom.getIdentity(), currentTo.getIdentity(), edgeType.getName(), null);
+                tx.addMergedEdgeBetweenExistingNodes(currentFrom.getIdentity(), currentTo.getIdentity(), edgeType.getName(), null);
             }
 
             // Store vertices for later connection after save
@@ -335,20 +337,36 @@ public class CreateEdgesStep extends AbstractExecutionStep {
           rid = result.getProperty("rid");
         if (rid != null)
           currentFrom = rid;
+        else if (result.isElement())
+          // a record that is not a vertex: refused below by its RID and kind, not by the JSON of its whole content
+          currentFrom = result.getElement().get();
         else
-          throw new CommandExecutionException("Invalid vertex for edge creation: " + result);
+          throw new TypeMismatchException("Invalid vertex for edge creation: " + result);
       }
     }
 
+    // An endpoint that is not a vertex is the caller's mistake: it is refused with a TypeMismatchException, a client error for
+    // every protocol, and a message of our own. Casting the record to a vertex raised a ClassCastException instead, which
+    // reached the client as a raw Java exception under an HTTP 500 (#12425)
     if (currentFrom instanceof Vertex vertex)
       return vertex;
-    else if (currentFrom instanceof Document document)
-      return document.asVertex();
-    else if (RID.is(currentFrom))
-      return getContext().getDatabase().newRID(currentFrom.toString()).asVertex();
 
-    throw new CommandExecutionException(
+    if (currentFrom instanceof Document document)
+      throw new TypeMismatchException(notAVertexMessage(document));
+
+    // A RID given as text, or as the @rid of a projection: the record it names is read and judged like any other endpoint, so
+    // a document is refused as the wrong kind of record and not answered as a record that does not exist
+    if (RID.is(currentFrom))
+      return asVertex(getContext().getDatabase().newRID(currentFrom.toString()).getRecord());
+
+    throw new TypeMismatchException(
         "Invalid vertex for edge creation: " + (currentFrom == null ? "null" : currentFrom.toString()));
+  }
+
+  private static String notAVertexMessage(final Document document) {
+    final RID identity = document.getIdentity();
+    return "Invalid vertex for edge creation: the " + (document instanceof Edge ? "edge" : "document")
+        + (identity != null ? " " + identity : "") + " is not a vertex";
   }
 
   @Override
@@ -392,5 +410,16 @@ public class CreateEdgesStep extends AbstractExecutionStep {
   private static MutableEdge forUpsert(final MutableEdge edge) {
     edge.clearBasedOnStaleRead();
     return edge;
+  }
+
+  /**
+   * The edge {@code IF NOT EXISTS} found, as the row the statement returns. A lightweight edge has no record to modify, so it
+   * is returned as the mutable form of itself, the one a creation of it returns (issue #12133): it carries no properties, so
+   * nothing of it is lost. As for a record-backed edge, a SET of the statement is not applied to an edge that already exists.
+   */
+  private static MutableEdge existingEdgeAsResult(final Edge existing) {
+    if (existing instanceof LightEdge)
+      return new MutableLightEdge(existing.getDatabase(), (EdgeType) existing.getType(), existing.getOut(), existing.getIn());
+    return forUpsert(existing.modify());
   }
 }

@@ -54,6 +54,13 @@ public class BasicCommandContext implements CommandContext {
   protected final    Set<String>          declaredScriptVariables = new HashSet<>();
   protected          boolean              profiling               = false;
   /**
+   * Whether no record a row of the command holds can be older than the transaction's own copy of it: true only for a
+   * command that writes nothing and is not nested in one that does, so no row can hold a record from before a write of it.
+   * Lets a sort, an aggregation or the eager barrier hand its rows out without looking up the transaction's written copy of
+   * every record they hold (issue #12565). False, the safe answer, unless the command's planner sets it.
+   */
+  protected          boolean              currentRecordsOnly      = false;
+  /**
    * {@link Long#MIN_VALUE} means "not resolved yet" for the two fields below.
    * <p>
    * The three resolvers that read them do a lazy check-then-set on a volatile without synchronizing, and the
@@ -531,11 +538,19 @@ public class BasicCommandContext implements CommandContext {
     return parent != null ? parent.getRunningQuery() : null;
   }
 
+  /**
+   * A bare row (no record, no value, no property) does not count: it is the row a SELECT without a target runs its projection on,
+   * so {@code SELECT expand(vector.neighbors(..., { filter: (SELECT ...) }))} would otherwise scan its filter on one thread
+   * though there is nothing a worker could read concurrently (issue #12537). A real row further up the chain still counts.
+   */
   @Override
   public boolean isUnderEnclosingRow() {
     for (CommandContext ancestor = parent; ancestor != null; ancestor = ancestor.getParent())
-      if (ancestor instanceof BasicCommandContext basic && basic.variables != null && basic.variables.get("current") != null)
-        return true;
+      if (ancestor instanceof BasicCommandContext basic && basic.variables != null) {
+        final Object current = basic.variables.get("current");
+        if (current != null && !(current instanceof ResultInternal row && row.isBare()))
+          return true;
+      }
     return false;
   }
 
@@ -570,6 +585,17 @@ public class BasicCommandContext implements CommandContext {
   @Override
   public BasicCommandContext setProfiling(final boolean profiling) {
     this.profiling = profiling;
+    return this;
+  }
+
+  /** @see #currentRecordsOnly */
+  public boolean isCurrentRecordsOnly() {
+    return currentRecordsOnly;
+  }
+
+  /** @see #currentRecordsOnly */
+  public BasicCommandContext setCurrentRecordsOnly(final boolean currentRecordsOnly) {
+    this.currentRecordsOnly = currentRecordsOnly;
     return this;
   }
 
@@ -637,6 +663,7 @@ public class BasicCommandContext implements CommandContext {
     copy.parent = parent;
     copy.child = child;
     copy.profiling = profiling;
+    copy.currentRecordsOnly = currentRecordsOnly;
     // The deadline is the command's, not the context's: a parallel bucket-scan worker that gets its own copy
     // must share the budget rather than restart it. Resolved here rather than copied as-is, because copying an
     // unresolved deadline is the same thing as not copying one - every worker would then read the clock for

@@ -18,7 +18,8 @@
  */
 package com.arcadedb.function.geo;
 
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.InvalidArgumentException;
+import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 
@@ -26,7 +27,8 @@ import java.util.Map;
 
 /**
  * point.withinBBox(point, lowerLeft, upperRight) - checks if a point is within a bounding box.
- * All 3 arguments are maps with x/y or longitude/latitude.
+ * All 3 arguments are maps with x/y or longitude/latitude. When they carry a third coordinate (z or height) it is checked
+ * against the box too; a 2D point against a 3D box, or the reverse, gives {@code null} (issue #12273).
  */
 public class PointWithinBBoxFunction implements StatelessFunction {
   @Override
@@ -57,6 +59,16 @@ public class PointWithinBBoxFunction implements StatelessFunction {
     final double[] point = extractCoordinates(args[0]);
     final double[] lowerLeft = extractCoordinates(args[1]);
     final double[] upperRight = extractCoordinates(args[2]);
+    // A 2D point against a 3D box (or the reverse) has no answer, as in Neo4j (issue #12273)
+    // (extractCoordinates above refused anything that is not a map, so the casts hold)
+    final Number pointZ = CypherPointDistanceFunction.thirdCoordinate((Map<?, ?>) args[0], lowerLeftGeo);
+    final Number lowerLeftZ = CypherPointDistanceFunction.thirdCoordinate((Map<?, ?>) args[1], lowerLeftGeo);
+    final Number upperRightZ = CypherPointDistanceFunction.thirdCoordinate((Map<?, ?>) args[2], lowerLeftGeo);
+    if (pointZ != null && lowerLeftZ != null && upperRightZ != null) {
+      if (pointZ.doubleValue() < lowerLeftZ.doubleValue() || pointZ.doubleValue() > upperRightZ.doubleValue())
+        return false;
+    } else if (pointZ != null || lowerLeftZ != null || upperRightZ != null)
+      return null;
     final boolean longitudeInRange;
     if (lowerLeftGeo && lowerLeft[0] > upperRight[0])
       // Crossmeridian bbox: lowerLeft.longitude > upperRight.longitude means the box wraps around ±180
@@ -76,9 +88,9 @@ public class PointWithinBBoxFunction implements StatelessFunction {
         coordinates = geographic ? pair(map, "x", "y") : pair(map, "longitude", "latitude");
       if (coordinates != null)
         return coordinates;
-      throw new CommandExecutionException("Point must have x/y or longitude/latitude properties");
+      throw new InvalidArgumentException("Point must have x/y or longitude/latitude properties");
     }
-    throw new CommandExecutionException("point.withinBBox() arguments must be point values (maps with x/y or longitude/latitude)");
+    throw new TypeMismatchException("point.withinBBox() arguments must be point values (maps with x/y or longitude/latitude)");
   }
 
   private static double[] pair(final Map<?, ?> map, final String first, final String second) {
@@ -87,16 +99,8 @@ public class PointWithinBBoxFunction implements StatelessFunction {
         null;
   }
 
-  private boolean isGeographic(final Object value) {
-    if (!(value instanceof Map<?, ?> map))
-      return false;
-    final Object crs = map.get("crs");
-    if (crs instanceof String s) {
-      if (CypherPointFunction.isGeographicCrs(s))
-        return true;
-      if (CypherPointFunction.isCartesianCrs(s))
-        return false;
-    }
-    return map.containsKey("longitude") && map.containsKey("latitude") && !map.containsKey("x");
+  // The same classification point.distance() makes, so a raw map without a crs is geographic for both functions or for neither
+  private static boolean isGeographic(final Object value) {
+    return value instanceof Map<?, ?> map && CypherPointDistanceFunction.isGeographic(map);
   }
 }

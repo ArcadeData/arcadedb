@@ -21,7 +21,9 @@ package com.arcadedb.serializer.json;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
+import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.utility.DateUtils;
+import com.arcadedb.utility.DurationArithmetic;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
@@ -90,7 +92,7 @@ public class JSONObject implements Map<String, Object> {
         reader.setStrictness(Strictness.LENIENT);
         object = JsonParser.parseReader(reader).getAsJsonObject();
       } catch (Exception e) {
-        throw new JSONException("Invalid JSON object format: " + input, e);
+        throw new JSONException("Invalid JSON object format: " + truncate(input), e);
       }
     } else
       object = new JsonObject();
@@ -149,7 +151,8 @@ public class JSONObject implements Map<String, Object> {
     case Character character -> put(name, character);
     case JSONObject nObject -> object.add(name, nObject.getInternal());
     case JSONArray array -> put(name, array.getInternal());
-    case Document doc -> object.add(name, doc.toJSON(false).getInternal());
+    // through the same guard as a nested value, so a record held inside its own JSON is written as its RID (issue #11850)
+    case Document doc -> object.add(name, objectToElement(doc));
     case String[] string1s -> object.add(name, new JSONArray(string1s).getInternal());
     case Object[] objects -> object.add(name, new JSONArray(objects).getInternal());
     case Iterable<?> iterable -> {
@@ -204,7 +207,8 @@ public class JSONObject implements Map<String, Object> {
         // SAVE AS STRING
         object.addProperty(name, dateTimeFormat.format(temporalAccessor));
     }
-    case Duration duration -> object.addProperty(name, duration.toSeconds() + (duration.toNanosPart() / 1_000_000_000.0));
+    // exact seconds to the nanosecond: a double lost the sub-microsecond digits of a duration longer than about 100 days (issue #12295)
+    case Duration duration -> object.addProperty(name, DurationArithmetic.toSeconds(duration));
     case Identifiable identifiable -> object.addProperty(name, identifiable.getIdentity().toString());
     case Map map -> object.add(name, new JSONObject(map).getInternal());
     // a Cypher path as its {_type, nodes, relationships, length} map rather than its toString() (issue #9913)
@@ -719,8 +723,11 @@ public class JSONObject implements Map<String, Object> {
    * a later {@code toBigInteger()}, {@code toPlainString()} or integer conversion would expand into gigabytes, and a token of
    * thousands of digits costs superlinear time to parse: beyond these limits the token is refused (a {@link JSONException}, HTTP 400)
    * rather than stored as an {@code Infinity} that the writers turn into {@code null}.
+   * <p>
+   * Public so that a decimal arriving by another road than a JSON number token (the {@code $decimal} marker of the HTTP query
+   * parameters) is held to the same limits instead of reaching {@code new BigDecimal(text)} unchecked.
    */
-  static boolean isSafeBigNumber(final String token) {
+  public static boolean isSafeBigNumber(final String token) {
     if (token.length() > MAX_BIG_NUMBER_TOKEN_LENGTH)
       return false;
     for (int i = 0; i < token.length(); i++) {
@@ -901,7 +908,8 @@ public class JSONObject implements Map<String, Object> {
       case Object[] objects -> new JSONArray(objects).getInternal();
       case Map map -> new JSONObject(map).getInternal();
       case TraversalPath path -> new JSONObject(path.toMap()).getInternal();
-      case Document document -> document.toJSON(false).getInternal();
+      // a record holding itself is written as its RID inside its own JSON (issue #11850)
+      case Document document -> objectToElement(JsonSerializer.nestedDocumentToJSON(document, false));
       case Identifiable identifiable -> new JsonPrimitive(identifiable.getIdentity().toString());
       case Enum<?> enumValue -> new JsonPrimitive(enumValue.name());
       case Object o when o.getClass().isArray() -> primitiveArrayToElement(o);
@@ -912,7 +920,7 @@ public class JSONObject implements Map<String, Object> {
         final Long timestamp = DateUtils.dateTimeToTimestamp(temporalAccessor, ChronoUnit.MILLIS);
         yield timestamp != null ? new JsonPrimitive(timestamp) : new JsonPrimitive(temporalAccessor.toString());
       }
-      case Duration duration -> new JsonPrimitive(duration.toSeconds() + (duration.toNanosPart() / 1_000_000_000.0));
+      case Duration duration -> new JsonPrimitive(DurationArithmetic.toSeconds(duration));
       case Class<?> clazz -> new JsonPrimitive(clazz.getName());
       default -> new JsonPrimitive(object.toString());
     };

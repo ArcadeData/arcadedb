@@ -125,14 +125,17 @@ class CountStarCacheTest {
     }
 
     @Test
-    void checkDatabaseWithoutFixDoesNotMutateCachedCounter() {
+    void checkDatabaseWithoutFixDropsTheCounterItProvedWrong() {
       driftCachedCounter();
 
-      // A read-only CHECK (no FIX) must not touch the cached counter.
+      // Issue #12347: a read-only CHECK drops a counter it proved wrong (a replica of a cluster has no other repair: its FIX goes
+      // to the leader, and a restart reloads the counter), and nothing else: the records are untouched
       database.command("sql", "CHECK DATABASE TYPE Customer");
 
       for (final Bucket b : database.getSchema().getType("Customer").getBuckets(false))
-        assertThat(((LocalBucket) b).getCachedRecordCount()).isEqualTo(0L);
+        assertThat(((LocalBucket) b).getCachedRecordCount()).isNotEqualTo(0L);
+      assertThat(countStar()).isEqualTo((long) TOTAL);
+      assertThat(countStar()).isEqualTo(countScan());
     }
   }
 

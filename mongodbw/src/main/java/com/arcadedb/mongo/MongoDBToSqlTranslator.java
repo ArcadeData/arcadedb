@@ -18,31 +18,44 @@
  */
 package com.arcadedb.mongo;
 
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.parser.Identifier;
 import de.bwaldvogel.mongo.backend.Utils;
+import de.bwaldvogel.mongo.bson.BinData;
+import de.bwaldvogel.mongo.bson.Bson;
 import de.bwaldvogel.mongo.bson.BsonRegularExpression;
+import de.bwaldvogel.mongo.bson.Decimal128;
 import de.bwaldvogel.mongo.bson.Document;
 import de.bwaldvogel.mongo.bson.ObjectId;
 
+import java.lang.reflect.Array;
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.Collection;
 import java.util.Date;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.logging.Level;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
 public class MongoDBToSqlTranslator {
   private static final Set<String> FIELD_OPERATORS = Set.of("$in", "$nin", "$eq", "$ne", "$lt", "$lte", "$gt", "$gte", "$exists", "$size");
+
+  // an unmapped class is reported once: see toBsonValue
+  private static final AtomicBoolean UNMAPPED_CLASS_WARNED = new AtomicBoolean();
 
   protected static void buildExpression(final StringBuilder buffer, final Map<String, Object> params, final Document query) {
     int expressionCount = 0;
@@ -51,7 +64,7 @@ public class MongoDBToSqlTranslator {
         buffer.append(" AND ");
 
       final Object key = entry.getKey();
-      // a filter on _id matches the stored hex string; any other field matches the tagged ObjectId (see toBound)
+      // a filter on _id takes the stored form of the _id (see MongoBsonValues.idFilter); any other field the one of toBound
       final Object value = "_id".equals(key) ? MongoBsonValues.idFilter(entry.getValue()) : entry.getValue();
 
       if (key instanceof String string && string.startsWith("$"))
@@ -68,26 +81,6 @@ public class MongoDBToSqlTranslator {
       } else
         buildEquality(buffer, params, quoteFieldPath(entry.getKey()), true, value);
     }
-  }
-
-  /**
-   * Compares a non-{@code _id} field with an ObjectId. Data stored before ObjectIds were tagged holds the bare hex string, so both
-   * forms are matched (or, when negated, both excluded).
-   */
-  private static void appendObjectIdEquality(final StringBuilder buffer, final Map<String, Object> params, final String field,
-      final ObjectId objectId, final boolean positive) {
-    if (positive) {
-      buffer.append('(').append(field).append(" = ");
-      buildValue(buffer, params, objectId);
-      buffer.append(" OR ").append(field).append(" = ");
-    } else {
-      // like any $ne, it also matches a null or missing field
-      buffer.append('(').append(field).append(" IS NULL OR (").append(field).append(" <> ");
-      buildValue(buffer, params, objectId);
-      buffer.append(" AND ").append(field).append(" <> ");
-    }
-    bindStored(buffer, params, objectId.getHexData());
-    buffer.append(positive ? ")" : "))");
   }
 
   protected static void buildAnd(final StringBuilder sql, final Map<String, Object> params, final Object key, final Object value) {
@@ -389,12 +382,8 @@ public class MongoDBToSqlTranslator {
     Collection<?> normalized = coll;
     if (needsConversion) {
       final List<Object> converted = new ArrayList<>(coll.size());
-      for (final Object element : coll) {
+      for (final Object element : coll)
         converted.add(MongoBsonValues.toBound(element));
-        // a non-_id ObjectId also matches the bare hex string stored before ObjectIds were tagged
-        if (element instanceof ObjectId objectId)
-          converted.add(objectId.getHexData());
-      }
       normalized = converted;
     }
 
@@ -421,9 +410,6 @@ public class MongoDBToSqlTranslator {
 
     if (value == null)
       buffer.append(field).append(positive ? " IS NULL" : " IS NOT NULL");
-    else if (value instanceof ObjectId objectId)
-      // an _id filter never gets here: its ObjectIds are already hex strings
-      appendObjectIdEquality(buffer, params, field, objectId, positive);
     else if (positive) {
       buffer.append(field).append(" = ");
       buildValue(buffer, params, value);
@@ -441,9 +427,9 @@ public class MongoDBToSqlTranslator {
    * unreachable by construction instead of by remembering to escape at each call site. Binding also preserves the value's Java
    * type: spelling it went through {@code String.valueOf}, which renders a {@code Date} as text no SQL parser accepts.
    * <p>
-   * An {@link ObjectId} is the one exception: it is converted to the same lowercase-hex string used to store it (see
-   * {@link MongoDBCollectionWrapper#insertDocuments}), because ArcadeDB has no dedicated ObjectId type. Binding the object
-   * itself would compare against its {@code toString()} ({@code "ObjectId[<hex>]"}), which never equals the stored hex text.
+   * The value is bound in the form it is stored in ({@link MongoBsonValues#toBound}): ArcadeDB has no dedicated ObjectId type, so an
+   * {@link ObjectId} is bound as the prefixed string a field stores it as, and the bound of a filter on the {@code _id} already
+   * carries the stored form of the {@code _id} ({@link MongoBsonValues.Stored}).
    * <p>
    * The parameter name is derived from the map's current size, so names are unique and assigned in the order the values are
    * met. That holds only while the map contains nothing but names this method generated: {@code params} must start empty and
@@ -485,33 +471,12 @@ public class MongoDBToSqlTranslator {
     return buffer.append('.').append(Identifier.quote(field.substring(start))).toString();
   }
 
-  protected static void fillResultSet(final int numberToSkip, final int numberToReturn, final List<Document> result, final Iterator it) {
-    for (int i = 0; it.hasNext(); ++i) {
-      // consume the element before deciding whether to skip it - a "continue" that never calls next() burns loop
-      // counter iterations without advancing the iterator, so skip has no effect for any numberToSkip >= 1
-      final Object next = it.next();
-
-      if (numberToSkip > 0 && i < numberToSkip)
-        continue;
-
-      if (next instanceof com.arcadedb.database.Document document)
-        result.add(convertDocumentToMongoDB(document));
-      else if (next instanceof Result result1)
-        result.add(convertDocumentToMongoDB(result1));
-      else
-        throw new IllegalArgumentException("Object not supported");
-
-      if (numberToReturn > 0 && result.size() >= numberToReturn)
-        break;
-    }
-  }
-
   protected static Document convertDocumentToMongoDB(final com.arcadedb.database.Document doc) {
-    return convertMapToMongoDB(doc.toMap());
+    return convertMapToMongoDB(doc.toMap(), true);
   }
 
   protected static Document convertDocumentToMongoDB(final Result doc) {
-    return convertMapToMongoDB(doc.toMap());
+    return convertMapToMongoDB(doc.toMap(), true);
   }
 
   /**
@@ -519,23 +484,28 @@ public class MongoDBToSqlTranslator {
    * own class (an Integer, a Long, a Date, a {@code null}), and a BSON document can only name a field by text. The key's text is
    * taken exactly as the shared {@code JSONObject(Map)} constructor takes it, a {@code null} key named {@code "null"}, so the same
    * record reads the same through every protocol (issue #9973).
+   *
+   * @param document whether the map is the document itself: only its {@code _id} is the one that reads as an ObjectId when it spells
+   *                 one (see {@link #convertIdToMongoDB}), an {@code _id} inside an embedded document is a field like any other, a
+   *                 String that spells an ObjectId is the String it was written as (issue #12073)
    */
-  private static Document convertMapToMongoDB(final Map<?, ?> map) {
+  private static Document convertMapToMongoDB(final Map<?, ?> map, final boolean document) {
     final Document result = new Document();
     for (final Map.Entry<?, ?> entry : map.entrySet()) {
       final String p = String.valueOf(entry.getKey());
       // the record's own metadata is not part of a MongoDB document: a client would see fields it never wrote
-      if (isRecordMetadata(p))
+      // (the derived keys of the unique indexes are properties of the record, not of an embedded document)
+      if (document ? isRecordMetadata(p) : isEngineMetadata(p))
         continue;
       final Object value = entry.getValue();
-      result.put(p, "_id".equals(p) ? convertIdToMongoDB(value) : toBsonValue(value));
+      result.put(p, document && "_id".equals(p) ? convertIdToMongoDB(value) : toBsonValue(value));
     }
     return result;
   }
 
   /**
-   * A stored record as the filter matcher sees it: the {@code _id} stays in its stored form (an ObjectId is its hex string), the
-   * form {@link MongoBsonValues#idFilter} gives the operand of a filter on it.
+   * A stored record as the filter matcher (and the sort) sees it: every value with its BSON type, the {@code _id} as a client reads
+   * it, so that an ObjectId and the String with the same hex are two values (issue #12073).
    */
   static Document toMatchDocument(final Map<String, Object> map, final Set<String> properties) {
     final Document result = new Document();
@@ -543,30 +513,34 @@ public class MongoDBToSqlTranslator {
       final String p = entry.getKey();
       // only the properties the filter reads are converted: the rest of a wide record never reaches the matcher
       if (properties.contains(p) && !isRecordMetadata(p))
-        result.put(p, toBsonValue(entry.getValue()));
+        result.put(p, "_id".equals(p) ? convertIdToMongoDB(entry.getValue()) : toBsonValue(entry.getValue()));
     }
     return result;
   }
 
+  /**
+   * The properties of a record that are not fields of the MongoDB document: the record's own metadata, and the derived keys the
+   * unique indexes are built on ({@link MongoKeys}).
+   */
   static boolean isRecordMetadata(final String property) {
+    return isEngineMetadata(property) || MongoKeys.isKeyProperty(property);
+  }
+
+  /**
+   * The metadata the engine puts in the map of a record or of an embedded document.
+   */
+  private static boolean isEngineMetadata(final String property) {
     return "@rid".equals(property) || "@type".equals(property) || "@cat".equals(property);
   }
 
   /**
-   * MongoDB allows any BSON scalar as {@code _id}, not just an ObjectId. Only a value that actually looks like a
-   * 24-char hex ObjectId string is decoded as one; anything else (an integer, an odd-length or non-hex string, ...)
-   * is passed through unchanged instead of corrupting or throwing.
-   * <p>
-   * Known limitation (#6955): a client-supplied {@code String _id} that happens to be exactly 24 hex characters is,
-   * once stored, indistinguishable from a real {@code ObjectId}'s hex encoding - both are the same bare hex string
-   * on disk. A plain {@code insertOne} followed by {@code find} therefore round-trips such a {@code String _id} back
-   * as an {@code ObjectId}. Unlike the upsert path (see {@code executeUpsert}'s {@code idIsObjectId} tracking), there
-   * is no in-memory flag to bridge insert and a later, possibly separate, {@code find} call - fixing this for real
-   * would mean persisting the original BSON type alongside {@code _id} (a marker byte/prefix, a side property, or a
-   * schema-level type tag), a storage-format decision affecting every document with a hex-looking String {@code _id}
-   * rather than a narrow code fix. Left as a documented limitation rather than guessed at unilaterally.
+   * A stored {@code _id} as the client wrote it. MongoDB allows any BSON value as {@code _id}, not just an ObjectId: an ObjectId is
+   * stored as its bare hex string, so only a bare 24-char hex string is decoded as one. A String {@code _id} that reads as such a hex
+   * string is stored escaped (see {@link MongoBsonValues#toStored(String, Object)}) and reads back as the String it was (issues
+   * #6955, #12073); one stored bare before that still reads back as an ObjectId, the form it always had. Anything else (an integer,
+   * any other string, ...) is converted like the value of any field.
    */
-  private static Object convertIdToMongoDB(final Object value) {
+  static Object convertIdToMongoDB(final Object value) {
     if (value instanceof String s && isObjectIdHex(s))
       return getObjectId(s);
     return toBsonValue(value);
@@ -584,21 +558,29 @@ public class MongoDBToSqlTranslator {
   /**
    * Maps a stored value onto a type the BSON encoder accepts. A temporal property is held as a {@code java.time} value, and
    * the encoder handles exactly one of those, {@link Instant}, rejecting the rest outright and failing the whole response.
-   * The engine anchors a stored date to UTC, so the conversion uses the same offset and is exact.
+   * The engine anchors a stored date to UTC, so the conversion uses the same offset and is exact. The encoder takes no
+   * {@code Float}, {@code Short} or {@code Byte}, no primitive array, no record identity and no embedded document either, and
+   * the value it rejects closes the connection (issue #12796): each of those is converted to the BSON value that carries it,
+   * and any other class to its text. The conversion is total: whatever it answers, the encoder takes.
+   * <p>
+   * {@code com.arcadedb.database.Document} is spelled out in full: its simple name is the one of the MongoDB Document imported here.
    */
   private static Object toBsonValue(final Object value) {
-    if (value instanceof Instant)
+    // the classes the encoder takes as they are and that nearly every value has: answered before the chain of conversions
+    if (value == null || value instanceof Integer || value instanceof Long || value instanceof Double || value instanceof Boolean)
+      return value;
+    else if (value instanceof String string)
+      return MongoBsonValues.isEncodedString(string) ? MongoBsonValues.toBson(value) : value;
+    else if (value instanceof Instant)
       return value;
     else if (value instanceof BigDecimal)
-      return MongoBsonValues.toBson(value);
-    else if (value instanceof String string && MongoBsonValues.isEncodedString(string))
       return MongoBsonValues.toBson(value);
     else if (MongoBsonValues.isTagged(value)) {
       final Object bson = MongoBsonValues.toBson(value);
       // a malformed tag stays a plain map and is converted like any other embedded document
       if (bson != value)
         return bson;
-      return convertMapToMongoDB((Map<?, ?>) value);
+      return convertMapToMongoDB((Map<?, ?>) value, false);
     } else if (value instanceof LocalDateTime dateTime)
       return dateTime.toInstant(ZoneOffset.UTC);
     else if (value instanceof LocalDate date)
@@ -607,16 +589,82 @@ public class MongoDBToSqlTranslator {
       return dateTime.toInstant();
     else if (value instanceof Date date)
       return date.toInstant();
+    else if (value instanceof Calendar calendar)
+      // the fifth class a DATE or DATETIME property can be configured to read as
+      return calendar.toInstant();
+    else if (value instanceof Float number)
+      return floatToDouble(number);
+    else if (value instanceof Short || value instanceof Byte)
+      return ((Number) value).intValue();
+    else if (value instanceof BigInteger integer)
+      // a number stays a number: the same Decimal128 (or double, beyond its 34 digits) a DECIMAL of that value reads as
+      return MongoBsonValues.toBson(new BigDecimal(integer));
+    else if (value instanceof com.arcadedb.database.Document embedded && embedded.getIdentity() == null)
+      // an embedded document has no identity of its own; its @type and @cat are dropped like the ones of the record
+      return convertMapToMongoDB(embedded.toMap(false), false);
+    else if (value instanceof Identifiable identifiable)
+      return identifiable.getIdentity().toString();
+    else if (value instanceof Result row)
+      // a row nested in a row (a sub-query in a projection) is a sub-document, as a map is
+      return convertMapToMongoDB(row.toMap(), false);
     else if (value instanceof Map<?, ?> map)
       // an embedded document can hold a temporal property of its own
-      return convertMapToMongoDB(map);
-    else if (value instanceof List<?> list) {
-      final List<Object> converted = new ArrayList<>(list.size());
-      for (final Object item : list)
+      return convertMapToMongoDB(map, false);
+    else if (value instanceof Collection<?> collection) {
+      final List<Object> converted = new ArrayList<>(collection.size());
+      for (final Object item : collection)
         converted.add(toBsonValue(item));
       return converted;
-    }
-    return value;
+    } else if (value instanceof byte[] bytes)
+      return new BinData(bytes);
+    else if (value instanceof float[] array) {
+      // the arrays a vector is held in are read directly; the reflective loop below is for the ones nobody stores by the thousand
+      final List<Object> converted = new ArrayList<>(array.length);
+      for (final float item : array)
+        converted.add(floatToDouble(item));
+      return converted;
+    } else if (value instanceof double[] array) {
+      final List<Object> converted = new ArrayList<>(array.length);
+      for (final double item : array)
+        converted.add(item);
+      return converted;
+    } else if (value instanceof int[] array) {
+      final List<Object> converted = new ArrayList<>(array.length);
+      for (final int item : array)
+        converted.add(item);
+      return converted;
+    } else if (value instanceof long[] array) {
+      final List<Object> converted = new ArrayList<>(array.length);
+      for (final long item : array)
+        converted.add(item);
+      return converted;
+    } else if (value.getClass().isArray()) {
+      // short[], boolean[], char[] and any array of objects: each element is converted like a value of its own
+      final int length = Array.getLength(value);
+      final List<Object> converted = new ArrayList<>(length);
+      for (int i = 0; i < length; i++)
+        converted.add(toBsonValue(Array.get(value, i)));
+      return converted;
+    } else if (value instanceof Bson || value instanceof Decimal128 || value instanceof UUID)
+      // every other class the encoder takes: ObjectId, BinData, LegacyUUID, a regular expression, a timestamp, MinKey, MaxKey
+      // and JavaScript are all a Bson
+      return value;
+
+    // the encoder would refuse the value and the refusal closes the connection: its text keeps the record readable. Said once, at
+    // WARNING, because the value changes type on the way out and a large result set would otherwise flood the log
+    if (UNMAPPED_CLASS_WARNED.compareAndSet(false, true))
+      LogManager.instance().log(MongoDBToSqlTranslator.class, Level.WARNING,
+          "A value of class %s has no BSON type and is returned to the MongoDB client as its text (further ones are not reported)",
+          value.getClass().getName());
+    return value.toString();
+  }
+
+  /**
+   * The double with the decimal text the float is written as, so that {@code 1.1f} reads {@code 1.1} as it does on every other
+   * protocol, not the {@code 1.100000023841858} a widening answers.
+   */
+  private static double floatToDouble(final float value) {
+    return Double.parseDouble(Float.toString(value));
   }
 
   protected static ObjectId getObjectId(final String s) {
@@ -628,89 +676,5 @@ public class MongoDBToSqlTranslator {
       buffer[i / 2] = (byte) ((Character.digit(s.charAt(i), 16) << 4) + Character.digit(s.charAt(i + 1), 16));
     }
     return new ObjectId(buffer);
-  }
-
-  /**
-   * Validates a {@code find} projection, which is either an inclusion ({@code {a: 1}}) or an exclusion ({@code {a: 0}}) - the
-   * two cannot be mixed, except that {@code _id} can always be excluded from an inclusion.
-   *
-   * @return {@code true} for an inclusion projection, {@code false} for an exclusion one
-   */
-  protected static boolean isInclusionProjection(final Document fields, final String idField) {
-    boolean inclusion = false;
-    boolean exclusion = false;
-    for (final Map.Entry<String, Object> entry : fields.entrySet()) {
-      final Object flag = entry.getValue();
-      if (flag instanceof Document || flag instanceof List)
-        throw new IllegalArgumentException("Projection operator on '" + entry.getKey() + "' is not supported");
-      // the _id never conflicts: it can be excluded from an inclusion and included in an exclusion
-      if (idField.equals(entry.getKey()))
-        continue;
-      if (Utils.isTrue(flag))
-        inclusion = true;
-      else
-        exclusion = true;
-    }
-    if (inclusion && exclusion)
-      throw new IllegalArgumentException("Cannot do exclusion on a field in an inclusion projection");
-    // only the _id given: {_id: 1} answers the _id alone, {_id: 0} everything else
-    return inclusion || (!exclusion && fields.containsKey(idField) && Utils.isTrue(fields.get(idField)));
-  }
-
-  protected static Document projectDocument(final Document document, final Document fields, final String idField) {
-    if (document == null)
-      return null;
-
-    final Document newDocument = new Document();
-    if (isInclusionProjection(fields, idField)) {
-      // the _id is part of the answer unless the projection excludes it
-      if (!fields.containsKey(idField) || Utils.isTrue(fields.get(idField)))
-        if (document.containsKey(idField))
-          newDocument.put(idField, document.get(idField));
-
-      for (final Map.Entry<String, Object> entry : fields.entrySet())
-        if (Utils.isTrue(entry.getValue()))
-          projectField(document, newDocument, entry.getKey());
-    } else {
-      newDocument.putAll(document);
-      for (final Map.Entry<String, Object> entry : fields.entrySet())
-        if (!Utils.isTrue(entry.getValue()))
-          removeField(newDocument, entry.getKey());
-    }
-    return newDocument;
-  }
-
-  /**
-   * Removes a possibly dotted field from a copy-on-write view of the document: an embedded document on the path is copied
-   * first, so the source document is never modified.
-   */
-  private static void removeField(final Document document, final String key) {
-    final int dotPos = key.indexOf('.');
-    if (dotPos <= 0) {
-      document.remove(key);
-      return;
-    }
-    final String mainKey = key.substring(0, dotPos);
-    if (document.get(mainKey) instanceof Document embedded) {
-      final Document copy = new Document();
-      copy.putAll(embedded);
-      removeField(copy, key.substring(dotPos + 1));
-      document.put(mainKey, copy);
-    }
-  }
-
-  protected static void projectField(final Document document, final Document newDocument, final String key) {
-    final int dotPos = key.indexOf('.');
-    if (dotPos > 0) {
-      final String mainKey = key.substring(0, dotPos);
-      final String subKey = key.substring(dotPos + 1);
-      final Object object = document.get(mainKey);
-      if (object instanceof Document embedded) {
-        if (!(newDocument.get(mainKey) instanceof Document))
-          newDocument.put(mainKey, new Document());
-        projectField(embedded, (Document) newDocument.get(mainKey), subKey);
-      }
-    } else if (document.containsKey(key))
-      newDocument.put(key, document.get(key));
   }
 }

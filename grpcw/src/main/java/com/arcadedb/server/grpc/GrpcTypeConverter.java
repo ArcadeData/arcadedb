@@ -104,14 +104,10 @@ class GrpcTypeConverter {
       return GrpcTemporalCodec.decodeString(v.getStringValue(), v.getLogicalType());
     case BYTES_VALUE:
       return v.getBytesValue().toByteArray();
-    case TIMESTAMP_VALUE: {
-      // Issue #4149: preserve full nanosecond precision so DATETIME_MICROS / DATETIME_NANOS
-      // columns get the precision the proto Timestamp natively carries. Type.convert() will
-      // truncate the resulting Instant to the column's declared precision via
-      // DateUtils.getPrecisionFromType(...) when storing.
-      final Timestamp ts = v.getTimestampValue();
-      return Instant.ofEpochSecond(ts.getSeconds(), ts.getNanos());
-    }
+    case TIMESTAMP_VALUE:
+      // Issue #4149: an Instant keeps the full nanosecond precision, which Type.convert() truncates to a DATETIME_MICROS /
+      // DATETIME_NANOS column's precision when storing. Issue #11956: a timestamp tagged "date" is a LocalDate
+      return GrpcTemporalCodec.decodeTimestamp(v.getTimestampValue(), v.getLogicalType());
     case LINK_VALUE:
       return new RID(v.getLinkValue().getRid());
     case DECIMAL_VALUE: {
@@ -243,7 +239,12 @@ class GrpcTypeConverter {
       final int len = Array.getLength(o);
       for (int i = 0; i < len; i++)
         lb.addValues(element.apply(Array.get(o, i)));
-      return GrpcValue.newBuilder().setListValue(lb.build()).build();
+      // a primitive numeric array keeps its class on the client (issue #12189)
+      final GrpcValue.Builder vb = GrpcValue.newBuilder().setListValue(lb.build());
+      final String logicalType = GrpcArrayCodec.logicalTypeOf(o);
+      if (logicalType != null)
+        vb.setLogicalType(logicalType);
+      return vb.build();
     }
 
     return null;

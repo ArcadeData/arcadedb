@@ -20,6 +20,7 @@ package com.arcadedb.database;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.async.AsyncQuiesce;
+import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.PageManager;
@@ -172,6 +173,17 @@ public interface DatabaseInternal extends Database {
   RecordFactory getRecordFactory();
 
   BinarySerializer getSerializer();
+
+  /**
+   * The dictionary the serializer resolves property names through, refused like {@link #getSchema()} once the database is
+   * closed. Unlike {@link #getSchema()} it does not make sure the calling thread has a transaction context: the serializer
+   * asks for the dictionary on every property it reads, and a property read of a record already loaded needs no context,
+   * while looking it up costs a thread-local and a map read per property (#12356). What a read reaches beyond the record's
+   * own bytes (an external value, a linked record) goes through {@link #getSchema()} or a lookup, which still set it up.
+   */
+  default Dictionary getDictionary() {
+    return getSchema().getDictionary();
+  }
 
   PageManager getPageManager();
 
@@ -613,6 +625,22 @@ public interface DatabaseInternal extends Database {
     } catch (final Throwable e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on persisting the compaction of database '%s'", e, getName());
     }
+  }
+
+  /**
+   * Hands the commit lock the calling thread holds on {@code fileId}, a file the compaction running on this thread has just
+   * created, to that compaction, which releases it once the entry publishing the compaction is accepted or the compaction
+   * fails (issue #12236). Until that entry is applied no other node has the file, so a commit that wrote into it and reached
+   * the log first shipped pages every other node skipped, and the next commit on those pages was refused cluster-wide as a
+   * WAL version gap. Held, the lock makes such a commit wait for the entry instead. Standalone, and outside a replicated
+   * compaction, nothing takes the lock over.
+   *
+   * @param fileId the file the caller locked and created
+   *
+   * @return true when the lock was taken over and the caller must not release it, false when the caller releases it
+   */
+  default boolean keepLockedUntilCompactionIsPublished(final int fileId) {
+    return false;
   }
 
   /**

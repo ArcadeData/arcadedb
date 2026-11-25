@@ -22,7 +22,7 @@ import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.VariableOverlayResult;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -73,15 +73,16 @@ public class ListComprehensionExpression implements Expression {
       throw new IllegalArgumentException("List comprehension requires an iterable, got: " + listValue.getClass().getSimpleName());
 
     final List<Object> resultList = new ArrayList<>();
+    // One row per evaluation, rebound per element: the outer columns are read through it, not copied (issue #12723)
+    final VariableOverlayResult iterResult = new VariableOverlayResult(result, variable);
 
     for (final Object item : iterable) {
-      // Create a new result with the iteration variable bound
-      final ResultInternal iterResult = createIterationResult(result, item);
+      iterResult.bind(item);
 
       // Apply WHERE filter if present
       if (whereExpression != null) {
         final Object filterValue = OpenCypherQueryEngine.getExpressionEvaluator().evaluate(whereExpression, iterResult, context);
-        if (filterValue == null || (filterValue instanceof Boolean b && !b))
+        if (!Boolean.TRUE.equals(BooleanCoercionExpression.toPredicate(filterValue)))
           continue; // Skip items that don't match the filter
       }
 
@@ -93,19 +94,6 @@ public class ListComprehensionExpression implements Expression {
     }
 
     return resultList;
-  }
-
-  private ResultInternal createIterationResult(final Result baseResult, final Object item) {
-    final ResultInternal iterResult = new ResultInternal();
-
-    // Copy all properties from the base result
-    if (baseResult != null)
-      for (final String prop : baseResult.getPropertyNames())
-        iterResult.setProperty(prop, baseResult.getProperty(prop));
-
-    // Add the iteration variable
-    iterResult.setProperty(variable, item);
-    return iterResult;
   }
 
   private List<Object> arrayToList(final Object array) {

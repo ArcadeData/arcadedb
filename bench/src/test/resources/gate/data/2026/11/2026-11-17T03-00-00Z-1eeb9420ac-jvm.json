@@ -1,0 +1,31 @@
+{
+ "runId": "2026-11-17T03-00-00Z-1eeb9420ac-jvm",
+ "source": "bench",
+ "trigger": "nightly",
+ "arcadedb": {
+  "commit": "1eeb9420ac",
+  "variant": "jvm",
+  "tag": null
+ },
+ "machine": {
+  "id": "perf-01",
+  "cpu": "Intel Core i5-13500",
+  "memGb": 62
+ },
+ "results": [
+  {
+   "workload": "ingestion",
+   "case": "bulk-import",
+   "scale": "M",
+   "status": "ok",
+   "metrics": [
+    {
+     "name": "records_per_s",
+     "unit": "records/s",
+     "better": "higher",
+     "median": 191631.5
+    }
+   ]
+  }
+ ]
+}

@@ -22,6 +22,7 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.antlr.SQLAntlrParser;
+import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.AlterTypeStatement;
@@ -188,6 +189,8 @@ class Issue7914RemoteIdentifierQuotingTest {
   @Test
   void createTypeIndexNamesTheTypeAndPropertiesTheCallerAskedFor() {
     final RemoteDatabase db = mock(RemoteDatabase.class);
+    // the index the server answered is then looked up by its name (issue #12193): here it answers none
+    when(db.command(anyString(), anyString())).thenReturn(new InternalResultSet());
     new RemoteSchema(db).createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "a\\b", "p,q", "back`tick");
 
     final CreateIndexStatement statement = (CreateIndexStatement) parse(commandSent(db));
@@ -250,6 +253,7 @@ class Issue7914RemoteIdentifierQuotingTest {
   @Test
   void createTypeIndexKeepsTheByKeyModifierOutOfTheQuotedName() {
     final RemoteDatabase db = mock(RemoteDatabase.class);
+    when(db.command(anyString(), anyString())).thenReturn(new InternalResultSet());
     new RemoteSchema(db).createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "T", "my`map by key", "plain");
 
     final CreateIndexStatement statement = (CreateIndexStatement) parse(commandSent(db));
@@ -313,7 +317,10 @@ class Issue7914RemoteIdentifierQuotingTest {
         // the mocked command answers null; the statement is already captured
       }
 
-      final InsertStatement statement = (InsertStatement) parse(commandSent(db));
+      // THE CONTENT IS THE :content PARAMETER SINCE #12186, SO THE INSERT GOES THROUGH THE command() OVERLOAD WITH PARAMETERS
+      final ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
+      verify(db, atLeastOnce()).command(anyString(), captor.capture(), any(Map.class));
+      final InsertStatement statement = (InsertStatement) parse(captor.getAllValues().getFirst());
       assertThat(statement.targetType.getStringValue()).isEqualTo(hostile);
       assertThat(statement.targetBucketName.getStringValue()).isEqualTo(hostile + "bucket");
     }

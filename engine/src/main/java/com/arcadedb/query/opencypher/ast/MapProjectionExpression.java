@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.ast;
 
 import com.arcadedb.database.Document;
+import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -114,6 +115,8 @@ public class MapProjectionExpression implements Expression {
     if (variable == null)
       return null;
 
+    DeletedEntityMarker.checkNotDeleted(variable);
+
     final Map<String, Object> projectedMap = new LinkedHashMap<>();
 
     for (final ProjectionElement element : elements) {
@@ -164,6 +167,18 @@ public class MapProjectionExpression implements Expression {
   public boolean isAggregation() {
     for (final ProjectionElement element : elements)
       if (element.isKeyExpression() && element.getExpression().isAggregation())
+        return true;
+    return false;
+  }
+
+  /**
+   * An aggregate in a computed entry, direct or nested ({@code p{.name, friends: collect(f.name)}}), makes the projection
+   * an aggregation too (issue #11770).
+   */
+  @Override
+  public boolean containsAggregation() {
+    for (final ProjectionElement element : elements)
+      if (element.isKeyExpression() && element.getExpression().containsAggregation())
         return true;
     return false;
   }

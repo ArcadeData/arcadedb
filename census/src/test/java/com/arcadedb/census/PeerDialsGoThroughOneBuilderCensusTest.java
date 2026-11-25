@@ -20,8 +20,6 @@ package com.arcadedb.census;
 
 import org.junit.jupiter.api.Test;
 
-import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
@@ -35,14 +33,15 @@ import static org.assertj.core.api.Assertions.assertThat;
  * same credential pair by hand: a snapshot download sent the token with no principal, a probe spelled the root principal as a
  * literal, seven dials fell back to plain HTTP on an SSL cluster without a word. The helpers are now one builder,
  * {@code PeerRequest} (server module), which attaches the cluster token and the forwarded user together and says the notice; the
- * dials are pinned by {@code Issue9999PeerDialsGoThroughOneBuilderTest}.
+ * dials are pinned by {@code PeerDialSafetyTest.PeerDialsGoThroughOneBuilder}.
  * <p>
  * The census ranges over the authority (#11288), in the compiled classes ({@link CompiledClasses}):
  * <ul>
  *   <li>every call that STARTS a request - {@code HttpRequest.newBuilder}, {@code URL.openConnection}, {@code URI.toURL} - in
- *       the two modules that dial peers, outside the builder. The ones that talk to services outside the cluster (the support
- *       portal, an AI provider, a jar on disk) are listed, and must never carry the cluster token, which the rule below keeps
- *       true of them;</li>
+ *       every module, outside the builder: not only the two that dial peers today, so a peer dial written in a third module is
+ *       still seen (#11619). The ones that talk to services outside the cluster (the support portal, an AI provider, the server a
+ *       client driver connects to, a file to import) are listed, and must never carry the cluster token, which the rule below
+ *       keeps true of them;</li>
  *   <li>every call that SETS a header - {@code HttpRequest.Builder.header/setHeader},
  *       {@code URLConnection.setRequestProperty/addRequestProperty} - naming one of the two cluster headers, in every module,
  *       outside the builder ({@link CallOperands}).</li>
@@ -54,8 +53,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class PeerDialsGoThroughOneBuilderCensusTest {
-  private static final List<String> DIALING_MODULES = List.of("server", "ha-raft");
   private static final String       BUILDER         = "server/PeerRequest";
+  /** A request start outside the two modules that dial peers today: reaching it proves the census reads every module. */
+  private static final String       REMOTE_DRIVER   = "remote/RemoteHttpComponent#";
   private static final Set<String>  CLUSTER_HEADERS = Set.of("X-ArcadeDB-Cluster-Token", "X-ArcadeDB-Forwarded-User");
 
   /** What starts a request: owner to method names. */
@@ -79,6 +79,8 @@ class PeerDialsGoThroughOneBuilderCensusTest {
    * file. A new method that dials a peer is not on this list, and fails the census.
    */
   private static final Map<String, String> OUTSIDE_THE_CLUSTER = new TreeMap<>(Map.ofEntries(//
+      Map.entry("bench/server/ServerUnderTest#answersReady",
+          "the readiness endpoint of the server a benchmark harness drives, as an anonymous HTTP client"),//
       Map.entry("server/ai/AiActivateHandler#execute", AI_PROVIDER),//
       Map.entry("server/ai/AiAnalyzeProfilerHandler#callGateway", AI_PROVIDER),//
       Map.entry("server/ai/AiChatHandler#callGateway", AI_PROVIDER),//
@@ -87,20 +89,21 @@ class PeerDialsGoThroughOneBuilderCensusTest {
       Map.entry("server/plugin/PluginClassLoader#<init>", "the URL of a plugin jar on disk"),//
       Map.entry("server/support/SupportConnector#rawPost", SUPPORT_PORTAL),//
       Map.entry("server/support/SupportPortalClient#execute", SUPPORT_PORTAL),//
-      Map.entry("server/support/SupportPortalClient#openStream", SUPPORT_PORTAL)));
+      Map.entry("server/support/SupportPortalClient#openStream", SUPPORT_PORTAL),//
+      // issue #11619: the request starts of the modules that dial no peer, read since the census ranges over every module
+      Map.entry("network/binary/SocketFactory#getAsStream", "the SSL key or trust store a client configuration names, a URL or a file"),//
+      Map.entry("remote/RemoteHttpComponent#createRequestBuilder", "the server a client driver connects to, with the client's own credentials"),//
+      Map.entry("utility/SafeHttpFetcher#open", "the caller-supplied URL of a LOAD CSV, IMPORT DATABASE or restore, checked against SSRF")));
 
   @Test
   void noPeerDialStartsItsRequestOutsideTheBuilder() throws Exception {
-    final Map<String, byte[]> classes = new HashMap<>();
-    for (final String module : DIALING_MODULES) {
-      assertThat(CompiledClasses.byModule()).as("the census must read the " + module + " module").containsKey(module);
-      classes.putAll(CompiledClasses.byModule().get(module));
-    }
-
-    final Map<String, Set<String>> callSites = CompiledClasses.callSitesOf(classes,
+    // issue #11619: every module, not the two that dial peers today - a peer dial moved into a third module is still a peer dial
+    final Map<String, Set<String>> callSites = CompiledClasses.callSitesOf(CompiledClasses.ofEveryModule(),
         (owner, name, desc) -> STARTS_A_REQUEST.getOrDefault(owner, Set.of()).contains(name));
     assertThat(callSites.keySet().stream().anyMatch(k -> k.startsWith(BUILDER + "#"))).as(
         "the census must reach the builder, where every peer request starts").isTrue();
+    assertThat(callSites.keySet().stream().anyMatch(k -> k.startsWith(REMOTE_DRIVER))).as(
+        "the census must reach the request starts of every module, the remote driver of the network module included").isTrue();
     callSites.keySet().removeIf(k -> k.startsWith(BUILDER + "#"));
 
     assertThat(CompiledClasses.unreviewed(callSites, OUTSIDE_THE_CLUSTER)).as(

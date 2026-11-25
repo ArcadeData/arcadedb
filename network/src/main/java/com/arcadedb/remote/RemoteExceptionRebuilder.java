@@ -36,9 +36,13 @@ import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.DatabaseOperationInProgressException;
+import com.arcadedb.exception.DeletedEntityException;
 import com.arcadedb.exception.EncryptionException;
 import com.arcadedb.exception.EquivalentIndexException;
+import com.arcadedb.exception.ExternalResourceException;
+import com.arcadedb.exception.GraphBatchInProgressException;
 import com.arcadedb.exception.HeapLimitExceededException;
+import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.exception.InvalidDatabaseInstanceException;
 import com.arcadedb.exception.InvalidPropertyTypeException;
 import com.arcadedb.exception.LockTimeoutException;
@@ -57,6 +61,8 @@ import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.exception.TransactionOutcomeUnknownException;
 import com.arcadedb.exception.TypeMismatchException;
+import com.arcadedb.exception.ImplicitTransactionRequiredException;
+import com.arcadedb.exception.ObjectInUseException;
 import com.arcadedb.exception.UnknownFunctionException;
 import com.arcadedb.exception.UnknownProcedureException;
 import com.arcadedb.exception.ValidationException;
@@ -65,6 +71,7 @@ import com.arcadedb.exception.VectorGraphBuildRefusedException;
 import com.arcadedb.exception.WALVersionGapException;
 import com.arcadedb.function.FunctionExecutionException;
 import com.arcadedb.index.IndexException;
+import com.arcadedb.index.StaleIndexException;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.query.opencypher.parser.FeatureNotImplementedException;
 import com.arcadedb.schema.trigger.TriggerExecutionException;
@@ -121,6 +128,14 @@ public final class RemoteExceptionRebuilder {
       Map.entry(TriggerExecutionException.class.getName(), TriggerExecutionException::new),
       Map.entry(InvalidPropertyTypeException.class.getName(), InvalidPropertyTypeException::new),
       Map.entry(TypeMismatchException.class.getName(), TypeMismatchException::new),
+      // A STATEMENT REFUSED FOR WHAT THE DATABASE HOLDS NOW: A NON-EMPTY TYPE, AN INDEXED PROPERTY (ISSUE #11803)
+      Map.entry(ObjectInUseException.class.getName(), ObjectInUseException::new),
+      // A STATEMENT REFUSED FOR THE TRANSACTION THE CALLER HOLDS: CALL { ... } IN TRANSACTIONS (ISSUE #12161)
+      Map.entry(ImplicitTransactionRequiredException.class.getName(), ImplicitTransactionRequiredException::new),
+      Map.entry(InvalidArgumentException.class.getName(), InvalidArgumentException::new),
+      // AN ENTITY THE STATEMENT DELETED ITSELF, AND AN EXTERNAL RESOURCE (A LOAD CSV URL) THAT CANNOT BE READ (ISSUE #11974)
+      Map.entry(DeletedEntityException.class.getName(), DeletedEntityException::new),
+      Map.entry(ExternalResourceException.class.getName(), ExternalResourceException::new),
       // THE NAME OF THE FUNCTION IS ONLY IN THE MESSAGE ON THE WIRE (ISSUE #11314)
       Map.entry(UnknownFunctionException.class.getName(), message -> new UnknownFunctionException(null, message)),
       // THE SAME FOR THE PROCEDURE OF A CALL (ISSUE #11384)
@@ -143,6 +158,7 @@ public final class RemoteExceptionRebuilder {
       Map.entry(DatabaseIsReopeningException.class.getName(), DatabaseIsReopeningException::new),
       Map.entry(DatabaseOperationException.class.getName(), DatabaseOperationException::new),
       Map.entry(DatabaseOperationInProgressException.class.getName(), DatabaseOperationInProgressException::new),
+      Map.entry(GraphBatchInProgressException.class.getName(), GraphBatchInProgressException::new),
       Map.entry(DatabaseMetadataException.class.getName(), DatabaseMetadataException::new),
       Map.entry(InvalidDatabaseInstanceException.class.getName(), InvalidDatabaseInstanceException::new),
       Map.entry(ConfigurationException.class.getName(), ConfigurationException::new),
@@ -151,6 +167,8 @@ public final class RemoteExceptionRebuilder {
       Map.entry(BrokenChunkChainException.class.getName(), BrokenChunkChainException::new),
       Map.entry(PageSnapshotException.class.getName(), PageSnapshotException::new),
       Map.entry(IndexException.class.getName(), IndexException::new),
+      // A READ THE SERVER COULD NOT FINISH ON AN INDEX A CONCURRENT DDL TOOK AWAY (ISSUE #11835): STILL AN IndexException
+      Map.entry(StaleIndexException.class.getName(), StaleIndexException::new),
       Map.entry(LockException.class.getName(), LockException::new),
       Map.entry(TransactionOutcomeUnknownException.class.getName(), TransactionOutcomeUnknownException::new),
       // THE ONES THE HTTP DRIVER ALSO MAPS BY HAND, AHEAD OF THIS TABLE AND WHATEVER THE STATUS, WITH THE ISSUE THAT ADDED EACH:

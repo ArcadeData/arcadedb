@@ -34,6 +34,7 @@ import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.IntegralKeyBound;
 import com.arcadedb.index.RangeIndex;
+import com.arcadedb.index.StaleIndexException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
@@ -307,6 +308,42 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   }
 
   /**
+   * Whether a record a range entry names, loaded after a commit overlapped the scan, still belongs to the range (issue #11790):
+   * it is still indexed under the entry's key, or, where the index keys are the plain property values ({@link #canVerifyKeys}),
+   * it still satisfies the condition of the seek. A record a commit moved out of the range is not a row of the statement; one it
+   * moved to another key of the range stays a row. Where the keys cannot be checked on the record (a case-insensitive or a
+   * by-item index) the record is served as loaded, as before.
+   */
+  boolean isStillInRange(final Document record, final Object entryKey) {
+    if (isKeyOf(record, entryKey) || !canVerifyKeys())
+      return true;
+    return new SeekCheck(condition, additionalRangeCondition).matches(record, context);
+  }
+
+  /**
+   * The check of {@link #isStillInRange} without an entry key, for the records of a range loaded in physical order (issue #11790):
+   * the entries are read before any record, and only their RIDs are kept. A copy of the condition of the seek, which a worker of a
+   * parallel load evaluates through its own context; null where the keys cannot be checked on the record, whose records are served
+   * as loaded.
+   */
+  SeekCheck seekCheck() {
+    return canVerifyKeys() ? new SeekCheck(condition, additionalRangeCondition).copy() : null;
+  }
+
+  /** The condition of a seek, evaluated on a record. */
+  record SeekCheck(BooleanExpression condition, BinaryCondition additionalRangeCondition) {
+    boolean matches(final Document record, final CommandContext context) {
+      if (!Boolean.TRUE.equals(condition.evaluate(record, context)))
+        return false;
+      return additionalRangeCondition == null || Boolean.TRUE.equals(additionalRangeCondition.evaluate(record, context));
+    }
+
+    SeekCheck copy() {
+      return new SeekCheck(condition.copy(), additionalRangeCondition != null ? additionalRangeCondition.copy() : null);
+    }
+  }
+
+  /**
    * The key of the lookup an entry of a point lookup was found by (#9902). A lookup of a prefix of a composite key reads a range
    * whose entries each carry their whole key ({@code a = 'p'} on {@code (a, b)} returns {@code [p, 0]}, {@code [p, 1]}, ...), so
    * the entry key is cut to the slots the lookup fills: what the entries of one lookup share, and what reads them all again.
@@ -418,7 +455,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
    */
   private RuntimeException staleIndexOr(final IllegalArgumentException e) {
     if (TypeIndex.isStaleRead(index, e))
-      return new IndexException("Index '" + indexName + "' was dropped or rebuilt while it was being read", e);
+      return new StaleIndexException("Index '" + indexName + "' was dropped or rebuilt while it was being read", e);
     return e;
   }
 
@@ -453,7 +490,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
             // only started counts too (issue #9615): it may already have taken the sub-indexes away, and an empty answer is the
             // one a statement planned again can still replace at no cost to the caller
             if (index instanceof TypeIndex typeIndex && (typeIndex.isDropped() || (count == 0 && typeIndex.isDropping())))
-              throw new IndexException("Index '" + indexName + "' was dropped or rebuilt while it was being read");
+              throw new StaleIndexException("Index '" + indexName + "' was dropped or rebuilt while it was being read");
             updateIndexStats();
           } else
             count++;
@@ -564,7 +601,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       try {
         index = (RangeIndex) db.getSchema().getIndexByName(indexName);
       } catch (final SchemaException e) {
-        throw new IndexException("Index '" + indexName + "' was dropped while it was being read", e);
+        throw new StaleIndexException("Index '" + indexName + "' was dropped while it was being read", e);
       }
     }
     // This cursor answers straight from the index, without loading each record through its bucket, so apply the
@@ -1241,7 +1278,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     }
   }
 
-  private static Object[] normaliseToIndexKey(final DatabaseInternal database, final Object[] bound,
+  static Object[] normaliseToIndexKey(final DatabaseInternal database, final Object[] bound,
       final byte[] keyTypes, final IndexMetadata metadata) {
     final Object[] key = new Object[bound.length];
     for (int i = 0; i < bound.length; i++) {
@@ -1621,6 +1658,13 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     return result;
   }
 
+  /** The index and the condition this step searches it for, on one line: how an {@link IndexIntersection} names its searches. */
+  String describeSearch() {
+    if (condition == null)
+      return indexName;
+    return indexName + " " + condition + (additionalRangeCondition == null ? "" : " and " + additionalRangeCondition);
+  }
+
   /**
    * Restarts the step: {@code inited} goes back to false and {@code init()} rebuilds the whole cursor set from scratch
    * (that is what {@code UpdateExecutionPlan.reset()} relies on - it re-runs the plan straight after). So the cursors of
@@ -1668,7 +1712,15 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
   @Override
   public ExecutionStep copy(final CommandContext context) {
-    return new FetchFromIndexStep(index, this.condition == null ? null : this.condition.copy(),
+    // `index` is null between a reset() and the next init(): an IndexIntersection copies the search of a plan run again (#13289)
+    RangeIndex current = index;
+    if (current == null)
+      try {
+        current = (RangeIndex) context.getDatabase().getSchema().getIndexByName(indexName);
+      } catch (final SchemaException e) {
+        throw new StaleIndexException("Index '" + indexName + "' was dropped while it was being read", e);
+      }
+    return new FetchFromIndexStep(current, this.condition == null ? null : this.condition.copy(),
         this.additionalRangeCondition == null ? null : this.additionalRangeCondition.copy(), this.orderAsc, context);
   }
 }

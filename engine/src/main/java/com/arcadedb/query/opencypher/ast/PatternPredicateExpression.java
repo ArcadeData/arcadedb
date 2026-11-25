@@ -36,6 +36,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.schema.Schema;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
@@ -57,6 +58,10 @@ public class PatternPredicateExpression implements BooleanExpression {
   private final String patternText;
   // THE PATTERN NEVER CHANGES, SO WHETHER IT IS A PARENTHESIZED VARIABLE IS DECIDED ONCE
   private final boolean parenthesizedVariable;
+  // A one-hop pattern the edge list of the bound vertex answers without loading an edge (issue #11891)
+  private final OneHopPattern oneHop;
+  // THE NAMED NODE AND RELATIONSHIP VARIABLES OF THE PATTERN, DECIDED ONCE (issue #13124)
+  private final String[] namedVariables;
 
   public PatternPredicateExpression(final PathPattern pathPattern, final boolean isNegated) {
     this(pathPattern, isNegated, null);
@@ -67,6 +72,8 @@ public class PatternPredicateExpression implements BooleanExpression {
     this.isNegated = isNegated;
     this.patternText = patternText;
     this.parenthesizedVariable = computeParenthesizedVariable(pathPattern);
+    this.oneHop = OneHopPattern.of(pathPattern);
+    this.namedVariables = namedVariablesOf(pathPattern);
   }
 
   @Override
@@ -105,6 +112,37 @@ public class PatternPredicateExpression implements BooleanExpression {
     return node.getVariable() != null && !node.hasLabels() && !node.hasProperties();
   }
 
+  private static String[] namedVariablesOf(final PathPattern pathPattern) {
+    if (pathPattern == null)
+      return new String[0];
+    final List<String> names = new ArrayList<>();
+    for (int i = 0; i < pathPattern.getNodeCount(); i++)
+      addNamed(names, pathPattern.getNode(i).getVariable());
+    for (int i = 0; i < pathPattern.getRelationshipCount(); i++)
+      addNamed(names, pathPattern.getRelationship(i).getVariable());
+    return names.toArray(new String[0]);
+  }
+
+  private static void addNamed(final List<String> names, final String variable) {
+    if (variable != null && !variable.isEmpty())
+      names.add(variable);
+  }
+
+  /**
+   * Whether the pattern names a node or relationship variable the row carries with a null value, which is what an earlier
+   * OPTIONAL MATCH that matched nothing leaves. A null node is the end of no relationship, so no path can hold the
+   * pattern: it is false, and {@code NOT} of it true (issue #13124). A variable the row does not carry at all is unbound
+   * and stands for any node, as an anonymous one does.
+   */
+  private boolean namesNullBoundVariable(final Result result) {
+    if (result == null)
+      return false;
+    for (final String variable : namedVariables)
+      if (result.getProperty(variable) == null && result.hasProperty(variable))
+        return true;
+    return false;
+  }
+
   private Boolean evaluateParenthesizedVariable(final Result result) {
     final String variable = pathPattern.getFirstNode().getVariable();
     final Object value = result.getProperty(variable);
@@ -124,6 +162,14 @@ public class PatternPredicateExpression implements BooleanExpression {
       // No relationships in pattern - this shouldn't happen
       return false;
     }
+
+    if (namesNullBoundVariable(result))
+      return false;
+
+    // The edge walk below loads the relationship records, so the user's permission to read them is still asked
+    final long found = oneHop.count(result, context, OneHopPattern.Question.PREDICATE);
+    if (found != OneHopPattern.NOT_ANSWERED)
+      return found > 0;
 
     // Multi-hop patterns or patterns whose start node does not bind to a row
     // variable are not handled by the in-memory single-edge fast path. Delegate

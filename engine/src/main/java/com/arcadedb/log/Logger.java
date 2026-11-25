@@ -46,8 +46,10 @@ public interface Logger {
   void log(Object iRequester, Level iLevel, String iMessage, Throwable iException, String context, Object... args);
 
   /**
-   * Tells whether a message at the given level would be emitted for the requester. Hot paths use it to skip boxing the
-   * arguments of a disabled FINE/FINER message. The default answers true, so a custom logger keeps receiving everything.
+   * Tells whether a message at the given level would be emitted for the requester. {@link LogManager} asks it before every
+   * {@code log} call, ahead of reading the thread's log context, and hands the logger only the messages it answers true for
+   * (#12357); hot paths also use it to skip boxing the arguments of a disabled FINE/FINER message. The default answers true, so
+   * a custom logger keeps receiving everything.
    */
   default boolean isLoggable(final Object requester, final Level level) {
     return true;

@@ -33,6 +33,12 @@ import com.arcadedb.utility.StringRidHashMap;
  */
 public class TempIdVertexRefResolver implements VertexRefResolver {
 
+  /**
+   * The bucket of the placeholder an id is entered with when a vertex declares it, before the vertex is created: no bucket
+   * has a negative id, and the position holds the line of the declaration, which the refusal of a repeated id names.
+   */
+  private static final int DECLARED = -2;
+
   private final StringRidHashMap map;
   private       int              verticesWithoutId;
 
@@ -57,7 +63,9 @@ public class TempIdVertexRefResolver implements VertexRefResolver {
   @Override
   public RID get(final String ref, final int lineNumber) {
     final RID rid = map.get(ref);
-    if (rid == null) {
+    // A vertex declared but not created yet cannot be referenced: an edge only ever arrives after the vertices are flushed,
+    // so this is defensive, and it keeps the placeholder from ever being handed out as a RID
+    if (rid == null || rid.getBucketId() == DECLARED) {
       final StringBuilder message = new StringBuilder("Unknown temporary ID '").append(ref).append("' at line ")
           .append(lineNumber).append(": no vertex earlier in this payload declared it as its @id (")
           .append(map.size()).append(" ids mapped so far");
@@ -72,12 +80,33 @@ public class TempIdVertexRefResolver implements VertexRefResolver {
     return rid;
   }
 
+  /**
+   * Accepts any id once, and none at all: a vertex nothing points at does not need one. A vertex without one is counted
+   * though, because a payload that meant to reference it has no other way to find out (issue #5618).
+   * <p>
+   * An id a vertex of this payload already declared is refused here, on the vertex that repeats it and before anything of
+   * it is written (issue #11801): the mapping holds one vertex per id, so the second declaration used to take the id over
+   * silently, wiring every edge that names it to the later vertex and leaving the earlier one unreachable. The id is
+   * therefore entered at declaration, with the line it was declared at in place of the RID the vertex does not have yet
+   * ({@link #DECLARED}), and {@link #put} replaces it once the vertex is created. That costs no extra memory - the entry
+   * was always going to be stored - and one probe of the map per vertex.
+   */
   @Override
   public void checkVertexId(final String tempId, final int ordinal, final int lineNumber) {
-    // Any id is acceptable here, including none: a vertex nothing points at does not need one. It is counted
-    // though, because a payload that meant to reference it has no other way to find out (issue #5618).
-    if (tempId == null)
+    if (tempId == null) {
       verticesWithoutId++;
+      return;
+    }
+
+    if (!map.putIfAbsent(tempId, DECLARED, lineNumber)) {
+      final RID earlier = map.get(tempId);
+      throw new IllegalArgumentException("Vertex at line " + lineNumber + " declares @id '" + tempId + "', which "
+          + (earlier.getBucketId() == DECLARED ?
+          "the vertex at line " + earlier.getPosition() :
+          "an earlier vertex of this payload (created as " + earlier + ")")
+          + " already declared. A temporary id names one vertex: give every vertex its own @id, or none if no edge "
+          + "of the payload references it");
+    }
   }
 
   @Override
@@ -102,7 +131,10 @@ public class TempIdVertexRefResolver implements VertexRefResolver {
 
   @Override
   public void forEach(final EntryConsumer consumer) {
-    map.forEach(consumer::accept);
+    map.forEach((tempId, rid) -> {
+      if (rid.getBucketId() != DECLARED)
+        consumer.accept(tempId, rid);
+    });
   }
 
   /**

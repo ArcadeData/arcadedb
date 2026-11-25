@@ -49,6 +49,7 @@ import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
+import com.arcadedb.query.opencypher.executor.RowIndependentValues;
 import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
@@ -63,6 +64,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.utility.RidHashSet;
 import com.arcadedb.utility.ScanPressureReporter;
 
@@ -110,6 +112,14 @@ public class MatchNodeStep extends AbstractExecutionStep {
   // branches - if a future change drives parallel sub-plans through the same step, all three fields
   // (including cachedFullScanCandidates below) need to move to a per-execution scope or be guarded.
   private       String              usedIndexName; // Track which index was used (if any)
+  private final Set<String>         usedIndexNames = new LinkedHashSet<>(); // the indexes sought by the plan of a node with no single type, once each
+  // TRUE WHEN THE CANDIDATES OF THE LAST COMPUTED ITERATOR DEPEND ON THE INPUT ROW: a node pattern that names no single
+  // type (no label, or several) pinned by a value, or a list of values, the row decides is answered by index seeks that are made
+  // again for every row, so its candidates are not the same for every row and must not be cached (issues #12522, #12546)
+  private       boolean             candidatesDependOnTheRow = false;
+  // The label whose vertices the user was found allowed to read, so that a chained MATCH, which re-opens the scan per outer row,
+  // asks the permission of a static label once (issue #12663)
+  private       String              readableLabel;
   // The full type scan the step reads from, kept only to report in a profile whether the heap budget reduced its read-ahead (#9404)
   // READ BY THE PROFILE WHILE THE THREAD THAT RUNS THE STEP WRITES THEM
   private volatile ScanPressureReporter scanIterator;
@@ -312,6 +322,11 @@ public class MatchNodeStep extends AbstractExecutionStep {
       private       int                    bufferIndex        = 0;
       private       boolean                finished           = false;
       private       Result                 currentInputResult = null;
+      // The inline property map resolved against currentInputResult: an expression in it ({k: toInteger(rand() * 10)}) is
+      // evaluated once per input row, and the same value is used to look the vertex up and to check every candidate. Two
+      // evaluations of a non-deterministic one drew two values, and the vertex found with the first failed the check with the
+      // second (issue #12179)
+      private       Map<String, Object>    rowProperties      = null;
 
       @Override
       public boolean hasNext() {
@@ -356,16 +371,17 @@ public class MatchNodeStep extends AbstractExecutionStep {
                 break;
               }
               currentInputResult = prevResults.next();
+              rowProperties = InlineProperties.resolveAll(pattern.getProperties(), currentInputResult, context);
 
               // Check if the variable is already bound in the input result.
               // This happens in OPTIONAL MATCH when a variable from a previous MATCH
               // is reused (e.g., MATCH (a)...(c) OPTIONAL MATCH (a)-[r]->(c)).
               // In this case, use the bound vertex directly instead of scanning all vertices.
-              if (variable != null && currentInputResult.getPropertyNames().contains(variable)) {
+              if (variable != null && currentInputResult.listsProperty(variable)) {
                 final Object boundValue = currentInputResult.getProperty(variable);
                 if (boundValue instanceof Vertex) {
                   final Vertex boundVertex = (Vertex) boundValue;
-                  if (matchesAllLabelsBound(boundVertex, currentInputResult) && matchesProperties(boundVertex, currentInputResult))
+                  if (matchesAllLabelsBound(boundVertex, currentInputResult) && matchesProperties(boundVertex, rowProperties))
                     iterator = Collections.singletonList((Identifiable) boundVertex).iterator();
                   else
                     iterator = Collections.<Identifiable>emptyList().iterator();
@@ -373,7 +389,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
                   iterator = Collections.<Identifiable>emptyList().iterator();
                 }
               } else {
-                iterator = getVertexIterator(currentInputResult);
+                iterator = getVertexIterator(currentInputResult, rowProperties);
               }
             }
 
@@ -401,7 +417,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
                   final Vertex vertex = (Vertex) record;
 
                   // Apply label and property filters
-                  if (!matchesAllLabels(vertex, currentInputResult) || !matchesProperties(vertex, currentInputResult))
+                  if (!matchesAllLabels(vertex, currentInputResult) || !matchesProperties(vertex, rowProperties))
                     continue;
 
                   // Copy input result and add our vertex
@@ -429,7 +445,8 @@ public class MatchNodeStep extends AbstractExecutionStep {
           // Standalone mode: no input, create fresh results
           // Initialize iterator on first call
           if (iterator == null) {
-            iterator = getVertexIterator();
+            rowProperties = InlineProperties.resolveAll(pattern.getProperties(), null, context);
+            iterator = getVertexIterator(null, rowProperties);
           }
 
           // Fetch up to n vertices
@@ -448,7 +465,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
                 final Vertex vertex = (Vertex) record;
 
                 // Apply label and property filters
-                if (!matchesAllLabels(vertex) || !matchesProperties(vertex))
+                if (!matchesAllLabels(vertex) || !matchesProperties(vertex, rowProperties))
                   continue;
 
                 // Create result with vertex bound to variable
@@ -486,15 +503,11 @@ public class MatchNodeStep extends AbstractExecutionStep {
    * Supports composite indexes with partial key matching (leftmost prefix).
    * OPTIMIZATION: Uses ID filter when available to return single vertex.
    */
-  private Iterator<Identifiable> getVertexIterator() {
-    return getVertexIterator(null);
-  }
-
-  private Iterator<Identifiable> getVertexIterator(final Result currentInputResult) {
+  private Iterator<Identifiable> getVertexIterator(final Result currentInputResult, final Map<String, Object> rowProperties) {
     if (cachedFullScanCandidates != null)
       return cachedFullScanCandidates.iterator();
 
-    final Iterator<Identifiable> computed = computeVertexIterator(currentInputResult);
+    final Iterator<Identifiable> computed = computeVertexIterator(currentInputResult, rowProperties);
 
     // prev != null: only a chained match re-opens this scan per outer input row, which is the only
     // situation where a live re-open can observe a downstream write made mid-query (issue #6602). The
@@ -556,6 +569,11 @@ public class MatchNodeStep extends AbstractExecutionStep {
    * post-fetch per-row filters (see {@code matchesProperties}/the {@code whereFilter.evaluate} call in this
    * step's chained-mode fetch loop), which does not affect what the candidate set is.
    * <p>
+   * It takes one other branch, the seek of the indexes that cover the pinned properties, or the list of values the WHERE filter
+   * pins one to ({@link #tryFindAndUseIndexAcrossTypes}, issues #12522 and #12546), and a value the input row decides makes its
+   * candidates differ from row to row: that branch says so in {@link #candidatesDependOnTheRow}, which is what is read first
+   * below. The values that pin it are the same for every row otherwise, and so are the candidates.
+   * <p>
    * {@code whereFilter} itself is checked structurally rather than just for {@code != null}:
    * {@code tryFindAndUseIndexFromWhere} only ever acts on a {@code variable.property = <expr>} (or reversed)
    * equality it can find inside {@code whereFilter}'s top-level AND-chain (see
@@ -564,6 +582,10 @@ public class MatchNodeStep extends AbstractExecutionStep {
    * nothing to do with this pattern's own variable - can never route there, so it must not disable caching.
    */
   private boolean isRowIndependentFullScan() {
+    if (candidatesDependOnTheRow)
+      // The index seek answered a value the row decides, so the candidates of this row are not the candidates of
+      // the next one (issue #12522)
+      return false;
     if ((idFilter != null && !idFilter.isEmpty()) || dynamicIdExpression != null || pattern.hasDynamicLabels())
       return false;
     final List<String> labels = pattern.getLabels();
@@ -603,7 +625,8 @@ public class MatchNodeStep extends AbstractExecutionStep {
    * Structural (not value-resolving) mirror of {@link #extractEqualityPredicates}'s predicate recognition:
    * true if {@code expr}'s top-level AND-chain contains a {@code variable.property = <expr>} (or reversed)
    * comparison against this step's own {@link #variable}, regardless of whether that expression could
-   * actually be resolved for any given row. Recursing through AND only (not OR/NOT/XOR) matches
+   * actually be resolved for any given row. Recursing through AND only (not OR/XOR, and NOT only over an
+   * inequality, which is the equality it negates) matches
    * {@code extractEqualityPredicates} exactly: a predicate {@code extractEqualityPredicates} can never reach
    * is not something {@code tryFindAndUseIndexFromWhere} can act on either, so it must not disqualify caching.
    */
@@ -613,9 +636,15 @@ public class MatchNodeStep extends AbstractExecutionStep {
         return false;
       return isPropertyAccessOnOwnVariable(comp.getLeft()) || isPropertyAccessOnOwnVariable(comp.getRight());
     }
-    if (expr instanceof LogicalExpression logical && logical.getOperator() == LogicalExpression.Operator.AND)
-      return whereFilterHasEqualityPredicateOnOwnVariable(logical.getLeft())
-          || whereFilterHasEqualityPredicateOnOwnVariable(logical.getRight());
+    if (expr instanceof LogicalExpression logical) {
+      if (logical.getOperator() == LogicalExpression.Operator.AND)
+        return whereFilterHasEqualityPredicateOnOwnVariable(logical.getLeft())
+            || whereFilterHasEqualityPredicateOnOwnVariable(logical.getRight());
+      // NOT (variable.property <> v), the equality extractEqualityPredicates reads from it (issue #12281)
+      final ComparisonExpression inequality = logical.getNegatedInequality();
+      return inequality != null && (isPropertyAccessOnOwnVariable(inequality.getLeft())
+          || isPropertyAccessOnOwnVariable(inequality.getRight()));
+    }
     return false;
   }
 
@@ -623,7 +652,8 @@ public class MatchNodeStep extends AbstractExecutionStep {
     return expr instanceof PropertyAccessExpression propAccess && variable.equals(propAccess.getVariableName());
   }
 
-  private Iterator<Identifiable> computeVertexIterator(final Result currentInputResult) {
+  private Iterator<Identifiable> computeVertexIterator(final Result currentInputResult, final Map<String, Object> rowProperties) {
+    candidatesDependOnTheRow = false;
     // OPTIMIZATION: Resolve ID filter - either static (from plan time) or dynamic (from runtime).
     // Static idFilter handles literals/parameters; dynamicIdExpression handles expressions like
     // BatchEntry.destRID that can only be resolved with the current input row (issue #3864).
@@ -646,8 +676,15 @@ public class MatchNodeStep extends AbstractExecutionStep {
     // Without this optimization, MATCH (a),(b) WHERE ID(a) = x AND ID(b) = y
     // would create a Cartesian product of ALL vertices before filtering
     if (effectiveIdFilter != null && !effectiveIdFilter.isEmpty()) {
+      // A scan of the type only meets records of the type, but a lookup by id reaches a record of ANY type: it answers for the node
+      // only when its type carries the labels of the pattern, as (n:Chunk) WHERE id(n) = <id of an Entity> matches nothing (the
+      // type is read from the bucket of the id, so a record of another type is not loaded)
+      final List<String> idLabels = resolveEffectiveLabels(currentInputResult);
       try {
         final RID rid = context.getDatabase().newRID(effectiveIdFilter);
+        if (!Labels.matches(context.getDatabase().getSchema().getTypeByBucketId(rid.getBucketId()), idLabels,
+            pattern.isLabelDisjunction()))
+          return List.<Identifiable>of().iterator();
         final Identifiable vertex = context.getDatabase().lookupByRID(rid, true);
         return List.of(vertex).iterator();
       } catch (final Exception e) {
@@ -682,11 +719,17 @@ public class MatchNodeStep extends AbstractExecutionStep {
           return Collections.emptyIterator();
         }
 
+        // An index seek of the type, which every branch below that has a property or a WHERE filter to seek by may make, loads a
+        // record only when the index holds the key: asked afterwards, the permission would refuse the statement for a key the type
+        // holds and answer for one it does not (issue #12663). The walk is refused by its bucket whatever the key is
+        if ((pattern.hasProperties() && !pattern.getProperties().isEmpty()) || whereFilter != null)
+          requireReadable(type, label);
+
         // OPTIMIZATION: Check if we can use an index for property lookup
         if (type != null && pattern.hasProperties() && !pattern.getProperties().isEmpty()) {
           // Try to find an index that matches the property constraints
           // Support composite indexes with partial keys (leftmost prefix matching)
-          final Iterator<Identifiable> indexedIter = tryFindAndUseIndex(type, label, currentInputResult, false);
+          final Iterator<Identifiable> indexedIter = tryFindAndUseIndex(type, label, rowProperties, false);
           if (indexedIter != null)
             return indexedIter;
         }
@@ -708,7 +751,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
         // OPTIMIZATION: no whole-key index answers the pattern or the WHERE clause, so a leading prefix of a composite index
         // may (issue #11576). Tried only after every whole-key choice: an exact lookup beats a range, a UNIQUE one included.
         if (type != null && pattern.hasProperties() && !pattern.getProperties().isEmpty()) {
-          final Iterator<Identifiable> prefixIter = tryFindAndUseIndex(type, label, currentInputResult, true);
+          final Iterator<Identifiable> prefixIter = tryFindAndUseIndex(type, label, rowProperties, true);
           if (prefixIter != null)
             return prefixIter;
         }
@@ -747,7 +790,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
         // No index available - a chained match re-opens this scan per outer row, which a transient hash answers
         // without the repeated full scans (issue #8695)
         if (prev != null && !pattern.hasDynamicLabels() && pattern.hasProperties() && !pattern.getProperties().isEmpty()) {
-          final Iterator<Identifiable> hashed = tryScanHashIndex(label, currentInputResult);
+          final Iterator<Identifiable> hashed = tryScanHashIndex(label, rowProperties);
           if (hashed != null)
             return hashed;
         }
@@ -756,18 +799,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
         if (type != null) {
           @SuppressWarnings("unchecked") final Iterator<Identifiable> iter =
               (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(label, true);
-          // A CHAINED MATCH OPENS A SCAN PER INPUT ROW: THE ONE BEFORE GIVES ITS READ-AHEAD BACK
-          if (openScan != null)
-            openScan.releaseReadAhead();
-          openScan = iter instanceof ScanPressureReporter reporter ? reporter : null;
-          // ONLY A PROFILED RUN KEEPS THE SCAN FOR THE PROFILE, WHICH HOLDS A BATCH OF RECORDS: THE PROFILE IS THE ONLY READER
-          if (context.isProfiling()) {
-            // A CHAINED MATCH OPENS A SCAN PER INPUT ROW: THE ONES DONE STAY IN THE COUNT
-            if (scanIterator != null)
-              completedScansShrunkBatches.addAndGet(scanIterator.getBudgetShrunkBatches());
-            scanIterator = iter instanceof ScanPressureReporter reporter ? reporter : null;
-          }
-          return iter;
+          return trackScan(iter);
         }
         return Collections.emptyIterator();
       }
@@ -778,11 +810,11 @@ public class MatchNodeStep extends AbstractExecutionStep {
       // wherever it is written - here as the anchor of a MATCH, or as the start of a pattern comprehension,
       // which used to take the first label and nothing else (issues #6338, #6352).
       // <p>
-      // isRowIndependentFullScan() relies on this branch - like the no-label one below - never routing
-      // through the index/partition-pruning branches above (tryFindAndUseIndex,
-      // tryFindAndUseIndexFromWhere, tryPartitionPrunedIterator), which is why it treats properties/WHERE
-      // as safe to ignore for a multi-label or label-less pattern. If a future change ever gives this
-      // branch an index/partition fast path of its own, isRowIndependentFullScan() must be revisited too.
+      // isRowIndependentFullScan() relies on this branch never routing through the index/partition-pruning
+      // branches above (tryFindAndUseIndex, tryFindAndUseIndexFromWhere, tryPartitionPrunedIterator), which is
+      // why it treats properties/WHERE as safe to ignore for a multi-label pattern. If a future change ever
+      // gives this branch an index/partition fast path of its own, isRowIndependentFullScan() must be revisited
+      // too. It has one, tryFindAndUseIndexAcrossTypes, which reports the candidates that depend on the row itself.
       // A static label was refused when the statement was planned (TimeSeriesPatternGuard), a dynamic one is only known
       // here (issue #10440): only then are the labels looked up, so a static multi-label scan opened per row pays nothing
       if (pattern.hasDynamicLabels()) {
@@ -790,24 +822,53 @@ public class MatchNodeStep extends AbstractExecutionStep {
         for (int i = 0; i < labels.size(); i++)
           Labels.requireNotTimeSeriesType(schema.getTypeOrNull(labels.get(i)), "label");
       }
+      // The types the labels select are the types of an unlabelled node narrowed down, and a property they pin is answered by the
+      // index of the buckets of those types the same way (issue #12522)
+      final Iterator<Identifiable> indexed = tryFindAndUseIndexAcrossTypes(currentInputResult, rowProperties, labels);
+      if (indexed != null)
+        return indexed;
       @SuppressWarnings("unchecked") final Iterator<Identifiable> labelled =
           (Iterator<Identifiable>) (Object) Labels.iterateMatchingVertices(context.getDatabase(), labels,
               pattern.isLabelDisjunction());
       return labelled;
     }
 
-    // No label specified - iterate ALL vertex types, which is the same rule with nothing to satisfy - and,
-    // like the multi-label branch above, relied on by isRowIndependentFullScan() for the same reason.
+    // No label specified - iterate ALL vertex types, which is the same rule with nothing to satisfy.
+    //
+    // A property the pattern pins to a value is answered by the indexes that cover the vertex buckets of the
+    // database, and only the buckets no index covers are walked (issue #12522). The candidates of that branch
+    // report themselves in candidatesDependOnTheRow, which isRowIndependentFullScan() reads: the walk below is
+    // the one it relies on to be the same for every row.
+    final Iterator<Identifiable> indexed = tryFindAndUseIndexAcrossTypes(currentInputResult, rowProperties, labels);
+    if (indexed != null)
+      return indexed;
+
     @SuppressWarnings("unchecked") final Iterator<Identifiable> everyVertex =
         (Iterator<Identifiable>) (Object) Labels.iterateMatchingVertices(context.getDatabase(), labels, false);
     return everyVertex;
   }
 
   /**
+   * Refuses the user who may not read the vertices of {@code type}, or of a type under it, before an index seek of it is tried
+   * (issue #12663), as the walk of its buckets does whatever the key is. The index of a type holds the vertices of its subtypes
+   * too, which may carry an access of their own, so the buckets of every one of them are asked.
+   * <p>
+   * A chained MATCH opens the scan once per outer row, so the label asked last is remembered: the answer cannot change while the
+   * step runs, since the step lives for one execution and the user is bound to it. It is remembered only once the check passed, so
+   * a refused label is refused again.
+   */
+  private void requireReadable(final DocumentType type, final String label) {
+    if (label.equals(readableLabel))
+      return;
+    SecurityHelper.checkReadOnTypeAndSubTypes(context.getDatabase(), type);
+    readableLabel = label;
+  }
+
+  /**
    * Answers a chained, unindexed inline-equality match from a hash built over one full scan, or returns null to
    * leave the plain scan in charge (first open, unsupported value type, type too large).
    */
-  private Iterator<Identifiable> tryScanHashIndex(final String label, final Result currentInputResult) {
+  private Iterator<Identifiable> tryScanHashIndex(final String label, final Map<String, Object> rowProperties) {
     if (scanHashDeclined)
       return null;
     if (scanHashIndex == null) {
@@ -827,7 +888,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
       String fallback = null;
       for (final Map.Entry<String, Object> entry : pattern.getProperties().entrySet()) {
         final Object declared = entry.getValue();
-        if (!ScanPropertyHashIndex.isSupported(InlineProperties.resolve(declared, currentInputResult, context)))
+        if (!ScanPropertyHashIndex.isSupported(rowProperties.get(entry.getKey())))
           continue;
         if (!(declared instanceof String) && !(declared instanceof Number) && !(declared instanceof Boolean)
             && !(declared instanceof CypherASTBuilder.ParameterReference) && !(declared instanceof ParameterExpression)) {
@@ -856,7 +917,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
       scanHashIndex = built;
     }
 
-    final Object value = InlineProperties.resolve(pattern.getProperties().get(scanHashProperty), currentInputResult, context);
+    final Object value = rowProperties.get(scanHashProperty);
     if (value == null)
       return Collections.emptyIterator(); // a null inline value equals nothing (InlineProperties.matchesResolvedValue)
     return ScanPropertyHashIndex.isSupported(value) ? scanHashIndex.candidates(value) : null; // null: plain scan for this row
@@ -874,18 +935,15 @@ public class MatchNodeStep extends AbstractExecutionStep {
   }
 
   private Iterator<Identifiable> tryFindAndUseIndex(final DocumentType type, final String label,
-      final Result currentInputResult, final boolean prefixOnly) {
-    // Prepare property names and values from the pattern
+      final Map<String, Object> rowProperties, final boolean prefixOnly) {
+    // Property names in the order of the pattern, with the values resolved for this row
     final Map<String, Object> properties = new LinkedHashMap<>();
-    for (final Map.Entry<String, Object> entry : pattern.getProperties().entrySet()) {
-      final String propertyName = entry.getKey();
-      Object propertyValue = entry.getValue();
-
-      // Resolve parameters and dynamic expressions (e.g., e.src_id from UNWIND) against the current input
-      // result. A parameter map field like $edge_data.uuid resolves from the context alone, so a bare MATCH
-      // with no input row still reaches the index (issue #4909); a value that does not resolve gives up on
-      // the index rather than looking up a null key, and the scan that follows filters identically.
-      propertyValue = InlineProperties.resolve(propertyValue, currentInputResult, context);
+    for (final String propertyName : pattern.getProperties().keySet()) {
+      // Parameters and dynamic expressions (e.g., e.src_id from UNWIND) were resolved against the current input result. A
+      // parameter map field like $edge_data.uuid resolves from the context alone, so a bare MATCH with no input row still
+      // reaches the index (issue #4909); a value that does not resolve gives up on the index rather than looking up a null
+      // key, and the scan that follows filters identically.
+      final Object propertyValue = rowProperties.get(propertyName);
       if (propertyValue == null)
         return null;
 
@@ -937,7 +995,9 @@ public class MatchNodeStep extends AbstractExecutionStep {
         continue;
       if (!wholeKey) {
         try {
-          if (!index.supportsOrderedIterations())
+          // a prefix range misses a record whose unbound column is indexed BY ITEM with no element, or is null in an index
+          // that skips nulls, and reaches one with several elements several times: the scan answers those
+          if (!index.supportsOrderedIterations() || !index.prefixReachesEveryRecord(matchCount))
             continue;
         } catch (final IndexException e) {
           continue; // dropped or rebuilt since it was checked: not a candidate, the scan answers
@@ -966,6 +1026,248 @@ public class MatchNodeStep extends AbstractExecutionStep {
       usedIndexName = index.getTypeName() + "[" + String.join(", ", index.getPropertyNames()) + "], prefix: "
           + String.join(", ", propertyNames);
     return seek;
+  }
+
+  /**
+   * The candidates of a node pinned to values whose pattern names no single type (no label, or several), read from the indexes that
+   * cover the vertex buckets of the types the labels select, and from a walk of the buckets that none covers; or null when no index
+   * answers the pattern and the walk of the types does (issue #12522). Which index answers which bucket is decided by
+   * {@link MultiTypeNodeIndexPlan}, before anything is read. The equalities of the pattern and of the WHERE filter are tried first;
+   * when none of them is answered by an index, a list of values the WHERE filter pins the node to is
+   * ({@link #tryInListSeekAcrossTypes}, issue #12546).
+   * <p>
+   * A value the input row decides makes the candidates differ from row to row, so the seeks are made again for every row and the
+   * candidates are not cached, as for a labelled node. The buckets that are walked would then be walked again for every row, where
+   * they used to be walked once and cached (issues #6602, #8695): when one of them holds a record, the walk of the types answers the
+   * statement instead.
+   *
+   * @param rowProperties the inline property map resolved for this row ({@link InlineProperties#resolveAll}), so the value sought
+   *                      is the value every candidate is checked with (issue #12179)
+   * @param labels        the labels of the pattern, none for an unlabelled node
+   */
+  private Iterator<Identifiable> tryFindAndUseIndexAcrossTypes(final Result currentInputResult,
+      final Map<String, Object> rowProperties, final List<String> labels) {
+    if (pattern.hasDynamicLabels())
+      return null; // the types are only known per row
+
+    final Map<String, Object> pinned = new LinkedHashMap<>();
+    boolean rowDependent = false;
+    for (final Map.Entry<String, Object> entry : pattern.getProperties().entrySet()) {
+      final Object declared = entry.getValue();
+      rowDependent |= declared instanceof Expression expression && !RowIndependentValues.isRowIndependent(expression);
+      final Object value = rowProperties.get(entry.getKey());
+      if (value == null) {
+        // A null equals nothing: no vertex matches this row. For a value the row decides the next row has its own candidates, so
+        // the none of this one must not be cached for it, nor the walk of every vertex stand in for the seek of the rows after it
+        candidatesDependOnTheRow = rowDependent;
+        return Collections.emptyIterator();
+      }
+      pinned.put(entry.getKey(), value);
+    }
+    // The equalities of the WHERE filter pin the node as well: (n) WHERE n.uuid = $u is the same statement as (n {uuid: $u}). A
+    // predicate whose value cannot be resolved is left to the filter, which decides every candidate in any case
+    final WhereEqualities whereEqualities = new WhereEqualities();
+    if (whereFilter != null) {
+      final Map<String, Object> fromWhere = new LinkedHashMap<>();
+      extractEqualityPredicates(whereFilter, fromWhere, currentInputResult, whereEqualities);
+      for (final Map.Entry<String, Object> entry : fromWhere.entrySet())
+        if (pinned.putIfAbsent(entry.getKey(), entry.getValue()) == null)
+          rowDependent |= whereEqualities.usedDependOnTheRow;
+    }
+    if (pinned.isEmpty())
+      // the walk answers this row, and a row whose value the row decides is not the one every row after it will have
+      candidatesDependOnTheRow = whereEqualities.anyDependsOnTheRow;
+    else {
+      final MultiTypeNodeIndexPlan plan =
+          MultiTypeNodeIndexPlan.of(context.getDatabase().getSchema(), labels, pattern.isLabelDisjunction(), pinned);
+      if (plan == MultiTypeNodeIndexPlan.UNKEYABLE)
+        // an index answers the pattern, but not with this row's value: the walk answers this row, and the rows after it may be sought
+        candidatesDependOnTheRow = rowDependent || whereEqualities.anyDependsOnTheRow;
+      else if (plan != null) {
+        plan.checkReadable(context.getDatabase());
+        if (rowDependent) {
+          if (plan.walksARecord(context.getDatabase()))
+            return null;
+          candidatesDependOnTheRow = true; // the candidates of this row are not the candidates of the next one
+        }
+        return new PlannedCandidates(plan.parts(), pinned, null);
+      }
+      // else no index answers the equalities for any row: the walk is cached as it always was
+    }
+
+    // No equality of the node is answered by an index: a list of values it is pinned to may be (issue #12546)
+    return inListSeeks.isEmpty() ? null : tryInListSeekAcrossTypes(currentInputResult, labels);
+  }
+
+  /**
+   * The candidates of a node pinned to a LIST of values ({@code WHERE n.uuid IN $keys}) whose pattern names no single type, read
+   * from the indexes that cover the vertex buckets of the types the labels select, the way {@link #tryFindAndUseIndexAcrossTypes}
+   * reads those of an equality; or null when no index answers the list and the walk of the types does (issue #12546). The index of a
+   * bucket is chosen by {@link MultiTypeNodeIndexPlan#ofInList}, for the list with the fewest distinct keys when the WHERE filter
+   * holds several, and each index is read one key at a time as the caller pulls, so a LIMIT that a few keys satisfy stops there.
+   * <p>
+   * The WHERE filter still decides every candidate: the seek only narrows them, so a list that is not answered here is answered by
+   * the walk with the same rows. A list the input row decides makes the candidates differ from row to row, and is handled as an
+   * equality that the row decides is.
+   */
+  private Iterator<Identifiable> tryInListSeekAcrossTypes(final Result currentInputResult, final List<String> labels) {
+    final Schema schema = context.getDatabase().getSchema();
+    InListSeek bestSeek = null;
+    List<Object[]> bestKeys = null;
+    MultiTypeNodeIndexPlan bestPlan = null;
+    boolean walkDependsOnTheRow = false;
+
+    for (final InListSeek seek : inListSeeks) {
+      final List<Object[]> keys = resolveInListKeys(seek.in(), currentInputResult);
+      if (keys == null) {
+        // a list this row cannot resolve (an element that is a list, a value that is not one): the walk answers this row, and the
+        // list of the next row may be one a seek answers
+        walkDependsOnTheRow |= !seek.rowIndependent();
+        continue;
+      }
+      if (bestKeys != null && keys.size() >= bestKeys.size())
+        continue; // not narrower than the list already chosen
+
+      final MultiTypeNodeIndexPlan plan = MultiTypeNodeIndexPlan.ofInList(schema, labels, pattern.isLabelDisjunction(), seek.propertyName(), keys);
+      if (plan == MultiTypeNodeIndexPlan.UNKEYABLE)
+        // an index answers the property, but not with every key of this row's list: the next row's list may be keyable
+        walkDependsOnTheRow |= !seek.rowIndependent();
+      else if (plan != null) {
+        bestSeek = seek;
+        bestKeys = keys;
+        bestPlan = plan;
+      }
+    }
+
+    if (bestPlan == null) {
+      candidatesDependOnTheRow |= walkDependsOnTheRow;
+      return null;
+    }
+
+    bestPlan.checkReadable(context.getDatabase());
+    if (!bestSeek.rowIndependent()) {
+      if (!bestKeys.isEmpty() && bestPlan.walksARecord(context.getDatabase()))
+        return null;
+      candidatesDependOnTheRow = true; // the candidates of this row are not the candidates of the next one
+    }
+    // No element can equal anything (an empty list, or only nulls): the predicate is never true
+    return bestKeys.isEmpty() ? Collections.emptyIterator() : new PlannedCandidates(bestPlan.parts(), null, bestKeys);
+  }
+
+  /**
+   * The parts of an {@link MultiTypeNodeIndexPlan}, one after the other. A part is opened when the caller asks for the first row
+   * it can answer, the way the walk of the whole database opens the walk of a type when the one before it is done: a statement
+   * that stops at the first row (a LIMIT) does not seek the indexes after it, which can hold any number of entries.
+   */
+  private final class PlannedCandidates implements Iterator<Identifiable> {
+    private final List<MultiTypeNodeIndexPlan.Part> parts;
+    private final Map<String, Object>                pinned;
+    private final List<Object[]>                     inListKeys;
+    private       int                                nextPart = 0;
+    private       Iterator<Identifiable>             current  = Collections.emptyIterator();
+
+    /**
+     * @param pinned     the values the pattern is pinned to, which the seeks are asked with; null for a list
+     * @param inListKeys the keys of the list the pattern is pinned to, which every seek is asked with, one at a time; null for values
+     */
+    private PlannedCandidates(final List<MultiTypeNodeIndexPlan.Part> parts, final Map<String, Object> pinned,
+        final List<Object[]> inListKeys) {
+      this.parts = parts;
+      this.pinned = pinned;
+      this.inListKeys = inListKeys;
+    }
+
+    @Override
+    public boolean hasNext() {
+      while (!current.hasNext() && nextPart < parts.size())
+        current = open(parts.get(nextPart++));
+      return current.hasNext();
+    }
+
+    @Override
+    public Identifiable next() {
+      if (!hasNext())
+        throw new NoSuchElementException();
+      return current.next();
+    }
+
+    private Iterator<Identifiable> open(final MultiTypeNodeIndexPlan.Part part) {
+      if (!part.isSeek())
+        return walk(part);
+
+      final TypeIndex index = part.index();
+      final String[] propertyNames = part.propertyNames();
+      // The index is the type's own: its declaring type is the label it is asked with, so it is not an inherited seek to filter by label
+      final Iterator<Identifiable> seek;
+      if (inListKeys != null)
+        seek = seekKeys(index, index.getTypeName(), inListKeys);
+      else {
+        final Object[] propertyValues = new Object[propertyNames.length];
+        for (int i = 0; i < propertyNames.length; i++)
+          propertyValues[i] = TemporalUtil.toIndexKey(pinned.get(propertyNames[i]));
+        seek = lookupByKey(index, index.getTypeName(), propertyNames, propertyValues);
+      }
+      if (seek == null)
+        return walkBucketsOf(part); // a concurrent DDL took the index away: the buckets it answered for are walked instead
+
+      recordIndexUsed(index.getTypeName() + "[" + String.join(", ", propertyNames) + "]");
+      // an index covers the buckets of its sub types too, and a bucket another index answers for must not be answered twice
+      return part.wholeIndex() ? seek : MultiTypeNodeIndexPlan.onlyBuckets(seek, part.buckets());
+    }
+
+    private Iterator<Identifiable> walk(final MultiTypeNodeIndexPlan.Part part) {
+      if (part.typeName() != null)
+        return trackScan(typeScan(part.typeName()));
+      return trackScan(bucketScan(part.bucketNames()[0]));
+    }
+
+    /** The walk of the buckets a seek was to answer for, when the index cannot be read. */
+    private Iterator<Identifiable> walkBucketsOf(final MultiTypeNodeIndexPlan.Part part) {
+      final Schema schema = context.getDatabase().getSchema();
+      final List<MultiTypeNodeIndexPlan.Part> walks = new ArrayList<>(part.buckets().cardinality());
+      for (int bucketId = part.buckets().nextSetBit(0); bucketId >= 0; bucketId = part.buckets().nextSetBit(bucketId + 1)) {
+        final Bucket bucket = schema.getBucketByIdIfExists(bucketId);
+        if (bucket != null)
+          walks.add(MultiTypeNodeIndexPlan.Part.walkOf(bucket.getName()));
+      }
+      return new PlannedCandidates(walks, pinned, inListKeys);
+    }
+  }
+
+  /**
+   * Makes {@code iter} the scan the step reads from: the one before it gives its read-ahead back, and {@link #close} gives back the
+   * one this opens. Returns {@code iter}.
+   */
+  private Iterator<Identifiable> trackScan(final Iterator<Identifiable> iter) {
+    // A CHAINED MATCH OPENS A SCAN PER INPUT ROW: THE ONE BEFORE GIVES ITS READ-AHEAD BACK
+    if (openScan != null)
+      openScan.releaseReadAhead();
+    openScan = iter instanceof ScanPressureReporter reporter ? reporter : null;
+    // ONLY A PROFILED RUN KEEPS THE SCAN FOR THE PROFILE, WHICH HOLDS A BATCH OF RECORDS: THE PROFILE IS THE ONLY READER
+    if (context.isProfiling()) {
+      // A CHAINED MATCH OPENS A SCAN PER INPUT ROW: THE ONES DONE STAY IN THE COUNT
+      if (scanIterator != null)
+        completedScansShrunkBatches.addAndGet(scanIterator.getBudgetShrunkBatches());
+      scanIterator = iter instanceof ScanPressureReporter reporter ? reporter : null;
+    }
+    return iter;
+  }
+
+  @SuppressWarnings("unchecked")
+  private Iterator<Identifiable> typeScan(final String typeName) {
+    return (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(typeName, false);
+  }
+
+  @SuppressWarnings("unchecked")
+  private Iterator<Identifiable> bucketScan(final String bucketName) {
+    return (Iterator<Identifiable>) (Object) context.getDatabase().iterateBucket(bucketName);
+  }
+
+  /** The profile names every index the step sought, once. */
+  private void recordIndexUsed(final String indexName) {
+    // a row-dependent value seeks the same indexes again for every row: the text is rebuilt only for a name not seen before
+    if (usedIndexNames.add(indexName))
+      usedIndexName = String.join(", ", usedIndexNames);
   }
 
   /**
@@ -1397,53 +1699,94 @@ public class MatchNodeStep extends AbstractExecutionStep {
 
   /**
    * Extracts equality predicates of the form variable.property = value from a boolean expression.
-   * Supports AND conjunctions. Resolves dynamic expressions against the current input result.
+   * Supports AND conjunctions and a conjunct NOT (variable.property &lt;&gt; value). Resolves dynamic expressions against the
+   * current input result.
    */
   private void extractEqualityPredicates(final BooleanExpression expr,
       final Map<String, Object> predicates, final Result currentInputResult) {
+    extractEqualityPredicates(expr, predicates, currentInputResult, null);
+  }
+
+  /**
+   * What the equalities of a WHERE filter say about the input row: whether a value only the row can tell stands in one of them.
+   */
+  private static final class WhereEqualities {
+    /** A predicate whose value the row decides was resolved, so the candidates it selects are not the same for every row. */
+    boolean usedDependOnTheRow;
+    /** Such a predicate stands in the filter, resolved or not: a row that leaves it unresolved says nothing about the next rows. */
+    boolean anyDependsOnTheRow;
+  }
+
+  /**
+   * @param rowDependence when not null, told what the predicates say about the input row
+   */
+  private void extractEqualityPredicates(final BooleanExpression expr,
+      final Map<String, Object> predicates, final Result currentInputResult, final WhereEqualities rowDependence) {
     if (expr instanceof ComparisonExpression) {
       final ComparisonExpression comp = (ComparisonExpression) expr;
       if (comp.getOperator() != ComparisonExpression.Operator.EQUALS)
         return;
 
-      // Check for pattern: variable.property = <expression>
-      String propertyName = null;
-      Expression valueExpr = null;
-
-      if (comp.getLeft() instanceof PropertyAccessExpression) {
-        final PropertyAccessExpression propAccess = (PropertyAccessExpression) comp.getLeft();
-        if (variable.equals(propAccess.getVariableName())) {
-          propertyName = propAccess.getPropertyName();
-          valueExpr = comp.getRight();
-        }
-      }
-      // Also check reversed: <expression> = variable.property
-      if (propertyName == null && comp.getRight() instanceof PropertyAccessExpression) {
-        final PropertyAccessExpression propAccess = (PropertyAccessExpression) comp.getRight();
-        if (variable.equals(propAccess.getVariableName())) {
-          propertyName = propAccess.getPropertyName();
-          valueExpr = comp.getLeft();
-        }
-      }
-
-      if (propertyName != null && valueExpr != null) {
-        // Resolve the value expression. Literals and $parameters resolve without an input row; a
-        // predicate referencing an unbound variable (e.g. a leading MATCH with no input row) cannot
-        // be resolved and is skipped for index selection - the query then falls back to the full
-        // scan + row-level whereFilter, which is always correct (issue #5107).
-        try {
-          final Object resolvedValue = evaluator.evaluate(valueExpr, currentInputResult, context);
-          if (resolvedValue != null)
-            predicates.put(propertyName, resolvedValue);
-        } catch (final Exception e) {
-          // Unresolvable predicate value: skip it for index selection (correctness preserved by whereFilter).
-        }
-      }
+      extractEqualityOperands(comp.getLeft(), comp.getRight(), predicates, currentInputResult, rowDependence);
     } else if (expr instanceof LogicalExpression) {
       final LogicalExpression logical = (LogicalExpression) expr;
       if (logical.getOperator() == LogicalExpression.Operator.AND) {
-        extractEqualityPredicates(logical.getLeft(), predicates, currentInputResult);
-        extractEqualityPredicates(logical.getRight(), predicates, currentInputResult);
+        extractEqualityPredicates(logical.getLeft(), predicates, currentInputResult, rowDependence);
+        extractEqualityPredicates(logical.getRight(), predicates, currentInputResult, rowDependence);
+      } else if (logical.getOperator() == LogicalExpression.Operator.NOT) {
+        // NOT (variable.property <> v) holds exactly where variable.property = v does, and is null with it where the property is
+        // null: the same lookup, under the whereFilter that still decides every row (issue #12281). The optimizer's
+        // AnchorSelector reads the same shape
+        final ComparisonExpression inequality = logical.getNegatedInequality();
+        if (inequality != null)
+          extractEqualityOperands(inequality.getLeft(), inequality.getRight(), predicates, currentInputResult, rowDependence);
+      }
+    }
+  }
+
+  /** The lookup an equality of {@code left} and {@code right} gives the property of this step's variable it reads, on either side. */
+  private void extractEqualityOperands(final Expression left, final Expression right, final Map<String, Object> predicates,
+      final Result currentInputResult, final WhereEqualities rowDependence) {
+    // Check for pattern: variable.property = <expression>
+    String propertyName = null;
+    Expression valueExpr = null;
+
+    if (left instanceof PropertyAccessExpression) {
+      final PropertyAccessExpression propAccess = (PropertyAccessExpression) left;
+      if (variable.equals(propAccess.getVariableName())) {
+        propertyName = propAccess.getPropertyName();
+        valueExpr = right;
+      }
+    }
+    // Also check reversed: <expression> = variable.property
+    if (propertyName == null && right instanceof PropertyAccessExpression) {
+      final PropertyAccessExpression propAccess = (PropertyAccessExpression) right;
+      if (variable.equals(propAccess.getVariableName())) {
+        propertyName = propAccess.getPropertyName();
+        valueExpr = left;
+      }
+    }
+
+    // A value whose second evaluation can differ (rand()) is not sought: the WHERE checks every candidate with a value of its
+    // own, so a vertex sought with one draw was rejected by the next and the match kept about one row in ten for
+    // a.k = toInteger(rand() * 10) (issue #12179). The scan evaluates it once per candidate, as the predicate is written
+    if (propertyName != null && valueExpr != null && RowIndependentValues.isDeterministic(valueExpr)) {
+      // Resolve the value expression. Literals and $parameters resolve without an input row; a
+      // predicate referencing an unbound variable (e.g. a leading MATCH with no input row) cannot
+      // be resolved and is skipped for index selection - the query then falls back to the full
+      // scan + row-level whereFilter, which is always correct (issue #5107).
+      final boolean dependsOnTheRow = rowDependence != null && !RowIndependentValues.isRowIndependent(valueExpr);
+      if (dependsOnTheRow)
+        rowDependence.anyDependsOnTheRow = true;
+      try {
+        final Object resolvedValue = evaluator.evaluate(valueExpr, currentInputResult, context);
+        if (resolvedValue != null) {
+          predicates.put(propertyName, resolvedValue);
+          if (dependsOnTheRow)
+            rowDependence.usedDependOnTheRow = true;
+        }
+      } catch (final Exception e) {
+        // Unresolvable predicate value: skip it for index selection (correctness preserved by whereFilter).
       }
     }
   }
@@ -1496,37 +1839,27 @@ public class MatchNodeStep extends AbstractExecutionStep {
 
     final List<String> result = new ArrayList<>(staticLabels.size() + pattern.getDynamicLabels().size());
     result.addAll(staticLabels);
-    for (final Expression dynExpr : pattern.getDynamicLabels()) {
-      final Object resolved = evaluator.evaluate(dynExpr, currentInputResult, context);
-      appendResolvedLabels(result, resolved);
-    }
-    return result;
+    // (n:A|$([])) is A OR the empty conjunction: every node (issue #12338). Every operand is still evaluated, so a value that
+    // is not a label is the same type error whatever the order of the operands
+    boolean emptyDisjunct = false;
+    for (final Expression dynExpr : pattern.getDynamicLabels())
+      if (!Labels.appendDynamicMatchLabels(result, evaluator.evaluate(dynExpr, currentInputResult, context)))
+        emptyDisjunct = true;
+    return emptyDisjunct && pattern.isLabelDisjunction() ? List.of() : result;
   }
 
-  private static void appendResolvedLabels(final List<String> labels, final Object resolved) {
-    if (resolved == null)
-      return;
-    if (resolved instanceof String) {
-      labels.add((String) resolved);
-    } else if (resolved instanceof Iterable) {
-      for (final Object item : (Iterable<?>) resolved) {
-        if (item != null)
-          labels.add(item.toString());
-      }
-    } else {
-      labels.add(resolved.toString());
-    }
-  }
-
-  private boolean matchesProperties(final Vertex vertex) {
-    return matchesProperties(vertex, null);
-  }
-
-  private boolean matchesProperties(final Vertex vertex, final Result currentResult) {
-    // A row-dependent value evaluated without an input row resolves to null and therefore matches nothing,
-    // which is no worse than the previous no-match behavior; a parameter still resolves from the context
-    // alone, so a bare MATCH with no input row keeps binding (issue #4909).
-    return InlineProperties.matches(vertex, pattern.getProperties(), currentResult, context);
+  /**
+   * Checks the inline property map, already resolved for the row by {@link InlineProperties#resolveAll}: a row-dependent
+   * value resolved without an input row is null and therefore matches nothing, while a parameter still resolves from the
+   * context alone, so a bare MATCH with no input row keeps binding (issue #4909).
+   */
+  private static boolean matchesProperties(final Vertex vertex, final Map<String, Object> rowProperties) {
+    if (rowProperties == null)
+      return true;
+    for (final Map.Entry<String, Object> entry : rowProperties.entrySet())
+      if (!InlineProperties.matchesProperty(vertex, entry.getKey(), entry.getValue()))
+        return false;
+    return true;
   }
 
   @Override

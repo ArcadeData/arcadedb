@@ -49,12 +49,7 @@ public class XMLImporterFormat implements FormatImporter {
     try {
       final int objectNestLevel = settings.getIntValue("objectNestLevel", 1);
 
-      final XMLInputFactory xmlFactory = XMLInputFactory.newInstance();
-      xmlFactory.setProperty(XMLConstants.ACCESS_EXTERNAL_DTD, "");
-      xmlFactory.setProperty(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "");
-      // DISABLE DTD PROCESSING AND EXTERNAL ENTITIES TO PREVENT XXE AND ENTITY-EXPANSION (BILLION LAUGHS) ATTACKS
-      xmlFactory.setProperty(XMLInputFactory.SUPPORT_DTD, false);
-      xmlFactory.setProperty(XMLInputFactory.IS_SUPPORTING_EXTERNAL_ENTITIES, false);
+      final XMLInputFactory xmlFactory = newXmlInputFactory();
       final XMLStreamReader xmlReader = xmlFactory.createXMLStreamReader(parser.getInputStream());
 
       int nestLevel = 0;
@@ -236,12 +231,7 @@ public class XMLImporterFormat implements FormatImporter {
     try {
       parser.reset();
 
-      final XMLInputFactory xmlFactory = XMLInputFactory.newInstance();
-      xmlFactory.setProperty(XMLConstants.ACCESS_EXTERNAL_DTD, "");
-      xmlFactory.setProperty(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "");
-      // DISABLE DTD PROCESSING AND EXTERNAL ENTITIES TO PREVENT XXE AND ENTITY-EXPANSION (BILLION LAUGHS) ATTACKS
-      xmlFactory.setProperty(XMLInputFactory.SUPPORT_DTD, false);
-      xmlFactory.setProperty(XMLInputFactory.IS_SUPPORTING_EXTERNAL_ENTITIES, false);
+      final XMLInputFactory xmlFactory = newXmlInputFactory();
 
       final XMLStreamReader xmlReader = xmlFactory.createXMLStreamReader(parser.getInputStream());
 
@@ -413,5 +403,22 @@ public class XMLImporterFormat implements FormatImporter {
       return prefix + "_" + localPart;
     }
     return localPart;
+  }
+
+  /**
+   * The factory both passes read the source with. Coalescing: without it the JDK parser hands the text of one element over as
+   * several events, split at every entity or character reference ({@code &amp;}, {@code &#233;}) and around a CDATA section,
+   * and the passes, which keep the text of the last event, stored {@code Al &amp; Bo &lt;3} as {@code 3} (issue #12044). The
+   * graph route's {@code XmlRowSource} already coalesces.
+   */
+  private static XMLInputFactory newXmlInputFactory() {
+    final XMLInputFactory xmlFactory = XMLInputFactory.newInstance();
+    xmlFactory.setProperty(XMLConstants.ACCESS_EXTERNAL_DTD, "");
+    xmlFactory.setProperty(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "");
+    // DISABLE DTD PROCESSING AND EXTERNAL ENTITIES TO PREVENT XXE AND ENTITY-EXPANSION (BILLION LAUGHS) ATTACKS
+    xmlFactory.setProperty(XMLInputFactory.SUPPORT_DTD, false);
+    xmlFactory.setProperty(XMLInputFactory.IS_SUPPORTING_EXTERNAL_ENTITIES, false);
+    xmlFactory.setProperty(XMLInputFactory.IS_COALESCING, true);
+    return xmlFactory;
   }
 }

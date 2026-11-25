@@ -41,7 +41,6 @@ import com.arcadedb.server.ErrorConcealment;
 import com.arcadedb.server.network.PreAuthConnectionGate;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
-import com.arcadedb.utility.NumberUtils;
 
 import java.io.EOFException;
 import java.io.IOException;
@@ -98,6 +97,9 @@ public class RedisNetworkExecutor extends Thread {
   private final    int                 maxMultiBulkDepth;
   private final    int                 maxMultiBulkLength;
   private final    int                 maxBulkLength;
+  // what a connection is held to until it authenticates: the configured limit, or the smaller bound below
+  private final    int                 maxMultiBulkLengthBeforeAuth;
+  private final    int                 maxBulkLengthBeforeAuth;
 
   // A misconfigured protocol-limit setting is re-read (and re-validated) on every new connection, since the
   // value can change at runtime; this only bounds the WARNING about it to once per setting per JVM, so a busy
@@ -114,6 +116,11 @@ public class RedisNetworkExecutor extends Thread {
   // The longest inline command line accepted, the bound Redis itself applies (PROTO_INLINE_MAX_SIZE): a client that sends
   // no LF is refused once this much has arrived (issue #10597)
   private static final int MAX_INLINE_LENGTH = 64 * 1024;
+
+  // The bounds Redis itself applies to a client that has not authenticated yet (networking.c): a command of at most 10 words,
+  // none longer than 16KB. AUTH and HELLO, the only commands such a client can run, fit well within them.
+  private static final int MAX_MULTIBULK_LENGTH_BEFORE_AUTH = 10;
+  private static final int MAX_BULK_LENGTH_BEFORE_AUTH      = 16 * 1024;
 
   /**
    * Bound of the buffer the replies of a batch are encoded into before they leave together: a larger reply is encoded into
@@ -141,6 +148,8 @@ public class RedisNetworkExecutor extends Thread {
     this.maxMultiBulkDepth = sanitizedLimit(server.getConfiguration(), GlobalConfiguration.REDIS_MAX_MULTIBULK_DEPTH, 2);
     this.maxMultiBulkLength = sanitizedLimit(server.getConfiguration(), GlobalConfiguration.REDIS_MAX_MULTIBULK_LENGTH, 1);
     this.maxBulkLength = sanitizedLimit(server.getConfiguration(), GlobalConfiguration.REDIS_MAX_BULK_LENGTH, 1);
+    this.maxMultiBulkLengthBeforeAuth = Math.min(maxMultiBulkLength, MAX_MULTIBULK_LENGTH_BEFORE_AUTH);
+    this.maxBulkLengthBeforeAuth = Math.min(maxBulkLength, MAX_BULK_LENGTH_BEFORE_AUTH);
 
     // Bound the pre-authentication window (issue #5912): without a read timeout, a client that opens a
     // connection and never completes AUTH/HELLO - or trickles bytes arbitrarily slowly - can hold this
@@ -409,8 +418,8 @@ public class RedisNetworkExecutor extends Thread {
 
       QueryAdmissionGate.Ticket admission = null;
       RunningQuery runningQuery = null;
-      try (final QueryTracer.Span span = QueryTracer.Holder.begin(
-          selectedDatabaseName, null, "command", cmdString)) {
+      final QueryTracer.Span span = QueryTracer.Holder.begin(selectedDatabaseName, null, "command", cmdString);
+      try {
 
         // AUTH and HELLO are the only commands accepted before authentication (HELLO must still carry a
         // valid AUTH option, otherwise it is rejected with NOAUTH). Every other command is rejected with
@@ -527,15 +536,19 @@ public class RedisNetworkExecutor extends Thread {
             break;
 
           default:
-            value.append("-Command not found");
+            // What Redis answers, with the ERR kind a client branches on: "-Command not found" made "Command" the kind (#11783)
+            value.append("-ERR unknown command '").append(errorEcho((String) cmd)).append('\'');
         }
 
       } catch (final Exception e) {
+        // the span is failed (issue #11638) before it is closed below: the client gets its error reply, the trace the error status
+        span.error(e);
         value.append('-');
         value.append(respErrorPrefix(e));
         value.append(' ');
         value.append(respClientMessage(e));
       } finally {
+        span.close();
         try {
           if (admission != null)
             admission.close();
@@ -1074,33 +1087,48 @@ public class RedisNetworkExecutor extends Thread {
   }
 
   /**
-   * Handles the {@code HELLO [protover [AUTH username password]]} handshake. Modern Redis clients use it
+   * Handles the {@code HELLO [protover [AUTH username password] [SETNAME clientname]]} handshake. Modern Redis clients use it
    * to authenticate and negotiate the protocol version in a single round-trip. Only the AUTH-carrying
    * form is accepted before authentication; a plain HELLO on an unauthenticated connection is rejected
    * with NOAUTH, matching Redis' own behaviour. Both RESP2 and RESP3 protocol versions are accepted but
    * the reply is always encoded as a RESP2 map (a flat array of key/value pairs).
+   * <p>
+   * The words are read as Redis reads them (issue #11783), and the whole command is checked before anything is done, so a
+   * malformed HELLO authenticates nobody: a protover that is not a 64-bit integer is refused as one, an integer other than 2 or 3
+   * with {@code NOPROTO}, and every word after it must be an {@code AUTH username password} or a {@code SETNAME clientname}
+   * option; any other word, or an option missing its values, is refused with {@code Syntax error in HELLO option '<word>'}. The
+   * client name is checked as Redis checks it and otherwise not used: this server has no {@code CLIENT} command to read it back,
+   * but the clients that send it (redis-py, Lettuce, go-redis) must not be refused for it.
    */
   private void hello(final List<Object> list) {
     int idx = 1;
 
     // Optional protocol version.
     if (list.size() > idx) {
-      final String maybeVersion = (String) list.get(idx);
-      if (NumberUtils.isIntegerNumber(maybeVersion)) {
-        final int proto = Integer.parseInt(maybeVersion);
-        if (proto < 2 || proto > 3)
-          throw RedisException.withKind("NOPROTO", "unsupported protocol version");
-        idx++;
-      }
+      final long proto = parseProtocolVersion((String) list.get(idx));
+      if (proto < 2 || proto > 3)
+        throw RedisException.withKind("NOPROTO", "unsupported protocol version");
+      idx++;
     }
 
-    // Optional AUTH <username> <password> option.
-    if (list.size() > idx && "AUTH".equalsIgnoreCase((String) list.get(idx))) {
-      if (list.size() < idx + 3)
-        // ERR is already respErrorPrefix()'s default kind, so the message no longer needs to repeat it.
-        throw new RedisException("Syntax error in HELLO");
-      final String userName = (String) list.get(idx + 1);
-      final String password = (String) list.get(idx + 2);
+    String userName = null;
+    String password = null;
+    for (; idx < list.size(); idx++) {
+      final String option = (String) list.get(idx);
+      final int moreArgs = list.size() - 1 - idx;
+      if ("AUTH".equalsIgnoreCase(option) && moreArgs >= 2) {
+        userName = (String) list.get(idx + 1);
+        password = (String) list.get(idx + 2);
+        idx += 2;
+      } else if ("SETNAME".equalsIgnoreCase(option) && moreArgs >= 1) {
+        checkClientName((String) list.get(idx + 1));
+        idx++;
+      } else
+        // ERR is already respErrorPrefix()'s default kind. The word is the client's own input, echoed on one line
+        throw new RedisException("Syntax error in HELLO option '" + errorEcho(option) + "'");
+    }
+
+    if (userName != null) {
       try {
         markAuthenticated(server.getSecurity().authenticate(userName, password, null));
       } catch (final ServerSecurityException e) {
@@ -1126,6 +1154,43 @@ public class RedisNetworkExecutor extends Thread {
     respondValue("modules", true);
     appendCrLf();
     value.append("*0");
+  }
+
+  /**
+   * The protocol version of a HELLO, as Redis reads it: a signed 64-bit integer, or the error Redis answers for anything else.
+   * {@code NumberUtils.isIntegerNumber} took the empty string, a lone minus sign and a digit string beyond the int range, and
+   * {@code Integer.parseInt} then answered them with the text of its {@code NumberFormatException}; a word that was no number
+   * was skipped and read as an option (issue #11783).
+   */
+  private static long parseProtocolVersion(final String text) {
+    final long version;
+    try {
+      version = Long.parseLong(text);
+    } catch (final NumberFormatException e) {
+      throw new RedisException("Protocol version is not an integer or out of range");
+    }
+    // Redis' string2ll takes the canonical form only: parseLong also takes "+3", "03" and non-ASCII digits
+    if (!Long.toString(version).equals(text))
+      throw new RedisException("Protocol version is not an integer or out of range");
+    return version;
+  }
+
+  /**
+   * A word of the client echoed in an error reply, as Redis echoes it: at most 128 characters, and a line break, which would end
+   * the one-line RESP error and start a reply the client never asked for, turned into a space.
+   */
+  static String errorEcho(final String word) {
+    final String bounded = word.length() > 128 ? word.substring(0, 128) : word;
+    return bounded.replace('\r', ' ').replace('\n', ' ');
+  }
+
+  /** Refuses the client name Redis refuses:an empty one is allowed, a space, a newline or another special character is not. */
+  private static void checkClientName(final String name) {
+    for (int i = 0; i < name.length(); i++) {
+      final char c = name.charAt(i);
+      if (c < '!' || c > '~')
+        throw new RedisException("Client names cannot contain spaces, newlines or special characters.");
+    }
   }
 
   private void appendHelloEntry(final String key, final Object entryValue) {
@@ -1337,9 +1402,9 @@ public class RedisNetworkExecutor extends Thread {
         // error branch for no behavioral benefit over just treating it the same as the one negative value
         // that is defined.
         return null;
-      if (size > maxBulkLength)
-        throw new RedisProtocolLimitException(
-            "Protocol error: invalid bulk length " + size + " (maximum allowed is " + maxBulkLength + ")");
+      final int bulkLimit = authenticatedUser != null ? maxBulkLength : maxBulkLengthBeforeAuth;
+      if (size > bulkLimit)
+        throw lengthRefused("bulk", size, bulkLimit, bulkLimit < maxBulkLength);
 
       final String value = parseChars(size);
       skipLF();
@@ -1350,9 +1415,9 @@ public class RedisNetworkExecutor extends Thread {
       if (arraySize <= 0)
         // RESP2 null array (*-1) or an explicit empty array (*0): nothing to read.
         return new ArrayList<>();
-      if (arraySize > maxMultiBulkLength)
-        throw new RedisProtocolLimitException(
-            "Protocol error: invalid multibulk length " + arraySize + " (maximum allowed is " + maxMultiBulkLength + ")");
+      final int multiBulkLimit = authenticatedUser != null ? maxMultiBulkLength : maxMultiBulkLengthBeforeAuth;
+      if (arraySize > multiBulkLimit)
+        throw lengthRefused("multibulk", arraySize, multiBulkLimit, multiBulkLimit < maxMultiBulkLength);
 
       final List<Object> array = new ArrayList<>();
       for (int i = 0; i < arraySize; ++i)
@@ -1368,6 +1433,18 @@ public class RedisNetworkExecutor extends Thread {
       // Inside an array RESP has no framing to resynchronize to: logging and reading on wrote two SEVERE records per
       // byte, for as long as the client kept writing (issue #10597)
       throw new RedisProtocolLimitException("Protocol error: expected '$', got '" + printable(b) + "'");
+  }
+
+  /**
+   * The refusal of a declared length above {@code limit}, in the words Redis gives; {@code beforeAuth} when the limit is the one
+   * of a connection that has not authenticated yet, which is lower than the configured one.
+   */
+  private static RedisProtocolLimitException lengthRefused(final String what, final long declared, final int limit,
+      final boolean beforeAuth) {
+    return new RedisProtocolLimitException(
+        "Protocol error: invalid " + what + " length " + declared + " (maximum allowed is " + limit + (beforeAuth ?
+            " before authentication" :
+            "") + ")");
   }
 
   /**
@@ -1395,10 +1472,10 @@ public class RedisNetworkExecutor extends Thread {
     if (length > 0 && line[length - 1] == '\r')
       --length;
     final List<Object> args = splitInlineArguments(line, length);
-    // the configured bound on a command's arguments holds for the inline form too, not only for a RESP array
-    if (args.size() > maxMultiBulkLength)
-      throw new RedisProtocolLimitException(
-          "Protocol error: invalid multibulk length " + args.size() + " (maximum allowed is " + maxMultiBulkLength + ")");
+    // the bound on a command's arguments holds for the inline form too, not only for a RESP array
+    final int multiBulkLimit = authenticatedUser != null ? maxMultiBulkLength : maxMultiBulkLengthBeforeAuth;
+    if (args.size() > multiBulkLimit)
+      throw lengthRefused("multibulk", args.size(), multiBulkLimit, multiBulkLimit < maxMultiBulkLength);
     // An HTTP request sent to this port (a browser form posting cross-protocol) would otherwise be read line by line as
     // commands: refused at its first line, as Redis refuses it
     if (!args.isEmpty() && args.getFirst() instanceof String name && (name.equalsIgnoreCase("POST") || name.equalsIgnoreCase(
@@ -1624,15 +1701,22 @@ public class RedisNetworkExecutor extends Thread {
    * {@link StringBuilder} one UTF-16 char at a time and copying it via {@code toString()} - also keeps the
    * transient cost close to the wire size instead of roughly double it. {@code size} is assumed
    * non-negative: the RESP2 null bulk string ({@code $-1}) is handled by the caller before this is reached.
+   * <p>
+   * {@code size} is what the client declared, not what it has sent: the array starts at the size of the read buffer at most and
+   * doubles, once more bytes have arrived, up to {@code size}, so the memory held follows the bytes received. A value that fits
+   * the read buffer, the common case, is still read into one array of its own size.
    */
   private String parseChars(final int size) throws IOException {
-    final byte[] bytes = new byte[size];
+    byte[] bytes = new byte[Math.min(size, buffer.length)];
     int read = 0;
     // copied a buffer at a time rather than a byte at a time: a 100-byte value used to be 100 calls
     while (read < size && !shutdown) {
       if (posInBuffer >= bytesRead)
         fill();
-      final int chunk = Math.min(size - read, bytesRead - posInBuffer);
+      if (read == bytes.length)
+        // after the read above, so the bigger array is only made for bytes that are there to go in it
+        bytes = Arrays.copyOf(bytes, (int) Math.min(size, 2L * bytes.length));
+      final int chunk = Math.min(bytes.length - read, bytesRead - posInBuffer);
       System.arraycopy(buffer, posInBuffer, bytes, read, chunk);
       posInBuffer += chunk;
       read += chunk;
@@ -1690,7 +1774,7 @@ public class RedisNetworkExecutor extends Thread {
       final String databaseName = bucketName.substring(0, pos);
       final String keyType = bucketName.substring(pos + 1);
 
-      final Database database = getAuthorizedDatabase(databaseName);
+      final DatabaseInternal database = getAuthorizedDatabase(databaseName);
 
       // "not found" only for a key that is not there: never for one a concurrent CREATE or DROP INDEX hid (#9811)
       final Identifiable found = RedisIndexKeys.lookup(database, keyType, key);
@@ -1720,7 +1804,7 @@ public class RedisNetworkExecutor extends Thread {
     final String databaseName = bucketName.substring(0, pos);
     final String keyType = bucketName.substring(pos + 1);
 
-    final Database database = getAuthorizedDatabase(databaseName);
+    final DatabaseInternal database = getAuthorizedDatabase(databaseName);
 
     for (final Object key : keys) {
       final Identifiable found = RedisIndexKeys.lookup(database, keyType, key.toString());

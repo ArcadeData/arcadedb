@@ -23,7 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Record;
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.ObjectInUseException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
@@ -87,11 +87,11 @@ public class DropTypeStatement extends DDLStatement {
       if (hasRecords) {
         //check vertex or edge
         if (typez.getType() == Vertex.RECORD_TYPE) {
-          throw new CommandExecutionException("'DROP TYPE' command cannot drop type '" + typeName
+          throw new ObjectInUseException("'DROP TYPE' command cannot drop type '" + typeName
               + "' because it contains Vertices. Use 'DELETE VERTEX' command first to avoid broken edges in a database, or apply the 'UNSAFE' keyword to force it");
         } else if (typez.getType() == Edge.RECORD_TYPE) {
           // FOUND EDGE TYPE
-          throw new CommandExecutionException("'DROP TYPE' command cannot drop type '" + typeName
+          throw new ObjectInUseException("'DROP TYPE' command cannot drop type '" + typeName
               + "' because it contains Edges. Use 'DELETE FROM " + typeName + "' first to avoid broken vertices in a database, or apply the 'UNSAFE' keyword to force it");
         }
       }

@@ -214,6 +214,9 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
       return;
 
     final Object targetValue = input.getProperty(targetVariable);
+    // A target an earlier OPTIONAL MATCH left null is bound, and a null vertex cannot be reached (#12728)
+    if (targetValue == null && input.hasProperty(targetVariable))
+      return;
     final Vertex boundTarget = targetValue instanceof Vertex vertex ? vertex : null;
 
     new RowSearch(input, boundTarget, out, guard).run(start);
@@ -497,16 +500,13 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
       return pattern.getLabels();
 
     final List<String> labels = new ArrayList<>(pattern.getLabels());
-    for (final Expression dynamicLabel : pattern.getDynamicLabels()) {
-      final Object resolved = dynamicLabelEvaluator.evaluate(dynamicLabel, input, context);
-      if (resolved instanceof Iterable<?> items) {
-        for (final Object item : items)
-          if (item != null)
-            labels.add(item.toString());
-      } else if (resolved != null)
-        labels.add(resolved.toString());
-    }
-    return labels;
+    // (n:A|$([])) is A OR the empty conjunction: every node (issue #12338). Every operand is still evaluated, so a value that
+    // is not a label is the same type error whatever the order of the operands
+    boolean emptyDisjunct = false;
+    for (final Expression dynamicLabel : pattern.getDynamicLabels())
+      if (!Labels.appendDynamicMatchLabels(labels, dynamicLabelEvaluator.evaluate(dynamicLabel, input, context)))
+        emptyDisjunct = true;
+    return emptyDisjunct && pattern.isLabelDisjunction() ? List.of() : labels;
   }
 
   private Result buildRow(final Result input, final Vertex end, final List<Repetition> repetitions) {

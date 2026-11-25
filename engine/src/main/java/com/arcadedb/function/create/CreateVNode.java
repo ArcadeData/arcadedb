@@ -18,26 +18,23 @@
  */
 package com.arcadedb.function.create;
 
+import com.arcadedb.exception.TypeMismatchException;
+import com.arcadedb.graph.VirtualVertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
 /**
- * create.vNode(labels, properties) - Create a virtual node (map representation).
- * <p>
- * Virtual nodes are not persisted to the database. They are useful for
- * temporary data structures or for returning computed results.
- * </p>
+ * create.vNode(labels, properties = {}) - Create a virtual node: a node that is not persisted, with the given labels and
+ * properties, as APOC's {@code apoc.create.vNode}. It is a real node value ({@code labels()}, {@code properties()},
+ * {@code n.prop}, {@code id()} work on it) with a negative id, not a map.
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class CreateVNode extends AbstractCreateFunction {
-  private static long virtualIdCounter = 0;
-
   @Override
   protected String getSimpleName() {
     return "vNode";
@@ -59,38 +56,30 @@ public class CreateVNode extends AbstractCreateFunction {
   }
 
   @Override
-  @SuppressWarnings("unchecked")
   public Object execute(final Object[] args, final CommandContext context) {
-    final List<String> labels = extractLabels(args[0]);
-    final Map<String, Object> properties = args.length > 1 && args[1] != null
-        ? new HashMap<>((Map<String, Object>) args[1])
-        : new HashMap<>();
-
-    // Create a virtual node representation
-    final Map<String, Object> vNode = new HashMap<>();
-    vNode.put("_type", "vNode");
-    vNode.put("_id", "vNode:" + (++virtualIdCounter));
-    vNode.put("_labels", labels);
-    vNode.putAll(properties);
-
-    return vNode;
+    return create(getName(), args[0], args.length > 1 ? args[1] : null, context);
   }
 
+  /**
+   * Builds the virtual node; shared with the {@code CALL create.vNode(...) YIELD node} form.
+   */
   @SuppressWarnings("unchecked")
-  private List<String> extractLabels(final Object input) {
-    final List<String> labels = new ArrayList<>();
-    if (input == null)
-      return labels;
+  public static VirtualVertex create(final String name, final Object labels, final Object properties,
+      final CommandContext context) {
+    if (properties != null && !(properties instanceof Map))
+      throw new TypeMismatchException(name + "() expects the properties as a map, got " + properties.getClass().getSimpleName());
+    return new VirtualVertex(context != null ? context.getDatabase() : null, extractLabels(labels),
+        (Map<String, Object>) properties);
+  }
 
-    if (input instanceof String) {
-      labels.add((String) input);
-    } else if (input instanceof Collection) {
-      for (final Object item : (Collection<?>) input) {
+  private static List<String> extractLabels(final Object input) {
+    final List<String> labels = new ArrayList<>();
+    if (input instanceof String label)
+      labels.add(label);
+    else if (input instanceof Collection<?> collection)
+      for (final Object item : collection)
         if (item != null)
           labels.add(item.toString());
-      }
-    }
-
     return labels;
   }
 }
