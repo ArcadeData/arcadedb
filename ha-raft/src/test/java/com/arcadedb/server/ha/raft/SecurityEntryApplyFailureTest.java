@@ -75,7 +75,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * Staying up must not mean honouring credentials the operator has just revoked, which is the other half of the
  * fix: {@code ServerSecurity.applyReplicatedUsers} publishes the new list in memory BEFORE reporting the write
  * failure, so the revocation is effective here immediately and only its durability is outstanding. That half is
- * covered by {@code Issue7137ReplicatedUsersAppliedOnWriteFailureTest} in the server module; this class covers
+ * covered by {@code ReplicatedSecurityEntryTest.UsersAppliedOnWriteFailure} in the server module; this class covers
  * the node not halting.
  * <p>
  * The empty {@code databaseName} the codec gives this entry is what routed the failure into the node-wide
@@ -138,7 +138,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * a users entry, so nothing about it repairs the users document. Issue #7252 pinned that outcome as the behaviour; this
  * pins the replacement. The failure is reported through {@code ServerSecurity.isReplicatedDocumentDurable}, answered
  * here from the same flag the fake's write flips, so the test exercises the state machine's reading of it rather than
- * the file layer, which {@code Issue7752ReplicatedSecurityReplayTest} in the {@code server} module covers.
+ * the file layer, which {@code ReplicatedSecurityEntryTest.ReplayAfterFailedWrite} in the {@code server} module covers.
  */
 class SecurityEntryApplyFailureTest {
 

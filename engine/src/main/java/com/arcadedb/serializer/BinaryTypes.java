@@ -314,7 +314,12 @@ public class BinaryTypes {
         }
       }
       type = t;
-    } else {
+    } else if (value instanceof Character || value instanceof Enum<?>)
+      // THE STRING Type.TYPES_BY_USERTYPE MAPS BOTH TO, WRITTEN AS THEIR TEXT (toString(), THE TEXT A DECLARED STRING PROPERTY GETS
+      // FROM Type.convert) AND READ BACK AS A String: THEY USED TO FALL TO THE UNKNOWN BRANCH BELOW, SO THE PROPERTY WAS LEFT OUT OF
+      // THE RECORD AND A LIST OR MAP ELEMENT BECAME null (ISSUES #12021, #12624)
+      type = TYPE_STRING;
+    else {
       LogManager.instance()
           .log(BinaryTypes.class, Level.WARNING, "Cannot serialize value '%s' of type %s. The value will be ignored", value,
               value.getClass());

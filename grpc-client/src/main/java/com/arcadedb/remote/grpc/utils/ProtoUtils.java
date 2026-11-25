@@ -18,17 +18,20 @@
  */
 package com.arcadedb.remote.grpc.utils;
 
+import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.server.grpc.GrpcArrayCodec;
 import com.arcadedb.server.grpc.GrpcDecimal;
 import com.arcadedb.server.grpc.GrpcEmbedded;
 import com.arcadedb.server.grpc.GrpcLink;
 import com.arcadedb.server.grpc.GrpcList;
 import com.arcadedb.server.grpc.GrpcMap;
+import com.arcadedb.server.grpc.GrpcPackedArrays;
 import com.arcadedb.server.grpc.GrpcRecord;
 import com.arcadedb.server.grpc.GrpcTemporalCodec;
 import com.arcadedb.server.grpc.GrpcValue;
@@ -50,6 +53,7 @@ import java.util.logging.Level;
 
 import java.util.Collection;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 public class ProtoUtils {
@@ -111,6 +115,8 @@ public class ProtoUtils {
         case STRING_VALUE -> "STRING(" + v.getStringValue().length() + ")";
         case BYTES_VALUE -> "BYTES[" + v.getBytesValue().size() + "]";
         case LIST_VALUE -> "LIST[size=" + v.getListValue().getValuesCount() + "]";
+        case FLOAT_ARRAY_VALUE -> "FLOAT_ARRAY[size=" + v.getFloatArrayValue().getValuesCount() + "]";
+        case DOUBLE_ARRAY_VALUE -> "DOUBLE_ARRAY[size=" + v.getDoubleArrayValue().getValuesCount() + "]";
         case MAP_VALUE -> "MAP[size=" + v.getMapValue().getEntriesCount() + "]";
         case EMBEDDED_VALUE -> "EMBEDDED[type=" + v.getEmbeddedValue().getType() + ", size=" + v.getEmbeddedValue().getFieldsCount() + "]";
         case LINK_VALUE -> "LINK(" + v.getLinkValue().getRid() + ")";
@@ -137,6 +143,10 @@ public class ProtoUtils {
       return "TIMESTAMP(" + v.getTimestampValue().getSeconds() + "." + v.getTimestampValue().getNanos() + ")";
     case LIST_VALUE:
       return "LIST[size=" + v.getListValue().getValuesCount() + "]";
+    case FLOAT_ARRAY_VALUE:
+      return "FLOAT_ARRAY[size=" + v.getFloatArrayValue().getValuesCount() + "]";
+    case DOUBLE_ARRAY_VALUE:
+      return "DOUBLE_ARRAY[size=" + v.getDoubleArrayValue().getValuesCount() + "]";
     case MAP_VALUE:
       return "MAP[size=" + v.getMapValue().getEntriesCount() + "]";
     case EMBEDDED_VALUE:
@@ -164,13 +174,25 @@ public class ProtoUtils {
   }
 
   /**
-   * Converts an ArcadeDB Record into a gRPC GrpcRecord message.
+   * Converts an ArcadeDB Record into a gRPC GrpcRecord message, its {@code float[]} / {@code double[]} properties as lists.
    *
    * @param rec ArcadeDB record (Document, Vertex, or Edge)
    *
    * @return Proto GrpcRecord message
    */
-  public static GrpcRecord toProtoRecord(Record rec) {
+  public static GrpcRecord toProtoRecord(final Record rec) {
+    return toProtoRecord(rec, false);
+  }
+
+  /**
+   * Converts an ArcadeDB Record into a gRPC GrpcRecord message.
+   *
+   * @param rec          ArcadeDB record (Document, Vertex, or Edge)
+   * @param packedArrays see {@link #toGrpcValue(Object, boolean)}
+   *
+   * @return Proto GrpcRecord message
+   */
+  public static GrpcRecord toProtoRecord(Record rec, final boolean packedArrays) {
 
     if (rec == null) {
       throw new IllegalArgumentException("Record cannot be null");
@@ -213,7 +235,7 @@ public class ProtoUtils {
       for (String propName : doc.getPropertyNames()) {
         Object value = doc.get(propName);
 
-        builder.putProperties(propName, toGrpcValue(value));
+        builder.putProperties(propName, toGrpcValue(value, packedArrays));
       }
     }
 
@@ -248,17 +270,29 @@ public class ProtoUtils {
   }
 
   /**
+   * Converts a Java Object into a GrpcValue for GrpcRecord.properties map, a {@code float[]} / {@code double[]} as a list: the
+   * encoding every server decodes.
+   *
+   * @see #toGrpcValue(Object, boolean)
+   */
+  public static GrpcValue toGrpcValue(final Object value) {
+    return toGrpcValue(value, false);
+  }
+
+  /**
    * Converts a Java Object into a GrpcValue for GrpcRecord.properties map.
    * <p>
    * Supports primitives, strings, numbers, booleans, lists, maps, dates, and
    * RIDs.
    *
-   * @param value Object value
+   * @param value        Object value
+   * @param packedArrays whether a {@code float[]} / {@code double[]}, at any depth, travels as {@code float_array_value} /
+   *                     {@code double_array_value} rather than as a list (issue #11714). Pass {@code true} only for a server
+   *                     that announced it decodes them: an older one reads them as a null
    *
    * @return GrpcValue
    */
-
-  public static GrpcValue toGrpcValue(Object value) {
+  public static GrpcValue toGrpcValue(Object value, final boolean packedArrays) {
     GrpcValue.Builder b = GrpcValue.newBuilder();
     if (value == null)
       return dbgEnc("toGrpcValue", value, b.build());
@@ -313,7 +347,7 @@ public class ProtoUtils {
       if (edoc.getType() != null)
         eb.setType(edoc.getType().getName());
       for (String k : edoc.getPropertyNames()) {
-        eb.putFields(k, toGrpcValue(edoc.get(k)));
+        eb.putFields(k, toGrpcValue(edoc.get(k), packedArrays));
       }
       return dbgEnc("toGrpcValue", value, GrpcValue.newBuilder().setEmbeddedValue(eb.build()).build());
     }
@@ -321,7 +355,7 @@ public class ProtoUtils {
     if (value instanceof Map<?, ?> m) {
       GrpcMap.Builder mb = GrpcMap.newBuilder();
       for (var e : m.entrySet()) {
-        mb.putEntries(String.valueOf(e.getKey()), toGrpcValue(e.getValue()));
+        mb.putEntries(String.valueOf(e.getKey()), toGrpcValue(e.getValue(), packedArrays));
       }
       return dbgEnc("toGrpcValue", value, GrpcValue.newBuilder().setMapValue(mb.build()).build());
     }
@@ -329,25 +363,45 @@ public class ProtoUtils {
     if (value instanceof Collection<?> c) {
       GrpcList.Builder lb = GrpcList.newBuilder();
       for (Object e : c)
-        lb.addValues(toGrpcValue(e));
+        lb.addValues(toGrpcValue(e, packedArrays));
       return dbgEnc("toGrpcValue", value, GrpcValue.newBuilder().setListValue(lb.build()).build());
     }
 
-    // Java arrays (e.g. float[]/double[] vectors, int[], long[], Object[]) are not Collections, so
-    // without this branch they would fall through to the String.valueOf(...) fallback below and
-    // corrupt the value (e.g. "[F@6d03e736"). byte[] keeps its dedicated BYTES branch above.
+    // A float[] / double[] (a vector) travels packed to a server that decodes it, one run of 4 or 8 bytes per element, and
+    // decodes to the same array (issue #11714). An older server would read the packed kind as a null: it gets the list.
+    if (packedArrays && value instanceof float[] v)
+      return dbgEnc("toGrpcValue", value, GrpcPackedArrays.encode(v));
+    if (packedArrays && value instanceof double[] v)
+      return dbgEnc("toGrpcValue", value, GrpcPackedArrays.encode(v));
+
+    // Java arrays (int[], long[], Object[], and float[]/double[] for an older server) are not Collections, so without this
+    // branch they would fall through to the String.valueOf(...) fallback below and corrupt the value (e.g. "[F@6d03e736").
+    // byte[] keeps its dedicated BYTES branch above.
     if (value.getClass().isArray()) {
       GrpcList.Builder lb = GrpcList.newBuilder();
       final int len = Array.getLength(value);
       for (int i = 0; i < len; i++)
-        lb.addValues(toGrpcValue(Array.get(value, i)));
+        lb.addValues(toGrpcValue(Array.get(value, i), packedArrays));
       return dbgEnc("toGrpcValue", value, GrpcValue.newBuilder().setListValue(lb.build()).build());
     }
 
     return dbgEnc("toGrpcValue", value, GrpcValue.newBuilder().setStringValue(String.valueOf(value)).build());
   }
 
-  public static Object fromGrpcValue(GrpcValue v) {
+  /** {@link #fromGrpcValue(GrpcValue, BasicDatabase)} with no database: a link decodes as a plain {@link RID}. */
+  public static Object fromGrpcValue(final GrpcValue v) {
+    return fromGrpcValue(v, null);
+  }
+
+  /**
+   * Decodes a value, binding every link it holds (a single one, and the items of a list, a map or an embedded value) to
+   * {@code database}, so that {@code rid.asDocument()} resolves against it on any thread, as it does for a link the embedded API
+   * answers (issue #12603). A plain RID, with no database to bind, looks for one active on the calling thread, which an application
+   * that only uses a remote client never has.
+   *
+   * @param database the database the links are bound to, or null for plain {@link RID}s
+   */
+  public static Object fromGrpcValue(final GrpcValue v, final BasicDatabase database) {
 
     if (v == null)
       return dbgDec("fromGrpcValue", v, null);
@@ -399,25 +453,40 @@ public class ProtoUtils {
       return dbgDec("fromGrpcValue", v, tsToMillis(ts));
     }
     case LIST_VALUE: {
-      var out = new ArrayList<>();
-      for (GrpcValue e : v.getListValue().getValuesList())
-        out.add(fromGrpcValue(e));
+      final List<GrpcValue> values = v.getListValue().getValuesList();
+      // Issue #12189: a primitive numeric array the server tagged is the array again, as the embedded API returns it. Decoded
+      // straight from the wire values: no list of boxed numbers is built first
+      final Object array = GrpcArrayCodec.toArray(values, v.getLogicalType());
+      if (array != null)
+        return dbgDec("fromGrpcValue", v, array);
+
+      var out = new ArrayList<>(values.size());
+      for (GrpcValue e : values)
+        out.add(fromGrpcValue(e, database));
       return dbgDec("fromGrpcValue", v, out);
     }
+    case FLOAT_ARRAY_VALUE:
+      return dbgDec("fromGrpcValue", v, GrpcPackedArrays.toFloats(v.getFloatArrayValue()));
+    case DOUBLE_ARRAY_VALUE:
+      return dbgDec("fromGrpcValue", v, GrpcPackedArrays.toDoubles(v.getDoubleArrayValue()));
     case MAP_VALUE: {
       var out = new LinkedHashMap<String, Object>();
-      v.getMapValue().getEntriesMap().forEach((k, vv) -> out.put(k, fromGrpcValue(vv)));
+      v.getMapValue().getEntriesMap().forEach((k, vv) -> out.put(k, fromGrpcValue(vv, database)));
       return dbgDec("fromGrpcValue", v, out);
     }
     case EMBEDDED_VALUE: {
       var out = new LinkedHashMap<String, Object>();
-      v.getEmbeddedValue().getFieldsMap().forEach((k, vv) -> out.put(k, fromGrpcValue(vv)));
+      v.getEmbeddedValue().getFieldsMap().forEach((k, vv) -> out.put(k, fromGrpcValue(vv, database)));
       // v.getEmbeddedValue().getType() is available if you want to instantiate a
       // typed DTO
       return dbgDec("fromGrpcValue", v, out);
     }
     case LINK_VALUE:
-      return dbgDec("fromGrpcValue", v, v.getLinkValue().getRid()); // or a Link object
+      // A RID, as the embedded engine answers a link and the HTTP driver answers a LINK column: the rid TEXT read a link back
+      // as a String, so (Identifiable) doc.get(name) failed and a re-save wrote it back as a string (issue #12195).
+      // Bound to the driver's database when the caller has one (issue #12603), as the HTTP driver binds its links. The rid text
+      // is always RID.toString() of the server, so a malformed one is a server bug and fails here instead of reading back as text.
+      return dbgDec("fromGrpcValue", v, RID.create(database, v.getLinkValue().getRid()));
     case DECIMAL_VALUE: {
       var d = v.getDecimalValue();
       return dbgDec("fromGrpcValue", v, toBigDecimal(d));

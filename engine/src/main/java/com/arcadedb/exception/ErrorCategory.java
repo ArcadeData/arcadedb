@@ -19,6 +19,7 @@
 package com.arcadedb.exception;
 
 import com.arcadedb.engine.timeseries.TimeSeriesWalkCoarsenedException;
+import com.arcadedb.index.IndexReplacedException;
 import com.arcadedb.index.fulltext.FullTextQueryParseException;
 
 /**
@@ -154,6 +155,8 @@ public enum ErrorCategory {
       new Rule(QueryTerminatedException.class, TERMINATED),
       new Rule(NeedRetryException.class, RETRY),
       new Rule(DatabaseIsReopeningException.class, RETRY),
+      // Above IllegalArgumentException, which its cause is: an index a replica replaced under the read, not a bad request (#12358)
+      new Rule(IndexReplacedException.class, RETRY),
       new Rule(TimeSeriesWalkCoarsenedException.class, RETRY),
       new Rule(QueryHeapBudgetExceededException.class, RETRY),
       new Rule(QueryAdmissionException.class, RETRY),
@@ -172,6 +175,8 @@ public enum ErrorCategory {
       // before IllegalArgumentException, which it extends: the definition asked for exists already (issue #11392)
       new Rule(EquivalentIndexException.class, ALREADY_EXISTS),
       new Rule(RecordNotFoundException.class, NOT_FOUND),
+      // an entity the statement deleted itself, read or linked later in it: Neo4j's EntityNotFound (issue #11974)
+      new Rule(DeletedEntityException.class, NOT_FOUND),
       new Rule(SchemaException.class, SCHEMA),
       new Rule(SecurityException.class, SECURITY),
       new Rule(CommandParsingException.class, PARSING),

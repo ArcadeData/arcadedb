@@ -129,7 +129,26 @@ class LocalCommitHandshakeTest {
 
     @AfterEach
     void tearDown() {
+      // A commit records the index it was acknowledged at on its thread (issue #11742): leave none for the next test
+      database.clearReadConsistencyContext();
       DatabaseContext.INSTANCE.removeContext(dbPath);
+    }
+
+    /**
+     * Issue #11742: the bookmark of the response covers the entry the cluster acknowledged the write at, even though this node
+     * has not applied it (here the state machine and Ratis are both at index 3 while the entry is 7): a read that waited for the
+     * applied index alone would not see the write.
+     */
+    // Regression for #11742: AcknowledgedWriteBookmark
+    @Test
+    void theBookmarkOfACommitCoversTheIndexTheClusterAcknowledgedItAt() {
+      raftServer.lastAppliedIndex(3L);
+      stateMachine.lastAppliedIndex.set(3L);
+      broker.on("replicateTransaction", args -> 7L);
+
+      database.replicateAndCommitLocally(payload, true, stateMachine);
+
+      assertThat(database.getCommitIndexBookmark()).as("the entry the write was acknowledged at, not the applied index").isEqualTo(7L);
     }
 
     /**

@@ -34,6 +34,7 @@ import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.IntegralKeyBound;
 import com.arcadedb.index.RangeIndex;
+import com.arcadedb.index.StaleIndexException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
@@ -57,7 +58,9 @@ import com.arcadedb.query.sql.parser.LeOperator;
 import com.arcadedb.query.sql.parser.LtOperator;
 import com.arcadedb.query.sql.parser.PCollection;
 import com.arcadedb.query.sql.parser.ValueExpression;
+import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.IndexMetadata;
+import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.security.SecurityDatabaseUser;
@@ -88,6 +91,8 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   private static final byte   SLOT_FIRST_ITEM              = 2;
   /** A CONTAINS over items that can nest: a one-item operand is its item and also the nested list it spells (issue #11730). */
   private static final byte   SLOT_ITEM_OR_WHOLE           = 3;
+  /** {@link #scalarsAsSingletonLists} answer for a scalar no element of the declared type equals: the seek matches nothing. */
+  private static final Object[] NO_KEY                     = new Object[0];
 
   protected final String                                         indexName;
   /** Package-private so a test can observe that a restart released them instead of only dropping the references. */
@@ -454,7 +459,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
    */
   private RuntimeException staleIndexOr(final IllegalArgumentException e) {
     if (TypeIndex.isStaleRead(index, e))
-      return new IndexException("Index '" + indexName + "' was dropped or rebuilt while it was being read", e);
+      return new StaleIndexException("Index '" + indexName + "' was dropped or rebuilt while it was being read", e);
     return e;
   }
 
@@ -489,7 +494,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
             // only started counts too (issue #9615): it may already have taken the sub-indexes away, and an empty answer is the
             // one a statement planned again can still replace at no cost to the caller
             if (index instanceof TypeIndex typeIndex && (typeIndex.isDropped() || (count == 0 && typeIndex.isDropping())))
-              throw new IndexException("Index '" + indexName + "' was dropped or rebuilt while it was being read");
+              throw new StaleIndexException("Index '" + indexName + "' was dropped or rebuilt while it was being read");
             updateIndexStats();
           } else
             count++;
@@ -600,7 +605,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       try {
         index = (RangeIndex) db.getSchema().getIndexByName(indexName);
       } catch (final SchemaException e) {
-        throw new IndexException("Index '" + indexName + "' was dropped while it was being read", e);
+        throw new StaleIndexException("Index '" + indexName + "' was dropped while it was being read", e);
       }
     }
     // This cursor answers straight from the index, without loading each record through its bucket, so apply the
@@ -861,6 +866,8 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
     final boolean[] fromNullRejectingSlots = nullRejectingSlotMask(true);
     final boolean[] toNullRejectingSlots = nullRejectingSlotMask(false);
+    final byte[] listKeyTypes = listKeyTypes();
+    final Type[] listElementTypes = listKeyTypes != null ? listElementTypes(listKeyTypes) : null;
     final List<Object[][]> seeks = new ArrayList<>(secondValueCombinations.size());
     for (int i = 0; i < secondValueCombinations.size(); i++) {
 
@@ -877,6 +884,13 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       if (convertedTo.length == 0)
         convertedTo = null;
 
+      if (listKeyTypes != null) {
+        convertedFrom = scalarsAsSingletonLists(convertedFrom, listKeyTypes, listElementTypes);
+        convertedTo = scalarsAsSingletonLists(convertedTo, listKeyTypes, listElementTypes);
+        if (convertedFrom == NO_KEY || convertedTo == NO_KEY)
+          continue;
+      }
+
       // A comparison with null is never true (issue #8812): a null range bound matches nothing, it must not read as "no bound"
       // (the other endpoint of a prefix range is shorter than the range slot, and may end with such an equality null)
       final int rangeKeySize = Math.max(fromKey.getExpressions().size(), toKey.getExpressions().size());
@@ -892,6 +906,10 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       // First: the conversion check below refuses a bound past the range of the key type, which this maps into it
       final Object[][] seek = { convertedFrom, convertedTo, { fromKeyIncluded, toKeyIncluded } };
       if (!mapInexactIntegralBounds(seek, rangeKeySize))
+        continue;
+
+      // An infinity or NaN has no decimal form: on a DECIMAL key it bounds every key or none, as it does in a scan (#12694)
+      if (!mapNonFiniteDecimalBounds(seek, rangeKeySize))
         continue;
 
       // A bound a DOUBLE or FLOAT key cannot hold is rounded by the index: the seek covers the keys around it and the entries are
@@ -919,9 +937,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
       // Null keys sort lowest: start past them, a comparison with null is never true (issue #8833). A NULL_STRATEGY SKIP index
       // holds them too when it is composite, as it drops a key only when every property is null (issue #8978)
-      if (convertedTo != null && (convertedFrom == null || convertedTo.length > convertedFrom.length)
-          && index.supportsOrderedIterations() && (index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.INDEX
-          || (index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.SKIP && index.getPropertyNames().size() > 1))) {
+      if (convertedTo != null && (convertedFrom == null || convertedTo.length > convertedFrom.length) && nullKeysAreOrdered()) {
         final int prefix = convertedFrom == null ? 0 : convertedFrom.length;
         final Object[] extended = new Object[prefix + 1];
         if (prefix > 0)
@@ -950,6 +966,79 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       cursor = nextCursors.removeFirst();
       fetchNextEntry();
     }
+  }
+
+  /**
+   * Whether the index holds the records whose key is null, ordered below every other key: an index keeping its nulls, and a
+   * composite one that skips them, since it drops a key only when every property is null (issue #8978). Such an entry has to be
+   * stepped over by a range that has no lower bound, as a comparison with null is never true.
+   */
+  private boolean nullKeysAreOrdered() {
+    return index.supportsOrderedIterations() && (index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.INDEX
+        || (index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.SKIP && index.getPropertyNames().size() > 1));
+  }
+
+  /**
+   * Maps the bounds of one seek that a DECIMAL key cannot hold, an infinite or NaN {@code double}/{@code float}, onto the keys that
+   * bound the same set (issue #12694). The index would refuse to convert such a bound and so match no row, where a scan orders it
+   * against a decimal in {@code double}: every decimal is above negative infinity and below positive infinity and NaN. The range
+   * slot of a range condition therefore loses the bound that holds for every key (no lower bound for negative infinity, no upper
+   * bound for positive infinity or NaN), keeping the null keys out, and the seek matches none when the bound holds for no key. A
+   * slot matched exactly (an equality, or the prefix before the range) has no key equal to such a bound, and the seek matches none.
+   *
+   * @return false when no key can match the seek
+   */
+  private boolean mapNonFiniteDecimalBounds(final Object[][] seek, final int rangeKeySize) {
+    if (!(index instanceof IndexInternal internalIndex))
+      return true;
+    final byte[] keyTypes = internalIndex.getBinaryKeyTypes();
+    if (keyTypes == null)
+      return true;
+    final int rangeSlot = isRangeCondition() ? rangeKeySize - 1 : -1;
+    boolean noLowerBound = false;
+    boolean noUpperBound = false;
+    for (int side = 0; side < 2; side++) {
+      final Object[] key = seek[side];
+      if (key == null)
+        continue;
+      for (int i = 0; i < key.length && i < keyTypes.length; i++) {
+        if (keyTypes[i] != BinaryTypes.TYPE_DECIMAL || !(key[i] instanceof Number number) || Type.isFinite(number))
+          continue;
+        if (i != rangeSlot)
+          return false;
+        final boolean negativeInfinity = number.doubleValue() == Double.NEGATIVE_INFINITY;
+        // a lower bound holds for every decimal only when it is negative infinity, an upper one only when it is not
+        if ((side == 0) != negativeInfinity)
+          return false;
+        if (side == 0)
+          noLowerBound = true;
+        else
+          noUpperBound = true;
+      }
+    }
+    if (!noLowerBound && !noUpperBound)
+      return true;
+
+    final Object[] from = seek[0];
+    final Object[] to = seek[1];
+    // The keys before the range slot, which both sides share
+    final Object[] prefix = Arrays.copyOf(from != null && from.length >= rangeSlot ? from : to, rangeSlot);
+    final boolean fromHasRangeSlot = !noLowerBound && from != null && from.length > rangeSlot;
+    if (noUpperBound) {
+      seek[1] = prefix.length == 0 ? null : prefix;
+      seek[2][1] = Boolean.TRUE;
+    }
+    if (noLowerBound || !fromHasRangeSlot) {
+      // the null keys sort lowest and are no match: start past them where the index holds them, else at the prefix
+      if (nullKeysAreOrdered()) {
+        seek[0] = Arrays.copyOf(prefix, rangeSlot + 1);
+        seek[2][0] = Boolean.FALSE;
+      } else {
+        seek[0] = prefix.length == 0 ? null : prefix;
+        seek[2][0] = Boolean.TRUE;
+      }
+    }
+    return true;
   }
 
   /**
@@ -998,6 +1087,86 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       }
     }
     return lossy;
+  }
+
+  /** The key types of the index when one of them is a whole LIST value, else null: the only case {@link #scalarsAsSingletonLists} rewrites. */
+  private byte[] listKeyTypes() {
+    if (!(index instanceof IndexInternal internalIndex))
+      return null;
+    final byte[] keyTypes = internalIndex.getBinaryKeyTypes();
+    if (keyTypes != null)
+      for (final byte keyType : keyTypes)
+        if (keyType == BinaryTypes.TYPE_LIST)
+          return keyTypes;
+    return null;
+  }
+
+  /**
+   * For each whole LIST key of the index, the scalar element type its property declares ({@code LIST OF INTEGER}), or null for a
+   * key with none (a plain {@code LIST}, a type that is not a scalar, a key that is not a LIST).
+   */
+  private Type[] listElementTypes(final byte[] keyTypes) {
+    final Type[] elementTypes = new Type[keyTypes.length];
+    final Schema schema = context.getDatabase().getSchema();
+    final String typeName = index.getTypeName();
+    final DocumentType type = typeName != null && schema.existsType(typeName) ? schema.getType(typeName) : null;
+    if (type == null)
+      return elementTypes;
+    final List<String> propertyNames = index.getPropertyNames();
+    for (int i = 0; i < keyTypes.length && i < propertyNames.size(); i++) {
+      if (keyTypes[i] != BinaryTypes.TYPE_LIST)
+        continue;
+      final Property property = type.getPolymorphicPropertyIfExists(propertyNames.get(i));
+      final Type elementType = property != null && property.getOfType() != null ? Type.getTypeByName(property.getOfType()) : null;
+      // getJavaImplementation, not the default: a LIST OF DATE holds what the database materialises a DATE as (#9111)
+      if (elementType != null && Type.isScalarKeyClass(elementType.getJavaImplementation(context.getDatabase())))
+        elementTypes[i] = elementType;
+    }
+    return elementTypes;
+  }
+
+  /**
+   * A value that is not a list, in the slot of a whole LIST key, as the singleton list the SQL scan compares it as (issue #12792):
+   * {@code li = 5} converts 5 to the class of the list it is compared with ({@link QueryOperatorEquals}, through
+   * {@link Type#convert}), so it matches a stored {@code [5]}, the same singleton a {@code LIST OF} property stores for a scalar
+   * (#9028). The index has to look up that list, not the scalar, which no LIST key equals. The element is read as the declared
+   * element type, the way the scan's element comparison reads {@code '5'} as 5; one that type cannot hold, or holds only rounded
+   * (5.5 for a LIST OF INTEGER), equals no element, and the key comparison is not handed what it cannot order. SQL only: openCypher
+   * keeps a scalar apart from a list ({@code [5] = 5} is false) and does not reach this step.
+   *
+   * @return the key, a copy of it with the singletons, or {@link #NO_KEY} when no row can match
+   */
+  private Object[] scalarsAsSingletonLists(final Object[] key, final byte[] keyTypes, final Type[] elementTypes) {
+    if (key == null)
+      return null;
+    final Database database = context.getDatabase();
+    Object[] converted = null;
+    for (int i = 0; i < key.length && i < keyTypes.length; i++) {
+      final Object value = key[i];
+      if (keyTypes[i] != BinaryTypes.TYPE_LIST || value == null || value instanceof Collection || MultiValue.isSequenceArray(value))
+        continue;
+      Object element = value;
+      final Type elementType = elementTypes[i];
+      if (elementType != null) {
+        if (IntegralKeyBound.isInexact(IntegralKeyBound.binaryTypeOf(elementType), value))
+          return NO_KEY;
+        final Class<?> elementClass = elementType.getJavaImplementation(database);
+        try {
+          element = Type.convertIndexKeyOrNull(database, value, elementClass);
+        } catch (final IllegalArgumentException e) {
+          return NO_KEY;
+        }
+        if (!Type.isReadAsIndexKey(value, element, elementClass))
+          return NO_KEY;
+      }
+      if (converted == null)
+        // a copy: the array can be the one the other side, or another seek, holds
+        converted = key.clone();
+      final List<Object> singleton = new ArrayList<>(1);
+      singleton.add(element);
+      converted[i] = singleton;
+    }
+    return converted != null ? converted : key;
   }
 
   private static boolean hasFloatingKeyType(final byte[] keyTypes) {
@@ -1601,7 +1770,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     for (int i = 0; i < values.length && i < keyTypes.length; i++)
       // Also a value the conversion leaves as it was or answers null for (a LocalDate for a BOOLEAN key, a List for an INTEGER one):
       // no key either, and a range reads a null bound as "no bound" (issue #10541)
-      if (!Type.canBeIndexLookupKey(database, values[i], BinaryTypes.getClassFromType(keyTypes[i])))
+      if (!Type.canBeIndexLookupKey(database, values[i], keyTypes[i]))
         return false;
     return true;
   }
@@ -1657,6 +1826,13 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     return result;
   }
 
+  /** The index and the condition this step searches it for, on one line: how an {@link IndexIntersection} names its searches. */
+  String describeSearch() {
+    if (condition == null)
+      return indexName;
+    return indexName + " " + condition + (additionalRangeCondition == null ? "" : " and " + additionalRangeCondition);
+  }
+
   /**
    * Restarts the step: {@code inited} goes back to false and {@code init()} rebuilds the whole cursor set from scratch
    * (that is what {@code UpdateExecutionPlan.reset()} relies on - it re-runs the plan straight after). So the cursors of
@@ -1704,7 +1880,15 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
   @Override
   public ExecutionStep copy(final CommandContext context) {
-    return new FetchFromIndexStep(index, this.condition == null ? null : this.condition.copy(),
+    // `index` is null between a reset() and the next init(): an IndexIntersection copies the search of a plan run again (#13289)
+    RangeIndex current = index;
+    if (current == null)
+      try {
+        current = (RangeIndex) context.getDatabase().getSchema().getIndexByName(indexName);
+      } catch (final SchemaException e) {
+        throw new StaleIndexException("Index '" + indexName + "' was dropped while it was being read", e);
+      }
+    return new FetchFromIndexStep(current, this.condition == null ? null : this.condition.copy(),
         this.additionalRangeCondition == null ? null : this.additionalRangeCondition.copy(), this.orderAsc, context);
   }
 }

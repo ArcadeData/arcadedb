@@ -42,8 +42,10 @@ import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexFactoryHandler;
 import com.arcadedb.index.IndexInternal;
+import com.arcadedb.index.IndexReplacedException;
 import com.arcadedb.index.PendingIndexRemovals;
 import com.arcadedb.index.RangeIndex;
+import com.arcadedb.index.StaleIndexException;
 import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
@@ -65,6 +67,7 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.Map;
 import java.util.Objects;
@@ -94,6 +97,15 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
    * valid rather than complete and empty for that bucket.
    */
   private volatile     boolean                       awaitingFill;
+  /**
+   * Whether this index may hold entries an older build wrote under the old spelling of a key, which a seek, a removal and the
+   * uniqueness check then read too (issues #12160 and #12233, {@link LSMTreeIndexLegacyKeys}). Off for an index this build creates,
+   * whose schema entry carries {@link #CANONICAL_KEYS}; on for one a schema load finds without it, which an older build wrote; off
+   * again once {@code REBUILD INDEX} has written every entry under its canonical key.
+   */
+  private volatile     boolean                       mayHoldLegacyKeys;
+  /** The schema entry key of an LSM_TREE index whose entries are all under their canonical key, see {@link #mayHoldLegacyKeys}. */
+  static final         String                        CANONICAL_KEYS = "canonicalKeys";
   /**
    * Compacted files replaced by a FULL compaction, awaiting their physical drop. The swap (under the write
    * lock) guarantees no NEW cursor can reach them, but live series cursors load pages lazily and may still
@@ -126,9 +138,31 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   public static class LSMTreeIndexFactoryHandler implements IndexFactoryHandler {
     @Override
     public IndexInternal create(final IndexBuilder<?> builder) {
+      checkSupportedKeyTypes(builder.getIndexName(), builder.getKeyTypes());
       return new LSMTreeIndex(builder.getDatabase(), builder.getIndexName(), builder.isUnique(), builder.getFilePath(),
           ComponentFile.MODE.READ_WRITE, builder.getKeyTypes(), builder.getLsmTreePageSize(), builder.getNullStrategy());
     }
+  }
+
+  /**
+   * Refuses the key types an LSM_TREE index cannot order (issue #12753). An embedded document has no order, so
+   * {@code BinaryComparator} cannot compare two of them: the index was accepted, the first insert written and the second
+   * one failed with a {@code ClassCastException}. EMBEDDED is the only such type a declared property can hand the builder:
+   * LIST and MAP keys are compared element by element, and a {@code BY ITEM} index over a LIST of embedded documents is
+   * keyed by STRING ({@code TypeIndexBuilder.listItemKeyType}).
+   * <p>
+   * Called by the factory handler, before any file is created, as {@code HashIndexBucket.checkSupportedKeyTypes} is for HASH.
+   * The load path deliberately does not call it: an index already on disk keeps opening, so it can still be dropped. Every
+   * NEW sub-index of such an index (a bucket added to its type, a rebuild) is refused by the same check.
+   */
+  static void checkSupportedKeyTypes(final String indexName, final Type[] keyTypes) {
+    if (keyTypes == null)
+      return;
+    for (final Type keyType : keyTypes)
+      if (keyType == Type.EMBEDDED)
+        throw new IndexException("Cannot create index '" + indexName + "' of type LSM_TREE because the key type " + keyType.name()
+            + " cannot be used as an LSM_TREE index key: an embedded document has no order. Index a field of it (a nested path"
+            + " such as 'p.x') instead");
   }
 
   /**
@@ -339,6 +373,11 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     if (collationsJSON != null)
       metadata.collations = collationsJSON.toListOfStrings();
 
+    // #12160, #12233: the entry of a plain LSM_TREE index an older build wrote has no marker, and its entries may still spell a key
+    // as that build did. The kinds stored in an LSM tree of their own (full-text, geospatial...) key it by tokens, which no build
+    // spelled another way
+    mayHoldLegacyKeys = Schema.INDEX_TYPE.LSM_TREE.name().equals(indexJSON.getString("type", Schema.INDEX_TYPE.LSM_TREE.name()))
+        && !indexJSON.getBoolean(CANONICAL_KEYS, false);
     updateCaseInsensitiveKeys();
   }
 
@@ -480,6 +519,8 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     json.put("unique", isUnique());
     if (metadata.hasAnyCaseInsensitive())
       json.put("collations", metadata.collations);
+    if (!mayHoldLegacyKeys)
+      json.put(CANONICAL_KEYS, true);
     return json;
   }
 
@@ -623,10 +664,46 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     return total;
   }
 
+  /**
+   * {@code read} under the index read lock. A read that cannot reach the index's files because they were retired reads an
+   * index that a newer schema generation has replaced, as on an HA replica that applied a compaction while a query still held
+   * this instance (issue #12358). That is an {@link IndexReplacedException}, an {@link IndexException} as for an index dropped
+   * or rebuilt under a statement, which plans the statement again on the current generation, and retryable on every wire; not
+   * the {@link IllegalArgumentException} a missing or closed file is reported with, which a client takes for a bad request.
+   */
+  private IndexCursor readLive(final Callable<IndexCursor> read) {
+    try {
+      return lock.executeInReadLock(read);
+    } catch (final IllegalArgumentException e) {
+      throw replacedOrSelf(mutable, getName(), e);
+    }
+  }
+
+  /**
+   * The failure a read of {@code read} raised, as the caller should see it: an {@link IndexReplacedException} when {@code read}
+   * or its compacted sub-index lives in a file that has been retired, {@code e} itself otherwise. Shared by the cursor
+   * creation above and by {@link LSMTreeIndexCursor}, which loads its pages lazily and so can meet a file retired after it was
+   * created: on an HA replica the files a replicated compaction supersedes are deleted as soon as the generation that no
+   * longer reads them is published, while a query of the previous generation may still be iterating (issue #12358).
+   */
+  static RuntimeException replacedOrSelf(final LSMTreeIndexMutable read, final String indexName,
+      final IllegalArgumentException e) {
+    final LSMTreeIndexCompacted subIndex = read.getSubIndex();
+    if (!isRetired(read, read.getFileId()) && (subIndex == null || !isRetired(read, subIndex.getFileId())))
+      return e;
+    return new IndexReplacedException("Index '" + indexName + "' was replaced while it was read: its file is retired", e);
+  }
+
+  /** Whether file {@code fileId} has left the database, or is on its way out: a drop closes it before it unlists it. */
+  private static boolean isRetired(final LSMTreeIndexMutable read, final int fileId) {
+    final ComponentFile file = read.getDatabase().getFileManager().getFileIfExists(fileId);
+    return file == null || file.isDropped();
+  }
+
   @Override
   public IndexCursor iterator(final boolean ascendingOrder) {
     checkIsValid();
-    return lock.executeInReadLock(() -> new LSMTreeIndexCursor(mutable, ascendingOrder));
+    return readLive(() -> new LSMTreeIndexCursor(mutable, ascendingOrder));
   }
 
   @Override
@@ -635,7 +712,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     // A bound of a kind the key type cannot hold bounds no entry (issue #10541): it used to be read as "no bound" and answer every one
     if (!canReadAsKeys(fromKeys))
       return EMPTY_CURSOR;
-    return lock.executeInReadLock(() -> mutable.iterator(ascendingOrder, fromKeys, inclusive));
+    return readLive(() -> mutable.iterator(ascendingOrder, fromKeys, inclusive));
   }
 
   @Override
@@ -644,8 +721,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     checkIsValid();
     if (!canReadAsKeys(beginKeys) || !canReadAsKeys(endKeys))
       return EMPTY_CURSOR;
-    return lock.executeInReadLock(() -> mutable.range(ascendingOrder, beginKeys, beginKeysInclusive, endKeys,
-        endKeysInclusive));
+    return readLive(() -> mutable.range(ascendingOrder, beginKeys, beginKeysInclusive, endKeys, endKeysInclusive));
   }
 
   /**
@@ -658,7 +734,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
     final byte[] keyTypes = mutable.binaryKeyTypes;
     for (int i = 0; i < keys.length && i < keyTypes.length; ++i)
-      if (!Type.canBeIndexLookupKey(getDatabase(), keys[i], BinaryTypes.getClassFromType(keyTypes[i])))
+      if (!Type.canBeIndexLookupKey(getDatabase(), keys[i], keyTypes[i]))
         return false;
     return true;
   }
@@ -670,7 +746,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
     final byte[] keyTypes = mutable.binaryKeyTypes;
     for (int i = 0; i < keys.length && i < convertedKeys.length && i < keyTypes.length; ++i)
-      if (!Type.isReadAsIndexKey(keys[i], convertedKeys[i], BinaryTypes.getClassFromType(keyTypes[i])))
+      if (!Type.isReadAsIndexKey(keys[i], convertedKeys[i], keyTypes[i]))
         return false;
     return true;
   }
@@ -714,6 +790,72 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     if (!areReadAsKeys(keys, convertedKeys))
       return EMPTY_CURSOR;
 
+    if (mayHoldLegacyKeys) {
+      final IndexCursor withLegacyEntries = LSMTreeIndexLegacyKeys.get(this, keys, convertedKeys, limit);
+      if (withLegacyEntries != null)
+        return withLegacyEntries;
+    }
+    return getConverted(convertedKeys, limit);
+  }
+
+  /**
+   * Whether this index may hold entries an older build wrote under the old spelling of a key (issues #12160 and #12233, see
+   * {@link LSMTreeIndexAbstract#legacyKeys}): true for an index whose schema entry an older build wrote, false for one this build
+   * created or rebuilt. Only such an index pays for the second read of a seek, of a removal and of the uniqueness check
+   * ({@link LSMTreeIndexLegacyKeys}).
+   */
+  public boolean mayHoldLegacyKeys() {
+    return mayHoldLegacyKeys;
+  }
+
+  /**
+   * Records that every entry of this index is under its canonical key, as after a {@code REBUILD INDEX} wrote them all again: the
+   * next schema save persists it ({@link #CANONICAL_KEYS}).
+   */
+  public void markKeysCanonical() {
+    mayHoldLegacyKeys = false;
+  }
+
+  /**
+   * The entries of keys already converted ({@link #convertLookupKeys}), as they are: no old spelling is read and no holder is dropped
+   * (issues #12160 and #12233). For the checks that judge the entries themselves, such as CHECK DATABASE and the uniqueness check
+   * under an old spelling.
+   */
+  public IndexCursor getStored(final Object[] storedKeys) {
+    checkIsValid();
+    return getConverted(storedKeys, -1);
+  }
+
+  /**
+   * Whether the record at {@code rid} holds {@code convertedKeys} in this index, as its put() converted them: false for a record that
+   * is gone.
+   */
+  public boolean holdsKey(final RID rid, final Object[] convertedKeys) {
+    return LSMTreeIndexLegacyKeys.holdsKey(this, rid, convertedKeys);
+  }
+
+  /**
+   * The keys an older build wrote for {@code keys}, or null when it wrote them as {@code convertedKeys} or this index holds canonical
+   * keys only (issues #12160 and #12233, see {@link LSMTreeIndexAbstract#legacyKeys}).
+   *
+   * @param convertedKeys {@code keys} after {@link #convertLookupKeys}
+   */
+  public Object[] legacyKeys(final Object[] keys, final Object[] convertedKeys) {
+    return mayHoldLegacyKeys ? mutable.legacyKeys(keys, convertedKeys) : null;
+  }
+
+  /**
+   * The keys an older build wrote for the value the record at {@code rid} holds under {@code convertedKeys}, or null when it wrote
+   * them the same way or the record holds no such value (issues #12160 and #12233). For a caller that has only the converted keys,
+   * as the uniqueness check at commit has, and has found an index of the type that {@link #mayHoldLegacyKeys() may hold} old
+   * entries: the record is loaded only for a key that can be the canonical key of a list or a number.
+   */
+  public Object[] legacyKeysOf(final Object[] convertedKeys, final RID rid) {
+    return LSMTreeIndexLegacyKeys.legacyKeysOf(this, convertedKeys, rid);
+  }
+
+  /** The entries of keys already converted to the declared types: the pending changes of the transaction over the pages. */
+  IndexCursor getConverted(final Object[] convertedKeys, final int limit) {
     if (getDatabase().getTransaction().getStatus() == TransactionContext.STATUS.BEGUN) {
       Set<IndexCursorEntry> txChanges = null;
       // what the pending entries of this key hide from the disk result, or null when they hide nothing (#6970)
@@ -757,7 +899,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
       // the disk rows that a pending removal hides do not count towards the limit: each pending entry hides at most one row, so
       // that many more are read and the limit is applied to the merged rows below. A key-wide removal hides every row
       final int diskLimit = removals == null || removals.isKeyWide() || limit < 0 ? limit : (int) Math.min(Integer.MAX_VALUE, (long) limit + pendingEntries);
-      final IndexCursor result = lock.executeInReadLock(() -> mutable.get(convertedKeys, diskLimit));
+      final IndexCursor result = readLive(() -> mutable.get(convertedKeys, diskLimit));
 
       if (txChanges != null || removals != null) {
         if (txChanges == null)
@@ -776,7 +918,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
       return result;
     }
 
-    return lock.executeInReadLock(() -> mutable.get(convertedKeys, limit));
+    return readLive(() -> mutable.get(convertedKeys, limit));
   }
 
   /**
@@ -861,13 +1003,26 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
         mutable.remove(convertedKeys);
         return null;
       });
+
+    // #12160, #12233: the entries an older build wrote for this value go too, and only those: the old text is also the key of a
+    // STRING
+    if (mayHoldLegacyKeys)
+      LSMTreeIndexLegacyKeys.removeLegacyEntries(this, keys, convertedKeys);
   }
 
   @Override
   public void remove(final Object[] keys, final Identifiable rid) {
     checkIsValid();
     final Object[] convertedKeys = convertKeys(keys);
+    removeConverted(convertedKeys, rid);
 
+    // #12160, #12233: the entry an older build wrote for this record's value goes too
+    if (mayHoldLegacyKeys && rid != null)
+      LSMTreeIndexLegacyKeys.removeLegacyEntry(this, keys, convertedKeys, rid);
+  }
+
+  /** Removes the entry of {@code rid} under keys already converted. */
+  void removeConverted(final Object[] convertedKeys, final Identifiable rid) {
     if (getDatabase().getTransaction().getStatus() == TransactionContext.STATUS.BEGUN)
       // KEY REMOVED AT COMMIT TIME (IN A LOCK)
       getDatabase().getTransaction()
@@ -1271,10 +1426,10 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
   private void checkIsValid() {
     if (!valid)
-      throw new IndexException("Index '" + name + "' is not valid. Probably has been drop or rebuilt");
+      throw new StaleIndexException("Index '" + name + "' is not valid. Probably has been drop or rebuilt");
   }
 
-  private DatabaseInternal getDatabase() {
+  DatabaseInternal getDatabase() {
     return mutable.getDatabase();
   }
 }

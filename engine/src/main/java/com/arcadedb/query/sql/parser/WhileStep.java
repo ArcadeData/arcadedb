@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.executor.BreakStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.EmptyStep;
 import com.arcadedb.query.sql.executor.ExecutionStepInternal;
@@ -35,6 +36,7 @@ public class WhileStep extends AbstractExecutionStep {
   private final BooleanExpression     condition;
   private final List<Statement>       statements;
   private       ExecutionStepInternal finalResult = null;
+  private       boolean               returned    = false;
 
   public WhileStep(final BooleanExpression condition, final List<Statement> statements, final CommandContext context) {
     super(context);
@@ -55,11 +57,21 @@ public class WhileStep extends AbstractExecutionStep {
       final ExecutionStepInternal result = plan.executeFull();
       if (result != null) {
         this.finalResult = result;
+        this.returned = !(result instanceof BreakStep);
         return result.syncPull(context, nRecords);
       }
     }
     finalResult = new EmptyStep(context);
     return finalResult.syncPull(context, nRecords);
+  }
+
+  /**
+   * True once the loop has run and stopped on a {@code RETURN} executed in its body, false while it has not run, when its
+   * condition turned false or when it stopped on a {@code BREAK}. A script line holding the loop ends the script only in the
+   * first case.
+   */
+  public boolean executedReturn() {
+    return returned;
   }
 
   public ScriptExecutionPlan initPlan(final CommandContext context) {
@@ -83,19 +95,6 @@ public class WhileStep extends AbstractExecutionStep {
   }
 
   public boolean containsReturn() {
-    for (final Statement stm : this.statements) {
-      if (stm instanceof ReturnStatement)
-        return true;
-
-      if (stm instanceof ForEachBlock block && block.containsReturn())
-        return true;
-
-      if (stm instanceof IfStatement statement && statement.containsReturn())
-        return true;
-
-      if (stm instanceof WhileBlock block && block.containsReturn())
-        return true;
-    }
-    return false;
+    return Statement.anyContainsReturn(statements);
   }
 }

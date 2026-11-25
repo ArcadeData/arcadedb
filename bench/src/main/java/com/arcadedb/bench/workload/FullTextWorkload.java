@@ -172,7 +172,7 @@ public class FullTextWorkload implements Workload {
     final List<Metric> metrics = new ArrayList<>();
     metrics.add(Metrics.rate("queries_per_s", "queries/s", count / (latencies.totalNanos() / 1e9)));
     metrics.addAll(Metrics.latencies(latencies));
-    return new Measurement(metrics);
+    return Measurement.of(metrics, latencies);
   }
 
   /** Query strings built from the words of documents that exist: the same documents the insert draws. */

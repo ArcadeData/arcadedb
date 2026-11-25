@@ -36,10 +36,14 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 /**
  * Created by luigidellaquila on 11/07/16.
  */
-public class OrderByStep extends AbstractExecutionStep {
+public class OrderByStep extends AbstractExecutionStep implements RowCapAwareStep {
   private final OrderBy            orderBy;
   private       Integer            maxResults;
   private final long               timeoutMillis;
+  // ISSUE #12016: THE SKIP THE CALLER'S ROW CAP IS COUNTED AFTER, SET BY THE PLANNER WHEN THE STATEMENT HAS NO LIMIT OF ITS OWN AND
+  // NOTHING DOWNSTREAM CAN DROP A ROW (-1: THE CAP DOES NOT BOUND THIS SORT), AND THE CAP ITSELF, HANDED OVER WITH THE PLAN (0: NONE)
+  private       int                capSkip = -1;
+  private       int                rowCap;
   // THE ROWS BUFFERED, UNDER THE PER-OPERATION CAP AND THE HEAP BUDGET OF ALL THE QUERIES (ISSUES #8585, #8591)
   private       OperationHeapLimit limit;
 
@@ -63,6 +67,24 @@ public class OrderByStep extends AbstractExecutionStep {
       this.maxResults = null;
     }
     this.timeoutMillis = timeoutMillis;
+  }
+
+  /** The sort keeps the rows the caller reads at most, instead of all of them: {@code skip} plus the cap, when the caller sets one. */
+  void boundByRowCap(final int skip) {
+    this.capSkip = skip;
+  }
+
+  @Override
+  public void applyRowCap(final int rowCap) {
+    this.rowCap = rowCap;
+  }
+
+  /** The rows the sort keeps at most: SKIP + LIMIT, else SKIP + the cap of the caller (issue #12016); null when it keeps every row. */
+  private Integer keptRows() {
+    if (maxResults != null)
+      return maxResults;
+    final int bound = RowCapAwareStep.bound(capSkip, rowCap);
+    return bound < 0 ? null : bound;
   }
 
   @Override
@@ -125,8 +147,9 @@ public class OrderByStep extends AbstractExecutionStep {
   }
 
   private void init(final ExecutionStepInternal p, final CommandContext context) {
-    if (maxResults != null) {
-      initTopK(p, context);
+    final Integer kept = keptRows();
+    if (kept != null) {
+      initTopK(p, context, kept);
       return;
     }
     final long timeoutBegin = System.currentTimeMillis();
@@ -177,7 +200,7 @@ public class OrderByStep extends AbstractExecutionStep {
    * Sorting the whole buffer every {@code maxResults} rows, and estimating the heap of every row kept each time, cost
    * several times the scan itself once SKIP made the bound large.
    */
-  private void initTopK(final ExecutionStepInternal p, final CommandContext context) {
+  private void initTopK(final ExecutionStepInternal p, final CommandContext context, final int maxResults) {
     parallelWorkers = 0;
     if (maxResults == 0)
       // nothing can be kept: no need to pull the input
@@ -186,8 +209,10 @@ public class OrderByStep extends AbstractExecutionStep {
     // The whole input is consumed before the first row is returned: see AggregateProjectionCalculationStep (issue #9680)
     final WorkGuard guard = WorkGuard.forCommandDeadline(context);
     int consumed = 0;
-    if (topKInParallel(context, timeoutBegin))
+    if (topKInParallel(context, timeoutBegin, maxResults))
       return;
+    // The heap lets rows go one at a time: each row it keeps is estimated, so a row that leaves gives back what it held
+    limit.estimateEachElement();
     final Comparator<Kept> byKeyThenArrival = byKeyThenArrival(orderBy, context);
     final PriorityQueue<Kept> heap = new PriorityQueue<>(Math.min(maxResults, 1024) + 1, byKeyThenArrival.reversed());
     long arrival = 0;
@@ -249,7 +274,7 @@ public class OrderByStep extends AbstractExecutionStep {
    * is not a parallel scan, a sort key is not a plain property, or an expression is not one the engine can evaluate on
    * several threads
    */
-  private boolean topKInParallel(final CommandContext context, final long timeoutBegin) {
+  private boolean topKInParallel(final CommandContext context, final long timeoutBegin, final int maxResults) {
     final ParallelRowPipeline pipeline = parallelPipeline();
     if (pipeline == null)
       return false;
@@ -285,7 +310,7 @@ public class OrderByStep extends AbstractExecutionStep {
                 return reused;
               final PartialTopK partial = new PartialTopK(types, pipeline.copyConditions(),
                   pipeline.projection() == null ? null : pipeline.projection().copy(), orderBy.copy(), workerContext, maxResults,
-                  OperationHeapLimit.of(workerContext, "ORDER BY"));
+                  OperationHeapLimit.of(workerContext, "ORDER BY").estimateEachElement());
               workerPartials.add(partial);
               return partial;
             }, (partial, row, position, ignored) -> partial.accept(row, roundPosition + position), onWait);
@@ -438,8 +463,9 @@ public class OrderByStep extends AbstractExecutionStep {
     if( context.isProfiling() ) {
       result += " (" + getCostFormatted() + ")";
     }
-    result += maxResults != null ?
-        "\n  (buffer size: " + maxResults + (parallelWorkers > 0 ? ", parallel: " + parallelWorkers + " workers" : "") + ")" :
+    final Integer kept = keptRows();
+    result += kept != null ?
+        "\n  (buffer size: " + kept + (parallelWorkers > 0 ? ", parallel: " + parallelWorkers + " workers" : "") + ")" :
         "";
     return result;
   }

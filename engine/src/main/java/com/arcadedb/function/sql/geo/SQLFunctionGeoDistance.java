@@ -64,6 +64,10 @@ public class SQLFunctionGeoDistance extends SQLFunctionAbstract {
 
     final Shape shape1 = toShape(iParams[0]);
     final Shape shape2 = toShape(iParams[1]);
+    // an EMPTY geometry has no position, so no distance to anything: NULL, as PostGIS's ST_Distance answers, rather than
+    // the NaN of the haversine formula on its NaN coordinates (issue #12277)
+    if (shape1.isEmpty() || shape2.isEmpty())
+      return null;
 
     final String unit = iParams.length >= 3 && iParams[2] != null ? iParams[2].toString() : "m";
 

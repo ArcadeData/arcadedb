@@ -27,7 +27,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Issue #7663: the hard row ceiling spread across a response that answers SEVERAL reads - one Grafana target per
  * panel query, one Prometheus {@code Query} per selector.
  * <p>
- * {@code Issue7663GrafanaPrometheusRowCeilingIT} pins the same arithmetic end to end, over HTTP. This class exists
+ * {@code GrafanaPrometheusRowCeilingIT} pins the same arithmetic end to end, over HTTP. This class exists
  * for the edges that are awkward to reach through a running server: a ceiling of exactly
  * {@link Integer#MAX_VALUE}, and the exhausted-budget boundary between the last read that fits and the first that
  * does not.

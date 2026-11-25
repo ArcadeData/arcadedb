@@ -23,6 +23,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
@@ -70,7 +71,15 @@ public class RemoteImmutableDocument extends ImmutableDocument {
         final Type elementType;
         if (property != null) {
           propType = property.getType();
-          elementType = property.getOfType() != null ? Type.getTypeByName(property.getOfType()) : null;
+          if (property.getOfType() != null)
+            elementType = Type.getTypeByName(property.getOfType());
+          else if (propType == Type.LIST || propType == Type.MAP) {
+            // Issue #12598: a LIST or MAP declared with no element type says nothing of its items, so the @props hint
+            // names them, as it does for a schemaless field (links, non-finite numbers)
+            final RemoteDatabase.ColumnTypeHint hint = propTypes.get(fieldName);
+            elementType = hint != null ? hint.elementType() : null;
+          } else
+            elementType = null;
         } else {
           // Schemaless field: the @props hint is all there is, element type included (e.g. "dates:9(6)").
           final RemoteDatabase.ColumnTypeHint hint = propTypes.get(fieldName);
@@ -97,10 +106,12 @@ public class RemoteImmutableDocument extends ImmutableDocument {
         // implementation. Converting it as a whole first, with the declared property, rebuilt a LIST OF DATE as
         // java.util.Date items (the zone-dependent midnight), which the item pass below then read as the previous day
         // wherever the zone is ahead of UTC.
+        // Issue #12603: a link is bound to the remote database, as the embedded API answers it, so rid.asDocument() follows it on
+        // a thread with no embedded database active
         if ((propType == Type.MAP || propType == Type.LIST) && elementType != null && (value instanceof List || value instanceof Map))
           value = convertNestedOfType(value, elementType);
         else
-          value = Type.convertOrKeep(null, value, javaImplementation, property);
+          value = RemoteDatabase.bindLink(remoteDatabase, Type.convertOrKeep(null, value, javaImplementation, property));
 
         map.put(fieldName, value);
       }
@@ -108,9 +119,12 @@ public class RemoteImmutableDocument extends ImmutableDocument {
 
     this.propertyNames = Collections.unmodifiableSet(new LinkedHashSet<>(map.keySet()));
 
-    final String ridAsString = (String) attributes.get(RID_PROPERTY);
-    if (ridAsString != null)
-      this.rid = remoteDatabase.newRID(ridAsString);
+    // The rid text over HTTP; a RID when a gRPC row carries @rid as a property, since gRPC decodes a link as one (#12195)
+    final Object ridValue = attributes.get(RID_PROPERTY);
+    if (ridValue instanceof RID ridObject)
+      this.rid = RemoteDatabase.bindRID(remoteDatabase, ridObject);
+    else if (ridValue != null)
+      this.rid = remoteDatabase.newRID((String) ridValue);
     else
       this.rid = null;
   }
@@ -243,12 +257,12 @@ public class RemoteImmutableDocument extends ImmutableDocument {
     if (value instanceof Map<?, ?> mapValue) {
       final Map<Object, Object> converted = new LinkedHashMap<>(mapValue.size());
       for (final Map.Entry<?, ?> entry : mapValue.entrySet())
-        converted.put(entry.getKey(), Type.convertOrKeep(null, entry.getValue(), javaType));
+        converted.put(entry.getKey(), RemoteDatabase.bindLink(remoteDatabase, Type.convertOrKeep(null, entry.getValue(), javaType)));
       return converted;
     } else if (value instanceof List<?> listValue) {
       final List<Object> converted = new ArrayList<>(listValue.size());
       for (final Object item : listValue)
-        converted.add(Type.convertOrKeep(null, item, javaType));
+        converted.add(RemoteDatabase.bindLink(remoteDatabase, Type.convertOrKeep(null, item, javaType)));
       return converted;
     }
 

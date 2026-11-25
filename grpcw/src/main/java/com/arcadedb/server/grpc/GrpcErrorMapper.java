@@ -212,7 +212,9 @@ public final class GrpcErrorMapper {
    * "token name already issued"), which are bounded and carry nothing the caller did not send. The exceptions that
    * reach here carry ENGINE text: a {@link DuplicatedKeyException}'s message embeds the index name and the
    * offending key VALUE - actual stored data - and a {@link DatabaseOperationInProgressException}'s names a
-   * database. Classified is not the same as safe to echo, so do not "fix" one of these to match the other.
+   * database. Classified is not the same as safe to echo, so do not "fix" one of these to match the other. An engine
+   * exception no arm of the admin service names is answered by the admin service THROUGH this method (issue #12550), and
+   * is concealed here for the same reason: it is engine text there too.
    * <p>
    * What survives concealment is what a client can act on without reading prose: the status CODE, the
    * {@link #EXCEPTION_CLASS_KEY} trailer, the duplicated-key index trailer - which goes to a DRIVER rebuilding a typed

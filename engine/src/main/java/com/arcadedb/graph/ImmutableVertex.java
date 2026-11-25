@@ -100,13 +100,19 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
 
   @Override
   public MutableVertex modify() {
+    final boolean readHere = readInCurrentTransaction();
     if (prepareForModify("vertex") instanceof MutableVertex fromCache)
       return fromCache;
 
-    checkForLazyLoading();
+    loadForModify(readHere);
     final Binary content = requireBuffer("modify");
     content.rewind();
-    return markIfReadWentStale(new MutableVertex(database, (VertexType) type, rid, content.copyOfContent()));
+    final MutableVertex copy = new MutableVertex(database, (VertexType) type, rid, copyOfContentForModify(content));
+    // #12642: the copy carries the heads of the transaction's own image this content was read from, so a traversal of the copy is
+    // recorded on the transaction too, whether or not the copy is ever saved
+    if (readFromOwnImage)
+      copy.markReadFromOwnImage();
+    return markIfReadWentStale(copy);
   }
 
   /**
@@ -139,7 +145,7 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
   public RID getOutEdgesHeadChunk() {
     checkForLazyLoading();
     if (readFromOwnImage)
-      recordEdgeListHeadRead(true);
+      recordEdgeListHeadReadFromOwnImage(database, rid, true);
     return outEdges;
   }
 
@@ -147,7 +153,7 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
   public RID getInEdgesHeadChunk() {
     checkForLazyLoading();
     if (readFromOwnImage)
-      recordEdgeListHeadRead(false);
+      recordEdgeListHeadReadFromOwnImage(database, rid, false);
     return inEdges;
   }
 
@@ -183,7 +189,8 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
     readFromOwnImage = true;
   }
 
-  private void recordEdgeListHeadRead(final boolean out) {
+  /** Records on the current transaction a head of {@code rid} read off its own image of the vertex's page, shared with {@link MutableVertex}. */
+  static void recordEdgeListHeadReadFromOwnImage(final Database database, final RID rid, final boolean out) {
     final TransactionContext tx = ((DatabaseInternal) database).getTransactionIfExists();
     if (tx != null)
       tx.trackEdgeListHeadReadFromOwnImage(rid, out);

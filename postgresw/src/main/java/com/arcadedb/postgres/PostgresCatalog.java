@@ -542,7 +542,7 @@ public class PostgresCatalog {
         "min_val", "max_val", "enumvals", "boot_val", "reset_val", "sourcefile", "sourceline", "pending_restart");
 
     // The declared type of every column that is not a varchar: what the rows of each relation carry, held to it by
-    // Issue10869CatalogColumnTypesTest over every modelled relation
+    // PostgresCatalogColumnsTest.ColumnTypes over every modelled relation
     columnTypes("pg_namespace", PostgresType.INTEGER, "oid", "nspowner");
     columnTypes("pg_class", PostgresType.INTEGER, "oid", "relnamespace", "reltype", "reloftype", "relowner", "relam", "relfilenode",
         "reltablespace", "relpages", "reltuples", "reltoastrelid", "relnatts", "relchecks", "relrewrite");
@@ -1691,13 +1691,16 @@ public class PostgresCatalog {
       if (answer.columns.size() != keys.size())
         return DECLINED;
       filtersExactly |= answer.filtersExactly;
+      // a row of an arm is copied, combined, and built again as a row of the answer: each pass is work of the statement
+      context.charge(answer.rows.size());
       final List<List<Object>> values = new ArrayList<>(answer.rows.size());
       for (final Map<String, Object> row : answer.rows)
         values.add(new ArrayList<>(row.values()));
       arms.add(values);
     }
 
-    final List<List<Object>> combined = combine(operation.operators, operation.all, arms);
+    final List<List<Object>> combined = combine(operation.operators, operation.all, arms, context::charge);
+    context.charge(combined.size());
 
     List<Map<String, Object>> rows = new ArrayList<>(combined.size());
     for (final List<Object> values : combined) {
@@ -1707,14 +1710,21 @@ public class PostgresCatalog {
       rows.add(row);
     }
 
-    if (operation.orderBy != null)
+    if (operation.orderBy != null) {
+      context.charge(sortCost(rows.size()));
       rows = sort(operation.orderBy, rows);
+    }
     if (rows == null)
       return DECLINED;
     if (operation.limit != null && rows.size() > operation.limit)
       rows = new ArrayList<>(rows.subList(0, operation.limit));
 
     return new Answer(unionColumns(keys, answers, rows), rows, filtersExactly);
+  }
+
+  /** The comparisons of sorting {@code rows} rows, about {@code rows * log2(rows)}: what the work budget is charged for a sort. */
+  private static int sortCost(final int rows) {
+    return (int) Math.min((long) rows * (Integer.SIZE - Integer.numberOfLeadingZeros(rows)), Integer.MAX_VALUE);
   }
 
   private static Family mostSpecific(final Family current, final Family candidate) {

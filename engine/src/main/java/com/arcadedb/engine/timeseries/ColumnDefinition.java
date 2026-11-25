@@ -200,7 +200,8 @@ public final class ColumnDefinition {
    * Boxes a value decoded from a {@code GORILLA_XOR} sealed column into this column's declared type.
    */
   public Object boxDouble(final double value) {
-    return dataType == Type.FLOAT ? (Object) (float) value : (Object) value;
+    // a FLOAT keeps the staleness marker one (issue #12580): the plain narrowing would drop what makes it the marker
+    return dataType == Type.FLOAT ? (Object) TimeSeriesNaN.toFloat(value) : (Object) value;
   }
 
   /**
@@ -222,6 +223,11 @@ public final class ColumnDefinition {
       return null;
     if (dataType == Type.BOOLEAN)
       return Boolean.parseBoolean(value);
+    // the staleness marker is sealed as its own text, which no number parses (issue #12580): see TimeSeriesNaN.dictionaryText
+    if (dataType == Type.DOUBLE && TimeSeriesNaN.STALE_MARKER_TEXT.equals(value))
+      return TimeSeriesNaN.STALE_MARKER;
+    if (dataType == Type.FLOAT && TimeSeriesNaN.STALE_MARKER_TEXT.equals(value))
+      return TimeSeriesNaN.STALE_MARKER_FLOAT;
     try {
       return switch (dataType) {
         case DOUBLE -> Double.valueOf(value);
@@ -606,7 +612,8 @@ public final class ColumnDefinition {
       return 0.0;
     if (value instanceof Boolean b)
       return b ? 1.0 : 0.0;
-    return ((Number) value).doubleValue();
+    // a FLOAT widens with the staleness marker kept one (issue #12580), so GORILLA_XOR seals the marker of a DOUBLE
+    return TimeSeriesNaN.doubleOf((Number) value);
   }
 
   @Override
