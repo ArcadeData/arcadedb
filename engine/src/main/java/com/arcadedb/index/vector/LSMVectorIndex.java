@@ -914,6 +914,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
       throw new IllegalStateException("Cannot compact vector index '" + indexName + "': cannot lock file " + oldFileId);
 
     int newFileId = -1;
+    // Whether an HA compaction took over the commit lock of the new file, to keep it until the entry creating the file is accepted
+    boolean newFileLockKept = false;
     LSMVectorIndexMutable previousMutable = null;
     LSMVectorIndexCompacted previousCompacted = null;
 
@@ -1032,6 +1034,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
         currentInsertPageNum = newPages.size() - 1;
         currentMutablePages.set(1);
 
+        // Issue #13336: the new data file stays locked until the cluster knows it (an HA compaction publishes it later), so a commit
+        // that resolves this index from now on cannot ship its entries into it ahead of the entry creating it: the followers skipped
+        // such a page (the file did not exist there yet), created the file one version behind and refused the next commit on it as
+        // a WAL version gap. Same as the LSM tree split (issue #12236).
+        // Unlike the split, the publication comes after the whole graph build here, so the hold spans it. That costs no new stall:
+        // a leader commit already waits at the recording-session gate for the whole session (up to the HA quorum timeout), and the
+        // only commits this lock adds a wait to are those on this index that passed the gate before the session opened or gave up
+        // on it. One that still finds the lock held after COMMIT_LOCK_TIMEOUT fails with a retryable LockTimeoutException, where
+        // before it shipped its pages ahead of the file and sent every follower into a resync.
+        if (database.getWrappedDatabaseInstance().keepLockedUntilCompactionIsPublished(newFileId))
+          newFileLockKept = true;
+
         // Re-point the location index at the new file in the SAME critical section that swapped it (issue #5568).
         // The entries above already carry their new offsets; leaving the swap to the caller would open a window in
         // which the index answers offsets into a file that no longer exists - a search landing there reads another
@@ -1079,7 +1093,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       return true;
     } finally {
-      if (newFileId > -1)
+      if (newFileId > -1 && !newFileLockKept)
         database.getTransactionManager().unlockFile(newFileId, Thread.currentThread());
       if (locked == LockManager.LOCK_STATUS.YES)
         database.getTransactionManager().unlockFile(oldFileId, Thread.currentThread());
