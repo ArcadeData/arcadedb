@@ -103,7 +103,7 @@ class Issue11983ExactLongAggregatesOverHttpIT extends BaseGraphServerTest {
         .toURL().openConnection();
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization",
-        "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+        "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes(StandardCharsets.UTF_8)));
     connection.setRequestProperty("Content-Type", "application/json");
     connection.setDoOutput(true);
     try (final OutputStream os = connection.getOutputStream()) {
