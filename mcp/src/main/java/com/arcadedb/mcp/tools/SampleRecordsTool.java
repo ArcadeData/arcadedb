@@ -31,6 +31,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.mcp.MCPConfiguration;
+import com.arcadedb.mcp.MCPRefusalException;
 import com.arcadedb.server.security.ServerSecurityUser;
 
 import java.util.ArrayList;
@@ -79,7 +80,7 @@ public class SampleRecordsTool {
   public static JSONObject execute(final ArcadeDBServer server, final ServerSecurityUser user, final JSONObject args,
       final MCPConfiguration config) {
     if (!config.isAllowReads())
-      throw new SecurityException("Read operations are not allowed by MCP configuration");
+      throw new MCPRefusalException("Read operations are not allowed by MCP configuration");
 
     final String databaseName = MCPToolUtils.requireString(args, "database");
     final int limit = MCPToolUtils.intArgument(args, "limit", DEFAULT_LIMIT);
@@ -149,7 +150,7 @@ public class SampleRecordsTool {
     final String query = "SELECT FROM " + MCPToolUtils.quoteIdentifier("type name", typeName) + " LIMIT " + limit;
     final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine("sql").analyze(query);
     if (!analyzed.isIdempotent())
-      throw new SecurityException("Generated sample query is not read-only");
+      throw new MCPRefusalException("Generated sample query is not read-only");
 
     // Reuse the already-parsed statement when possible (SQL). For other engines analyzed.execute()
     // returns null and the query is re-parsed by database.query().
