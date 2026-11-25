@@ -19,10 +19,15 @@
 package com.arcadedb.gremlin;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.gremlin.support.TraversalPlans;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.query.sql.executor.ResultSet;
+import org.apache.tinkerpop.gremlin.process.traversal.traverser.B_O_Traverser;
+import org.apache.tinkerpop.gremlin.structure.Direction;
+import org.apache.tinkerpop.gremlin.structure.Edge;
+import org.apache.tinkerpop.gremlin.structure.Vertex;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -43,9 +48,16 @@ class Issue12017GremlinGAVOwnWritesTest {
   private ArcadeGraph         graph;
   private GraphAnalyticalView gav;
 
+  private static final String DB_PATH = "./target/testgremlin-gav-12017";
+
   @BeforeEach
   void setup() {
-    graph = ArcadeGraph.open("./target/testgremlin-gav-12017");
+    // A RUN THAT DIED BEFORE ITS TEARDOWN LEAVES THE DATABASE BEHIND, AND THE TYPES BELOW WOULD THEN ALREADY EXIST
+    try (final DatabaseFactory factory = new DatabaseFactory(DB_PATH)) {
+      if (factory.exists())
+        factory.open().drop();
+    }
+    graph = ArcadeGraph.open(DB_PATH);
     graph.getDatabase().getSchema().createVertexType("P");
     graph.getDatabase().getSchema().createEdgeType("K");
 
@@ -74,6 +86,23 @@ class Issue12017GremlinGAVOwnWritesTest {
   private Object single(final String gremlin) {
     try (final ResultSet rs = graph.gremlin(gremlin).execute()) {
       return rs.next().getProperty("result");
+    }
+  }
+
+  @Test
+  void theDegreeCheckStepCountsTheEdgesTheTransactionDropped() {
+    // THE STRATEGY DOES NOT INSTALL THIS STEP TODAY (TINKERPOP'S CountStrategy REWRITES THE where() FIRST, SEE
+    // ArcadeEdgeCountFilterStepTest), SO IT IS DRIVEN DIRECTLY: ONCE THE TRANSACTION HOLDS A WRITE IT MUST COUNT THE RECORDS
+    final ArcadeEdgeCountFilterStep step = new ArcadeEdgeCountFilterStep(graph.traversal().V().asAdmin(), graph, gav, Direction.OUT,
+        new String[] { "K" }, count -> count == 1L);
+    graph.tx().open();
+    try {
+      final Vertex v1 = graph.traversal().V().has("P", "n", 1).next();
+      assertThat(step.filter(new B_O_Traverser<>(v1, 1L))).isTrue();
+      v1.edges(Direction.OUT, "K").forEachRemaining(Edge::remove);
+      assertThat(step.filter(new B_O_Traverser<>(v1, 1L))).isFalse();
+    } finally {
+      graph.tx().rollback();
     }
   }
 
