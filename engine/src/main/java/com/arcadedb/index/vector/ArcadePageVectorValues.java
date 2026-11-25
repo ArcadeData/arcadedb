@@ -272,7 +272,7 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
   }
 
   /**
-   * The INT8 vector of {@code vectorId} read from its index page into buffers this reader reuses (issue #13154), or {@code null} when
+   * The INT8 vector stored at {@code offsetAndFlag} read from its index page into buffers this reader reuses (issue #13154), or {@code null} when
    * {@link #load} has to answer: a build reader (its cache keeps the vector it is given), an index that is not INT8, vectors kept in
    * the graph file, a row that cannot be read or has another width. Where it answers, it answers what {@link #load}
    * reads from the same row, dequantized by the same function, without the {@code byte[]} and {@code float[]} that
@@ -282,7 +282,7 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
    * The vector returned is the reader's buffer: valid until the next call on the same thread, so only for scoring it at once and
    * for copying it into the search cache, never for keeping.
    */
-  private VectorFloat<?> readQuantizedForScoring(final int vectorId, final long offsetAndFlag) {
+  private VectorFloat<?> readQuantizedForScoring(final long offsetAndFlag) {
     if (locations == null || vectorCache != null || byOrdinal != null
         || lsmIndex.metadata.quantizationType != VectorQuantizationType.INT8 || lsmIndex.metadata.storeVectorsInGraph
         || lsmIndex.metadata.dimensions != dimensions)
@@ -362,7 +362,7 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
     if (lsmIndex != null) {
       try {
         if (forScoring) {
-          final VectorFloat<?> scored = readQuantizedForScoring(vectorId, offsetAndFlag);
+          final VectorFloat<?> scored = readQuantizedForScoring(offsetAndFlag);
           if (scored != null) {
             cache(vectorId, scored);
             return scored;
