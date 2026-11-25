@@ -185,7 +185,7 @@ class PostgresCatalogSortBudgetTest {
   void theOrderingKeysOfAWindowAreCharged() {
     final StringBuilder keys = new StringBuilder();
     for (int i = 0; i < 100; i++)
-      keys.append(i > 0 ? ", " : "").append(i % 2 == 0 ? "r" : "r desc");
+      keys.append(i > 0 ? ", " : "").append(i % 2 == 0 ? "r + " + i : "r + " + i + " desc");
     final String query = "select row_number() over (order by " + keys + ") as pg_n from pg_database d, generate_series(1, 50000) as s(r)";
 
     assertThatThrownBy(() -> PostgresCatalog.resolve(query, database, USER)).isInstanceOf(PostgresCatalog.WorkLimitExceeded.class);
@@ -196,10 +196,38 @@ class PostgresCatalogSortBudgetTest {
   void theSortOfAWindowPartitionIsCharged() {
     final StringBuilder keys = new StringBuilder();
     for (int i = 0; i < 40; i++)
-      keys.append(i > 0 ? ", " : "").append("r");
+      keys.append(i > 0 ? ", " : "").append("r + ").append(i);
     final String query = "select row_number() over (order by " + keys + ") as pg_n from pg_database d, generate_series(1, 20000) as s(r)";
 
     assertThatThrownBy(() -> PostgresCatalog.resolve(query, database, USER)).isInstanceOf(PostgresCatalog.WorkLimitExceeded.class);
+  }
+
+  /** A column the order of a window names again ties exactly where its first use did: it adds no key, to the work or to the order. */
+  @Test
+  void aRepeatedOrderingKeyOfAWindowAddsNoKey() {
+    final StringBuilder keys = new StringBuilder();
+    for (int i = 0; i < 40; i++)
+      keys.append(i > 0 ? ", " : "").append(i % 2 == 0 ? "r" : "r desc");
+    final String query = "select row_number() over (order by " + keys + ") as pg_n from pg_database d, generate_series(1, 20000) as s(r)";
+
+    // one distinct key over 20000 rows is within the budget that 40 distinct keys exceed
+    final PostgresCatalog.Answer answer = PostgresCatalog.resolve(query, database, USER);
+    assertThat(answer).isNotNull();
+    assertThat(answer.rows).hasSize(20_000);
+  }
+
+  /** The first use of a repeated column decides the direction of the numbering, whatever the later ones say. */
+  @Test
+  void theFirstUseOfARepeatedWindowKeyDecidesTheDirection() {
+    final PostgresCatalog.Answer answer = PostgresCatalog.resolve(
+        "select g as pg_g, r as pg_r, row_number() over (partition by g order by r desc, r asc, r) as pg_n " + TWELVE_ROWS
+            + " order by pg_g, pg_r", database, USER);
+
+    assertThat(answer).isNotNull();
+    assertThat(answer.rows).hasSize(12);
+    // each g is a partition of four rows, numbered from the greatest r, as the first use asks
+    for (int row = 0; row < 12; row++)
+      assertThat(answer.rows.get(row).get("pg_n")).as("row %d", row).isEqualTo(4L - row % 4);
   }
 
   /** The same for the keys a window partitions by. */

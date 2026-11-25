@@ -25,6 +25,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.function.Supplier;
 import java.util.regex.Matcher;
@@ -2025,7 +2026,6 @@ abstract class PostgresCatalogExpression {
           final PostgresCatalogExpression key = parseExpression();
           if (key == null)
             return null;
-          orderBy.add(key);
 
           // The direction decides the numbering, so it is carried rather than consumed and forgotten: a key
           // read as ascending when the client wrote DESC numbers the partition backwards, and a wrong number
@@ -2039,7 +2039,12 @@ abstract class PostgresCatalogExpression {
           // for it is declined rather than numbered by a rule it did not ask for.
           if (peek() != null && peek().isKeyword("NULLS"))
             return null;
-          orderByDescending.add(descending);
+
+          // a column named again ties exactly where its first use did, whatever direction it is given: it is no key
+          if (!namesColumnOf(orderBy, key)) {
+            orderBy.add(key);
+            orderByDescending.add(descending);
+          }
         } while (skipSymbol(","));
       }
 
@@ -2047,6 +2052,16 @@ abstract class PostgresCatalogExpression {
         return null;
 
       return new WindowCall(functionName, partitionBy, orderBy, orderByDescending);
+    }
+
+    /** Whether {@code key} is a plain column that one of {@code keys} is already. */
+    private static boolean namesColumnOf(final List<PostgresCatalogExpression> keys, final PostgresCatalogExpression key) {
+      if (!(key instanceof ColumnReference column))
+        return false;
+      for (final PostgresCatalogExpression other : keys)
+        if (other instanceof ColumnReference known && known.name.equals(column.name) && Objects.equals(known.qualifier, column.qualifier))
+          return true;
+      return false;
     }
 
     /**
