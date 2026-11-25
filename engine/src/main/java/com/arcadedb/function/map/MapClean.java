@@ -78,12 +78,21 @@ public class MapClean extends AbstractMapFunction {
     }
 
     final Set<Object> valuesSet = new HashSet<>(valuesToRemove);
+    // The string form of a value can only match a listed String: skip rendering it (one allocation per entry, a full render for
+    // a nested list or map) when no String is listed
+    boolean matchStringForm = false;
+    for (final Object value : valuesSet)
+      if (value instanceof String) {
+        matchStringForm = true;
+        break;
+      }
 
     // As in APOC, an entry goes when its key is listed, its value is null, or its value or its value's string form is listed
     final Map<String, Object> result = new LinkedHashMap<>();
     for (final Map.Entry<String, Object> entry : map.entrySet()) {
       final Object value = entry.getValue();
-      if (!keysSet.contains(entry.getKey()) && value != null && !valuesSet.contains(value) && !valuesSet.contains(value.toString()))
+      if (!keysSet.contains(entry.getKey()) && value != null && !valuesSet.contains(value) && !(matchStringForm && valuesSet.contains(
+          value.toString())))
         result.put(entry.getKey(), value);
     }
 

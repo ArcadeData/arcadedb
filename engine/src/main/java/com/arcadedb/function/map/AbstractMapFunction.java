@@ -53,6 +53,8 @@ public abstract class AbstractMapFunction implements StatelessFunction {
     if (arg instanceof Map) {
       return (Map<String, Object>) arg;
     }
+    // A copy on purpose: it holds the properties only (no @rid, @type and the other metadata entries Document.toMap() adds), and only
+    // a node or relationship argument pays for it, a map argument is read as it is
     if (arg instanceof Document document) {
       final Map<String, Object> properties = new LinkedHashMap<>();
       for (final String name : document.getPropertyNames())
