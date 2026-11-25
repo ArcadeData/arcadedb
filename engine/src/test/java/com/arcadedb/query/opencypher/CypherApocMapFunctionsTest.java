@@ -127,6 +127,15 @@ class CypherApocMapFunctionsTest {
       assertThat(value("MATCH (n:P {uid:1}) RETURN apoc.map.clean(n, ['uid'], []) AS r")).isEqualTo(Map.of("name", "a"));
     }
 
+    @Test
+    void aRelationshipIsTheMapOfItsPropertiesWithoutItsEndpoints() {
+      createGraph();
+      assertThat(value("MATCH ()-[r:K {uid:10}]->() RETURN apoc.map.sortedProperties(r) AS r")).isEqualTo(
+          List.of(List.of("uid", 10), List.of("w", 2)));
+      assertThat(value("MATCH ()-[r:K {uid:10}]->() RETURN apoc.map.values(r, ['w', '@in', '@rid']) AS r")).isEqualTo(List.of(2));
+      assertThat(value("MATCH ()-[r:K {uid:10}]->() RETURN apoc.map.clean(r, ['uid'], []) AS r")).isEqualTo(Map.of("w", 2));
+    }
+
     private void createGraph() {
       database.transaction(() -> database.command("opencypher",
           "CREATE (a:P {uid:1, name:'a'})-[:K {w:2, uid:10}]->(b:P {uid:2, name:'b'}), (c:P {uid:3, name:'a'}), (d:P {uid:4}), "
