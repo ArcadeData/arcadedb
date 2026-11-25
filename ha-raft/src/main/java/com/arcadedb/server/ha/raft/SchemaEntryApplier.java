@@ -281,14 +281,17 @@ final class SchemaEntryApplier {
       // "Invalid sub-index for index '...' (error=File with id 'NNN' was not found)" over a state that was
       // purely transient, and the old self-repair in LSMTreeIndexMutable.onAfterLoad then tried to DROP
       // the index - a schema write a replica may not perform - which failed the apply and escalated the
-      // whole database to a snapshot resync. Retiring last closes that window: by then page 0 already
-      // names the new file.
-      if (!appliedBefore && decoded.filesToRemove() != null)
-        for (final Map.Entry<Integer, String> fileEntry : decoded.filesToRemove().entrySet()) {
-          db.getPageManager().deleteFile(db, fileEntry.getKey());
-          db.getFileManager().dropFile(fileEntry.getKey());
-          db.getSchema().getEmbedded().removeFile(fileEntry.getKey());
-        }
+      // whole database to a snapshot resync.
+      //
+      // And only AFTER the reload below has published the generation that no longer reads them (issue #12358). The
+      // previous generation stays published for the whole of a full load, so the queries running meanwhile keep
+      // resolving its indexes (issue #7963) - and those indexes read through the files this entry retires. Deleted
+      // first, every lookup on them failed for the length of the load (up to 1.4 s on a database with many vector
+      // indexes) with "File with id NNN was not found". The load leaves them out of the components it builds instead,
+      // as if they were already gone, which keeps #4743 closed.
+      final Set<Integer> retiring = !appliedBefore && decoded.filesToRemove() != null ?
+          decoded.filesToRemove().keySet() :
+          Collections.emptySet();
 
       // Reload schema after WAL pages are on disk so new index files have valid content
       // and are correctly registered (page counts, type links, in-memory structures).
@@ -319,11 +322,21 @@ final class SchemaEntryApplier {
               walTouchedFileIds);
 
         if (refusal != null)
-          loadSchemaInFull(schema, decoded, entryIndex, refusal);
+          loadSchemaInFull(schema, decoded, entryIndex, refusal, retiring);
 
         // The reload read the index and dictionary files again, on the apply thread (issue #11518): a copy that turns up
         // damaged here is quarantined before the next entry is applied to it, as the startup scan does for one found at open
         sm.quarantine.quarantineIfLocalCopyDamaged(decoded.databaseName(), db);
+      }
+
+      // Whichever path published above: the incremental refresh refuses every entry that retires a file (FILE_RETIRED), so a
+      // non-empty set here always follows a full load that left these ids out. A load that throws leaves them in place: the
+      // entry is not applied, so its retry or replay (appliedBefore false) retires them after its own load. Scans of the previous generation
+      // that still read them end with a retryable IndexReplacedException rather than a bad request.
+      for (final Integer fileId : retiring) {
+        db.getPageManager().deleteFile(db, fileId);
+        db.getFileManager().dropFile(fileId);
+        db.getSchema().getEmbedded().removeFile(fileId);
       }
 
     } catch (final IOException e) {
@@ -341,13 +354,13 @@ final class SchemaEntryApplier {
    * ({@code arcadedb.ha.schema.full_load}) are what a dashboard alerts on.
    */
   private void loadSchemaInFull(final LocalSchema schema, final RaftLogEntryCodec.DecodedEntry decoded, final long entryIndex,
-      final IncrementalLoadRefusal refusal) throws IOException {
+      final IncrementalLoadRefusal refusal, final Set<Integer> retiringFileIds) throws IOException {
     final SchemaFullLoadRecorder recorder = sm.schemaFullLoadRecorder;
     // Counted before the load, so one that throws is still seen
     recorder.started(refusal.reason());
 
     final long startNanos = System.nanoTime();
-    schema.load(ComponentFile.MODE.READ_WRITE, true);
+    schema.load(ComponentFile.MODE.READ_WRITE, true, false, retiringFileIds);
     final long elapsedNanos = System.nanoTime() - startNanos;
     recorder.completed(refusal.reason(), elapsedNanos);
 

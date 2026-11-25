@@ -28,6 +28,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
+import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.utility.TimeBoundRegex;
 
 import java.io.IOException;
@@ -222,11 +223,15 @@ public final class ExistingRecordsCheck {
    * @param requiredBy the existence constraint being declared (MANDATORY or NOTNULL), or null for a MIN, a MAX or a REGEXP; when it is
    *                   set, {@code what} is the keyword of that constraint, which the column check names in its reason
    * @param what       what is being declared, for the message
+   *
+   * @throws SecurityException when the current user may not read the type, before any sample is looked at
    */
   private static void requireSamples(final Database db, final LocalTimeSeriesType type, final String propertyName,
       final ValidationException.Kind requiredBy, final String min, final String max, final String regexp, final String what) {
     final boolean required = requiredBy != null;
-    final TimeSeriesEngine engine = type.getEngine();
+    // a read of every sample of the type, so it is held to the per-type read check first, as the scan of the records of any other type
+    // is by their buckets: a TIMESERIES type owns no bucket, so this is the only check the samples have
+    final TimeSeriesEngine engine = type.getEngine(SecurityDatabaseUser.ACCESS.READ_RECORD);
     final Property property = type.getPolymorphicPropertyIfExists(propertyName);
     if (engine == null || property == null)
       return;

@@ -21,6 +21,8 @@ package com.arcadedb.postgres;
 import com.arcadedb.utility.TimeBoundRegex;
 
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -136,6 +138,52 @@ abstract class PostgresCatalogExpression {
     default int expansion() {
       return -1;
     }
+
+    /**
+     * @return what the text patterns of the whole statement this resolver evaluates a row of share, which every expression of it
+     * and every sub-select it parses again for a row spends from alike; null when the resolver belongs to no statement, and each
+     * pattern predicate then holds a budget of its own
+     */
+    default StatementPatterns statementPatterns() {
+      return null;
+    }
+  }
+
+  /**
+   * What the text patterns ({@code ~}, {@code LIKE}, ...) of one statement share: the character reads they may make in all, over
+   * every row, every predicate and every evaluation of a sub-select, and the patterns they compiled. A sub-select is parsed again
+   * for each row of the query around it, into fresh expression nodes, so a budget or a compiled pattern held by a node would start
+   * over with each of those rows. One is created per statement, by whoever resolves it, and is read and spent by the one thread
+   * answering that statement.
+   */
+  static final class StatementPatterns {
+    /** The patterns kept: a statement that computes a pattern for each row would otherwise keep one for each of them. */
+    private static final int MAX_COMPILED = 64;
+
+    private long                            left = BoundedCharSequence.STATEMENT_BUDGET;
+    private Map<CompiledKey, CompiledRegex> compiled;
+
+    /**
+     * The pattern the client's text is, compiled the first time the statement asks for it.
+     *
+     * @throws PatternSyntaxException when Java cannot compile the text
+     */
+    private CompiledRegex compiled(final String source, final boolean like, final int flags) {
+      final CompiledKey key = new CompiledKey(source, like, flags);
+      if (compiled == null)
+        compiled = new HashMap<>();
+      CompiledRegex regex = compiled.get(key);
+      if (regex == null) {
+        regex = CompiledRegex.of(source, like, flags);
+        if (compiled.size() < MAX_COMPILED)
+          compiled.put(key, regex);
+      }
+      return regex;
+    }
+  }
+
+  /** What tells a compiled pattern from another one of the same statement. */
+  private record CompiledKey(String source, boolean like, int flags) {
   }
 
   /** What a sub-select is asked for, which is decided by where it is written. */
@@ -729,19 +777,21 @@ abstract class PostgresCatalogExpression {
     /**
      * The last regular expression this node compiled, with the client's text it was translated from: one reference,
      * so it can never be read half-updated. An expression tree is built per statement and evaluated by the one
-     * thread answering it, so nothing else ever reads it anyway.
+     * thread answering it, so nothing else ever reads it anyway. The patterns of a statement are kept by the statement as well,
+     * see {@link StatementPatterns}: a sub-select is parsed again for each outer row, and a node of its own would compile the
+     * same pattern again for each of them.
      */
     private       CompiledRegex             compiled;
     /**
      * The work this node's pattern has left, in character reads: the steps a match takes without reading one are charged in the
      * same unit ({@link BoundedCharSequence#READ_FREE_STEPS_PER_READ}). One match is bounded by
      * {@link BoundedCharSequence#MATCH_BUDGET}, and this bounds the sum over every row the node is evaluated
-     * against, so a pattern that exhausts the per-match budget on each of many rows cannot add up to a long run. A
-     * correlated sub-select is parsed again for each outer row, into fresh nodes; what bounds that case is the
-     * statement's work budget, which every re-parse is charged to (pinned by
-     * {@code PostgresCatalogRelationsTest.PsqlOdbcCatalogShapes.aBacktrackingRegularExpressionIsBounded}). Like {@link #compiled} it is
-     * per-statement state: a tree is parsed for one statement, evaluated by the one thread answering it, and never
-     * cached or reused, so a spent budget cannot carry into another statement.
+     * against, so a pattern that exhausts the per-match budget on each of many rows cannot add up to a long run. Only the nodes
+     * evaluated outside a statement spend it: those of a statement spend the budget of its {@link StatementPatterns}, which a
+     * sub-select parsed again for each outer row, into fresh nodes, shares with the rest of it (pinned by
+     * {@code PostgresCatalogStatementPatternWorkTest}). Like {@link #compiled} it is per-statement state: a tree is parsed for one
+     * statement, evaluated by the one thread answering it, and never cached or reused, so a spent budget cannot carry into another
+     * statement.
      */
     private       long                      regexBudget = BoundedCharSequence.STATEMENT_BUDGET;
 
@@ -794,8 +844,8 @@ abstract class PostgresCatalogExpression {
         case "&" -> l == null || r == null ? null : l instanceof Number ln && r instanceof Number rn ?
             (Object) (ln.longValue() & rn.longValue()) : UNKNOWN;
         case "+", "-", "*", "/" -> arithmetic(operator, l, r);
-        case "~", "!~", "~*", "!~*" -> regex(operator, l, r);
-        case "LIKE", "NOT LIKE", "ILIKE", "NOT ILIKE" -> like(operator, l, r);
+        case "~", "!~", "~*", "!~*" -> regex(resolver, operator, l, r);
+        case "LIKE", "NOT LIKE", "ILIKE", "NOT ILIKE" -> like(resolver, operator, l, r);
         default -> compare(operator, l, r);
       };
     }
@@ -816,55 +866,62 @@ abstract class PostgresCatalogExpression {
       return result == Math.rint(result) ? (Object) (long) result : (Object) result;
     }
 
-    private Object regex(final String operator, final Object l, final Object r) {
+    private Object regex(final Resolver resolver, final String operator, final Object l, final Object r) {
       if (l == null || r == null)
         return null;
       try {
-        final CompiledRegex regex = compile(asString(r), false, operator.endsWith("*") ? Pattern.CASE_INSENSITIVE : 0);
-        return operator.startsWith("!") != matches(regex, asString(l), true);
+        final CompiledRegex regex = compile(resolver, asString(r), false, operator.endsWith("*") ? Pattern.CASE_INSENSITIVE : 0);
+        return operator.startsWith("!") != matches(resolver, regex, asString(l), true);
       } catch (final PatternSyntaxException e) {
         // A POSIX regex Java cannot compile: not something to guess the answer of.
         return UNKNOWN;
       }
     }
 
-    private Object like(final String operator, final Object l, final Object r) {
+    private Object like(final Resolver resolver, final String operator, final Object l, final Object r) {
       if (l == null || r == null)
         return null;
-      final CompiledRegex regex = compile(asString(r), true, operator.contains("ILIKE") ? Pattern.CASE_INSENSITIVE : 0);
-      return operator.startsWith("NOT") != matches(regex, asString(l), false);
+      final CompiledRegex regex = compile(resolver, asString(r), true, operator.contains("ILIKE") ? Pattern.CASE_INSENSITIVE : 0);
+      return operator.startsWith("NOT") != matches(resolver, regex, asString(l), false);
     }
 
     /**
      * The pattern is a literal in every query a client writes and the predicate runs once per row, so it is translated and
-     * compiled once per pattern text, and measured once, not once per row (psql's \d sends one, issue #10228).
+     * compiled once per pattern text, and measured once, not once per row (psql's \d sends one, issue #10228). Once per statement
+     * as well as per node: the nodes of a sub-select are made again for every outer row.
      */
-    private CompiledRegex compile(final String pattern, final boolean like, final int flags) {
+    private CompiledRegex compile(final Resolver resolver, final String pattern, final boolean like, final int flags) {
       CompiledRegex cached = compiled;
       if (cached == null || !cached.source().equals(pattern)) {
-        final Pattern regex = Pattern.compile(like ? likeToRegex(pattern) : javaRegex(pattern), flags);
-        cached = new CompiledRegex(pattern, regex, TimeBoundRegex.readFreeWork(regex));
+        final StatementPatterns statement = resolver.statementPatterns();
+        cached = statement != null ? statement.compiled(pattern, like, flags) : CompiledRegex.of(pattern, like, flags);
         compiled = cached;
       }
       return cached;
     }
 
     /**
-     * Runs the match under the budget of this node: a search ({@code scans}, the regular-expression operators) tries every
-     * start position, a full match (LIKE) the one.
+     * Runs the match under the budget of the statement the resolver evaluates a row of, or under the budget of this node when it
+     * belongs to none: a search ({@code scans}, the regular-expression operators) tries every start position, a full match (LIKE)
+     * the one.
      *
      * @throws BudgetExceeded when the match needs more than the budget allows
      */
-    private boolean matches(final CompiledRegex regex, final String value, final boolean scans) {
-      if (regexBudget <= 0)
+    private boolean matches(final Resolver resolver, final CompiledRegex regex, final String value, final boolean scans) {
+      final StatementPatterns statement = resolver.statementPatterns();
+      final long left = statement != null ? statement.left : regexBudget;
+      if (left <= 0)
         throw new BudgetExceeded();
-      final BoundedCharSequence text = BoundedCharSequence.of(value, Math.min(BoundedCharSequence.MATCH_BUDGET, regexBudget),
-          regex.work(), scans);
+      final BoundedCharSequence text = BoundedCharSequence.of(value, Math.min(BoundedCharSequence.MATCH_BUDGET, left), regex.work(),
+          scans);
       try {
         final Matcher matcher = regex.regex().matcher(text);
         return scans ? matcher.find() : matcher.matches();
       } finally {
-        regexBudget -= text.used();
+        if (statement != null)
+          statement.left -= text.used();
+        else
+          regexBudget -= text.used();
       }
     }
 
@@ -1094,6 +1151,11 @@ abstract class PostgresCatalogExpression {
 
   /** A compiled regular expression, the client's text it was translated from and the steps it can take without a read. */
   private record CompiledRegex(String source, Pattern regex, TimeBoundRegex.ReadFreeWork work) {
+    /** @throws PatternSyntaxException when Java cannot compile the text */
+    static CompiledRegex of(final String source, final boolean like, final int flags) {
+      final Pattern regex = Pattern.compile(like ? likeToRegex(source) : javaRegex(source), flags);
+      return new CompiledRegex(source, regex, TimeBoundRegex.readFreeWork(regex));
+    }
   }
 
   /** Translates a SQL LIKE pattern into the equivalent regular expression. */
@@ -2006,6 +2068,7 @@ abstract class PostgresCatalogExpression {
       final List<PostgresCatalogExpression> partitionBy = new ArrayList<>();
       final List<PostgresCatalogExpression> orderBy = new ArrayList<>();
       final List<Boolean>                   orderByDescending = new ArrayList<>();
+      final Set<ColumnKey>                  orderedColumns = new HashSet<>();
 
       if (skipKeyword("PARTITION")) {
         if (!skipKeyword("BY"))
@@ -2025,7 +2088,6 @@ abstract class PostgresCatalogExpression {
           final PostgresCatalogExpression key = parseExpression();
           if (key == null)
             return null;
-          orderBy.add(key);
 
           // The direction decides the numbering, so it is carried rather than consumed and forgotten: a key
           // read as ascending when the client wrote DESC numbers the partition backwards, and a wrong number
@@ -2039,7 +2101,12 @@ abstract class PostgresCatalogExpression {
           // for it is declined rather than numbered by a rule it did not ask for.
           if (peek() != null && peek().isKeyword("NULLS"))
             return null;
-          orderByDescending.add(descending);
+
+          // a column named again ties exactly where its first use did, whatever direction it is given: it is no key
+          if (!(key instanceof ColumnReference column) || orderedColumns.add(new ColumnKey(column.qualifier, column.name))) {
+            orderBy.add(key);
+            orderByDescending.add(descending);
+          }
         } while (skipSymbol(","));
       }
 
@@ -2047,6 +2114,10 @@ abstract class PostgresCatalogExpression {
         return null;
 
       return new WindowCall(functionName, partitionBy, orderBy, orderByDescending);
+    }
+
+    /** A plain column as the ORDER BY of a window names it, so that a column named again is told in constant time. */
+    private record ColumnKey(String qualifier, String name) {
     }
 
     /**
