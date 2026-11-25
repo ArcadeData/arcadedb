@@ -182,10 +182,9 @@ class VectorMemoryPressureOracleTest {
         Internals.startAsyncGraphRebuild(index);
         assertThat(index.getStats().get("asyncRebuildInProgress")).as("the rebuild was started").isEqualTo(1L);
 
-        // A rebuild that took a permit of its own would run to its end in this window and clear the flag; this one cannot get past
-        // the held permit. The window only observes: it can make the test pass wrongly, never fail it
-        for (int i = 0; i < 20; i++)
-          sleepMillis(10);
+        // A rebuild that took a permit of its own would run to its end and clear the flag, and never queue; this one reaches the
+        // semaphore and waits in its queue, behind the held permit, which is what is waited for here instead of a fixed time
+        waitUntil(permits::hasQueuedThreads, "the rebuild queues for the permit of the other holder");
         assertThat(index.getStats().get("asyncRebuildInProgress")).as("still waiting for the permit of the other holder").isEqualTo(1L);
       } finally {
         LSMVectorIndex.releaseAllRebuildPermitsForTest();
