@@ -49,6 +49,8 @@ public class FunctionCall extends SimpleNode {
   /** {@code count(DISTINCT x)}: the aggregate sees each distinct value of its arguments once (issue #8889) */
   public boolean          distinct = false;
   private   SQLFunction      cachedFunction;
+  /** Memo of {@link #isAggregateCall()}, null until first asked. */
+  private   Boolean          aggregateCall;
 
   public FunctionCall() {
   }
@@ -475,7 +477,28 @@ public class FunctionCall extends SimpleNode {
       if (!param.isFoldable())
         return false;
 
-    return true;
+    // a deterministic aggregate (count(1), sum(1)) is still an accumulator over the rows: evaluated once at plan time it would answer
+    // with the first row's state, not with a constant (issue #13059)
+    return !isAggregateCall();
+  }
+
+  /**
+   * Whether this call aggregates the rows it sees, as the function answers it for these arguments: {@code max(a)} does,
+   * {@code max(a, b)} does not. Memoized on the call site, which the statement cache shares across executions.
+   */
+  private boolean isAggregateCall() {
+    Boolean result = aggregateCall;
+    if (result == null) {
+      try {
+        final SQLFunction function = DefaultSQLFunctionFactory.getInstance().getFunctionInstance(name.getStringValue().toLowerCase(Locale.ENGLISH));
+        result = function != null && function.config(params.toArray()).aggregateResults();
+      } catch (final CommandExecutionException e) {
+        // not resolvable without a database: treated as an aggregate, the conservative answer for folding
+        result = Boolean.TRUE;
+      }
+      aggregateCall = result;
+    }
+    return result;
   }
 
   /**

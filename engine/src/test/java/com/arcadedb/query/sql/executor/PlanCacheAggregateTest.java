@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.sql.parser.ExecutionPlanCache;
@@ -26,8 +27,10 @@ import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -147,6 +150,122 @@ class PlanCacheAggregateTest extends TestHelper {
       assertThat(rows).as("LIMIT %d", n).isEqualTo(n);
     }
     assertThat(cache().contains(sql)).isFalse();
+  }
+
+  @Test
+  void aCachedDistinctCountAndAParameterInsideTheAggregateAreBoundPerExecution() {
+    final String distinct = "SELECT count(DISTINCT tag) AS c FROM Item WHERE grp = :g";
+    final String shifted = "SELECT sum(seq + :p) AS s, max(seq + :p) AS hi FROM Item WHERE grp = :g";
+    for (int round = 0; round < 3; round++)
+      for (final int g : new int[] { 2, 6, 2 }) {
+        final Set<String> tags = new HashSet<>();
+        long sum = 0;
+        int max = Integer.MIN_VALUE;
+        int n = 0;
+        for (int i = 0; i < RECORDS; i++)
+          if (i % 10 == g) {
+            tags.add("t" + (i % 3));
+            sum += i;
+            max = Math.max(max, i);
+            n++;
+          }
+        assertThat(row(distinct, Map.of("g", g)).<Number>getProperty("c").longValue()).as("distinct g=%d", g).isEqualTo(tags.size());
+
+        final int p = 1000 * (round + 1);
+        final Result result = row(shifted, Map.of("g", g, "p", p));
+        assertThat(result.<Number>getProperty("s").longValue()).as("sum g=%d p=%d", g, p).isEqualTo(sum + (long) n * p);
+        assertThat(result.<Number>getProperty("hi").longValue()).as("max g=%d p=%d", g, p).isEqualTo(max + p);
+      }
+    assertThat(cache().contains(distinct)).isTrue();
+    assertThat(cache().contains(shifted)).isTrue();
+  }
+
+  @Test
+  void aCachedAggregatePlanAnswersAParallelScanAndASequentialOneAlike() {
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN_PAGES_PER_UNIT, 2);
+    database.getSchema().createDocumentType("Big", 4);
+    final int rows = 20_000;
+    database.transaction(() -> {
+      for (int i = 0; i < rows; i++)
+        database.newDocument("Big").set("grp", i % 10).set("seq", i).set("tag", "t" + (i % 7)).save();
+    });
+
+    final String sql = "SELECT tag, count(*) AS c, sum(seq) AS s FROM Big WHERE grp = :g GROUP BY tag";
+    assertThat(explain(sql, Map.of("g", 1))).contains("(parallel");
+    for (int round = 0; round < 2; round++)
+      for (final int g : new int[] { 1, 8, 1 }) {
+        final Map<String, Long> expectedCounts = new TreeMap<>();
+        final Map<String, Long> expectedSums = new TreeMap<>();
+        for (int i = 0; i < rows; i++)
+          if (i % 10 == g) {
+            expectedCounts.merge("t" + (i % 7), 1L, Long::sum);
+            expectedSums.merge("t" + (i % 7), (long) i, Long::sum);
+          }
+        // outside a transaction the scan runs in parallel, inside one it is sequential: both run copies of the same cached plan
+        assertThat(groups(sql, g, "c")).as("parallel count g=%d", g).isEqualTo(expectedCounts);
+        assertThat(groups(sql, g, "s")).as("parallel sum g=%d", g).isEqualTo(expectedSums);
+        database.transaction(() -> {
+          assertThat(groups(sql, g, "c")).as("sequential count g=%d", g).isEqualTo(expectedCounts);
+          assertThat(groups(sql, g, "s")).as("sequential sum g=%d", g).isEqualTo(expectedSums);
+        });
+      }
+    assertThat(cache().contains(sql)).isTrue();
+  }
+
+  @Test
+  void aHardwiredCountOrMaxIsCachedAndSeesTheRowsWrittenSinceItWasPlanned() {
+    final String countType = "SELECT count(*) AS c FROM Item";
+    final String countIndex = "SELECT count(*) AS c FROM index:`Item[grp]`";
+    final String maxIndexed = "SELECT max(grp) AS m FROM Item";
+    assertThat(explain(countType, Map.of())).contains("CALCULATE USERTYPE SIZE");
+    assertThat(explain(countIndex, Map.of())).contains("CALCULATE INDEX SIZE");
+    assertThat(explain(maxIndexed, Map.of())).contains("MAX FROM INDEX");
+
+    for (int round = 0; round < 3; round++) {
+      assertThat(row(countType, Map.of()).<Number>getProperty("c").longValue()).isEqualTo(RECORDS + round);
+      assertThat(row(countIndex, Map.of()).<Number>getProperty("c").longValue()).isEqualTo(RECORDS + round);
+      assertThat(row(maxIndexed, Map.of()).<Number>getProperty("m").intValue()).isEqualTo(round == 0 ? 9 : 100 + round - 1);
+      final int grp = 100 + round;
+      database.transaction(() -> database.newDocument("Item").set("grp", grp).set("seq", -1).set("tag", "t0").save());
+    }
+    // planned once: an execution after the first takes the cached plan instead of missing the lookup and planning again
+    final ExecutionPlanCache cache = cache();
+    assertThat(cache.contains(countType)).isTrue();
+    assertThat(cache.contains(countIndex)).isTrue();
+    assertThat(cache.contains(maxIndexed)).isTrue();
+    final long puts = cache.getPutCount();
+    row(countType, Map.of());
+    row(maxIndexed, Map.of());
+    assertThat(cache.getPutCount()).isEqualTo(puts);
+  }
+
+  @Test
+  void anAggregateOverConstantsInAWhereIsNotFoldedAtPlanTime() {
+    // the marker that lets a plan holding count() or sum() be cached does not make the aggregate a constant: folding it would
+    // evaluate the accumulator once at planning and drop or keep every row on that one value
+    for (final String sql : new String[] { "SELECT FROM Item WHERE count(1) = 1", "SELECT FROM Item WHERE sum(1) = 5",
+        "SELECT FROM Item WHERE max(1) = 1" })
+      assertThat(explain(sql, Map.of())).as(sql).contains("WITH FILTER");
+
+    // a scalar call of the same functions over constants still folds
+    assertThat(explain("SELECT FROM Item WHERE max(1, 3) = 3", Map.of())).doesNotContain("FILTER");
+  }
+
+  private Map<String, Long> groups(final String sql, final int g, final String property) {
+    final Map<String, Long> groups = new TreeMap<>();
+    try (final ResultSet rs = database.query("sql", sql, Map.of("g", g))) {
+      while (rs.hasNext()) {
+        final Result row = rs.next();
+        groups.put(row.getProperty("tag"), row.<Number>getProperty(property).longValue());
+      }
+    }
+    return groups;
+  }
+
+  private String explain(final String sql, final Map<String, Object> params) {
+    try (final ResultSet rs = database.query("sql", "EXPLAIN " + sql, params)) {
+      return rs.next().getProperty("executionPlanAsString");
+    }
   }
 
   private ExecutionPlanCache cache() {

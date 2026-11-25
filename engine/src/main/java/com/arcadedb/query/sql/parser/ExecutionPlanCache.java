@@ -50,7 +50,7 @@ public class ExecutionPlanCache {
    */
   private volatile long                               invalidationEpoch = 0;
   // how many plans were taken from the cache and how many were stored, so a test can tell a statement planned once from one
-  // planned every time
+  // planned every time. Diagnostic only: updated under the lock get() and put() already hold, nothing reads them on a query path
   private long                                        hits;
   private long                                        puts;
 
