@@ -18,6 +18,8 @@
  */
 package com.arcadedb.query.opencypher.executor.steps;
 
+import com.arcadedb.database.MutableDocument;
+
 import java.util.Map;
 import java.util.Set;
 
@@ -30,13 +32,13 @@ public final class CypherStatisticsHelper {
   }
 
   /**
-   * Counts pre-existing, non-internal properties that a replace-map (SET n = {..} / MERGE ... = {..})
+   * Counts pre-existing properties (every one but a reserved metadata name, see {@link MutableDocument#isReservedName}) that a replace-map (SET n = {..} / MERGE ... = {..})
    * does not re-set with a non-null value. Neo4j counts these removals toward properties-set.
    */
   public static int countRemovedProperties(final Set<String> existingProps, final Map<String, Object> replacementMap) {
     int removed = 0;
     for (final String prop : existingProps)
-      if (!prop.startsWith("@") && replacementMap.get(prop) == null)
+      if (!MutableDocument.isReservedName(prop) && replacementMap.get(prop) == null)
         removed++;
     return removed;
   }
