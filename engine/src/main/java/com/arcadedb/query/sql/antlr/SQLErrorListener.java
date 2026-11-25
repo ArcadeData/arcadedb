@@ -31,6 +31,17 @@ import java.util.Locale;
  */
 public class SQLErrorListener extends BaseErrorListener {
 
+  /**
+   * The most characters of the offending line the message quotes, so the message fits a transport with a size limit, such
+   * as the gRPC metadata (issue #12567).
+   */
+  static final int QUOTE_BUDGET = 4 * 1024;
+
+  /**
+   * The characters before the failing character a cut quote keeps, so the caret points into the quoted text.
+   */
+  static final int QUOTE_WINDOW = 512;
+
   private final String sqlText;
 
   public SQLErrorListener(final String sqlText) {
@@ -66,12 +77,13 @@ public class SQLErrorListener extends BaseErrorListener {
       final String[] lines = sqlText.split("\n");
       if (line > 0 && line <= lines.length) {
         final String errorLine = lines[line - 1];
+        final Snippet snippet = snippetOf(errorLine, charPositionInLine);
         errorMessage.append("\n");
-        errorMessage.append(errorLine);
+        errorMessage.append(snippet.text);
         errorMessage.append("\n");
 
-        // Add a caret (^) pointing to the error position
-        for (int i = 0; i < charPositionInLine; i++) {
+        // The caret points at the failing character, under the quoted text
+        for (int i = 0; i < snippet.caretOffset; i++) {
           errorMessage.append(" ");
         }
         errorMessage.append("^");
@@ -79,6 +91,46 @@ public class SQLErrorListener extends BaseErrorListener {
     }
 
     throw new CommandSQLParsingException(errorMessage.toString());
+  }
+
+  /**
+   * The offending line, quoted whole when it fits {@link #QUOTE_BUDGET}, otherwise cut around the failing character with
+   * the caret placed under the cut quote. The parser's column counts code points, as does the caret padding.
+   */
+  private static Snippet snippetOf(final String errorLine, final int charPositionInLine) {
+    if (errorLine.length() <= QUOTE_BUDGET)
+      return new Snippet(errorLine, charPositionInLine);
+
+    // The UTF-16 index of the failing character, or the line's end for an error at the end of the input
+    final int position = errorLine.offsetByCodePoints(0,
+        Math.max(0, Math.min(charPositionInLine, errorLine.codePointCount(0, errorLine.length()))));
+    int start = Math.max(0, position - QUOTE_WINDOW);
+    // A cut never splits a surrogate pair
+    if (start > 0 && Character.isLowSurrogate(errorLine.charAt(start)))
+      --start;
+    int end = Math.min(errorLine.length(), start + QUOTE_BUDGET);
+    if (end < errorLine.length() && Character.isLowSurrogate(errorLine.charAt(end)))
+      --end;
+    final StringBuilder out = new StringBuilder(QUOTE_BUDGET + 32);
+    if (start > 0)
+      out.append("...");
+    out.append(errorLine, start, end);
+    if (end < errorLine.length())
+      out.append("...");
+    return new Snippet(out.toString(), errorLine.codePointCount(start, position) + (start > 0 ? 3 : 0));
+  }
+
+  /**
+   * A quoted piece of the offending line and where the caret goes under it.
+   */
+  private static final class Snippet {
+    private final String text;
+    private final int caretOffset;
+
+    private Snippet(final String text, final int caretOffset) {
+      this.text = text;
+      this.caretOffset = caretOffset;
+    }
   }
 
   /**

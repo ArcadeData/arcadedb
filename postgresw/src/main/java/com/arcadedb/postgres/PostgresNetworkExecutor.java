@@ -84,6 +84,7 @@ import com.arcadedb.query.sql.parser.WhereClause;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
+import com.arcadedb.schema.TypeHierarchy;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.server.ArcadeDBServer;
@@ -2551,14 +2552,19 @@ public class PostgresNetworkExecutor extends Thread {
    * {@code HashSet}, whose iteration order would make an exported column order vary from run to run.
    */
   private static void collectDeclaredColumns(final DocumentType docType, final Map<String, PostgresType> columns) {
+    collectOwnDeclaredColumns(docType, columns);
+    // each super type once, whatever the number of paths that lead up to it
+    for (final DocumentType superType : TypeHierarchy.allSuperTypes(docType))
+      collectOwnDeclaredColumns(superType, columns);
+  }
+
+  private static void collectOwnDeclaredColumns(final DocumentType docType, final Map<String, PostgresType> columns) {
     for (final String propName : docType.getPropertyNames()) {
       final Property prop = docType.getProperty(propName);
       columns.putIfAbsent(propName, prop != null && prop.getType() != null
           ? PostgresType.getTypeFromArcade(prop.getType(), prop.getOfType())
           : PostgresType.VARCHAR);
     }
-    for (final DocumentType superType : docType.getSuperTypes())
-      collectDeclaredColumns(superType, columns);
   }
 
   /**

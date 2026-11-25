@@ -36,6 +36,7 @@ import com.arcadedb.schema.VertexType;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.NoSuchElementException;
@@ -185,7 +186,7 @@ public final class Labels {
       return List.of(typeName);
 
     final Set<String> labels = new TreeSet<>();
-    collectLabels(type, labels);
+    collectLabels(type, labels, new HashSet<>());
     return List.copyOf(labels);
   }
 
@@ -199,7 +200,10 @@ public final class Labels {
    * genuine supertype named {@code V} - the openCypher TCK writes exactly that in {@code (b:U:V:W:X:Y:Z)}, and
    * with {@code V} no longer a sentinel it is reported like any other label.
    */
-  private static void collectLabels(final DocumentType type, final Set<String> out) {
+  private static void collectLabels(final DocumentType type, final Set<String> out, final Set<String> visited) {
+    // A type reached through more than one path is read once: what it adds is the same on every one of them
+    if (!visited.add(type.getName()))
+      return;
     final List<DocumentType> superTypes = type.getSuperTypes();
     if (isBaseVertexTypeName(type.getName())) {
       // The sentinel is never a label, however deep in the hierarchy it appears - unlike V/Vertex before it, it
@@ -207,13 +211,13 @@ public final class Labels {
       // way there is one for a genuine supertype named V (issue #6395). Recurse past it rather than stopping: a
       // type that extends it may still extend something else worth reporting.
       for (int i = 0; i < superTypes.size(); i++)
-        collectLabels(superTypes.get(i), out);
+        collectLabels(superTypes.get(i), out, visited);
       return;
     }
     if (!isLabelComposite(type, superTypes))
       out.add(type.getName());
     for (int i = 0; i < superTypes.size(); i++)
-      collectLabels(superTypes.get(i), out);
+      collectLabels(superTypes.get(i), out, visited);
   }
 
   /**
@@ -241,7 +245,7 @@ public final class Labels {
       return List.of(typeName);
 
     final Set<String> labels = new TreeSet<>();
-    collectOwnLabels(type, labels);
+    collectOwnLabels(type, labels, new HashSet<>());
     return List.copyOf(labels);
   }
 
@@ -249,14 +253,17 @@ public final class Labels {
    * Walks down through composite types only: an ordinary type stops the walk and contributes its own name, because
    * its ancestors are reached from it and do not have to be listed alongside it.
    */
-  private static void collectOwnLabels(final DocumentType type, final Set<String> out) {
+  private static void collectOwnLabels(final DocumentType type, final Set<String> out, final Set<String> visited) {
+    // A type reached through more than one path is read once: what it adds is the same on every one of them
+    if (!visited.add(type.getName()))
+      return;
     final List<DocumentType> superTypes = type.getSuperTypes();
     if (isBaseVertexTypeName(type.getName())) {
       // Symmetric with collectLabels: a composite that happens to inherit the sentinel through one of its own
       // supertypes (the Neo4j importer's shared root, reached through a label type) must not have it show
       // through a relabelling's own-label set either.
       for (int i = 0; i < superTypes.size(); i++)
-        collectOwnLabels(superTypes.get(i), out);
+        collectOwnLabels(superTypes.get(i), out, visited);
       return;
     }
     if (!isLabelComposite(type, superTypes)) {
@@ -264,7 +271,7 @@ public final class Labels {
       return;
     }
     for (int i = 0; i < superTypes.size(); i++)
-      collectOwnLabels(superTypes.get(i), out);
+      collectOwnLabels(superTypes.get(i), out, visited);
   }
 
   /**

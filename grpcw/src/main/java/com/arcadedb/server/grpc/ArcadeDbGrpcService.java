@@ -66,6 +66,7 @@ import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.RunningQueryRegistry;
 import com.arcadedb.query.facet.FacetResults;
+import com.arcadedb.query.sql.executor.CommandTimeoutOverride;
 import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
@@ -105,7 +106,6 @@ import io.grpc.StatusException;
 import io.grpc.StatusRuntimeException;
 import io.grpc.stub.ServerCallStreamObserver;
 import io.grpc.stub.StreamObserver;
-import org.jspecify.annotations.NonNull;
 
 import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.StringUtils;
@@ -614,6 +614,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // The call's read consistency, read here for the same reason, and applied on the transaction's thread, where the
     // statement reads (issue #11948)
     final GrpcReadConsistencyInterceptor.ReadConsistency readConsistency = GrpcReadConsistencyInterceptor.current();
+    // The call's consent to packed array results, read from the gRPC Context the transaction's thread lacks: a statement that
+    // runs there encodes its rows there (issue #11714)
+    final boolean packedArrays = GrpcPackedArraysInterceptor.requested();
     try {
       return txCtx.executor.submit(() -> {
         requireTransactionStillActive(txCtx);
@@ -631,7 +634,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         Throwable failure = null;
         txCtx.runningStatements.incrementAndGet();
         try {
-          return task.call();
+          return GrpcPackedArraysInterceptor.callWith(packedArrays, task);
         } catch (final Throwable t) {
           failure = t;
           throw t;
@@ -954,7 +957,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    */
   private ExecuteCommandResponse executeCommandInternal(ExecuteCommandRequest req, long t0,
                                                         Database db, boolean isExternalTransaction) {
-
+    // the encoding the client asked for, as ExecuteQuery and StreamQuery honour it (issue #11959)
+    final ProjectionConfig projectionConfig = projectionConfigOf(req.hasProjectionSettings(), req.getProjectionSettings());
     boolean beganHere = false;
     final QueryProfile profile = new QueryProfile();
     QueryProfile.pushCurrent(profile);
@@ -1052,8 +1056,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
               final long serRowStart = System.nanoTime();
               // Convert Result to GrpcRecord, preserving aliases and all properties
-              GrpcRecord grpcRecord = convertResultToGrpcRecord(result, db,
-                  new ProjectionConfig(true, ProjectionEncoding.PROJECTION_AS_JSON, 0));
+              GrpcRecord grpcRecord = convertResultToGrpcRecord(result, db, projectionConfig);
               out.addRecords(grpcRecord);
               serializationAccum += System.nanoTime() - serRowStart;
 
@@ -1807,9 +1810,19 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     QueryProfile.pushCurrent(profile);
     ProtocolContext.set("grpc");
     String profileLanguage = null;
+    // The request's timeout_ms is the budget the engine enforces on the query (arcadedb.command.timeout), as the Postgres
+    // statement_timeout and the Bolt transaction timeout are: the earlier of it and the database setting wins (issue #11813).
+    // Restored afterwards, not cleared: the thread may serve a forwarded request that published its own budget
+    final long publishedBudget = CommandTimeoutOverride.get();
+    if (request.getTimeoutMs() > 0) {
+      final long databaseTimeout = database != null ?
+          database.getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_TIMEOUT) :
+          0L;
+      CommandTimeoutOverride.set(databaseTimeout > 0 ? Math.min(databaseTimeout, request.getTimeoutMs()) : request.getTimeoutMs());
+    }
     try {
       final long deserStart = System.nanoTime();
-      ProjectionConfig projectionConfig = getProjectionConfig(request);
+      ProjectionConfig projectionConfig = projectionConfigOf(request.hasProjectionSettings(), request.getProjectionSettings());
 
       LogManager.instance().log(this, Level.FINE, """
               executeQuery(): projectionConfig.include = %s projectionConfig\
@@ -1911,6 +1924,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         return response;
       }
     } finally {
+      if (request.getTimeoutMs() > 0)
+        CommandTimeoutOverride.set(publishedBudget);
       ProtocolContext.clear();
       recordGrpcProfile("grpc.query", profile, database != null ? database.getName() : request.getDatabase(),
           profileLanguage != null ? profileLanguage : request.getLanguage(), request.getQuery());
@@ -1918,27 +1933,16 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     }
   }
 
-  private @NonNull ProjectionConfig getProjectionConfig(ExecuteQueryRequest request) {
-    ProjectionConfig projectionConfig;
-    if (request.hasProjectionSettings()) {
-
-      var projectionSettings = request.getProjectionSettings();
-
-      final boolean includeProjections = projectionSettings.getIncludeProjections();
-      final var projMode = projectionSettings.getProjectionEncoding();
-
-      int softLimit = projectionSettings.hasSoftLimitBytes() ?
-          projectionSettings.getSoftLimitBytes().getValue() :
-          0; // choose your
-      // default
-      // or 0 =
-      // unlimited
-      projectionConfig = new ProjectionConfig(includeProjections, projMode, softLimit);
-    } else {
-
-      projectionConfig = new ProjectionConfig(true, ProjectionEncoding.PROJECTION_AS_JSON, 0);
-    }
-    return projectionConfig;
+  /**
+   * The projection encoding a request asks for, or the JSON default when it sets none. The one reading of the settings that
+   * ExecuteQuery, StreamQuery and ExecuteCommand share, so the three RPCs encode one statement's nested records alike (issue #11959).
+   */
+  private static ProjectionConfig projectionConfigOf(final boolean hasSettings, final ProjectionSettings settings) {
+    if (!hasSettings)
+      return new ProjectionConfig(true, ProjectionEncoding.PROJECTION_AS_JSON, 0);
+    // 0 = no soft limit
+    final int softLimit = settings.hasSoftLimitBytes() ? settings.getSoftLimitBytes().getValue() : 0;
+    return new ProjectionConfig(settings.getIncludeProjections(), settings.getProjectionEncoding(), softLimit);
   }
 
   /**
@@ -2359,7 +2363,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     ProtocolContext.set("grpc");
     try {
-      final ProjectionConfig projectionConfig = getProjectionConfigFromRequest(request);
+      final ProjectionConfig projectionConfig = projectionConfigOf(request.hasProjectionSettings(), request.getProjectionSettings());
 
       final ServerCallStreamObserver<QueryResult> scso = (ServerCallStreamObserver<QueryResult>) responseObserver;
       onCancel(scso, cancelled);
@@ -2702,29 +2706,6 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       b.setTotalRecordsInBatch(end - i).setRunningTotalEmitted(running).setIsLastBatch(last);
       safeOnNext(scso, cancelled, (last ? withFacets(b, facets) : b).build());
     }
-  }
-
-  private ProjectionConfig getProjectionConfigFromRequest(StreamQueryRequest request) {
-
-    ProjectionConfig projectionConfig = null;
-
-    if (request.hasProjectionSettings()) {
-
-      var projectionSettings = request.getProjectionSettings();
-
-      final boolean includeProjections = projectionSettings.getIncludeProjections();
-      final var projMode = projectionSettings.getProjectionEncoding();
-
-      int softLimit = projectionSettings.hasSoftLimitBytes() ? projectionSettings.getSoftLimitBytes().getValue() : 0; // choose your
-      // default
-      // or 0 = unlimited
-      projectionConfig = new ProjectionConfig(includeProjections, projMode, softLimit);
-    } else {
-
-      projectionConfig = new ProjectionConfig(true, ProjectionEncoding.PROJECTION_AS_JSON, 0);
-    }
-
-    return projectionConfig;
   }
 
   private void safeOnNext(ServerCallStreamObserver<QueryResult> scso, AtomicBoolean cancelled, QueryResult payload) {
@@ -4341,7 +4322,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       final TimeSeriesBucket.Builder bucket = TimeSeriesBucket.newBuilder().setTimestamp(timestamp);
       for (int r = 0; r < requests.size(); r++)
         // NOT setDoubleValue: an absent MIN/MAX answers NaN, which a client would otherwise read as a number.
-        bucket.addValues(GrpcTimeSeriesSupport.toSampleValue(result.getValue(timestamp, r)));
+        bucket.addValues(GrpcTimeSeriesSupport.toSampleValue(result.getWireValue(timestamp, r)));
       final TimeSeriesBucket built = bucket.build();
       batch.add(built);
       batchBytes += built.getSerializedSize();
@@ -5443,6 +5424,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           out.add(fromGrpcValue(e));
         return dbgDec("fromGrpcValue", v, out, null);
       }
+
+      case FLOAT_ARRAY_VALUE:
+        // Issue #11714: straight into the float[] an ARRAY_OF_FLOATS property and the vector functions take, no element boxed
+        return dbgDec("fromGrpcValue", v, GrpcPackedArrays.toFloats(v.getFloatArrayValue()), null);
+
+      case DOUBLE_ARRAY_VALUE:
+        return dbgDec("fromGrpcValue", v, GrpcPackedArrays.toDoubles(v.getDoubleArrayValue()), null);
 
       case MAP_VALUE: {
         var out = new LinkedHashMap<String, Object>();
@@ -6689,6 +6677,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       case STRING:
         return switch (v.getKindCase()) {
           case STRING_VALUE -> v.getStringValue();
+          // The text a list_value of the same elements gives, not the array's identity hash
+          case FLOAT_ARRAY_VALUE -> Arrays.toString(GrpcPackedArrays.toFloats(v.getFloatArrayValue()));
+          case DOUBLE_ARRAY_VALUE -> Arrays.toString(GrpcPackedArrays.toDoubles(v.getDoubleArrayValue()));
           default -> String.valueOf(fromGrpcValue(v));
         };
 
@@ -6855,6 +6846,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           }
           return list;
         }
+        // A packed array goes to the engine as the array, which its LIST conversion turns into the list of its elements
+        if (v.getKindCase() == GrpcValue.KindCase.FLOAT_ARRAY_VALUE || v.getKindCase() == GrpcValue.KindCase.DOUBLE_ARRAY_VALUE)
+          return fromGrpcValue(v);
         throw cannotConvert(propName, t, v);
 
       case ARRAY_OF_SHORTS:
@@ -6862,10 +6856,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       case ARRAY_OF_LONGS:
       case ARRAY_OF_FLOATS:
       case ARRAY_OF_DOUBLES:
-        // The items go to the engine as they came: its conversion of the array range-checks each one (issue #11382)
-        if (v.getKindCase() == GrpcValue.KindCase.LIST_VALUE)
-          return fromGrpcValue(v);
-        throw cannotConvert(propName, t, v);
+        // The items go to the engine as they came: its conversion of the array range-checks each one (issue #11382). A packed
+        // array is already the float[] / double[] it converts from (issue #11714)
+        return switch (v.getKindCase()) {
+          case LIST_VALUE, FLOAT_ARRAY_VALUE, DOUBLE_ARRAY_VALUE -> fromGrpcValue(v);
+          default -> throw cannotConvert(propName, t, v);
+        };
 
       case DATETIME_SECOND:
       case DATETIME_MICROS:
@@ -6969,6 +6965,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         case STRING_VALUE -> "STRING(" + v.getStringValue().length() + ")";
         case BYTES_VALUE -> "BYTES[" + v.getBytesValue().size() + "]";
         case LIST_VALUE -> "LIST[size=" + v.getListValue().getValuesCount() + "]";
+        case FLOAT_ARRAY_VALUE -> "FLOAT_ARRAY[size=" + v.getFloatArrayValue().getValuesCount() + "]";
+        case DOUBLE_ARRAY_VALUE -> "DOUBLE_ARRAY[size=" + v.getDoubleArrayValue().getValuesCount() + "]";
         case MAP_VALUE -> "MAP[size=" + v.getMapValue().getEntriesCount() + "]";
         case EMBEDDED_VALUE -> "EMBEDDED[type=" + v.getEmbeddedValue().getType() + ", size=" + v.getEmbeddedValue().getFieldsCount() + "]";
         case LINK_VALUE -> "LINK(" + v.getLinkValue().getRid() + ")";
@@ -6995,6 +6993,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         return "TIMESTAMP(" + v.getTimestampValue().getSeconds() + "." + v.getTimestampValue().getNanos() + ")";
       case LIST_VALUE:
         return "LIST[size=" + v.getListValue().getValuesCount() + "]";
+      case FLOAT_ARRAY_VALUE:
+        return "FLOAT_ARRAY[size=" + v.getFloatArrayValue().getValuesCount() + "]";
+      case DOUBLE_ARRAY_VALUE:
+        return "DOUBLE_ARRAY[size=" + v.getDoubleArrayValue().getValuesCount() + "]";
       case MAP_VALUE:
         return "MAP[size=" + v.getMapValue().getEntriesCount() + "]";
       case EMBEDDED_VALUE:
