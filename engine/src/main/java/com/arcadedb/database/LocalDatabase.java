@@ -2878,7 +2878,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           // The caller may be no retry loop of ours, but its own code or a client: a block that committed part of its work
           // does not reach it as a retryable conflict either (#13251)
           if (TransactionContext.isPartiallyCommitted(txAtStart, commitCountAtStart))
-            throw TransactionContext.notReplayable(e, "Transaction block");
+            throw TransactionContext.notReplayable(e, "Transaction block", txAtStart, commitCountAtStart);
           throw e;
         }
 
@@ -2890,7 +2890,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
         // Decided before the error callback runs, so the callback is told the failure the caller is (#13251)
         final boolean partiallyCommitted = TransactionContext.isPartiallyCommitted(txAtStart, commitCountAtStart);
-        final ArcadeDBException failure = partiallyCommitted ? TransactionContext.notReplayable(e, "Transaction block") : e;
+        final ArcadeDBException failure = partiallyCommitted ? TransactionContext.notReplayable(e, "Transaction block", txAtStart, commitCountAtStart) : e;
 
         if (error != null)
           error.call(failure);

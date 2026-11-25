@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
+import com.arcadedb.database.RefusedBeforePublishingException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.network.binary.QuorumNotReachedException;
@@ -210,9 +211,9 @@ class UnpublishedSchemaChangeQuarantineTest {
    * An instalment carries pages the session already committed here (#6136), so its refusal leaves the same divergence
    * as a refused final entry, even though the exception reaches the session through the engine's commit path.
    * <p>
-   * The block's transaction committed here before its instalment was refused, so the retry loop reports it as partially
-   * committed (#13251) and raises a non-retryable {@link TransactionException} that carries the refusal. That is cautious
-   * for a FIRST instalment, whose commit the resync drops: issue #13437 keeps such a refusal retryable.
+   * The block's transaction committed here before its instalment was refused, and the retry loop reports a partially committed
+   * block as not retryable (#13251). Not this one: the refused instalment is the first entry of the session, so nothing of the
+   * block reached another node and the resync drops its commit here. The refusal stays retryable (issue #13437).
    */
   // Regression for #9555: a schema session runs on its proposer FIRST and ships afterwards.
   @Test
@@ -232,10 +233,123 @@ class UnpublishedSchemaChangeQuarantineTest {
     assertThatThrownBy(() -> replicated.recordFileChanges(() -> {
       replicated.transaction(() -> replicated.newDocument("Filled").set("value", 1L).save());
       return null;
-    })).isInstanceOf(TransactionException.class)
-        .satisfies(e -> assertThat(e.getSuppressed()).singleElement().isInstanceOf(NeedRetryException.class));
+    })).isInstanceOf(RefusedBeforePublishingException.class).hasCauseInstanceOf(NeedRetryException.class);
 
     assertThat(broker.calls("replicateSchemaInstalment")).as("the refusal came from an instalment").isNotEmpty();
+    assertThat(stateMachine.quarantineCause(db.getName())).isEqualTo(DivergenceCause.UNPUBLISHED_SCHEMA_CHANGE);
+  }
+
+  /** An earlier instalment of the session is on the followers, and stays in the cluster after the resync: not replayable. */
+  // Regression for #13437: a refused FIRST instalment stays retryable, a later one does not.
+  @Test
+  void aSchemaChangeWhoseSecondInstalmentIsRefusedIsNotReplayable() {
+    final AtomicInteger instalments = new AtomicInteger();
+    final FakeRaftTransactionBroker broker = new FakeRaftTransactionBroker() {
+      @Override
+      long walChunkBudget() {
+        return 1L;
+      }
+    }.on("replicateSchemaInstalment", args -> {
+      if (instalments.incrementAndGet() == 2)
+        throw new NeedRetryException("Refused a schema change on database 'issue13437' allocated in Raft term 7");
+      return null;
+    });
+    db.getSchema().createDocumentType("Filled", 1);
+    final RaftReplicatedDatabase replicated = replicated(leader(broker));
+
+    assertThatThrownBy(() -> replicated.recordFileChanges(() -> {
+      replicated.transaction(() -> {
+        replicated.newDocument("Filled").set("value", 1L).save();
+        replicated.commit();
+        replicated.begin();
+        replicated.newDocument("Filled").set("value", 2L).save();
+      });
+      return null;
+    })).isInstanceOf(TransactionException.class)
+        .satisfies(e -> assertThat(e.getSuppressed()).singleElement().isExactlyInstanceOf(NeedRetryException.class));
+
+    assertThat(broker.calls("replicateSchemaInstalment")).hasSize(2);
+    assertThat(stateMachine.quarantineCause(db.getName())).isEqualTo(DivergenceCause.UNPUBLISHED_SCHEMA_CHANGE);
+  }
+
+  /** A first instalment split over the entry cap whose first chunk committed left pages on the followers: not replayable. */
+  // Regression for #13437: a refused FIRST instalment stays retryable, a later one does not.
+  @Test
+  void aSchemaChangeWhoseSplitFirstInstalmentIsRefusedAfterItsFirstChunkIsNotReplayable() {
+    final FakeRaftTransactionBroker broker = new FakeRaftTransactionBroker() {
+      @Override
+      long walChunkBudget() {
+        return 1L;
+      }
+    }.on("replicateSchemaInstalment", args -> {
+      // The first chunk committed, the second was refused
+      ((Runnable) args[4]).run();
+      throw new NeedRetryException("Refused a schema change on database 'issue13437' allocated in Raft term 7");
+    });
+    db.getSchema().createDocumentType("Filled", 1);
+    final RaftReplicatedDatabase replicated = replicated(leader(broker));
+
+    assertThatThrownBy(() -> replicated.recordFileChanges(() -> {
+      replicated.transaction(() -> replicated.newDocument("Filled").set("value", 1L).save());
+      return null;
+    })).isInstanceOf(TransactionException.class)
+        .satisfies(e -> assertThat(e.getSuppressed()).singleElement().isExactlyInstanceOf(NeedRetryException.class));
+
+    assertThat(stateMachine.quarantineCause(db.getName())).isEqualTo(DivergenceCause.UNPUBLISHED_SCHEMA_CHANGE);
+  }
+
+  /** A block that published a commit before the session opened cannot be replayed, whatever the session published. */
+  // Regression for #13437: a refused FIRST instalment stays retryable, a later one does not.
+  @Test
+  void aBlockThatPublishedACommitBeforeTheSessionIsNotReplayable() {
+    final FakeRaftTransactionBroker broker = new FakeRaftTransactionBroker() {
+      @Override
+      long walChunkBudget() {
+        return 1L;
+      }
+    }.fails("replicateSchemaInstalment",
+        new NeedRetryException("Refused a schema change on database 'issue13437' allocated in Raft term 7"));
+    db.getSchema().createDocumentType("Filled", 1);
+    final RaftReplicatedDatabase replicated = replicated(leader(broker));
+
+    assertThatThrownBy(() -> replicated.transaction(() -> {
+      replicated.newDocument("Filled").set("value", 1L).save();
+      // Replicated as a transaction of its own, before the session opens
+      replicated.commit();
+      replicated.recordFileChanges(() -> {
+        replicated.transaction(() -> replicated.newDocument("Filled").set("value", 2L).save());
+        return null;
+      });
+    })).isInstanceOf(TransactionException.class)
+        .satisfies(e -> assertThat(e.getSuppressed()).singleElement().isInstanceOf(RefusedBeforePublishingException.class));
+
+    assertThat(stateMachine.quarantineCause(db.getName())).isEqualTo(DivergenceCause.UNPUBLISHED_SCHEMA_CHANGE);
+  }
+
+  /**
+   * The session's final entry is its first, and was refused: the commit the session made inside a block around it reached no
+   * other node, so that block stays retryable as well.
+   */
+  // Regression for #13437: a refused FIRST instalment stays retryable, a later one does not.
+  @Test
+  void aBlockAroundASessionWhoseOnlyEntryIsRefusedStaysRetryable() {
+    final FakeRaftTransactionBroker broker = new FakeRaftTransactionBroker().fails("replicateSchema",
+        new NeedRetryException("Refused a schema change on database 'issue13437' allocated in Raft term 7"));
+    db.getSchema().createDocumentType("Filled", 1);
+    final RaftReplicatedDatabase replicated = replicated(leader(broker));
+    final AtomicInteger attempts = new AtomicInteger();
+
+    assertThatThrownBy(() -> replicated.transaction(() -> {
+      attempts.incrementAndGet();
+      // The session commits on the transaction this block began, which moves its commit count
+      replicated.rollback();
+      replicated.recordFileChanges(() -> {
+        replicated.transaction(() -> replicated.newDocument("Filled").set("value", 1L).save());
+        return null;
+      });
+    })).isInstanceOf(RefusedBeforePublishingException.class).hasCauseInstanceOf(NeedRetryException.class);
+
+    assertThat(attempts.get()).as("not replayed on this node, which is quarantined").isEqualTo(1);
     assertThat(stateMachine.quarantineCause(db.getName())).isEqualTo(DivergenceCause.UNPUBLISHED_SCHEMA_CHANGE);
   }
 
