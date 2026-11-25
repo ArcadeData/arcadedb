@@ -218,6 +218,46 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     purgeIdleCursorsOnce(System.nanoTime());
   }
 
+  /** What runs a command of the database. */
+  @FunctionalInterface
+  private interface CommandHandler {
+    Document run(MongoDBDatabaseWrapper wrapper, Channel channel, Document document, Oplog opLog, long quota) throws MongoServerException;
+  }
+
+  /** A command and its handler: the name is the one {@code mongod} spells, which is also the key of its {@link MongoCommandFields} table. */
+  private record Route(String name, CommandHandler handler) {
+  }
+
+  /**
+   * The commands this database runs itself, by name whatever its case. {@link #handleCommand} checks the fields of each against
+   * its {@link MongoCommandFields} table before the handler runs, so a command cannot be added here and acknowledge the fields it
+   * does not read (issue #12625: {@code insert} and {@code createIndexes} were dispatched and never checked).
+   */
+  private static final Map<String, Route> ROUTES = routes(
+      new Route("find", (wrapper, channel, document, opLog, quota) -> wrapper.find(document, quota)),
+      new Route("create", (wrapper, channel, document, opLog, quota) -> wrapper.createCollection(document)),
+      new Route("count", (wrapper, channel, document, opLog, quota) -> wrapper.countCollection(document)),
+      new Route("insert", (wrapper, channel, document, opLog, quota) -> wrapper.insertDocument(channel, document)),
+      new Route("delete", (wrapper, channel, document, opLog, quota) -> wrapper.deleteDocuments(document)),
+      new Route("update", (wrapper, channel, document, opLog, quota) -> wrapper.updateDocuments(document)),
+      new Route("aggregate", (wrapper, channel, document, opLog, quota) -> wrapper.aggregateCollection(document, opLog, quota)),
+      new Route("createIndexes", (wrapper, channel, document, opLog, quota) -> wrapper.createIndexes(document)));
+
+  private static Map<String, Route> routes(final Route... routes) {
+    final Map<String, Route> byName = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+    for (final Route route : routes)
+      byName.put(route.name, route);
+    return Collections.unmodifiableMap(byName);
+  }
+
+  /** The commands {@link #handleCommand} dispatches: read by the census of their field tables (issue #12625). */
+  static Set<String> commands() {
+    final Set<String> names = new HashSet<>();
+    for (final Route route : ROUTES.values())
+      names.add(route.name);
+    return names;
+  }
+
   @Override
   public Document handleCommand(final Channel channel, final String command, final Document document,
       final DatabaseResolver databaseResolver,
@@ -231,29 +271,18 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     // THE SQL STATEMENTS THE COMMAND READS THROUGH ARE A PART OF IT: NONE TAKES THE QUOTA AS ITS LIMIT (ISSUE #13087)
     ProfiledLimitScope.enter();
     try {
-      if ("find".equalsIgnoreCase(command))
-        return find(document, quota);
-      else if ("create".equalsIgnoreCase(command))
-        return createCollection(document);
-      else if ("count".equalsIgnoreCase(command))
-        return countCollection(document);
-      else if ("insert".equalsIgnoreCase(command))
-        return insertDocument(channel, document);
-      else if ("delete".equalsIgnoreCase(command))
-        return deleteDocuments(document);
-      else if ("update".equalsIgnoreCase(command))
-        return updateDocuments(document);
-      else if ("aggregate".equalsIgnoreCase(command))
-        return aggregateCollection(command, document, opLog, quota);
-      else if ("createIndexes".equalsIgnoreCase(command))
-        return createIndexes(document);
-      else {
+      final Route route = ROUTES.get(command);
+      if (route == null) {
         // a client's request, not a server fault: the operator learns which commands clients ask for, without the document, which can
         // carry stored data
         LogManager.instance().log(this, Level.INFO, "Received unsupported command '%s' from MongoDB client", null, command);
         // what mongod answers a command it does not have, and what drivers detect a command missing from a server by (issue #11449)
         throw new MongoServerError(COMMAND_NOT_FOUND, "CommandNotFound", "no such command: '" + command + "'");
       }
+      // a field the command would not read is refused, not ignored: the answer would be the one of another command (issue #11778).
+      // Refused here, before any handler runs, so that no command can be routed without its fields being checked (issue #12625)
+      MongoCommandFields.check(route.name, document);
+      return route.handler.run(this, channel, document, opLog, quota);
     } catch (final Exception e) {
       throw wireException("Error on executing MongoDB '" + command + "' command", e);
     } finally {
@@ -447,9 +476,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     };
   }
 
-  private Document aggregateCollection(final String command, final Document document, final Oplog oplog, final long quota)
-      throws MongoServerException {
-    MongoCommandFields.check("aggregate", document);
+  private Document aggregateCollection(final Document document, final Oplog oplog, final long quota) throws MongoServerException {
     final String collectionName = document.get("aggregate").toString();
     // like MongoDB, a pipeline over a collection that does not exist is answered with no documents (countDocuments is one). A
     // pipeline that writes ($out, $merge) is not read-only: it keeps failing on the missing collection, as it always did
@@ -623,8 +650,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   }
 
   private Document createCollection(final Document document) {
-    // refused before anything is created: a capped, validated or collated collection would be an ordinary one (issue #11778)
-    MongoCommandFields.check("create", document);
+    // the options of the collection were refused before this ran: a capped, validated or collated one would be an ordinary one
+    // (issue #11778)
     database.getSchema().buildDocumentType().withName((String) document.get("create")).withTotalBuckets(1).create();
     return responseOk();
   }
@@ -772,7 +799,6 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * documents than an int counts, and the reply carries it as {@code mongod} does, an int32 while it fits and an int64 past it.
    */
   private Document countCollection(final Document document) throws MongoServerException {
-    MongoCommandFields.check("count", document);
     final String collectionName = document.get("count").toString();
     final Document queryObject = documentField(document, "query");
     // read first: an invalid option is an error whether or not the collection exists
@@ -796,8 +822,6 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   }
 
   private Document find(final Document document, final long quota) throws MongoServerException {
-    // a field this would not read is refused, not ignored: the answer would be the one of another command (issue #11778)
-    MongoCommandFields.check("find", document);
     final Document filter = documentField(document, "filter");
     final Document sort = documentField(document, "sort");
     // A missing/0 limit means "no limit" (a -1 sentinel here would be interpreted as a legacy single-batch limit of 1)
@@ -1198,7 +1222,6 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * the whole command with nothing deleted.
    */
   private Document deleteDocuments(final Document document) {
-    MongoCommandFields.check("delete", document);
     final String collectionName = document.get("delete").toString();
     final List<Document> deletes = (List<Document>) document.get("deletes");
     if (deletes != null)
@@ -1326,7 +1349,6 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * nothing matched, a new document seeded from the filter's equalities and the update is inserted.
    */
   private Document updateDocuments(final Document document) {
-    MongoCommandFields.check("update", document);
     final String collectionName = document.get("update").toString();
     final List<Document> updates = (List<Document>) document.get("updates");
     // every statement is checked before any runs, as mongod parses the command before it executes it: a field the plugin would
