@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.TransactionRetryAndRollbackTest;
 import com.arcadedb.event.AfterRecordCreateListener;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DuplicatedKeyException;
@@ -37,7 +38,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * Issue #13223: the HTTP, gRPC and MCP auto-commit wrappers run a request in {@code Database.transaction(block, false, retries)}
  * and replay the whole block on a conflict. A {@code CALL { ... } IN TRANSACTIONS} commits its batches (and, since #13172, the
  * statement's writes before the CALL) while the block runs, so a conflict after that point replayed work already durable: the
- * batches were applied twice. A block that committed part of its work is not retried any more: the conflict reaches the caller.
+ * batches were applied twice. A block that committed part of its work is not retried any more: the conflict reaches the caller,
+ * as a failure no layer retries (issue #13251).
  * <p>
  * Every test here runs the statement the way those wrappers do: inside {@code transaction(..., false, 3)}, in the implicit
  * transaction they open around one request.
@@ -59,7 +61,7 @@ class CypherCallInTransactionsRetryIssue13223Test extends TestHelper {
     final AtomicInteger attempts = new AtomicInteger();
     assertThatThrownBy(() -> runAsTheServerWrapperDoes(attempts,
         "UNWIND range(1, 3) AS i CALL (i) { CREATE (:Batch13223 {i: i}) } IN TRANSACTIONS OF 1 ROW", true))
-        .isInstanceOf(ConcurrentModificationException.class);
+        .satisfies(TransactionRetryAndRollbackTest::assertNotReplayable);
 
     assertThat(attempts.get()).isEqualTo(1);
     assertThat(count("Batch13223")).isEqualTo(3L);
@@ -73,7 +75,7 @@ class CypherCallInTransactionsRetryIssue13223Test extends TestHelper {
     assertThatThrownBy(() -> runAsTheServerWrapperDoes(attempts,
         "CREATE (:Pre13223) WITH 1 AS one UNWIND range(1, 3) AS i CALL (i) { CREATE (:Batch13223 {i: i}) } IN TRANSACTIONS OF 1 ROW",
         true))
-        .isInstanceOf(ConcurrentModificationException.class);
+        .satisfies(TransactionRetryAndRollbackTest::assertNotReplayable);
 
     assertThat(attempts.get()).isEqualTo(1);
     assertThat(count("Pre13223")).isEqualTo(1L);
@@ -86,7 +88,7 @@ class CypherCallInTransactionsRetryIssue13223Test extends TestHelper {
     final AtomicInteger attempts = new AtomicInteger();
     assertThatThrownBy(() -> runAsTheServerWrapperDoes(attempts,
         "UNWIND [1, 0, 2] AS i CALL (i) { CREATE (:Batch13223 {i: 1 / i}) } IN TRANSACTIONS OF 1 ROW ON ERROR CONTINUE", true))
-        .isInstanceOf(ConcurrentModificationException.class);
+        .satisfies(TransactionRetryAndRollbackTest::assertNotReplayable);
 
     assertThat(attempts.get()).isEqualTo(1);
     assertThat(count("Batch13223")).isEqualTo(2L);
@@ -187,7 +189,7 @@ class CypherCallInTransactionsRetryIssue13223Test extends TestHelper {
     database.async().waitCompletion();
 
     assertThat(attempts.get()).isEqualTo(1);
-    assertThat(failure.get()).isInstanceOf(ConcurrentModificationException.class);
+    TransactionRetryAndRollbackTest.assertNotReplayable(failure.get());
     assertThat(count("Batch13223")).isEqualTo(3L);
   }
 

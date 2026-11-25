@@ -158,8 +158,19 @@ public class LocalProperty extends AbstractProperty implements TypeNameDependant
     checkForSchemaMutation();
     final boolean changed = !Objects.equals(this.ofType, ofType);
     if (changed) {
-      final String newOfType = resolveOfType((LocalSchema) owner.getSchema(), owner.getName(), name, type, ofType);
-      publish(() -> this.ofType = newOfType);
+      final LocalSchema schema = (LocalSchema) owner.getSchema();
+      final String newOfType = resolveOfType(schema, owner.getName(), name, type, ofType);
+      publish(() -> {
+        // Inside the schema frame, which the hierarchy walk needs: a declaration of the name elsewhere in the hierarchy keeps its OF
+        // type, so the two cannot drift apart (issue #12732). The load restores what the file says
+        if (!schema.isReadingFromFile() && owner instanceof LocalDocumentType localOwner) {
+          final Property otherKind = localOwner.findDeclarationOfAnotherKind(name, type, newOfType, this);
+          if (otherKind != null)
+            throw new SchemaException("Cannot set the OF type of the property '" + owner.getName() + "." + name + "' to " + newOfType
+                + LocalDocumentType.otherKindReason(otherKind));
+        }
+        this.ofType = newOfType;
+      });
     }
     forgetUnrestoredAttribute("of");
     return this;

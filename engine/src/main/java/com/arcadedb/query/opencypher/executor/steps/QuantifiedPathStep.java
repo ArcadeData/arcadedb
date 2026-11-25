@@ -254,6 +254,9 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
       return null;
 
     final Object targetValue = input.getProperty(targetVariable);
+    // A target an earlier OPTIONAL MATCH left null is bound, and a null vertex cannot be reached (#12728)
+    if (targetValue == null && input.hasProperty(targetVariable))
+      return;
     final Vertex boundTarget = targetValue instanceof Vertex vertex ? vertex : null;
 
     return new RowSearch(input, boundTarget, start, guard);
