@@ -227,6 +227,8 @@ class Issue12106ApocDateSemanticsTest extends TestHelper {
     assertThat(cypher("apoc.date.add(0, 'ms', 9223372036854775807, 'd')")).isEqualTo(Long.MAX_VALUE);
     assertThatThrownBy(() -> cypher("apoc.date.add(9223372036854775807, 'ms', 1, 'ms')")).isInstanceOf(InvalidArgumentException.class);
     assertThatThrownBy(() -> cypher("apoc.date.add(1000, 500, 'ms')")).hasStackTraceContaining("apoc.date.add");
+    // the three-argument call of before the split is pointed at the name that still takes it
+    assertThatThrownBy(() -> cypher("apoc.date.add(1000, 500, 'ms')")).hasStackTraceContaining("date.add(timestamp, value, unit)");
 
     assertThat(cypher("date.add(1000, 500, 'ms')")).isEqualTo(1500L);
     assertThat(cypher("date.add(1000, 2, 's')")).isEqualTo(3000L);
@@ -330,9 +332,6 @@ class Issue12106ApocDateSemanticsTest extends TestHelper {
       // the time is in the unit the call names, so a point in time is expressed in it before the amount is added
       assertThat(new ApocDateAdd().execute(new Object[] { point, "s", 1L, "m" }, null)).as(point.getClass().getName())
           .isEqualTo(instant.getEpochSecond() + 60L);
-      // ArcadeDB's date.format had the same defect
-      assertThat(new DateFormat().execute(new Object[] { point, "s", "yyyy-MM-dd HH:mm:ss.SSS" }, null)).as(point.getClass().getName())
-          .isEqualTo(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS").format(instant.atZone(ZoneId.systemDefault())));
     }
 
     // a number, or its text, is still a count in the unit

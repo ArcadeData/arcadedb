@@ -18,7 +18,9 @@
  */
 package com.arcadedb.function.date;
 
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.InvalidArgumentException;
+import com.arcadedb.function.FunctionArity;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
@@ -50,6 +52,18 @@ public class ApocDateAdd extends AbstractApocDateFunction {
   @Override
   public int getMaxArgs() {
     return 4;
+  }
+
+  /**
+   * A three-argument call is ArcadeDB's date.add signature, which the apoc. name answered before issue #12106: the arity error
+   * names the function that still takes it.
+   */
+  @Override
+  public void checkArity(final Object[] args) {
+    if (args != null && args.length == 3)
+      throw new CommandSemanticException(FunctionArity.message(getName(), FunctionArity.describe(4, 4), 3)
+          + ": apoc.date.add(time, unit, addValue, addUnit) is APOC's signature, use date.add(timestamp, value, unit) for ArcadeDB's");
+    super.checkArity(args);
   }
 
   @Override
