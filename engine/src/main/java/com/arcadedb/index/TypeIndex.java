@@ -32,6 +32,7 @@ import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.IndexMetadata;
@@ -272,27 +273,8 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     final boolean isFullText = first != null && first.getType() == Schema.INDEX_TYPE.FULL_TEXT;
 
     if (isFullText) {
-      if (first instanceof final LSMTreeFullTextIndex fullTextIndex && fullTextIndex.isBM25())
-        return FullTextSearch.searchSimple(this, keys, -1);
-
-      // For full-text indexes, collect entries with scores
-      final List<IndexCursorEntry> entries = new ArrayList<>();
-
-      for (final Index index : getIndexesByKeys(keys)) {
-        try (final IndexCursor cursor = index.get(keys, -1)) {
-          while (cursor.hasNext()) {
-            final Identifiable record = cursor.next();
-            final int score = cursor.getScore();
-            entries.add(new IndexCursorEntry(keys, record, score));
-          }
-        }
-      }
-
-      // Sort by score descending
-      if (entries.size() > 1)
-        entries.sort((o1, o2) -> Integer.compare(o2.score, o1.score));
-
-      return new TempIndexCursor(entries);
+      // A caller with no command context: the guard stops a terminated statement
+      return getFullText(first, keys, -1, WorkGuard.forCommandDeadline(null));
     } else {
       // For non-full-text indexes, use the original implementation
       Set<Identifiable> result = null;
@@ -328,37 +310,8 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     final boolean isFullText = first != null && first.getType() == Schema.INDEX_TYPE.FULL_TEXT;
 
     if (isFullText) {
-      if (first instanceof final LSMTreeFullTextIndex fullTextIndex && fullTextIndex.isBM25())
-        return FullTextSearch.searchSimple(this, keys, limit);
-
-      // For full-text indexes, collect entries with scores
-      final List<IndexCursorEntry> entries = new ArrayList<>();
-
-      for (final Index index : getIndexesByKeys(keys)) {
-        // #5662: try-with-resources - the limit breaks out of the loop, abandoning the cursor partway
-        try (final IndexCursor cursor = index.get(keys, limit > -1 ? limit - entries.size() : -1)) {
-          while (cursor.hasNext()) {
-            final Identifiable record = cursor.next();
-            final int score = cursor.getScore();
-            entries.add(new IndexCursorEntry(keys, record, score));
-
-            if (limit > -1 && entries.size() >= limit)
-              break;
-          }
-        }
-        if (limit > -1 && entries.size() >= limit)
-          break;
-      }
-
-      // Sort by score descending
-      if (entries.size() > 1)
-        entries.sort((o1, o2) -> Integer.compare(o2.score, o1.score));
-
-      // Apply limit after sorting
-      if (limit > -1 && entries.size() > limit)
-        return new TempIndexCursor(entries.subList(0, limit));
-
-      return new TempIndexCursor(entries);
+      // A caller with no command context: the guard stops a terminated statement
+      return getFullText(first, keys, limit, WorkGuard.forCommandDeadline(null));
     } else {
       // For non-full-text indexes, use the original implementation.
       // An index whose results are APPROXIMATE (a spatial grid: a cell hit is a candidate, not a match) cannot have a
@@ -389,6 +342,69 @@ public class TypeIndex implements RangeIndex, IndexInternal {
       }
       return keyedCursor(result != null ? result : Collections.emptyList(), keys);
     }
+  }
+
+  /**
+   * {@link #get(Object[], int)} stopping through {@code guard} when the statement it runs for is terminated or past its deadline.
+   * <p>
+   * A full-text lookup reads the postings of every word of the key, and answers only once it has them all, so a check between the
+   * rows of the statement comes too late: the guard is checked inside that read. The other kinds of index answer a key from the
+   * entries it names, as {@link #get(Object[], int)} does.
+   */
+  public IndexCursor get(final Object[] keys, final int limit, final WorkGuard guard) {
+    checkIsValid();
+
+    final IndexInternal first = firstOrNull();
+    if (first != null && first.getType() == Schema.INDEX_TYPE.FULL_TEXT)
+      return getFullText(first, keys, limit, guard);
+
+    return get(keys, limit);
+  }
+
+  /**
+   * The lookup of a full-text index, over every bucket: collects the entries with their scores, ranked best first, and applies the
+   * limit after the ranking.
+   */
+  private IndexCursor getFullText(final IndexInternal first, final Object[] keys, final int limit, final WorkGuard guard) {
+    if (first instanceof final LSMTreeFullTextIndex fullTextIndex && fullTextIndex.isBM25())
+      return FullTextSearch.searchSimple(this, keys, limit, guard);
+
+    // For full-text indexes, collect entries with scores
+    final List<IndexCursorEntry> entries = new ArrayList<>();
+    int ticks = 0;
+
+    for (final Index index : getIndexesByKeys(keys)) {
+      guard.check();
+      final int bucketLimit = limit > -1 ? limit - entries.size() : -1;
+      // #5662: try-with-resources - the limit breaks out of the loop, abandoning the cursor partway
+      try (final IndexCursor cursor = index instanceof final LSMTreeFullTextIndex fullTextIndex ?
+          fullTextIndex.get(keys, bucketLimit, guard) :
+          index.get(keys, bucketLimit)) {
+        while (cursor.hasNext()) {
+          guard.checkPeriodically(++ticks);
+          final Identifiable record = cursor.next();
+          final int score = cursor.getScore();
+          entries.add(new IndexCursorEntry(keys, record, score));
+
+          if (limit > -1 && entries.size() >= limit)
+            break;
+        }
+      }
+      if (limit > -1 && entries.size() >= limit)
+        break;
+    }
+
+    // Sort by score descending
+    if (entries.size() > 1) {
+      guard.check();
+      entries.sort((o1, o2) -> Integer.compare(o2.score, o1.score));
+    }
+
+    // Apply limit after sorting
+    if (limit > -1 && entries.size() > limit)
+      return new TempIndexCursor(entries.subList(0, limit));
+
+    return new TempIndexCursor(entries);
   }
 
   /** The entries of the set, at most {@code limit} of them when the limit is set (-1 for none) */

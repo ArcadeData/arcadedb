@@ -37,7 +37,9 @@ import java.util.stream.Collectors;
  * </p>
  * <p>
  * For Neo4j/APOC compatibility, functions can also be accessed using the "apoc." prefix.
- * For example, "apoc.text.indexOf" will automatically resolve to "text.indexOf".
+ * For example, "apoc.text.indexOf" will automatically resolve to "text.indexOf". A function registered under its own
+ * "apoc." name answers that name instead: "apoc.date.format" follows APOC while "date.format" keeps ArcadeDB's semantics
+ * (issue #12106).
  * </p>
  * <p>
  * Thread-safe: All operations use a ConcurrentHashMap for safe concurrent access.
@@ -161,18 +163,28 @@ public final class FunctionRegistry {
   }
 
   /**
-   * Normalizes a function name by stripping the "apoc." prefix if present.
+   * The key a function name is registered under: the lower-cased name, without its "apoc." prefix unless a function is
+   * registered under the full apoc. name, which then answers it (issue #12106).
    * This provides compatibility with Neo4j APOC procedure calls.
    *
    * @param name the function name
-   * @return the normalized name (lowercase, without apoc. prefix)
+   * @return the normalized name (lowercase, without the apoc. prefix unless that name is registered)
    */
   public static String normalizeApocName(final String name) {
     final String lowerName = name.toLowerCase(Locale.ROOT);
-    if (lowerName.startsWith(APOC_PREFIX)) {
+    if (hasApocPrefix(lowerName) && !FUNCTIONS.containsKey(lowerName))
       return lowerName.substring(APOC_PREFIX.length());
-    }
     return lowerName;
+  }
+
+  /**
+   * Whether {@code name} starts with the "apoc." prefix (any case) that {@link #normalizeApocName} strips. The SQL parser asks
+   * it to read {@code apoc.text.indexOf(...)} as a function call and not as a property chain (issue #12086).
+   *
+   * @param name the function name, or a dotted prefix of it
+   */
+  public static boolean hasApocPrefix(final String name) {
+    return name.regionMatches(true, 0, APOC_PREFIX, 0, APOC_PREFIX.length());
   }
 
   /**

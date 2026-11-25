@@ -41,14 +41,16 @@ import java.util.function.Predicate;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class ArcadeEdgeCountFilterStep extends FilterStep<org.apache.tinkerpop.gremlin.structure.Vertex> {
+  private final ArcadeGraph            graph;
   private final GraphTraversalProvider provider;
   private final Vertex.DIRECTION       direction;
   private final String[]               edgeLabels;
   private final Predicate<Long>        predicate;
 
-  ArcadeEdgeCountFilterStep(final Traversal.Admin<?, ?> traversal, final GraphTraversalProvider provider,
+  ArcadeEdgeCountFilterStep(final Traversal.Admin<?, ?> traversal, final ArcadeGraph graph, final GraphTraversalProvider provider,
       final Direction direction, final String[] edgeLabels, final Predicate<Long> predicate) {
     super(traversal);
+    this.graph = graph;
     this.provider = provider;
     this.direction = ArcadeGraph.mapDirection(direction);
     this.edgeLabels = edgeLabels;
@@ -65,7 +67,7 @@ class ArcadeEdgeCountFilterStep extends FilterStep<org.apache.tinkerpop.gremlin.
     else
       rid = null;
 
-    if (rid != null) {
+    if (rid != null && ArcadeGAVVertexStep.viewAnswers(graph)) {
       final int nodeId = provider.getNodeId(rid);
       if (nodeId >= 0) {
         final long count = edgeLabels.length == 0

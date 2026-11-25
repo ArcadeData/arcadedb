@@ -22,6 +22,7 @@ import com.arcadedb.utility.TimeBoundRegex;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -2067,6 +2068,7 @@ abstract class PostgresCatalogExpression {
       final List<PostgresCatalogExpression> partitionBy = new ArrayList<>();
       final List<PostgresCatalogExpression> orderBy = new ArrayList<>();
       final List<Boolean>                   orderByDescending = new ArrayList<>();
+      final Set<ColumnKey>                  orderedColumns = new HashSet<>();
 
       if (skipKeyword("PARTITION")) {
         if (!skipKeyword("BY"))
@@ -2086,7 +2088,6 @@ abstract class PostgresCatalogExpression {
           final PostgresCatalogExpression key = parseExpression();
           if (key == null)
             return null;
-          orderBy.add(key);
 
           // The direction decides the numbering, so it is carried rather than consumed and forgotten: a key
           // read as ascending when the client wrote DESC numbers the partition backwards, and a wrong number
@@ -2100,7 +2101,12 @@ abstract class PostgresCatalogExpression {
           // for it is declined rather than numbered by a rule it did not ask for.
           if (peek() != null && peek().isKeyword("NULLS"))
             return null;
-          orderByDescending.add(descending);
+
+          // a column named again ties exactly where its first use did, whatever direction it is given: it is no key
+          if (!(key instanceof ColumnReference column) || orderedColumns.add(new ColumnKey(column.qualifier, column.name))) {
+            orderBy.add(key);
+            orderByDescending.add(descending);
+          }
         } while (skipSymbol(","));
       }
 
@@ -2108,6 +2114,10 @@ abstract class PostgresCatalogExpression {
         return null;
 
       return new WindowCall(functionName, partitionBy, orderBy, orderByDescending);
+    }
+
+    /** A plain column as the ORDER BY of a window names it, so that a column named again is told in constant time. */
+    private record ColumnKey(String qualifier, String name) {
     }
 
     /**

@@ -19,6 +19,7 @@
 package com.arcadedb.query.facet;
 
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.function.sql.time.SQLFunctionTimeBucket;
 import org.junit.jupiter.api.Test;
 
@@ -199,10 +200,10 @@ class CalendarBoundariesTest {
   void tooManyBucketsRefused() {
     final String message = "more than 100000 buckets";
     assertThatThrownBy(() -> CalendarBoundaries.calendar("h", ChronoUnit.MINUTES, ZoneOffset.UTC, null, ms("2016-01-01T00:00:00Z"),
-        ms("2026-01-01T00:00:00Z"), MAX)).isInstanceOf(CommandExecutionException.class).hasMessageContaining(message)
-        .hasMessageContaining("HISTOGRAM h would").hasMessageContaining("use a coarser interval or BOUNDS");
+        ms("2026-01-01T00:00:00Z"), MAX)).isInstanceOf(CommandSQLParsingException.class).hasMessageContaining(message)
+        .hasMessageContaining("FACETS h: the histogram would").hasMessageNotContaining("BOUNDS");
     assertThatThrownBy(() -> CalendarBoundaries.fixed("h", ZoneOffset.UTC, 60_000L, 0L, ms("2016-01-01T00:00:00Z"), ms("2026-01-01T00:00:00Z"), MAX))
-        .isInstanceOf(CommandExecutionException.class).hasMessageContaining(message);
+        .isInstanceOf(CommandSQLParsingException.class).hasMessageContaining(message);
     // exactly at the cap is accepted
     assertThat(CalendarBoundaries.fixed("h", ZoneOffset.UTC, 1000L, 0L, 0L, 99_999_999L, MAX).size()).isEqualTo(MAX);
   }
@@ -210,17 +211,17 @@ class CalendarBoundariesTest {
   @Test
   void fixedWideRangeIsRefusedByTheCapNotByOverflow() {
     assertThatThrownBy(() -> CalendarBoundaries.fixed("h", ZoneOffset.UTC, 3_600_000L, 0L, -5_000_000_000_000_000_000L,
-        5_000_000_000_000_000_000L, MAX)).isInstanceOf(CommandExecutionException.class).hasMessageContaining("HISTOGRAM h would produce more than 100000 buckets");
+        5_000_000_000_000_000_000L, MAX)).isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("FACETS h: the histogram would have more than 100000 buckets");
     assertThatThrownBy(() -> CalendarBoundaries.fixed("h", ZoneOffset.UTC, 1L, 0L, Long.MIN_VALUE, Long.MAX_VALUE, MAX))
-        .isInstanceOf(CommandExecutionException.class).hasMessageContaining("more than 100000 buckets");
+        .isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("more than 100000 buckets");
   }
 
   @Test
   void fixedAtTheLongLimitsIsRefusedNeverInverted() {
     assertThatThrownBy(() -> CalendarBoundaries.fixed("h", ZoneOffset.UTC, 3_600_000L, 0L, Long.MAX_VALUE - 10, Long.MAX_VALUE, MAX))
-        .isInstanceOf(CommandExecutionException.class).hasMessageContaining("representable");
+        .isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("representable").hasMessageNotContaining("BOUNDS");
     assertThatThrownBy(() -> CalendarBoundaries.fixed("h", ZoneOffset.UTC, 3_600_000L, 0L, Long.MIN_VALUE, Long.MIN_VALUE + 10, MAX))
-        .isInstanceOf(CommandExecutionException.class).hasMessageContaining("representable");
+        .isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("representable").hasMessageNotContaining("BOUNDS");
     // a single bucket as wide as the whole range is fine while its end is representable
     final CalendarBoundaries b = CalendarBoundaries.fixed("h", ZoneOffset.UTC, 1L << 61, 0L, -5L, 5L, MAX);
     assertThat(b.size()).isEqualTo(2);
@@ -230,11 +231,11 @@ class CalendarBoundariesTest {
   @Test
   void calendarAtTheLongLimitsIsRefused() {
     assertThatThrownBy(() -> CalendarBoundaries.calendar("h", ChronoUnit.YEARS, ZoneOffset.UTC, null, Long.MAX_VALUE - 5, Long.MAX_VALUE, MAX))
-        .isInstanceOf(CommandExecutionException.class).hasMessageContaining("representable");
+        .isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("representable").hasMessageNotContaining("BOUNDS");
     assertThatThrownBy(() -> CalendarBoundaries.calendar("h", ChronoUnit.YEARS, ZoneOffset.UTC, null, Long.MIN_VALUE, Long.MIN_VALUE + 5, MAX))
-        .isInstanceOf(CommandExecutionException.class).hasMessageContaining("representable");
+        .isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("representable").hasMessageNotContaining("BOUNDS");
     assertThatThrownBy(() -> CalendarBoundaries.calendar("h", ChronoUnit.DAYS, ZoneOffset.UTC, Duration.ofSeconds(Long.MAX_VALUE), 0L, 0L, MAX))
-        .isInstanceOf(CommandExecutionException.class).hasMessageContaining("representable");
+        .isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("representable").hasMessageNotContaining("BOUNDS");
   }
 
   @Test
@@ -281,6 +282,6 @@ class CalendarBoundariesTest {
     final CalendarBoundaries ok = CalendarBoundaries.calendar("h", ChronoUnit.MINUTES, ZoneOffset.UTC, null, min, min + 99_999 * 60_000L, MAX);
     assertThat(ok.size()).isEqualTo(MAX);
     assertThatThrownBy(() -> CalendarBoundaries.calendar("h", ChronoUnit.MINUTES, ZoneOffset.UTC, null, min, min + 100_000 * 60_000L, MAX))
-        .isInstanceOf(CommandExecutionException.class).hasMessageContaining("more than 100000 buckets");
+        .isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("more than 100000 buckets");
   }
 }

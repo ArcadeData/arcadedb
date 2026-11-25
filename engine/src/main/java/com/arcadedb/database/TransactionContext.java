@@ -3749,10 +3749,16 @@ public class TransactionContext implements Transaction {
    * Whether {@code slot} holds on {@code committed} the record this transaction read from {@code image} (#11590): the same plain
    * record, or no record on either page. A record that is not plain on one of them is taken as changed. A vertex that changed
    * only in the heads of its edge lists is still the one read when this transaction appended to each list whose head moved: the
-   * edge-append merge and the edge-list head merge (#11498) reconcile a head moved under such appends. A moved head of a list it
-   * did not append to is a stale read of that list (its outgoing appends do not make its read of the incoming list current), and
-   * so is a moved head of a list whose chunk the application read: a walk of that list started from the head it read, and missed
+   * edge-append merge and the edge-list head merge (#11498) reconcile a head moved under such appends. A moved head of a list
+   * whose chunk the application read is a stale read of that list: a walk of that list started from the head it read, and missed
    * the chunk the other transaction put in front of it.
+   * <p>
+   * A moved head of a list it did not append to is a stale read only when a traversal read that head off the vertex, which
+   * {@link #trackEdgeListHeadReadFromOwnImage} records (#12320). A vertex read for what it is - its type, its properties, the
+   * vertex a {@code MATCH (a {uuid: ..})} binds before a relationship is created from it - read neither list: a concurrent
+   * transaction that gave it its first relationship in the other direction, or a new chunk in front of a full one, changed
+   * nothing that read decided on. Refusing it threw away most commits of concurrent relationship loads on shared vertices
+   * (issue #12642).
    */
   private boolean isReadSlotCurrent(final LocalBucket bucket, final MutablePage image, final ImmutablePage committed,
       final int slot) {
@@ -3763,7 +3769,7 @@ public class TransactionContext implements Transaction {
     if (Arrays.equals(read, current))
       return true;
 
-    if (edgeAppendsBySegment == null || read.length != current.length || read.length < VERTEX_HEADS_END
+    if (read.length != current.length || read.length < VERTEX_HEADS_END
         || read[0] != Vertex.RECORD_TYPE || current[0] != Vertex.RECORD_TYPE
         || !Arrays.equals(read, VERTEX_HEADS_END, read.length, current, VERTEX_HEADS_END, current.length))
       return false;
@@ -3773,22 +3779,31 @@ public class TransactionContext implements Transaction {
     final boolean inMoved = !Arrays.equals(read, VERTEX_IN_HEAD_OFFSET, VERTEX_HEADS_END, current, VERTEX_IN_HEAD_OFFSET,
         VERTEX_HEADS_END);
     final RID vertex = recordAt(bucket, image.getPageId(), slot);
-    foldReadsOfAppendedChunks();
     boolean outAppended = false;
     boolean inAppended = false;
     boolean outRead = false;
     boolean inRead = false;
-    for (final EdgeAppendBuffer appends : edgeAppendsBySegment.values())
-      if (vertex.equals(appends.owner)) {
-        if (appends.ownerOut) {
-          outAppended = true;
-          outRead |= appends.readByApplication;
-        } else {
-          inAppended = true;
-          inRead |= appends.readByApplication;
+    if (edgeAppendsBySegment != null) {
+      foldReadsOfAppendedChunks();
+      for (final EdgeAppendBuffer appends : edgeAppendsBySegment.values())
+        if (vertex.equals(appends.owner)) {
+          if (appends.ownerOut) {
+            outAppended = true;
+            outRead |= appends.readByApplication;
+          } else {
+            inAppended = true;
+            inRead |= appends.readByApplication;
+          }
         }
-      }
-    return (!outMoved || outAppended && !outRead) && (!inMoved || inAppended && !inRead);
+    }
+    return (!outMoved || (outAppended ? !outRead : !isHeadReadFromOwnImage(vertex, true)))
+        && (!inMoved || (inAppended ? !inRead : !isHeadReadFromOwnImage(vertex, false)));
+  }
+
+  /** Whether a traversal read the outgoing ({@code out}) or incoming head of {@code vertex} off this transaction's own image. */
+  private boolean isHeadReadFromOwnImage(final RID vertex, final boolean out) {
+    final RidHashSet read = out ? outHeadsReadFromOwnImage : inHeadsReadFromOwnImage;
+    return read != null && read.contains(vertex);
   }
 
   /**
@@ -3846,8 +3861,8 @@ public class TransactionContext implements Transaction {
    * it replaced. A read image that is no plain vertex record answers true, which keeps the conflict.
    */
   private boolean isOwnImageHeadReadStale(final LocalBucket bucket, final RID vertex, final byte[] committedImage) {
-    final boolean outRead = outHeadsReadFromOwnImage != null && outHeadsReadFromOwnImage.contains(vertex);
-    final boolean inRead = inHeadsReadFromOwnImage != null && inHeadsReadFromOwnImage.contains(vertex);
+    final boolean outRead = isHeadReadFromOwnImage(vertex, true);
+    final boolean inRead = isHeadReadFromOwnImage(vertex, false);
     if (!outRead && !inRead)
       return false;
     final MutablePage image = ownPageImageOf(bucket, vertex);
@@ -3860,10 +3875,7 @@ public class TransactionContext implements Transaction {
 
   /** Whether a traversal read a head of {@code vertex} off a vertex loaded from this transaction's own image of its page. */
   private boolean isEdgeListHeadRead(final MutableVertex vertex, final boolean out) {
-    if (vertex.isEdgeListHeadRead(out))
-      return true;
-    final RidHashSet read = out ? outHeadsReadFromOwnImage : inHeadsReadFromOwnImage;
-    return read != null && read.contains(vertex.getIdentity());
+    return vertex.isEdgeListHeadRead(out) || isHeadReadFromOwnImage(vertex.getIdentity(), out);
   }
 
   /** {@link #trackReadFromPage(BasePage, int)} for a read of the page as a whole, as a scan of it is (#11590). */
