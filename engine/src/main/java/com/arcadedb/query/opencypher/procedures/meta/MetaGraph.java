@@ -19,26 +19,34 @@
 package com.arcadedb.query.opencypher.procedures.meta;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.VirtualEdge;
+import com.arcadedb.graph.VirtualVertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
-import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EdgeType;
-import com.arcadedb.schema.VertexType;
-import com.arcadedb.security.SecurityHelper;
 
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
 
 /**
- * Procedure: meta.graph()
+ * Procedure: meta.graph([config])
  * <p>
- * Returns a virtual graph representing the schema structure with node types
- * and relationship types as virtual nodes and edges.
+ * Returns the graph's schema as a virtual graph, as APOC's {@code apoc.meta.graph}: one virtual node per label with nodes,
+ * carrying {@code name} and {@code count}, and one virtual relationship per (start label, type, end label) that occurs,
+ * carrying {@code type}, {@code out} (relationships of the type leaving a node with the start label), {@code in}
+ * (reaching a node with the end label) and {@code count} (all relationships of the type). Nodes are sorted by label,
+ * relationships by type, start label and end label. The optional config map is accepted and, as APOC 5.26 does with
+ * it for this procedure, does not narrow the answer.
+ * </p>
+ * <p>
+ * Cost: the relationship records of every readable edge type are scanned once (linear in the number of relationships, where
+ * Neo4j reads its count store), because ArcadeDB keeps no per-label relationship counts. The scan stops at the command's
+ * timeout, on termination and on interrupt.
  * </p>
  * <p>
  * Example Cypher usage:
@@ -65,12 +73,12 @@ public class MetaGraph extends AbstractMetaProcedure {
 
   @Override
   public int getMaxArgs() {
-    return 0;
+    return 1;
   }
 
   @Override
   public String getDescription() {
-    return "Returns a virtual graph representing the schema structure";
+    return "Returns a virtual graph of the labels and relationship types in the database, with their counts";
   }
 
   @Override
@@ -81,49 +89,39 @@ public class MetaGraph extends AbstractMetaProcedure {
   @Override
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     final Database database = context.getDatabase();
+    // Validated as a map, otherwise unused: APOC answers the whole graph whatever includeLabels/includeRels say
+    optionalMapArg(args, 0, "config");
+    final MetaGraphCounts counts = new MetaGraphCounts(database, new MetaLabels(database), false, newWorkGuard(context));
 
-    final List<Map<String, Object>> nodes = new ArrayList<>();
-    final List<Map<String, Object>> relationships = new ArrayList<>();
-
-    // Create virtual nodes for each vertex type
-    for (final DocumentType type : SecurityHelper.readableTypes((DatabaseInternal) database)) {
-      if (type instanceof VertexType) {
-        final Map<String, Object> node = new HashMap<>();
-        node.put("_type", "vNode");
-        node.put("_id", "meta:" + type.getName());
-        node.put("_labels", List.of(type.getName()));
-        node.put("name", type.getName());
-        node.put("count", database.countType(type.getName(), true));
-
-        // Add property info
-        final List<String> propertyNames = new ArrayList<>(type.getPropertyNames());
-        node.put("properties", propertyNames);
-
-        nodes.add(node);
-      }
+    final Map<String, Vertex> nodesByLabel = new LinkedHashMap<>();
+    for (final Map.Entry<String, Long> label : counts.labels.entrySet()) {
+      final Map<String, Object> properties = new LinkedHashMap<>();
+      properties.put("name", label.getKey());
+      properties.put("count", label.getValue());
+      nodesByLabel.put(label.getKey(), new VirtualVertex(database, List.of(label.getKey()), properties));
     }
 
-    // Create virtual relationships for each edge type
-    for (final DocumentType type : SecurityHelper.readableTypes((DatabaseInternal) database)) {
-      if (type instanceof EdgeType) {
-        final Map<String, Object> rel = new HashMap<>();
-        rel.put("_type", "vRelationship");
-        rel.put("_id", "meta_rel:" + type.getName());
-        rel.put("type", type.getName());
-        rel.put("count", database.countType(type.getName(), true));
-
-        // Add property info
-        final List<String> propertyNames = new ArrayList<>(type.getPropertyNames());
-        rel.put("properties", propertyNames);
-
-        relationships.add(rel);
-      }
+    final List<Edge> relationships = new ArrayList<>();
+    for (final Map.Entry<String, Map<String, Map<String, Long>>> type : counts.between.entrySet()) {
+      final String typeName = type.getKey();
+      for (final Map.Entry<String, Map<String, Long>> start : type.getValue().entrySet())
+        for (final String endLabel : start.getValue().keySet()) {
+          final Vertex from = nodesByLabel.get(start.getKey());
+          final Vertex to = nodesByLabel.get(endLabel);
+          if (from == null || to == null)
+            continue;
+          final Map<String, Object> properties = new LinkedHashMap<>();
+          properties.put("type", typeName);
+          properties.put("out", counts.outCounts.get(typeName).get(start.getKey()));
+          properties.put("in", counts.inCounts.get(typeName).get(endLabel));
+          properties.put("count", counts.relTypes.get(typeName));
+          relationships.add(new VirtualEdge(database, from, typeName, properties, to));
+        }
     }
 
     final ResultInternal result = new ResultInternal();
-    result.setProperty("nodes", nodes);
+    result.setProperty("nodes", new ArrayList<>(nodesByLabel.values()));
     result.setProperty("relationships", relationships);
-
     return Stream.of(result);
   }
 }

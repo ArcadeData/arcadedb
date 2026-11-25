@@ -24,6 +24,11 @@ package com.arcadedb.exception;
  * right (a wrong count is a {@link CommandSemanticException}) and so is its KIND (a value of the wrong kind is a
  * {@link TypeMismatchException}); its value is not one the function accepts.
  * <p>
+ * The same holds for the value a DDL statement carries and the engine refuses before it changes anything (issue #12436): a bare
+ * word where an attribute takes a value ({@code CREATE PROPERTY ... (mandatory maybe)}), a MIN, a MAX or a REGEXP that cannot be
+ * read for the property's type, and a {@code DROP BUCKET} of a bucket a type owns. The statement is well-formed and the server is
+ * healthy, so they answer as a function argument does.
+ * <p>
  * The statement is well-formed and the engine is healthy, so this is the caller's error and not an internal failure: HTTP 400,
  * {@link ErrorCategory#VALIDATION} on every other protocol - Neo4j's {@code Neo.ClientError.Statement.ArgumentError} over Bolt,
  * {@code 22023} invalid_parameter_value over Postgres (issue #11589, where such calls answered 500, some of them with a raw

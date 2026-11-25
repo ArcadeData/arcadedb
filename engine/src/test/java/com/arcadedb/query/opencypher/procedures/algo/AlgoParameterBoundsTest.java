@@ -883,26 +883,30 @@ class AlgoParameterBoundsTest {
      * deadline test on them would assert nothing about a run that is over before the clock is read. Their checkpoint
      * is the same {@code WorkGuard.check()} call the other twelve use - it observes the deadline and the interrupt
      * in one place - and it is covered above.
+     * <p>
+     * The vertices a procedure starts from come in as parameters, not from a {@code MATCH} in front of the call: with a 1 ms
+     * deadline that MATCH can be what runs out the clock, and the timeout it raises names no procedure (issue #12095).
      */
     @Timeout(120)
     @ParameterizedTest(name = "{0}")
     @CsvSource(delimiter = '|', value = {
         "algo.pagerank             | CALL algo.pagerank({maxIterations: 2000000000, tolerance: 0.0}) YIELD node RETURN node",
         "algo.articlerank          | CALL algo.articlerank({maxIterations: 2000000000, tolerance: 0.0}) YIELD node RETURN node",
-        "algo.personalizedPageRank | MATCH (a:Node {name: 'A'}) CALL algo.personalizedPageRank(a, 'LINK', 0.85, 2000000000, 0.0) YIELD nodeId RETURN nodeId",
+        "algo.personalizedPageRank | CALL algo.personalizedPageRank($a, 'LINK', 0.85, 2000000000, 0.0) YIELD nodeId RETURN nodeId",
         "algo.eigenvector          | CALL algo.eigenvector('LINK', 'BOTH', 2000000000, 0.0) YIELD node RETURN node",
         "algo.hits                 | CALL algo.hits('LINK', 2000000000, 0.0) YIELD node RETURN node",
         "algo.katz                 | CALL algo.katz('LINK', 0.005, 2000000000, 0.0) YIELD nodeId RETURN nodeId",
         "algo.labelpropagation     | CALL algo.labelpropagation({maxIterations: 2000000000}) YIELD node RETURN node",
-        "algo.simRank              | MATCH (a:Node {name: 'A'}), (b:Node {name: 'C'}) CALL algo.simRank(a, b, 'LINK', 0.8, 2000000000) YIELD similarity RETURN similarity",
+        "algo.simRank              | CALL algo.simRank($a, $c, 'LINK', 0.8, 2000000000) YIELD similarity RETURN similarity",
         "algo.slpa                 | CALL algo.slpa({iterations: 1000000, seed: 1}) YIELD node RETURN node",
         "algo.fastrp               | CALL algo.fastrp({dimensions: 8, iterations: 2000000000, seed: 1}) YIELD node RETURN node",
         "algo.hashgnn              | CALL algo.hashgnn({embeddingDimension: 8, iterations: 2000000000, seed: 1}) YIELD node RETURN node",
         "algo.graphsage            | CALL algo.graphsage({embeddingDimension: 8, layers: 2000000000, seed: 1}) YIELD node RETURN node" })
     void everyIterationLoopHonoursTheCommandTimeout(final String procedure, final String query) {
+      final Map<String, Object> params = Map.of("a", node("A"), "c", node("C"));
       database.getConfiguration().setValue(GlobalConfiguration.COMMAND_TIMEOUT, 1L);
 
-      assertThatThrownBy(() -> drain(query))
+      assertThatThrownBy(() -> drain(query, params))
           .as("%s must give up at the command deadline instead of running the whole knob out", procedure)
           .hasStackTraceContaining(procedure + "() exceeded the " + GlobalConfiguration.COMMAND_TIMEOUT.getKey());
     }
@@ -1157,11 +1161,21 @@ class AlgoParameterBoundsTest {
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private List<Result> drain(final String query) {
-      final ResultSet rs = database.query("opencypher", query);
+      return drain(query, Map.of());
+    }
+
+    private List<Result> drain(final String query, final Map<String, Object> params) {
+      final ResultSet rs = database.query("opencypher", query, params);
       final List<Result> results = new ArrayList<>();
       while (rs.hasNext())
         results.add(rs.next());
       return results;
+    }
+
+    private Vertex node(final String name) {
+      try (final ResultSet rs = database.query("sql", "SELECT FROM Node WHERE name = ?", name)) {
+        return rs.next().getVertex().orElseThrow();
+      }
     }
   }
 

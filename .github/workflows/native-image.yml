@@ -205,7 +205,7 @@ jobs:
       # see docs/native-image.md "Prerequisites". Move the two together or not at all;
       # .github/scripts/check-native-graalvm-pin.py fails the `lint` job if they disagree.
       - name: Set up GraalVM (Community 25.0.2)
-        uses: graalvm/setup-graalvm@d6eca2595046623d69d636041513c80abf745406 # v1.6.9
+        uses: graalvm/setup-graalvm@60e76998d25690099182b796e99b8804da582d90 # v1.6.10
         with:
           java-version: "25.0.2"
           distribution: "graalvm-community"
@@ -636,7 +636,7 @@ jobs:
       # is asserted against the packaged native image. The suite ends with ServerLogIT, which fails on a
       # ClassNotFoundException / MissingReflectionRegistrationError / log-handler failure anywhere in the server log.
       - name: Set up JDK 21
-        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
         with:
           distribution: "temurin"
           java-version: 21

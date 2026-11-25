@@ -100,6 +100,10 @@ class SQLMethodPrecisionTest {
 
       if (DateUtils.getPrecision(DateUtils.getNanos(result)) == precision)
         break;
+
+      // A sample taken on a whole millisecond truncates to whole seconds, and back-to-back retries land in that same
+      // millisecond: the ten of them were one sample, and the test failed whenever the first one did. Let the clock move first.
+      Thread.sleep(1);
     }
     assertThat(DateUtils.getPrecision(DateUtils.getNanos(result))).isEqualTo(precision);
   }
