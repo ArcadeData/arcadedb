@@ -86,7 +86,8 @@ class SQLFunctionVectorFuseOracleTest extends TestHelper {
     try (final ResultSet rs = database.query("sql", sql.toString(), params)) {
       while (rs.hasNext()) {
         final Result r = rs.next();
-        out.put(r.getIdentity().get(), ((Number) r.getProperty("score")).doubleValue());
+        assertThat(out.put(r.getIdentity().get(), ((Number) r.getProperty("score")).doubleValue()))
+            .as("%s is returned once", r.getIdentity().get()).isNull();
       }
     }
     return out;
