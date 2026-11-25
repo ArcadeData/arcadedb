@@ -19,6 +19,7 @@
 package com.arcadedb.bolt.message;
 
 import com.arcadedb.bolt.packstream.PackStreamWriter;
+import com.arcadedb.bolt.structure.BoltStructureMapper;
 
 import java.io.IOException;
 import java.util.Map;
@@ -30,21 +31,45 @@ import java.util.Map;
  */
 public class RunMessage extends BoltMessage {
   private final String              query;
-  private final Map<String, Object> parameters;
   private final Map<String, Object> extra;
+  // Until the first getParameters() call of a parsed message these are the parameters as the request decoded them. A
+  // message belongs to the connection thread that parsed it, so neither field needs synchronization
+  private       Map<String, Object> parameters;
+  private       boolean             converted;
 
   public RunMessage(final String query, final Map<String, Object> parameters, final Map<String, Object> extra) {
+    this(query, parameters, extra, true);
+  }
+
+  private RunMessage(final String query, final Map<String, Object> parameters, final Map<String, Object> extra,
+      final boolean converted) {
     super(RUN);
     this.query = query;
     this.parameters = parameters != null ? parameters : Map.of();
     this.extra = extra != null ? extra : Map.of();
+    this.converted = converted || this.parameters.isEmpty();
+  }
+
+  /**
+   * A RUN as {@link BoltMessage#parse} builds it, from the fields exactly as they were decoded: the parameters are turned
+   * into the values the engine binds (temporals, durations, points) by the first {@link #getParameters()}, which only a
+   * handler of a request the connection's state accepts calls. A request is parsed before its state is checked, so the
+   * conversion, which costs as much as the parameters are large, is not paid for a request that is refused.
+   */
+  static RunMessage decoded(final String query, final Map<String, Object> parameters, final Map<String, Object> extra) {
+    return new RunMessage(query, parameters, extra, false);
   }
 
   public String getQuery() {
     return query;
   }
 
+  @SuppressWarnings("unchecked")
   public Map<String, Object> getParameters() {
+    if (!converted) {
+      parameters = (Map<String, Object>) BoltStructureMapper.fromPackStreamValue(parameters);
+      converted = true;
+    }
     return parameters;
   }
 
@@ -60,7 +85,7 @@ public class RunMessage extends BoltMessage {
   public void writeTo(final PackStreamWriter writer) throws IOException {
     writer.writeStructureHeader(signature, 3);
     writer.writeString(query);
-    writer.writeMap(parameters);
+    writer.writeMap(getParameters());
     writer.writeMap(extra);
   }
 
