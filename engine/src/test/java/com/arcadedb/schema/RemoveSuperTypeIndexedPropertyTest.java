@@ -23,8 +23,11 @@ import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
+import java.io.File;
+import java.nio.file.Files;
 import java.util.Collections;
 import java.util.List;
 
@@ -156,14 +159,16 @@ class RemoveSuperTypeIndexedPropertyTest extends TestHelper {
   }
 
   @Test
-  void propertyInheritedThroughAnotherSuperTypeAsAnotherTypeRefusesTheRemoval() {
-    // C resolves k through P first, so C[k] is keyed INTEGER: without P, k would be the STRING of Q and the index stale
+  void propertyInheritedThroughAnotherSuperTypeAsAnotherTypeRefusesTheRemoval() throws Exception {
+    // C resolves k through P first, so C[k] is keyed INTEGER: without P, k would be the STRING of Q and the index stale. Since #12732
+    // the two declarations cannot disagree from the start, so the file of a database written before is edited to make them
     database.command("sql", "CREATE DOCUMENT TYPE P");
     database.command("sql", "CREATE PROPERTY P.k INTEGER");
     database.command("sql", "CREATE DOCUMENT TYPE Q");
-    database.command("sql", "CREATE PROPERTY Q.k STRING");
+    database.command("sql", "CREATE PROPERTY Q.k INTEGER");
     database.command("sql", "CREATE DOCUMENT TYPE C EXTENDS P, Q");
     database.command("sql", "CREATE INDEX ON C (k) UNIQUE");
+    reopenWithPropertyAttribute("Q", "k", "type", "STRING");
 
     assertThatThrownBy(() -> database.command("sql", "ALTER TYPE C SUPERTYPE -P"))//
         .isInstanceOf(SchemaException.class)//
@@ -177,13 +182,15 @@ class RemoveSuperTypeIndexedPropertyTest extends TestHelper {
   }
 
   @Test
-  void itemTypeOfAListInheritedFromAnotherSuperTypeRefusesTheRemoval() {
+  void itemTypeOfAListInheritedFromAnotherSuperTypeRefusesTheRemoval() throws Exception {
+    // a database written before #12732, as above
     database.command("sql", "CREATE DOCUMENT TYPE P");
     database.command("sql", "CREATE PROPERTY P.tags LIST OF STRING");
     database.command("sql", "CREATE DOCUMENT TYPE Q");
-    database.command("sql", "CREATE PROPERTY Q.tags LIST OF INTEGER");
+    database.command("sql", "CREATE PROPERTY Q.tags LIST OF STRING");
     database.command("sql", "CREATE DOCUMENT TYPE C EXTENDS P, Q");
     database.command("sql", "CREATE INDEX ON C (tags BY ITEM) NOTUNIQUE");
+    reopenWithPropertyAttribute("Q", "tags", "of", "INTEGER");
 
     assertThatThrownBy(() -> database.command("sql", "ALTER TYPE C SUPERTYPE -P"))//
         .isInstanceOf(SchemaException.class)//
@@ -410,5 +417,19 @@ class RemoveSuperTypeIndexedPropertyTest extends TestHelper {
     assertThat(database.getSchema().getType(type).getPolymorphicPropertyNames()).contains("k");
     final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName(indexName);
     assertThat(index.isValid()).isTrue();
+  }
+
+  /** Closes the database, sets one attribute of a property in the schema file (and its fallback copy), and opens it again. */
+  private void reopenWithPropertyAttribute(final String type, final String property, final String attribute, final String value)
+      throws Exception {
+    database.close();
+    final File schemaFile = new File(getDatabasePath() + File.separator + LocalSchema.SCHEMA_FILE_NAME);
+    final JSONObject root = new JSONObject(Files.readString(schemaFile.toPath()));
+    root.getJSONObject("types").getJSONObject(type).getJSONObject("properties").getJSONObject(property).put(attribute, value);
+    Files.writeString(schemaFile.toPath(), root.toString());
+    final File prev = new File(getDatabasePath() + File.separator + "schema.prev.json");
+    if (prev.exists())
+      Files.writeString(prev.toPath(), root.toString());
+    database = factory.open();
   }
 }

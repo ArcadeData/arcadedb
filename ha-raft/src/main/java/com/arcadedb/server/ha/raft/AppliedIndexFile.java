@@ -72,6 +72,23 @@ final class AppliedIndexFile {
 
   final Object                    appliedIndexFileLock = new Object();
 
+  // The index of the INSTALL_DATABASE_ENTRY that created the copy of each database this node holds (issue #11919), or for
+  // a copy acquired from the leader the index after the one the leader served it at. An entry naming the database at a
+  // LOWER index, whatever its type, is not applied: it belongs to an incarnation a drop removed, or it is already in the
+  // copy. For an acquired copy that is a transaction, a schema change or a configuration the copy carries, and a create,
+  // a drop or a bootstrap baseline whose effect the copy supersedes (the #8579 skip leaves those to the apply, which would
+  // drop the copy, or verify it against a baseline it has moved past). A replay from a snapshot marker older than the drop
+  // must not apply them to the copy the later create made. Kept in a file of its own, .raft/created-index, fsynced on
+  // every change: the applied-index file is rewritten without an fsync on every entry, and a power loss can leave that
+  // rewrite empty. The fsync is paid only when a copy is created, acquired or dropped, never per applied entry. Guarded by
+  // appliedIndexFileLock and evicted by a drop with the per-database applied index.
+  // The boundary is trusted as it stands: it is bound to no Raft group, so a node whose Raft storage is reset to join
+  // another cluster must not keep a .raft directory from the old one (the applied-index file there has the same exposure).
+  private final Map<String, Long> createdIndexByDb = new ConcurrentHashMap<>();
+
+  // Whether the last change of createdIndexByDb could not be written (issue #11919): the next applied entry writes it again
+  private volatile boolean createdIndexFilePending = false;
+
   // Which writes of the applied-index file are fsynced (issue #11517), both guarded by appliedIndexFileLock: whether
   // the file on disk carries a quarantine or a read floor (so the write that clears them must be durable too), and
   // whether this instance has made one durable write yet (the file's existence is what the offline-bootstrap gate reads)
@@ -174,9 +191,10 @@ final class AppliedIndexFile {
       return;
     synchronized (appliedIndexFileLock) {
       ensureAppliedIndexLoaded();
-      if (drop)
+      if (drop) {
         appliedIndexByDb.remove(dbName);
-      else
+        evictCreatedIndex(dbName);
+      } else
         appliedIndexByDb.put(dbName, index);
       persistAppliedIndexFile();
     }
@@ -194,9 +212,96 @@ final class AppliedIndexFile {
     synchronized (appliedIndexFileLock) {
       ensureAppliedIndexLoaded();
       globalAppliedIndex = index;
-      if (dbName != null)
+      if (dbName != null) {
         appliedIndexByDb.remove(dbName);
+        // The copy the create made is gone: a create of the same name starts the next incarnation (issue #11919)
+        evictCreatedIndex(dbName);
+      }
       persistAppliedIndexFile();
+    }
+  }
+
+  /**
+   * Records that the {@code INSTALL_DATABASE_ENTRY} at {@code index} made the copy of {@code dbName} this node holds (issue
+   * #11919), the boundary {@link #isOfEarlierIncarnation} tells a replayed entry of a dropped incarnation by. A replay of
+   * the same create records nothing new. Written durably to {@code .raft/created-index}, which no per-entry write touches:
+   * the boundary has to survive whatever restart replays the drop before it. A failed write keeps the boundary in memory,
+   * where it already protects this run, and is written again by the next applied entry (see
+   * {@link #retryCreatedIndexFile()}).
+   */
+  void recordDatabaseCreated(final long index, final String dbName) {
+    synchronized (appliedIndexFileLock) {
+      ensureAppliedIndexLoaded();
+      final Long previous = createdIndexByDb.get(dbName);
+      if (previous != null && previous >= index)
+        return;
+      createdIndexByDb.put(dbName, index);
+      persistCreatedIndexFile();
+    }
+  }
+
+  /** Forgets the creation boundary of a dropped database (issue #11919), on disk too. Called under appliedIndexFileLock. */
+  private void evictCreatedIndex(final String dbName) {
+    if (createdIndexByDb.remove(dbName) != null)
+      persistCreatedIndexFile();
+  }
+
+  /** Writes the creation boundaries again after a failed write (issue #11919). */
+  void retryCreatedIndexFile() {
+    synchronized (appliedIndexFileLock) {
+      if (createdIndexFilePending)
+        persistCreatedIndexFile();
+    }
+  }
+
+  /** Whether a change of the creation boundaries is still to be written (issue #11919). */
+  boolean isCreatedIndexFilePending() {
+    return createdIndexFilePending;
+  }
+
+  /**
+   * Whether the entry at {@code index} naming {@code dbName} is below the creation boundary of the copy this node holds
+   * (issue #11919): of an incarnation a drop removed before the create that made the copy, or, for a copy acquired from
+   * the leader, already in it. A replay of the log from a snapshot marker older than that drop gets here with such an
+   * entry, and so do the entries between an acquired copy's install boundary and the index the leader served it at.
+   */
+  boolean isOfEarlierIncarnation(final String dbName, final long index) {
+    ensureAppliedIndexLoaded();
+    final Long created = createdIndexByDb.get(dbName);
+    return created != null && index < created;
+  }
+
+  /** The creation boundary of {@code dbName}, or null when none is recorded (issue #11919). */
+  Long createdIndex(final String dbName) {
+    return createdIndexByDb.get(dbName);
+  }
+
+  /**
+   * Writes {@link #createdIndexByDb} to {@code .raft/created-index} with an fsync (issue #11919). Called under
+   * appliedIndexFileLock. A failure is logged at WARNING and leaves {@link #createdIndexFilePending} set: until a write
+   * succeeds, a crash loses the boundaries recorded since the last good one, and a restart replaying a drop older than
+   * them falls back to applying the dropped incarnation's entries, which the later create then rebuilds the copy over.
+   */
+  private void persistCreatedIndexFile() {
+    if (sm.closed)
+      return; // see close(): a task that outlived the shutdown must not recreate the file
+    final Path file = getCreatedIndexFile();
+    if (file == null)
+      return;
+    final JSONObject json = new JSONObject();
+    for (final Map.Entry<String, Long> entry : createdIndexByDb.entrySet())
+      json.put(entry.getKey(), entry.getValue().longValue());
+    try {
+      Files.createDirectories(file.getParent());
+      FileUtils.atomicWriteFile(file.toFile(), json.toString());
+      createdIndexFilePending = false;
+    } catch (final Exception e) {
+      if (!createdIndexFilePending)
+        LogManager.instance().log(sm, Level.WARNING,
+            "Could not write %s: %s. Retried with every applied entry; until it succeeds, a restart that replays the log "
+                + "from before a drop may apply the dropped incarnation's entries to the database created after it",
+            file, e.getMessage());
+      createdIndexFilePending = true;
     }
   }
 
@@ -278,6 +383,7 @@ final class AppliedIndexFile {
       } catch (final Exception e) {
         LogManager.instance().log(sm, Level.FINE, "Could not read persisted applied index: %s", e.getMessage());
       } finally {
+        loadCreatedIndexFile();
         // The path was resolvable and we attempted a read: latch even on a parse failure so a corrupt
         // file is not re-read on every apply (it degrades to -1, re-running the idempotent verification).
         // Deliberate coupling: a corrupt file leaving globalAppliedIndex at -1 also makes
@@ -477,6 +583,39 @@ final class AppliedIndexFile {
   Path getAppliedIndexFile() {
     final Path raftDir = getRaftDir();
     return raftDir != null ? raftDir.resolve("applied-index") : null;
+  }
+
+  private Path getCreatedIndexFile() {
+    final Path raftDir = getRaftDir();
+    return raftDir != null ? raftDir.resolve("created-index") : null;
+  }
+
+  /**
+   * Reads {@code .raft/created-index} into {@link #createdIndexByDb} (issue #11919), from {@link #ensureAppliedIndexLoaded()}
+   * under appliedIndexFileLock. A missing, empty or unreadable file records no boundary: nothing is skipped for a database
+   * until its next create, as before the file existed.
+   */
+  private void loadCreatedIndexFile() {
+    final Path file = getCreatedIndexFile();
+    if (file == null)
+      return;
+    removeStrayAppliedIndexTempFiles(file);
+    try {
+      if (!Files.exists(file))
+        return;
+      final String content = Files.readString(file).trim();
+      if (content.isEmpty())
+        return;
+      final JSONObject json = new JSONObject(content);
+      for (final String name : json.keySet()) {
+        // A null or negative value records no boundary, the same as a database absent from the file
+        final long created = json.getLong(name, -1);
+        if (created >= 0)
+          createdIndexByDb.put(name, created);
+      }
+    } catch (final Exception e) {
+      LogManager.instance().log(sm, Level.WARNING, "Could not read %s: %s", file, e.getMessage());
+    }
   }
 
   /**

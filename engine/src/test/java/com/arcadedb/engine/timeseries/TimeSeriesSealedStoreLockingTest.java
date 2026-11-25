@@ -1364,6 +1364,11 @@ class TimeSeriesSealedStoreLockingTest {
     void aRewriteOfTheDroppedStoreLeavesTheTempFilesOfTheRecreatedTypeAlone() throws Exception {
       final TimeSeriesSealedStore dropped = createTypeWithSmallBlocks();
       final TimeSeriesSealedStore.MergePlan plan = dropped.prepareMerge(TimeSeriesShard.SEALED_BLOCK_SIZE, 0L, 1);
+      // a downsampling pass between its prepare and its commit (issue #12610): one sample a second, folded to one a minute
+      final TimeSeriesSealedStore.DownsamplePlan downsample = dropped.prepareDownsample(Long.MAX_VALUE, 60_000L, 0L, 0, List.of(1),
+          List.of(2));
+      assertThat(downsample).isNotNull();
+      assertThat(downsample.directoryMoved()).isFalse();
 
       database.command("sql", "DROP TYPE Ticker");
       database.command("sql", "CREATE TIMESERIES TYPE Ticker TIMESTAMP ts TAGS (name STRING) FIELDS (f1 DOUBLE) SHARDS 1");
@@ -1371,19 +1376,26 @@ class TimeSeriesSealedStoreLockingTest {
       // the temp files a rewrite of the new store is in the middle of writing
       final File compactionTemp = new File(getDatabasePath(), "Ticker_shard_0.ts.sealed.tmp");
       final File mergeTemp = new File(getDatabasePath(), "Ticker_shard_0" + TimeSeriesSealedStore.MERGE_TEMP_SUFFIX);
+      final File downsampleTemp = new File(getDatabasePath(), "Ticker_shard_0" + TimeSeriesSealedStore.DOWNSAMPLE_TEMP_SUFFIX);
       Files.writeString(compactionTemp.toPath(), "the new store's compaction");
       Files.writeString(mergeTemp.toPath(), "the new store's merge");
+      Files.writeString(downsampleTemp.toPath(), "the new store's downsample");
 
       assertThat(dropped.commitMerge(plan)).isFalse();
+      assertThat(dropped.commitDownsample(downsample)).isFalse();
+      assertThatThrownBy(() -> dropped.downsampleBlocks(Long.MAX_VALUE, 60_000L, 0L, 0, List.of(1), List.of(2)))
+          .isInstanceOf(IOException.class);
       assertThatThrownBy(() -> dropped.commitTempCompactionFile(List.of())).isInstanceOf(IOException.class);
       assertThatThrownBy(() -> dropped.appendBlocksToTempFile(List.<byte[][]>of(new byte[][] { {} }), List.<long[]>of(new long[] { 0L, 0L, 1L }),
           List.of(), null, new ArrayList<>())).isInstanceOf(IOException.class);
       assertThatThrownBy(() -> dropped.truncateBefore(Long.MAX_VALUE)).isInstanceOf(IOException.class);
       dropped.deleteTempFileIfExists();
       dropped.deleteMergeTempFileIfExists();
+      dropped.deleteDownsampleTempFileIfExists();
 
       assertThat(compactionTemp).hasContent("the new store's compaction");
       assertThat(mergeTemp).hasContent("the new store's merge");
+      assertThat(downsampleTemp).hasContent("the new store's downsample");
       assertThat(sealedFile()).as("the new store's own file, untouched by the old merge").exists();
       assertThat(countSamples()).isZero();
 

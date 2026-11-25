@@ -23,7 +23,9 @@ import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
- * path.slice(path, from, [to]) - Extract a subpath from a path.
+ * path.slice(path, offset = 0, length = -1) - Extract a subpath from a path, as APOC's {@code apoc.path.slice}: the
+ * {@code length} relationships starting at relationship {@code offset}. A length of -1 reads to the end of the path; a
+ * negative offset counts as 0.
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -35,7 +37,7 @@ public class PathSlice extends AbstractPathFunction {
 
   @Override
   public int getMinArgs() {
-    return 2;
+    return 1;
   }
 
   @Override
@@ -45,7 +47,7 @@ public class PathSlice extends AbstractPathFunction {
 
   @Override
   public String getDescription() {
-    return "Extract a subpath from index 'from' to 'to' (based on relationship count)";
+    return "Extract the subpath of 'length' relationships starting at relationship 'offset' (length -1 = to the end)";
   }
 
   @Override
@@ -56,24 +58,31 @@ public class PathSlice extends AbstractPathFunction {
     // A TraversalPath in, a TraversalPath out: the path a MATCH pattern binds used to answer null (issue #9913)
     final TraversalPath path = requirePath(args[0]);
     final int relCount = path.length();
-    final long from = index(args[1], 0);
-    final long to = index(args.length > 2 ? args[2] : null, relCount);
+    final long offset = wholeNumber(args.length > 1 ? args[1] : null, 0L, "offset");
+    final long length = wholeNumber(args.length > 2 ? args[2] : null, -1L, "length");
 
-    // Clamp the bounds. An empty slice (from == to, or from == relCount, i.e. slicing at the path's
-    // end) yields a zero-relationship path containing just the boundary node, not null (issue #4707).
-    final int actualFrom = (int) Math.max(0L, Math.min(from, relCount));
-    final int actualTo = (int) Math.max(actualFrom, Math.min(relCount, to));
-    return path.subPath(actualFrom, actualTo);
+    // Issue #12109: the third argument is a LENGTH, as in APOC, not an end index: slice(p, 1, 1) is the second
+    // relationship, and -1 (the default) reads to the end. Any other negative length is an empty slice. An empty slice
+    // yields a zero-relationship path holding the node it starts at, not null (issue #4707).
+    final int from = (int) Math.max(0L, Math.min(offset, relCount));
+    final int to;
+    if (length == -1L)
+      to = relCount;
+    else if (length < 0L)
+      to = from;
+    else
+      to = from + (int) Math.min(length, relCount - from);
+    return path.subPath(from, to);
   }
 
-  /** A relationship index, {@code defaultValue} for null; anything but a number is a type error, not a ClassCastException. */
-  private long index(final Object value, final int defaultValue) {
+  /** A whole number, {@code defaultValue} for null; anything but a number is a type error, not a ClassCastException. */
+  private long wholeNumber(final Object value, final long defaultValue, final String argumentName) {
     if (value == null)
       return defaultValue;
     if (value instanceof Number)
       // Issue #10850: a whole number - intValue() read 1.9 as 1 and wrapped 4294967297 to 1. The index stays a long until
       // it is clamped to the path, so one past the int range means "past the end" as it should
-      return CypherFunctionHelper.requireWholeNumberArgument(value, getName(), "index");
+      return CypherFunctionHelper.requireWholeNumberArgument(value, getName(), argumentName);
     throw CypherFunctionHelper.typeMismatch(getName(), "an INTEGER", value);
   }
 }

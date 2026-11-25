@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.ast;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.opencypher.executor.CypherExecutionPlan;
+import com.arcadedb.query.opencypher.executor.SubqueryPlans;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -111,13 +112,25 @@ public final class CorrelatedSubqueryRunner {
   }
 
   private static CypherExecutionPlan planFor(final CypherStatement body, final CommandContext context) {
+    // Planned once per execution of a statement that cannot write, and its step chain run again for each outer row when
+    // it can be (issue #12136); planned per row otherwise
+    final SubqueryPlans subqueryPlans = SubqueryPlans.of(context);
+    if (subqueryPlans != null) {
+      final CypherExecutionPlan planned = subqueryPlans.get(body);
+      if (planned != null)
+        return planned;
+    }
+
     final DatabaseInternal database = (DatabaseInternal) context.getDatabase();
     final Map<String, Object> parameters = context.getInputParameters();
 
     // No physical plan: the optimizer is keyed on a query string this body never had, and the seed row is exactly the
-    // input the physical operators do not model. The step chain is built per row, as it is for a CALL { } body.
-    return new CypherExecutionPlan(database, body, parameters != null ? parameters : Map.of(),
+    // input the physical operators do not model.
+    final CypherExecutionPlan plan = new CypherExecutionPlan(database, body, parameters != null ? parameters : Map.of(),
         database.getConfiguration(), null, OpenCypherQueryEngine.getExpressionEvaluator());
+    if (subqueryPlans != null)
+      subqueryPlans.put(body, plan);
+    return plan;
   }
 
   /**

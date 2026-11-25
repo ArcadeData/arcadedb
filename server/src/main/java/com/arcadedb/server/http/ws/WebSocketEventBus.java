@@ -19,8 +19,11 @@
 package com.arcadedb.server.http.ws;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.security.ServerSecurity;
@@ -180,10 +183,15 @@ public class WebSocketEventBus {
   }
 
   public void publish(final ChangeEvent event) {
-    final var databaseName = event.getRecord().getDatabase().getName();
+    final Database recordDatabase = event.getRecord().getDatabase();
+    final var databaseName = recordDatabase.getName();
     final var databaseSubscribers = this.subscribers.get(databaseName);
     if (databaseSubscribers == null)
       return;
+
+    // The bucket of the record is what the per-type read grants are keyed on: resolved once for the whole fan-out
+    final RID identity = event.getRecord().getIdentity();
+    final int bucketId = identity != null ? identity.getBucketId() : -1;
 
     // Serialize the event ONCE for the whole fan-out instead of once per subscriber: ChangeEvent.toJSON does a full
     // record.toJSON(true) + String materialization, so per-subscriber serialization is O(N x record size) on the single
@@ -248,7 +256,8 @@ public class WebSocketEventBus {
         // Authorization is re-checked on DELIVERY, not only at SUBSCRIBE time (issue #6762): the identity is
         // captured once at the handshake, so revoking a user's access to the database - or dropping the user
         // outright - otherwise left the change stream flowing until the client happened to disconnect.
-        if (!isStillAuthorized(subscription, databaseName)) {
+        final Delivery delivery = deliveryTo(subscription, recordDatabase, bucketId);
+        if (delivery == Delivery.DROP) {
           LogManager.instance().log(this, Level.WARNING,
               "Dropping change-stream subscription %s: the user is no longer authorized on database '%s'", null,
               channelId, databaseName);
@@ -256,6 +265,10 @@ public class WebSocketEventBus {
           subscription.close();
           return;
         }
+
+        // The subscription is legitimate for the other types of the database: only this change is passed over
+        if (delivery == Delivery.SKIP)
+          return;
 
         if (!subscription.reservePending(messageSize, maxPendingBytes)) {
           LogManager.instance().log(this, Level.WARNING,
@@ -313,22 +326,54 @@ public class WebSocketEventBus {
     });
   }
 
+  /** What one change is to do for one subscriber. */
+  private enum Delivery {
+    /** The change is sent. */
+    SEND,
+    /** The change is passed over, the subscription stays: the subscriber may not read the type of the record. */
+    SKIP,
+    /** The subscription is closed: the subscriber may no longer read the database at all. */
+    DROP
+  }
+
   /**
-   * Whether the identity that opened this channel may still read {@code databaseName}.
+   * What the change of a record of {@code bucketId} is to do for the identity that opened this channel: sent when it may read
+   * the database AND the type the record belongs to, passed over when it may read the database but not that type, and the
+   * subscription dropped when it may not read the database any more.
    * <p>
    * The {@link ServerSecurityUser} captured at the handshake is a snapshot: {@code ServerSecurity.updateUser}
    * replaces the instance and {@code dropUser} removes it, so the current grant has to be re-resolved by name. A
    * channel with no identity attached (embedded/test wiring, where no security is installed) is left alone.
+   * <p>
+   * The per-type read grant is the one the engine asks for every record read ({@code READ_RECORD} on the bucket of the
+   * record), taken from the same live principal: a type the group may not read is never pushed, whether the subscription names
+   * it or covers every type, and a grant changed after the subscription is honoured by the next change. A lookup in the
+   * grant array of the user, nothing is allocated per subscriber.
    */
-  private boolean isStillAuthorized(final EventWatcherSubscription subscription, final String databaseName) {
+  private Delivery deliveryTo(final EventWatcherSubscription subscription, final Database database, final int bucketId) {
     final WebSocketChannel channel = subscription.getChannel();
     if (channel == null || this.arcadeServer == null)
-      return true;
+      return Delivery.SEND;
+
+    final ServerSecurityUser current;
     try {
-      final ServerSecurityUser current = revalidatedUser(channel);
-      return current == null || current.canAccessToDatabase(databaseName);
+      current = revalidatedUser(channel);
+      if (current == null)
+        return Delivery.SEND;
+      if (!current.canAccessToDatabase(database.getName()))
+        return Delivery.DROP;
     } catch (final ServerSecurityException e) {
-      return false;
+      return Delivery.DROP;
+    }
+
+    // A negative bucket id is a record with no identity, so no bucket to look a grant up for: it is passed over, not sent
+    try {
+      return bucketId >= 0 && current.getDatabaseUser(database).requestAccessOnFile(bucketId, SecurityDatabaseUser.ACCESS.READ_RECORD) ?
+          Delivery.SEND :
+          Delivery.SKIP;
+    } catch (final ServerSecurityException e) {
+      // The grants are being rebuilt: this change is passed over rather than sent on a map that is not complete
+      return Delivery.SKIP;
     }
   }
 

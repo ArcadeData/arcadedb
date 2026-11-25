@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.TrackableBinary;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.ComponentFile;
@@ -61,6 +62,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
   // removing one (key, RID) does not read the other values of the key (#11935). A plain long on purpose: it is bumped on every
   // removal, and only a single-threaded test reads it, so an increment lost to a concurrent removal costs nothing
   private             long                  removeValuesRead    = 0;
+  private             long                  keyPresentProbes    = 0;
 
   // Why the last onAfterLoad() of a schema load could not attach the sub-index, reported once the schema entries are read
   private String subIndexLoadError;
@@ -369,6 +371,170 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
   }
 
   /**
+   * The non-empty mutable pages of this index as they are now, for {@link #holdsNoEntryFor}: each with the view and the entry count
+   * a lookup reads it through, and the position the last probe of the page ended at.
+   */
+  final class MutablePagesSnapshot {
+    private final Binary[] buffers;
+    private final int[]    counts;
+    private final int[]    headerSizes;
+    // the entry each page's last probe ended at: the next probe starts there. Probes of one commit run on one thread
+    private final int[]    hints;
+    private final int      size;
+
+    private MutablePagesSnapshot() throws IOException {
+      final int totalPages = getTotalPages();
+      final Binary[] pageBuffers = new Binary[totalPages];
+      final int[] pageCounts = new int[totalPages];
+      final int[] pageHeaderSizes = new int[totalPages];
+      final TransactionContext transaction = database.getTransaction();
+      int n = 0;
+      // NEWEST PAGE FIRST, as the walk of get()
+      for (int p = totalPages - 1; p > -1; --p) {
+        final BasePage page = transaction.getPageForAbsoluteReads(pageIds.get(p), pageSize);
+        final int count = getCount(page);
+        if (count < 1)
+          continue;
+        pageBuffers[n] = new Binary(page.slice());
+        pageCounts[n] = count;
+        pageHeaderSizes[n] = getHeaderSize(p);
+        ++n;
+      }
+      this.buffers = pageBuffers;
+      this.counts = pageCounts;
+      this.headerSizes = pageHeaderSizes;
+      this.hints = new int[totalPages];
+      this.size = n;
+    }
+
+    /**
+     * Whether an entry of page {@code i} has {@code convertedKeys} as its key: a search that starts at the entry the last probe of the
+     * page ended at and doubles its step away from it, so the keys of a sorted batch cost a few comparisons each and a key anywhere
+     * costs at most about twice a binary search.
+     */
+    private boolean pageHoldsKeyNearHint(final int i, final Object[] convertedKeys) {
+      final Binary buffer = buffers[i];
+      final int count = counts[i];
+      final int start = headerSizes[i];
+      final int hint = hints[i];
+
+      int result = compareKey(buffer, start, convertedKeys, hint, count);
+      if (result == 0)
+        return true;
+
+      int low;
+      int high;
+      if (result > 0) {
+        // THE KEY IS HIGHER THAN THE ENTRY AT THE HINT: GALLOP UP
+        low = hint + 1;
+        high = count - 1;
+        for (int step = 1; low <= high; step <<= 1) {
+          final int probe = hint + step;
+          if (probe > high)
+            break;
+          result = compareKey(buffer, start, convertedKeys, probe, count);
+          if (result == 0) {
+            hints[i] = probe;
+            return true;
+          }
+          if (result < 0) {
+            high = probe - 1;
+            break;
+          }
+          low = probe + 1;
+        }
+      } else {
+        // LOWER: GALLOP DOWN
+        low = 0;
+        high = hint - 1;
+        for (int step = 1; low <= high; step <<= 1) {
+          final int probe = hint - step;
+          if (probe < low)
+            break;
+          result = compareKey(buffer, start, convertedKeys, probe, count);
+          if (result == 0) {
+            hints[i] = probe;
+            return true;
+          }
+          if (result > 0) {
+            low = probe + 1;
+            break;
+          }
+          high = probe - 1;
+        }
+      }
+
+      while (low <= high) {
+        final int mid = (low + high) >>> 1;
+        result = compareKey(buffer, start, convertedKeys, mid, count);
+        if (result == 0) {
+          hints[i] = mid;
+          return true;
+        }
+        if (result > 0)
+          low = mid + 1;
+        else
+          high = mid - 1;
+      }
+      // NOT HELD: THE NEXT KEY OF A SORTED BATCH LIES AT OR AFTER WHERE THIS ONE WOULD BE
+      hints[i] = Math.min(low, count - 1);
+      return false;
+    }
+  }
+
+  MutablePagesSnapshot newPageSnapshot() throws IOException {
+    return new MutablePagesSnapshot();
+  }
+
+  /**
+   * Whether no page of this index, mutable or compacted, has an entry for {@code keys}: then {@link #get} answers nothing, and the
+   * caller skips it. It is what the uniqueness check of a commit asks for every new key of every bucket index of a type, and it
+   * answers from the pages alone: no result is built, and the mutable pages are those of the snapshot, taken once for all the keys.
+   * The compacted series are read as {@link #get} reads them, bloom filters first.
+   * <p>
+   * False when a page has an entry for the key, a deletion marker included: {@link #get} then decides what survives. False too
+   * for what this does not judge (a partial key), so that {@link #get} raises what it raises.
+   *
+   * @param pages the snapshot of this index the caller took, and may use while no other transaction writes its pages
+   * @param keys  keys already read as the declared types, as {@link LSMTreeIndex#get} passes them on
+   */
+  boolean holdsNoEntryFor(final MutablePagesSnapshot pages, final Object[] keys) {
+    try {
+      checkForNulls(keys);
+
+      final Object[] convertedKeys = convertKeys(keys, binaryKeyTypes);
+      if (convertedKeys == null || convertedKeys.length != binaryKeyTypes.length)
+        return false;
+
+      for (int i = 0; i < pages.size; ++i)
+        if (pages.pageHoldsKeyNearHint(i, convertedKeys)) {
+          ++keyPresentProbes;
+          return false;
+        }
+
+      if (subIndex != null) {
+        final KeyPresenceSink sink = new KeyPresenceSink(convertedKeys);
+        subIndex.searchInCompactedIndex(convertedKeys, sink);
+        if (sink.isPresent()) {
+          ++keyPresentProbes;
+          return false;
+        }
+      }
+      return true;
+    } catch (final IOException e) {
+      throw new DatabaseOperationException("Cannot probe the index '" + componentName + "'", e);
+    }
+  }
+
+  /**
+   * How many {@link #holdsNoEntryFor} probes found an entry of the key since this index was opened. Package-private: for tests only,
+   * and exact only when the probes ran on one thread.
+   */
+  long getKeyPresentProbesForTesting() {
+    return keyPresentProbes;
+  }
+
+  /**
    * Every value of a key, decoded into primitives with the deletion markers applied (issue #12458): see
    * {@link LSMTreeIndex#getPostings}.
    */
@@ -489,10 +655,12 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
   private void searchInNonCompactedIndex(final Object[] convertedKeys, final KeyLookupSink sink) throws IOException {
     // SEARCH FROM THE LAST PAGE BACK
     final int totalPages = getTotalPages();
+    // ONE LOOKUP OF THE TRANSACTION OF THE THREAD, NOT ONE PER PAGE
+    final TransactionContext transaction = database.getTransaction();
 
     for (int p = totalPages - 1; p > -1; --p) {
       // #10654: the PageId is the one this index handed out before, and the buffer is built only for a page that has entries
-      final BasePage currentPage = database.getTransaction().getPageForAbsoluteReads(pageIds.get(p), pageSize);
+      final BasePage currentPage = transaction.getPageForAbsoluteReads(pageIds.get(p), pageSize);
       final int count = getCount(currentPage);
 
       if (count < 1)

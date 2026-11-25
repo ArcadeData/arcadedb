@@ -114,8 +114,8 @@ public class MatchNodeStep extends AbstractExecutionStep {
   private       String              usedIndexName; // Track which index was used (if any)
   private final Set<String>         usedIndexNames = new LinkedHashSet<>(); // the indexes sought by the plan of a node with no single type, once each
   // TRUE WHEN THE CANDIDATES OF THE LAST COMPUTED ITERATOR DEPEND ON THE INPUT ROW: a node pattern that names no single
-  // type (no label, or several) pinned by a value the row decides is answered by index seeks that are made again for
-  // every row, so its candidates are not the same for every row and must not be cached (issue #12522)
+  // type (no label, or several) pinned by a value, or a list of values, the row decides is answered by index seeks that are made
+  // again for every row, so its candidates are not the same for every row and must not be cached (issues #12522, #12546)
   private       boolean             candidatesDependOnTheRow = false;
   // The label whose vertices the user was found allowed to read, so that a chained MATCH, which re-opens the scan per outer row,
   // asks the permission of a static label once (issue #12663)
@@ -569,10 +569,10 @@ public class MatchNodeStep extends AbstractExecutionStep {
    * post-fetch per-row filters (see {@code matchesProperties}/the {@code whereFilter.evaluate} call in this
    * step's chained-mode fetch loop), which does not affect what the candidate set is.
    * <p>
-   * It takes one other branch, the seek of the indexes that cover the pinned properties
-   * ({@link #tryFindAndUseIndexAcrossTypes}, issue #12522), and a value the input row decides makes its candidates differ from
-   * row to row: that branch says so in {@link #candidatesDependOnTheRow}, which is what is read first below. The values that
-   * pin it are the same for every row otherwise, and so are the candidates.
+   * It takes one other branch, the seek of the indexes that cover the pinned properties, or the list of values the WHERE filter
+   * pins one to ({@link #tryFindAndUseIndexAcrossTypes}, issues #12522 and #12546), and a value the input row decides makes its
+   * candidates differ from row to row: that branch says so in {@link #candidatesDependOnTheRow}, which is what is read first
+   * below. The values that pin it are the same for every row otherwise, and so are the candidates.
    * <p>
    * {@code whereFilter} itself is checked structurally rather than just for {@code != null}:
    * {@code tryFindAndUseIndexFromWhere} only ever acts on a {@code variable.property = <expr>} (or reversed)
@@ -1032,7 +1032,9 @@ public class MatchNodeStep extends AbstractExecutionStep {
    * The candidates of a node pinned to values whose pattern names no single type (no label, or several), read from the indexes that
    * cover the vertex buckets of the types the labels select, and from a walk of the buckets that none covers; or null when no index
    * answers the pattern and the walk of the types does (issue #12522). Which index answers which bucket is decided by
-   * {@link MultiTypeNodeIndexPlan}, before anything is read.
+   * {@link MultiTypeNodeIndexPlan}, before anything is read. The equalities of the pattern and of the WHERE filter are tried first;
+   * when none of them is answered by an index, a list of values the WHERE filter pins the node to is
+   * ({@link #tryInListSeekAcrossTypes}, issue #12546).
    * <p>
    * A value the input row decides makes the candidates differ from row to row, so the seeks are made again for every row and the
    * candidates are not cached, as for a labelled node. The buckets that are walked would then be walked again for every row, where
@@ -1072,28 +1074,84 @@ public class MatchNodeStep extends AbstractExecutionStep {
         if (pinned.putIfAbsent(entry.getKey(), entry.getValue()) == null)
           rowDependent |= whereEqualities.usedDependOnTheRow;
     }
-    if (pinned.isEmpty()) {
+    if (pinned.isEmpty())
       // the walk answers this row, and a row whose value the row decides is not the one every row after it will have
       candidatesDependOnTheRow = whereEqualities.anyDependsOnTheRow;
+    else {
+      final MultiTypeNodeIndexPlan plan =
+          MultiTypeNodeIndexPlan.of(context.getDatabase().getSchema(), labels, pattern.isLabelDisjunction(), pinned);
+      if (plan == MultiTypeNodeIndexPlan.UNKEYABLE)
+        // an index answers the pattern, but not with this row's value: the walk answers this row, and the rows after it may be sought
+        candidatesDependOnTheRow = rowDependent || whereEqualities.anyDependsOnTheRow;
+      else if (plan != null) {
+        plan.checkReadable(context.getDatabase());
+        if (rowDependent) {
+          if (plan.walksARecord(context.getDatabase()))
+            return null;
+          candidatesDependOnTheRow = true; // the candidates of this row are not the candidates of the next one
+        }
+        return new PlannedCandidates(plan.parts(), pinned, null);
+      }
+      // else no index answers the equalities for any row: the walk is cached as it always was
+    }
+
+    // No equality of the node is answered by an index: a list of values it is pinned to may be (issue #12546)
+    return inListSeeks.isEmpty() ? null : tryInListSeekAcrossTypes(currentInputResult, labels);
+  }
+
+  /**
+   * The candidates of a node pinned to a LIST of values ({@code WHERE n.uuid IN $keys}) whose pattern names no single type, read
+   * from the indexes that cover the vertex buckets of the types the labels select, the way {@link #tryFindAndUseIndexAcrossTypes}
+   * reads those of an equality; or null when no index answers the list and the walk of the types does (issue #12546). The index of a
+   * bucket is chosen by {@link MultiTypeNodeIndexPlan#ofInList}, for the list with the fewest distinct keys when the WHERE filter
+   * holds several, and each index is read one key at a time as the caller pulls, so a LIMIT that a few keys satisfy stops there.
+   * <p>
+   * The WHERE filter still decides every candidate: the seek only narrows them, so a list that is not answered here is answered by
+   * the walk with the same rows. A list the input row decides makes the candidates differ from row to row, and is handled as an
+   * equality that the row decides is.
+   */
+  private Iterator<Identifiable> tryInListSeekAcrossTypes(final Result currentInputResult, final List<String> labels) {
+    final Schema schema = context.getDatabase().getSchema();
+    InListSeek bestSeek = null;
+    List<Object[]> bestKeys = null;
+    MultiTypeNodeIndexPlan bestPlan = null;
+    boolean walkDependsOnTheRow = false;
+
+    for (final InListSeek seek : inListSeeks) {
+      final List<Object[]> keys = resolveInListKeys(seek.in(), currentInputResult);
+      if (keys == null) {
+        // a list this row cannot resolve (an element that is a list, a value that is not one): the walk answers this row, and the
+        // list of the next row may be one a seek answers
+        walkDependsOnTheRow |= !seek.rowIndependent();
+        continue;
+      }
+      if (bestKeys != null && keys.size() >= bestKeys.size())
+        continue; // not narrower than the list already chosen
+
+      final MultiTypeNodeIndexPlan plan = MultiTypeNodeIndexPlan.ofInList(schema, labels, pattern.isLabelDisjunction(), seek.propertyName(), keys);
+      if (plan == MultiTypeNodeIndexPlan.UNKEYABLE)
+        // an index answers the property, but not with every key of this row's list: the next row's list may be keyable
+        walkDependsOnTheRow |= !seek.rowIndependent();
+      else if (plan != null) {
+        bestSeek = seek;
+        bestKeys = keys;
+        bestPlan = plan;
+      }
+    }
+
+    if (bestPlan == null) {
+      candidatesDependOnTheRow |= walkDependsOnTheRow;
       return null;
     }
 
-    final MultiTypeNodeIndexPlan plan =
-        MultiTypeNodeIndexPlan.of(context.getDatabase().getSchema(), labels, pattern.isLabelDisjunction(), pinned);
-    if (plan == null)
-      return null; // no index answers the pattern for any row: the walk is cached as it always was
-    if (plan == MultiTypeNodeIndexPlan.UNKEYABLE) {
-      // an index answers the pattern, but not with this row's value: the walk answers this row, and the rows after it may be sought
-      candidatesDependOnTheRow = rowDependent || whereEqualities.anyDependsOnTheRow;
-      return null;
-    }
-    plan.checkReadable(context.getDatabase());
-    if (rowDependent) {
-      if (plan.walksARecord(context.getDatabase()))
+    bestPlan.checkReadable(context.getDatabase());
+    if (!bestSeek.rowIndependent()) {
+      if (!bestKeys.isEmpty() && bestPlan.walksARecord(context.getDatabase()))
         return null;
       candidatesDependOnTheRow = true; // the candidates of this row are not the candidates of the next one
     }
-    return new PlannedCandidates(plan.parts(), pinned);
+    // No element can equal anything (an empty list, or only nulls): the predicate is never true
+    return bestKeys.isEmpty() ? Collections.emptyIterator() : new PlannedCandidates(bestPlan.parts(), null, bestKeys);
   }
 
   /**
@@ -1104,12 +1162,19 @@ public class MatchNodeStep extends AbstractExecutionStep {
   private final class PlannedCandidates implements Iterator<Identifiable> {
     private final List<MultiTypeNodeIndexPlan.Part> parts;
     private final Map<String, Object>                pinned;
+    private final List<Object[]>                     inListKeys;
     private       int                                nextPart = 0;
     private       Iterator<Identifiable>             current  = Collections.emptyIterator();
 
-    private PlannedCandidates(final List<MultiTypeNodeIndexPlan.Part> parts, final Map<String, Object> pinned) {
+    /**
+     * @param pinned     the values the pattern is pinned to, which the seeks are asked with; null for a list
+     * @param inListKeys the keys of the list the pattern is pinned to, which every seek is asked with, one at a time; null for values
+     */
+    private PlannedCandidates(final List<MultiTypeNodeIndexPlan.Part> parts, final Map<String, Object> pinned,
+        final List<Object[]> inListKeys) {
       this.parts = parts;
       this.pinned = pinned;
+      this.inListKeys = inListKeys;
     }
 
     @Override
@@ -1132,12 +1197,16 @@ public class MatchNodeStep extends AbstractExecutionStep {
 
       final TypeIndex index = part.index();
       final String[] propertyNames = part.propertyNames();
-      final Object[] propertyValues = new Object[propertyNames.length];
-      for (int i = 0; i < propertyNames.length; i++)
-        propertyValues[i] = TemporalUtil.toIndexKey(pinned.get(propertyNames[i]));
-
       // The index is the type's own: its declaring type is the label it is asked with, so it is not an inherited seek to filter by label
-      final Iterator<Identifiable> seek = lookupByKey(index, index.getTypeName(), propertyNames, propertyValues);
+      final Iterator<Identifiable> seek;
+      if (inListKeys != null)
+        seek = seekKeys(index, index.getTypeName(), inListKeys);
+      else {
+        final Object[] propertyValues = new Object[propertyNames.length];
+        for (int i = 0; i < propertyNames.length; i++)
+          propertyValues[i] = TemporalUtil.toIndexKey(pinned.get(propertyNames[i]));
+        seek = lookupByKey(index, index.getTypeName(), propertyNames, propertyValues);
+      }
       if (seek == null)
         return walkBucketsOf(part); // a concurrent DDL took the index away: the buckets it answered for are walked instead
 
@@ -1161,7 +1230,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
         if (bucket != null)
           walks.add(MultiTypeNodeIndexPlan.Part.walkOf(bucket.getName()));
       }
-      return new PlannedCandidates(walks, pinned);
+      return new PlannedCandidates(walks, pinned, inListKeys);
     }
   }
 

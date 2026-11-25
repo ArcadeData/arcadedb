@@ -135,13 +135,14 @@ public abstract class AbstractNodeFunction implements StatelessFunction {
 
   /**
    * The relationships of {@code vertex} the pattern follows, summed per alternative as APOC sums them ({@code 'KNOWS|KNOWS'}
-   * counts each KNOWS twice); every relationship in {@code restriction} for an empty pattern. The incoming side of a
+   * counts each KNOWS twice); every relationship in {@code restriction} for an empty pattern. A self loop followed in both
+   * directions counts once, as APOC and {@code COUNT { (n)-[:T]-() }} count it (issue #12674). The incoming side of a
    * unidirectional edge type is counted from the edges that end in the node (issue #8629).
    */
   protected static long countEdges(final CommandContext context, final Vertex vertex, final RelationshipPattern pattern,
       final Vertex.DIRECTION restriction) {
     if (pattern.isEmpty())
-      return IncomingEdgeLookup.countEdges(context, vertex, restriction);
+      return IncomingEdgeLookup.countPatternEdges(context, vertex, restriction);
 
     long count = 0;
     for (final RelationshipPattern.Entry entry : pattern.entries()) {
@@ -174,7 +175,7 @@ public abstract class AbstractNodeFunction implements StatelessFunction {
   private static long countAlternative(final CommandContext context, final Vertex vertex, final RelationshipPattern.Entry entry,
       final Vertex.DIRECTION direction) {
     return entry.type() == null ?
-        IncomingEdgeLookup.countEdges(context, vertex, direction) :
-        IncomingEdgeLookup.countEdges(context, vertex, direction, entry.type());
+        IncomingEdgeLookup.countPatternEdges(context, vertex, direction) :
+        IncomingEdgeLookup.countPatternEdges(context, vertex, direction, entry.type());
   }
 }

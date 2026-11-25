@@ -18,6 +18,7 @@
  */
 package com.arcadedb.gremlin;
 
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
@@ -32,6 +33,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.SelectExecutionPlanner;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.utility.LongHashSet;
 import com.arcadedb.utility.ScanPressureReporter;
 import org.apache.tinkerpop.gremlin.process.traversal.Compare;
@@ -255,6 +257,9 @@ public class ArcadeFilterByIndexStep<S, E extends Element> extends AbstractStep<
   private Iterator<E> openIterator() {
     final ArcadeGraph graph = (ArcadeGraph) getTraversal().getGraph().get();
     final Schema schema = graph.getDatabase().getSchema();
+    // The read permission of the type and of its subtypes is asked before the cursor is opened, as the walk of their buckets does
+    if (graph.getDatabase() instanceof DatabaseInternal database)
+      SecurityHelper.checkReadOnTypeAndSubTypes(database, schema.getTypeOrNull(typeName));
     final TypeIndex current = currentIndex(schema);
     if (current == null)
       return new CandidateIterator(graph, null, null, null, null);

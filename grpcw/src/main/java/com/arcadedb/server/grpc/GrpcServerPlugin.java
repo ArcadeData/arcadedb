@@ -321,6 +321,10 @@ public class GrpcServerPlugin implements ServerPlugin {
     // Read-your-writes on a cluster (issue #11948): the x-arcadedb-commit-index bookmark on every response, and the
     // x-arcadedb-read-after / x-arcadedb-read-consistency a read sends back, as X-ArcadeDB-* do over HTTP
     serverBuilder.intercept(new GrpcReadConsistencyInterceptor());
+    // The packed array negotiation (issue #11714): every response announces that this server decodes float_array_value /
+    // double_array_value, and a call's consent decides whether its float[] / double[] results are sent packed or as list_value,
+    // which every client decodes. On this shared path, so the standard and the xDS builder answer alike.
+    serverBuilder.intercept(new GrpcPackedArraysInterceptor());
     // The query admission gate (issue #9518). Added after the interceptors above so it runs outside them and inside the
     // authentication one added below: an unauthenticated call is refused before it can take a slot or wait for one.
     serverBuilder.intercept(new GrpcAdmissionInterceptor(arcadeServer));

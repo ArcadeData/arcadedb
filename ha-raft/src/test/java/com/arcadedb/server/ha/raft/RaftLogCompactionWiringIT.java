@@ -18,8 +18,19 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.LocalDatabase;
+import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.engine.PaginatedComponentFile;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -33,9 +44,19 @@ import static org.assertj.core.api.Assertions.assertThat;
  * the request from the real client id, local peer id and group id, and the compaction target resolving
  * the Raft storage volume for the free-space probe. A wrong group id or an unresolvable storage volume
  * would be invisible to both of the other suites.
+ * <p>
+ * It also covers where the checkpoint's data-file forcing runs (issue #11989). The checkpoint forces the data files of
+ * every open database (issue #11258) and Ratis runs it on its StateMachineUpdater, which is also the apply thread, so
+ * every commit of the node waited for that forcing. The compaction target forces them on its own thread before it asks
+ * for the checkpoint, and leaves the apply thread only what was written in between.
  */
 @Tag("slow")
 class RaftLogCompactionWiringIT extends BaseRaftHATest {
+
+  @AfterEach
+  void clearCheckpointHook() {
+    ArcadeStateMachine.TEST_BEFORE_CHECKPOINT_SYNC = null;
+  }
 
   @Test
   void takeLocalSnapshotSucceedsOnEveryNodeThroughTheProductionRequestPath() throws Exception {
@@ -82,5 +103,80 @@ class RaftLogCompactionWiringIT extends BaseRaftHATest {
           .as("server %d is running, so the tick must not be suppressed", i)
           .isFalse();
     }
+  }
+
+  @Test
+  void theCompactionForcesTheDataFilesBeforeTheApplyThreadCheckpoints() {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("a Raft leader must be elected").isGreaterThanOrEqualTo(0);
+    final LocalDatabase local = writeAccountsLeavingFilesToForce(leaderIndex);
+
+    final RaftHAServer leader = getRaftPlugin(leaderIndex).getRaftHAServer();
+    final ArcadeStateMachine leaderStateMachine = leader.getStateMachine();
+    final AtomicBoolean checkpointed = new AtomicBoolean();
+    final List<String> leftToTheApplyThread = new CopyOnWriteArrayList<>();
+    ArcadeStateMachine.TEST_BEFORE_CHECKPOINT_SYNC = stateMachine -> {
+      if (stateMachine != leaderStateMachine)
+        return;
+      checkpointed.set(true);
+      leftToTheApplyThread.addAll(unsyncedFiles(local));
+    };
+
+    final long index = leader.newCompactionTargetForTesting().triggerSnapshot(1);
+
+    assertThat(index).as("precondition: the compaction took a checkpoint").isPositive();
+    assertThat(checkpointed.get()).as("precondition: the checkpoint reached its data-file sync").isTrue();
+    assertThat(leftToTheApplyThread)
+        .as("the compaction forced the data files on its own thread: the apply thread had none left to force (issue #11989)")
+        .isEmpty();
+    assertThat(unsyncedFiles(local)).as("and the checkpoint's guarantee holds: nothing it covers still owes the disk").isEmpty();
+  }
+
+  @Test
+  void aTickBelowTheCreationGapForcesNoDataFile() {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("a Raft leader must be elected").isGreaterThanOrEqualTo(0);
+    final LocalDatabase local = writeAccountsLeavingFilesToForce(leaderIndex);
+
+    final RaftHAServer leader = getRaftPlugin(leaderIndex).getRaftHAServer();
+    final ArcadeStateMachine leaderStateMachine = leader.getStateMachine();
+    final AtomicBoolean checkpointed = new AtomicBoolean();
+    ArcadeStateMachine.TEST_BEFORE_CHECKPOINT_SYNC = stateMachine -> {
+      if (stateMachine == leaderStateMachine)
+        checkpointed.set(true);
+    };
+
+    // A gap no node reaches: Ratis answers the request without a checkpoint, so nothing is there to force ahead of
+    final long index = leader.newCompactionTargetForTesting().triggerSnapshot(Long.MAX_VALUE);
+
+    assertThat(index).as("precondition: Ratis answered the request below the gap").isNotNegative();
+    assertThat(checkpointed.get()).as("precondition: Ratis took no checkpoint below the creation gap").isFalse();
+    assertThat(unsyncedFiles(local))
+        .as("a tick that takes no checkpoint must not pay the data-file forcing either (issue #11989)")
+        .isNotEmpty();
+  }
+
+  /** Commits on the leader, waits for the pages to reach the files and asserts that the files still owe their fsync. */
+  private LocalDatabase writeAccountsLeavingFilesToForce(final int leaderIndex) {
+    final Database db = getServerDatabase(leaderIndex, getDatabaseName());
+    db.transaction(() -> db.getSchema().createDocumentType("Account"));
+    db.transaction(() -> {
+      for (int i = 0; i < 500; i++)
+        db.newDocument("Account").set("i", i).save();
+    });
+
+    final LocalDatabase local = (LocalDatabase) ((DatabaseInternal) db).getEmbedded();
+    assertThat(local.getPageManager().waitAllPagesOfDatabaseAreFlushed(local)).as("the fixture: the pages reached the files")
+        .isTrue();
+    assertThat(unsyncedFiles(local)).as("the fixture: the commits left data files to force").isNotEmpty();
+    return local;
+  }
+
+  private static List<String> unsyncedFiles(final LocalDatabase db) {
+    final List<String> unsynced = new ArrayList<>();
+    for (final ComponentFile f : db.getFileManager().getFiles())
+      if (f instanceof PaginatedComponentFile pcf && pcf.isModifiedSinceLastSync())
+        unsynced.add(pcf.getFileName());
+    return unsynced;
   }
 }
