@@ -28,6 +28,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.TypeHierarchy;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.utility.FileUtils;
@@ -234,8 +235,9 @@ public class FetchFromLightweightEdgeTypeStep extends AbstractExecutionStep {
       return;
 
     SecurityHelper.checkAccessOnType(database, type, SecurityDatabaseUser.ACCESS.READ_RECORD);
-    for (final DocumentType subType : type.getSubTypes())
-      checkAccessOnTypeAndSubTypes(database, subType);
+    // each type below once, whatever the number of paths that lead down to it
+    for (final DocumentType subType : TypeHierarchy.allSubTypes(type))
+      SecurityHelper.checkAccessOnType(database, subType, SecurityDatabaseUser.ACCESS.READ_RECORD);
   }
 
   /**

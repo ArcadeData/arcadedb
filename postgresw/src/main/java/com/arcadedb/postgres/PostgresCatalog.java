@@ -33,6 +33,7 @@ import com.arcadedb.schema.MaterializedView;
 import com.arcadedb.schema.MaterializedViewStatus;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.TypeHierarchy;
 import com.arcadedb.security.SecurityHelper;
 
 import java.util.ArrayList;
@@ -2996,15 +2997,8 @@ public class PostgresCatalog {
 
   /** The declaration of {@code name} that {@link #collectProperties} keeps for {@code type}, or null if it has none. */
   private static Property nearestProperty(final DocumentType type, final String name) {
-    final Property own = type.getPropertyIfExists(name);
-    if (own != null)
-      return own;
-    for (final DocumentType superType : type.getSuperTypes()) {
-      final Property inherited = nearestProperty(superType, name);
-      if (inherited != null)
-        return inherited;
-    }
-    return null;
+    // the type's own declaration, then its super types in order, depth first, each type once
+    return type.getPolymorphicPropertyIfExists(name);
   }
 
   /**
@@ -3030,8 +3024,10 @@ public class PostgresCatalog {
   private static void collectProperties(final DocumentType type, final Map<String, Property> byName) {
     for (final Property property : type.getProperties())
       byName.putIfAbsent(property.getName(), property);
-    for (final DocumentType superType : type.getSuperTypes())
-      collectProperties(superType, byName);
+    // each super type once, whatever the number of paths that lead up to it
+    for (final DocumentType superType : TypeHierarchy.allSuperTypes(type))
+      for (final Property property : superType.getProperties())
+        byName.putIfAbsent(property.getName(), property);
   }
 
   /**
