@@ -619,9 +619,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   /**
    * The records whose vector a commit replay put in this index and whose transaction has not concluded yet (issue #13323), with
-   * how many such replays put one: the vector is in the index, the record pages are published only once the replay concludes. A
-   * RID is added before its vector becomes visible ({@link VectorIndexReplayUndo#recordPut}) and removed after the pages are
-   * published, or after a rollback took the vector back ({@link #putsConcluded}). Per record, not per index: a search hands every
+   * how many such replays put one: the replay wrote the vector on the index pages, and the record pages are published only once
+   * the replay concludes (the replay holds the vector back from searches until then, issue #11962). A RID is added before the
+   * replay goes on ({@link VectorIndexReplayUndo#recordPut}) and removed after the pages are published, or after a rollback
+   * dropped the replay ({@link #putsConcluded}). Per record, not per index: a search hands every
    * other row on without reading it, however many commits are in flight (issue #10973). Empty whenever no commit is in flight, so
    * a search asks an empty map. A replay tracks at most {@link VectorIndexReplayUndo#MAX_TRACKED_PUTS} records here, see
    * {@link #bulkPutsInFlight}.
