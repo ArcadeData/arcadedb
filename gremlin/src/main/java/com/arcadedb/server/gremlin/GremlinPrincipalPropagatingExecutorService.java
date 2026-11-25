@@ -30,6 +30,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.AbstractExecutorService;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -67,6 +68,12 @@ public class GremlinPrincipalPropagatingExecutorService extends AbstractExecutor
     this.server = server;
   }
 
+  /**
+   * A task the delegate refuses because its work queue is full (see {@link GremlinServerPlugin#newGremlinPool}) is not caught
+   * here: the {@link RejectedExecutionException} reaches TinkerPop's eval and traversal processors as thrown, which answer the
+   * request with the "too many requests" status. Nothing is bound or published before the delegate accepts the task, so a
+   * refused one leaves nothing behind.
+   */
   @Override
   public void execute(final Runnable command) {
     // Captured on the Netty request thread, where ArcadeGremlinAuthorizer has just published the user.

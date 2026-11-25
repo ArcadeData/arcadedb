@@ -314,9 +314,10 @@ public class BinaryTypes {
         }
       }
       type = t;
-    } else if (value instanceof Character)
-      // THE STRING Type.TYPES_BY_USERTYPE MAPS IT TO, WRITTEN AS ITS ONE-CHARACTER TEXT AND READ BACK AS A String: IT USED TO FALL
-      // TO THE UNKNOWN BRANCH BELOW, SO THE PROPERTY WAS LEFT OUT OF THE RECORD AND A LIST OR MAP ELEMENT BECAME null (ISSUE #12021)
+    } else if (value instanceof Character || value instanceof Enum<?>)
+      // THE STRING Type.TYPES_BY_USERTYPE MAPS BOTH TO, WRITTEN AS THEIR TEXT (toString(), THE TEXT A DECLARED STRING PROPERTY GETS
+      // FROM Type.convert) AND READ BACK AS A String: THEY USED TO FALL TO THE UNKNOWN BRANCH BELOW, SO THE PROPERTY WAS LEFT OUT OF
+      // THE RECORD AND A LIST OR MAP ELEMENT BECAME null (ISSUES #12021, #12624)
       type = TYPE_STRING;
     else {
       LogManager.instance()

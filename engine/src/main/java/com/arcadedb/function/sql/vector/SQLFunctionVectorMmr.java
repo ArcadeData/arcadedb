@@ -129,12 +129,12 @@ public class SQLFunctionVectorMmr extends SQLFunctionVectorAbstract {
     if (Float.isNaN(lambda) || lambda < 0.0f || lambda > 1.0f)
       throw new CommandSQLParsingException(NAME + " lambda must be in [0, 1], got " + lambda);
 
-    final List<RawCandidate> rawCandidates = materializeCandidates(source);
-    if (rawCandidates.isEmpty())
-      return new ArrayList<>(0);
+    // Absent is the whole candidate set (targetK below caps it to the usable candidates); 0 is no row and a negative k is refused,
+    // as the limit of vector.fuse / vector.boost is (issue #13131). Read before the candidates, so an empty set does not hide it
+    final int k = opts.getNonNegativeInt("k", Integer.MAX_VALUE);
 
-    final int k = opts.getInt("k", rawCandidates.size());
-    if (k <= 0)
+    final List<RawCandidate> rawCandidates = materializeCandidates(source);
+    if (rawCandidates.isEmpty() || k == 0)
       return new ArrayList<>(0);
 
     final BasicDatabase db = context.getDatabase();

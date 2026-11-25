@@ -28,6 +28,7 @@ import com.arcadedb.engine.OwnTransaction;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.LongHashSet;
@@ -507,6 +508,17 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   // --- reads ----------------------------------------------------------------
 
   public List<RidScore> topK(final int[] queryDims, final float[] queryWeights, final int k) throws IOException {
+    return topK(queryDims, queryWeights, k, WorkGuard.forCommandDeadline(null));
+  }
+
+  /**
+   * {@link #topK(int[], float[], int)} bound by {@code guard}: the scan stops with the abort of the guard (the command's
+   * deadline, or the termination of its statement) instead of running to the end of the postings. The ranges of a split query
+   * are scored on pool threads, which read a copy of the guard that leaves the interrupt flag alone, and the abort of any of
+   * them is the one this call throws.
+   */
+  public List<RidScore> topK(final int[] queryDims, final float[] queryWeights, final int k, final WorkGuard guard)
+      throws IOException {
     ensureOpen();
     if (k <= 0)
       return List.of();
@@ -522,7 +534,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     // ThreadPoolExecutor that this JVM has just been told it will never use, which an embedded
     // deployment that disabled the feature should not be paying for.
     if (GlobalConfiguration.SPARSE_VECTOR_SCORING_MAX_PARTITIONS.getValueAsInteger() == 1)
-      return rangeTopK(queryDims, queryWeights, k, mtSnapshot, segSnapshot, null, null);
+      return rangeTopK(queryDims, queryWeights, k, mtSnapshot, segSnapshot, null, null, guard);
 
     // Registered for the whole call, split or not: the split decision is made against how many
     // queries are running, and a query that stays serial still occupies its caller's thread.
@@ -534,7 +546,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
         partitionedQueries.incrementAndGet();
         pool.querySplit();
         try {
-          return parallelTopK(queryDims, queryWeights, k, mtSnapshot, segSnapshot, plan.boundaries());
+          return parallelTopK(queryDims, queryWeights, k, mtSnapshot, segSnapshot, plan.boundaries(), guard);
         } finally {
           // Hand back exactly what the pool recorded, not what the split asked for: leaking it would
           // permanently shrink what later queries believe is free, and over-releasing would let them
@@ -543,7 +555,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
         }
       }
 
-      return rangeTopK(queryDims, queryWeights, k, mtSnapshot, segSnapshot, null, null);
+      return rangeTopK(queryDims, queryWeights, k, mtSnapshot, segSnapshot, null, null, guard);
     } finally {
       pool.queryFinished();
     }
@@ -560,12 +572,15 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * memtable is a {@code ConcurrentSkipListMap}. Nothing else is shared.
    */
   private List<RidScore> rangeTopK(final int[] queryDims, final float[] queryWeights, final int k, final MemSnapshot mtSnapshot,
-      final PaginatedSegmentReader[] segSnapshot, final RID startInclusive, final RID endExclusive) throws IOException {
+      final PaginatedSegmentReader[] segSnapshot, final RID startInclusive, final RID endExclusive, final WorkGuard guard)
+      throws IOException {
+    // A range that starts on a bound already reached opens no cursor at all
+    guard.check();
     final DimCursor[] cursors = new DimCursor[queryDims.length];
     try {
       for (int i = 0; i < queryDims.length; i++)
         cursors[i] = openMergedCursor(queryDims[i], mtSnapshot, segSnapshot);
-      return BmwScorer.topK(queryDims, queryWeights, cursors, k, startInclusive, endExclusive);
+      return BmwScorer.topK(queryDims, queryWeights, cursors, k, startInclusive, endExclusive, guard);
     } finally {
       for (final DimCursor c : cursors)
         if (c != null)
@@ -724,9 +739,12 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * {@code SQLFunctionVectorSparseNeighbors}.
    */
   private List<RidScore> parallelTopK(final int[] queryDims, final float[] queryWeights, final int k,
-      final MemSnapshot mtSnapshot, final PaginatedSegmentReader[] segSnapshot, final RID[] boundaries) throws IOException {
+      final MemSnapshot mtSnapshot, final PaginatedSegmentReader[] segSnapshot, final RID[] boundaries, final WorkGuard guard)
+      throws IOException {
     final int partitions = boundaries.length + 1;
     final ExecutorService pool = SparseVectorScoringPool.getInstance().getExecutorService();
+    // What the pool threads read: the same bound, without consuming the interrupt flag that belongs to their task
+    final WorkGuard workerGuard = guard.withoutInterrupt();
     // Ranges [1, partitions) go to workers; the caller scores range 0 itself rather than blocking on
     // them all. That is one more range running concurrently for the same claimed capacity, and it
     // keeps a thread that would otherwise be parked doing the work it came to do.
@@ -760,7 +778,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
         if (contextCreated)
           DatabaseContext.INSTANCE.init(database);
         try {
-          return rangeTopK(queryDims, queryWeights, k, mtSnapshot, segSnapshot, start, end);
+          return rangeTopK(queryDims, queryWeights, k, mtSnapshot, segSnapshot, start, end, workerGuard);
         } finally {
           if (contextCreated)
             DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
@@ -772,13 +790,21 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     final long deadlineNs = timeoutSeconds > 0 ? System.nanoTime() + TimeUnit.SECONDS.toNanos(timeoutSeconds) : Long.MAX_VALUE;
     final List<List<RidScore>> ranges = new ArrayList<>(partitions);
     IOException failure = null;
+    // The abort of the command's guard, from whichever range met it first: it reaches the caller as it is, and not as the
+    // failure of a range
+    RuntimeException abort = null;
 
     // The caller's own range, scored while the workers run. Its failure is handled with the others so
     // one bad range never leaves siblings running behind a caller that has already given up.
     try {
-      ranges.add(rangeTopK(queryDims, queryWeights, k, mtSnapshot, segSnapshot, null, boundaries[0]));
-    } catch (final IOException | RuntimeException e) {
-      failure = e instanceof IOException io ? io : new IOException("sparse-vector range scoring failed", e);
+      ranges.add(rangeTopK(queryDims, queryWeights, k, mtSnapshot, segSnapshot, null, boundaries[0], guard));
+    } catch (final IOException io) {
+      failure = io;
+    } catch (final RuntimeException e) {
+      if (WorkGuard.isAbort(e))
+        abort = e;
+      else
+        failure = new IOException("sparse-vector range scoring failed", e);
     }
 
     for (final Future<List<RidScore>> f : futures) {
@@ -787,32 +813,47 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
         // its own range before getting here, so it can legitimately consume the whole budget on work
         // that succeeded; failing the query then, while every worker range sits complete and waiting
         // to be read, would be a timeout reported for nothing that is actually outstanding. The
-        // deadline governs waiting, not collecting.
-        if (timeoutSeconds <= 0 || f.isDone()) {
-          ranges.add(f.get());
-        } else {
-          final long remainingNs = deadlineNs - System.nanoTime();
-          if (remainingNs <= 0L)
-            throw new TimeoutException("deadline elapsed before draining range");
-          ranges.add(f.get(remainingNs, TimeUnit.NANOSECONDS));
-        }
+        // deadline governs waiting, not collecting. The wait also ends with the abort of the command's guard, so a
+        // range queued behind other work of the pool does not keep the caller past it.
+        ranges.add(SparseVectorScoringPool.awaitGuarded(f, deadlineNs, timeoutSeconds > 0, guard));
       } catch (final InterruptedException ie) {
         Thread.currentThread().interrupt();
         for (final Future<?> other : futures)
           other.cancel(true);
-        throw new IndexException("Interrupted during sparse-vector top-K range fan-out", ie);
+        final IndexException interrupted = new IndexException("Interrupted during sparse-vector top-K range fan-out", ie);
+        throw SparseVectorScoringPool.abortOr(abort, interrupted);
       } catch (final TimeoutException te) {
         for (final Future<?> other : futures)
           other.cancel(true);
-        throw new IndexException("Sparse-vector top-K range fan-out timed out after " + timeoutSeconds + "s (configurable via "
-            + GlobalConfiguration.SPARSE_VECTOR_SCORING_TIMEOUT_SECONDS.getKey() + ")", te);
+        final IndexException timedOut = new IndexException("Sparse-vector top-K range fan-out timed out after " + timeoutSeconds
+            + "s (configurable via " + GlobalConfiguration.SPARSE_VECTOR_SCORING_TIMEOUT_SECONDS.getKey() + ")", te);
+        throw SparseVectorScoringPool.abortOr(abort, timedOut);
+      } catch (final RuntimeException e) {
+        if (!WorkGuard.isAbort(e))
+          throw e;
+        // The bound is reached while ranges are still outstanding: they stop at their own next check, and the ones
+        // that never started are dropped. Not interrupted - an interrupt reaching a thread in a file read is no way to stop it
+        for (final Future<?> other : futures)
+          other.cancel(false);
+        if (abort == null)
+          abort = e;
+        break;
       } catch (final ExecutionException ee) {
         final Throwable cause = ee.getCause();
-        if (failure == null)
+        if (WorkGuard.isAbort(cause)) {
+          // isAbort only accepts runtime exceptions
+          if (abort == null)
+            abort = (RuntimeException) cause;
+        } else if (failure == null)
           failure = cause instanceof IOException io ? io : new IOException("sparse-vector range scoring failed", cause);
         else
           failure.addSuppressed(cause);
       }
+    }
+    if (abort != null) {
+      if (failure != null)
+        abort.addSuppressed(failure);
+      throw abort;
     }
     if (failure != null)
       throw failure;
@@ -849,6 +890,17 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   public List<RidScore> topKGrouped(final int[] queryDims, final float[] queryWeights, final int limit,
       final int groupSize, final Function<RID, Object> groupKeyResolver, final Set<RID> allowedRIDs,
       final Set<RID> excludedRIDs) throws IOException {
+    return topKGrouped(queryDims, queryWeights, limit, groupSize, groupKeyResolver, allowedRIDs, excludedRIDs,
+        WorkGuard.forCommandDeadline(null));
+  }
+
+  /**
+   * {@link #topKGrouped(int[], float[], int, int, Function, Set, Set)} bound by {@code guard}, see
+   * {@link #topK(int[], float[], int, WorkGuard)}.
+   */
+  public List<RidScore> topKGrouped(final int[] queryDims, final float[] queryWeights, final int limit,
+      final int groupSize, final Function<RID, Object> groupKeyResolver, final Set<RID> allowedRIDs,
+      final Set<RID> excludedRIDs, final WorkGuard guard) throws IOException {
     ensureOpen();
     if (limit <= 0 || groupSize <= 0)
       return List.of();
@@ -856,7 +908,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       throw new IllegalArgumentException("queryDims and queryWeights must have equal length");
 
     return groupedSearch(queryDims, cursors -> BmwScorer.topKGrouped(queryDims, queryWeights, cursors, limit, groupSize,
-        groupKeyResolver, allowedRIDs, excludedRIDs));
+        groupKeyResolver, allowedRIDs, excludedRIDs, guard));
   }
 
   /**
@@ -869,14 +921,25 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   public List<RidScore> topKForGroups(final int[] queryDims, final float[] queryWeights, final Set<Object> groupKeys,
       final int groupSize, final float floor, final Function<RID, Object> groupKeyResolver, final Set<RID> allowedRIDs,
       final Set<RID> excludedRIDs) throws IOException {
+    return topKForGroups(queryDims, queryWeights, groupKeys, groupSize, floor, groupKeyResolver, allowedRIDs, excludedRIDs,
+        WorkGuard.forCommandDeadline(null));
+  }
+
+  /**
+   * {@link #topKForGroups(int[], float[], Set, int, float, Function, Set, Set)} bound by {@code guard}, see
+   * {@link #topK(int[], float[], int, WorkGuard)}.
+   */
+  public List<RidScore> topKForGroups(final int[] queryDims, final float[] queryWeights, final Set<Object> groupKeys,
+      final int groupSize, final float floor, final Function<RID, Object> groupKeyResolver, final Set<RID> allowedRIDs,
+      final Set<RID> excludedRIDs, final WorkGuard guard) throws IOException {
     ensureOpen();
     if (groupKeys == null || groupKeys.isEmpty() || groupSize <= 0)
       return List.of();
     if (queryDims.length != queryWeights.length)
       throw new IllegalArgumentException("queryDims and queryWeights must have equal length");
 
-    return groupedSearch(queryDims, cursors -> BmwScorer.topKForGroups(queryDims, queryWeights, cursors, groupKeys,
-        groupSize, floor, groupKeyResolver, allowedRIDs, excludedRIDs));
+    return groupedSearch(queryDims, cursors -> BmwScorer.topKForGroups(queryDims, queryWeights, cursors,
+        new BmwScorer.FixedGroups(groupKeys, groupSize, floor), groupKeyResolver, allowedRIDs, excludedRIDs, guard));
   }
 
   @FunctionalInterface
@@ -934,6 +997,14 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * and again.
    */
   public long countDim(final int dim) throws IOException {
+    return countDim(dim, WorkGuard.forCommandDeadline(null));
+  }
+
+  /**
+   * {@link #countDim(int)} bound by {@code guard}: the walk over the postings of the dim stops with its abort. A count
+   * the walk did not finish is not cached.
+   */
+  public long countDim(final int dim, final WorkGuard guard) throws IOException {
     countDimCalls.incrementAndGet();
     final MemSnapshot mt = captureMemtables();
     final PaginatedSegmentReader[] segSnapshot = segments.get();
@@ -958,9 +1029,11 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     if (c == null)
       return 0L;
     long df = 0L;
+    int steps = 0;
     try {
       c.start();
       while (!c.isExhausted()) {
+        guard.checkPeriodically(++steps);
         if (!c.isTombstone())
           df++;
         if (!c.advance())

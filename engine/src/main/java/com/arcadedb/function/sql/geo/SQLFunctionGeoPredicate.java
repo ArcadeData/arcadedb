@@ -18,6 +18,7 @@
  */
 package com.arcadedb.function.sql.geo;
 
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
@@ -35,6 +36,7 @@ import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.FromClause;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.security.SecurityHelper;
 import org.locationtech.spatial4j.shape.Shape;
 
 import java.util.Arrays;
@@ -192,6 +194,9 @@ public abstract class SQLFunctionGeoPredicate extends SQLFunctionAbstract implem
       return List.of();
 
     final DocumentType docType = schema.getType(typeName);
+
+    // The read permission of the type and of its subtypes is asked before the index is opened, as the walk of their buckets does
+    SecurityHelper.checkReadOnTypeAndSubTypes((DatabaseInternal) context.getDatabase(), docType);
 
     // Resolve the GEOSPATIAL index on this field
     final TypeIndex geoTypeIndex = resolveGeoIndex(docType, fieldName);
