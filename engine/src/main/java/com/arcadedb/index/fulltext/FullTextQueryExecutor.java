@@ -105,6 +105,9 @@ public class FullTextQueryExecutor {
    */
   static final int PURE_NEGATIVE_WARN_THRESHOLD = 100_000;
 
+  /** Characters of keys measured against a fuzzy term between two checks of the work guard (see {@link #chargeCharacters}). */
+  private static final int GUARD_CHARACTERS_PER_CHECK = 65_536;
+
   private final LSMTreeFullTextIndex   index;
   private final Analyzer               analyzer;
   private final FullTextIndexMetadata  metadata;
@@ -112,6 +115,7 @@ public class FullTextQueryExecutor {
   // #9894): all of a search's work happens before its first row, so no check of the executor between rows can reach it.
   private final WorkGuard              guard;
   private       int                    guardTicks;
+  private       long                   guardCharacters;
   // Cached once: the indexed property names don't change during a query, but isUnqualified() is consulted per matched term.
   private final List<String>           propertyNames;
   /**
@@ -1104,18 +1108,21 @@ public class FullTextQueryExecutor {
     final String requiredPrefix = term.substring(0, Math.min(query.getPrefixLength(), term.length()));
     final String fieldPrefix = fieldPrefix(query.getTerm().field());
 
+    // The term is as long as the statement wrote it: its code points are worked out once, not for each key it is measured against
+    final int[] termPoints = codePointsOf(term);
+
     // The worst of the best kept so far at the head, so a better term replaces it
     final PriorityQueue<FuzzyExpansion> best = new PriorityQueue<>(Math.min(max, 1024) + 1, BEST_EXPANSION_FIRST.reversed());
     if (!fieldPrefix.isEmpty())
-      walkFuzzyExpansions(query, term, fieldPrefix + requiredPrefix, key -> key.substring(fieldPrefix.length()), max, best);
+      walkFuzzyExpansions(query, termPoints, fieldPrefix + requiredPrefix, key -> key.substring(fieldPrefix.length()), max, best);
     else {
       final UnaryOperator<String> unqualified = key -> {
         final String token = FullTextKeys.unqualifiedToken(propertyNames, key);
         return token != null && token.startsWith(requiredPrefix) ? token : null;
       };
-      walkFuzzyExpansions(query, term, requiredPrefix, unqualified, max, best);
+      walkFuzzyExpansions(query, termPoints, requiredPrefix, unqualified, max, best);
       if (!requiredPrefix.isEmpty() && FullTextKeys.qualifies(propertyNames) && !FullTextKeys.onlyEscapes(requiredPrefix))
-        walkFuzzyExpansions(query, term, FullTextKeys.ESCAPE + requiredPrefix, unqualified, max, best);
+        walkFuzzyExpansions(query, termPoints, FullTextKeys.ESCAPE + requiredPrefix, unqualified, max, best);
     }
 
     final List<FuzzyExpansion> result = new ArrayList<>(best);
@@ -1128,11 +1135,11 @@ public class FullTextQueryExecutor {
    * terms within the clause's edit distance. {@code tokenOf} answers the token a key holds for this clause, or null for a key the
    * clause does not read.
    */
-  private void walkFuzzyExpansions(final FuzzyQuery query, final String term, final String searchPrefix,
+  private void walkFuzzyExpansions(final FuzzyQuery query, final int[] term, final String searchPrefix,
       final UnaryOperator<String> tokenOf, final int max, final PriorityQueue<FuzzyExpansion> best) {
     final int maxEdits = query.getMaxEdits();
     final boolean transpositions = query.getTranspositions();
-    final int termLength = term.codePointCount(0, term.length());
+    final int termLength = term.length;
     final boolean rangeScan = !searchPrefix.isEmpty();
 
     final IndexCursor cursor = index.iterateUnderlying(true, rangeScan ? new String[] { searchPrefix } : null, true);
@@ -1157,6 +1164,7 @@ public class FullTextQueryExecutor {
         if (token == null)
           continue;
         final int distance = fuzzyDistance(token, term, transpositions, maxEdits);
+        chargeCharacters(token.length());
         if (distance > maxEdits)
           continue;
         final FuzzyExpansion expansion = new FuzzyExpansion(key, token, fuzzyBoost(token, distance, termLength));
@@ -1222,33 +1230,103 @@ public class FullTextQueryExecutor {
   /**
    * The edit distance Lucene's FuzzyQuery matches by (issue #12165): over code points, with a transposition of two adjacent
    * characters counted as one edit when the query allows transpositions, which it does by default (the optimal string alignment
-   * distance), and as two otherwise. Answers {@code maxEdits + 1} at once when the lengths alone differ by more than
-   * {@code maxEdits}.
+   * distance), and as two otherwise. Answers the distance when it is at most {@code maxEdits}, and {@code maxEdits + 1} for any
+   * larger one: a measure is only ever asked whether a term is within the edits the clause allows, so what lies past them is not
+   * worked out. The lengths alone settle most pairs, and the rest are measured in a band of {@code maxEdits} cells on each side of
+   * the diagonal, which is all a path of at most {@code maxEdits} edits can reach, so a measure costs the length of the shorter
+   * text times {@code 2 * maxEdits + 1} however long both are.
+   * <p>
+   * The term is given as its code points: the caller works them out once and measures every key against them.
    */
-  static int fuzzyDistance(final String token, final String term, final boolean transpositions, final int maxEdits) {
-    final int[] s = token.codePoints().toArray();
-    final int[] t = term.codePoints().toArray();
-    if (Math.abs(s.length - t.length) > maxEdits)
+  static int fuzzyDistance(final String token, final int[] term, final boolean transpositions, final int maxEdits) {
+    final int length = token.length();
+    // A code point takes one or two chars, so the chars bound the code points from both sides. A key that is too short or too long
+    // for the term to be within reach is turned away from its length, without being read
+    if (length < term.length - maxEdits || ((length + 1) >>> 1) > term.length + maxEdits)
       return maxEdits + 1;
-    int[] beforePrevious = new int[t.length + 1];
-    int[] previous = new int[t.length + 1];
-    int[] current = new int[t.length + 1];
-    for (int j = 0; j <= t.length; j++)
-      previous[j] = j;
-    for (int i = 1; i <= s.length; i++) {
-      current[0] = i;
-      for (int j = 1; j <= t.length; j++) {
-        int distance = Math.min(Math.min(previous[j], current[j - 1]) + 1, previous[j - 1] + (s[i - 1] == t[j - 1] ? 0 : 1));
-        if (transpositions && i > 1 && j > 1 && s[i - 1] == t[j - 2] && s[i - 2] == t[j - 1])
-          distance = Math.min(distance, beforePrevious[j - 2] + 1);
-        current[j] = distance;
+    final int count = token.codePointCount(0, length);
+    if (Math.abs(count - term.length) > maxEdits)
+      return maxEdits + 1;
+    return bandedDistance(codePointsOf(token, count), term, transpositions, maxEdits);
+  }
+
+  /** {@link #fuzzyDistance(String, int[], boolean, int)} for a term not worked out as code points yet: a single measure. */
+  static int fuzzyDistance(final String token, final String term, final boolean transpositions, final int maxEdits) {
+    return fuzzyDistance(token, codePointsOf(term), transpositions, maxEdits);
+  }
+
+  /** The code points of a text: a character outside the basic plane, which a text holds as two chars, is one of them. */
+  static int[] codePointsOf(final String text) {
+    return codePointsOf(text, text.codePointCount(0, text.length()));
+  }
+
+  private static int[] codePointsOf(final String text, final int count) {
+    final int[] points = new int[count];
+    for (int i = 0, n = 0; n < count; n++) {
+      final int point = text.codePointAt(i);
+      points[n] = point;
+      i += Character.charCount(point);
+    }
+    return points;
+  }
+
+  /**
+   * The optimal string alignment distance of two texts within {@code maxEdits}, or {@code maxEdits + 1}. A path of at most
+   * {@code maxEdits} edits never leaves the cells whose column is within {@code maxEdits} of their row (each step off the diagonal
+   * is an edit, and a transposition stays on it), so only those cells are kept: row {@code i} holds the columns
+   * {@code i - maxEdits .. i + maxEdits}, the cell of column {@code j} at {@code j - i + maxEdits}. A cell past {@code maxEdits}
+   * is kept as {@code maxEdits + 1}, which no later cell can bring back under it. The measure stops as soon as every cell of the
+   * rows a later one can read from is past {@code maxEdits}. The lengths differ by at most {@code maxEdits}.
+   */
+  private static int bandedDistance(final int[] s, final int[] t, final boolean transpositions, final int maxEdits) {
+    final int n = s.length;
+    final int m = t.length;
+    final int over = maxEdits + 1;
+    final int width = 2 * maxEdits + 1;
+    int[] beforePrevious = new int[width];
+    int[] previous = new int[width];
+    int[] current = new int[width];
+    // row 0: the distance of the first j characters of the term to nothing is j
+    for (int d = 0; d < width; d++) {
+      final int j = d - maxEdits;
+      previous[d] = j >= 0 && j <= m ? j : over;
+    }
+    int previousMin = 0;
+    for (int i = 1; i <= n; i++) {
+      int rowMin = over;
+      for (int d = 0; d < width; d++) {
+        final int j = i + d - maxEdits;
+        int distance;
+        if (j < 0 || j > m)
+          distance = over;
+        else if (j == 0)
+          distance = i;
+        else {
+          // previous[d] is the cell up and to the left, previous[d + 1] the one above, current[d - 1] the one to the left
+          distance = previous[d] + (s[i - 1] == t[j - 1] ? 0 : 1);
+          if (d + 1 < width && previous[d + 1] + 1 < distance)
+            distance = previous[d + 1] + 1;
+          if (d > 0 && current[d - 1] + 1 < distance)
+            distance = current[d - 1] + 1;
+          if (transpositions && i > 1 && j > 1 && s[i - 1] == t[j - 2] && s[i - 2] == t[j - 1] && beforePrevious[d] + 1 < distance)
+            distance = beforePrevious[d] + 1;
+          if (distance > over)
+            distance = over;
+        }
+        current[d] = distance;
+        if (distance < rowMin)
+          rowMin = distance;
       }
+      // Every cell of the next row is read from this row and the one before it (a transposition) only
+      if (rowMin > maxEdits && (!transpositions || previousMin > maxEdits))
+        return over;
+      previousMin = rowMin;
       final int[] recycled = beforePrevious;
       beforePrevious = previous;
       previous = current;
       current = recycled;
     }
-    return previous[t.length];
+    return Math.min(previous[m - n + maxEdits], over);
   }
 
   private void collectRegexpMatches(final RegexpQuery query, final Map<RID, AtomicInteger> scoreMap) {
@@ -1358,6 +1436,19 @@ public class FullTextQueryExecutor {
    */
   private void tick() {
     guard.checkPeriodically(++guardTicks);
+  }
+
+  /**
+   * The characters of a key measured against a fuzzy term: what one measure costs depends on the length of the key, which
+   * {@link #tick} counting a key as one does not see, so a walk over long keys checks {@link #guard} every
+   * {@link #GUARD_CHARACTERS_PER_CHECK} characters measured as well.
+   */
+  private void chargeCharacters(final int characters) {
+    guardCharacters += characters;
+    if (guardCharacters >= GUARD_CHARACTERS_PER_CHECK) {
+      guardCharacters = 0;
+      guard.check();
+    }
   }
 
   /**
