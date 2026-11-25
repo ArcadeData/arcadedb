@@ -23,8 +23,6 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
@@ -58,8 +56,6 @@ record PostgresSessionCommand(Kind kind, String name) {
     }
   }
 
-  // A double-quoted identifier may hold spaces and doubled quotes; anything else ends at whitespace
-  private static final Pattern TOKEN = Pattern.compile("\"(?:[^\"]|\"\")*\"|`[^`]*`|\\S+");
   private static final Set<String> TAGS = Arrays.stream(Kind.values()).map(kind -> kind.tag).collect(Collectors.toUnmodifiableSet());
 
   /**
@@ -85,11 +81,7 @@ record PostgresSessionCommand(Kind kind, String name) {
    * @throws PostgresSessionSettings.SettingException {@code 42601} for a statement that is not one of the forms above
    */
   static PostgresSessionCommand parse(final String query) {
-    final List<String> found = new ArrayList<>(4);
-    final Matcher matcher = TOKEN.matcher(query);
-    while (matcher.find())
-      found.add(matcher.group());
-    final String[] tokens = found.toArray(new String[0]);
+    final String[] tokens = tokensOf(query);
     final PostgresSessionCommand command = tokens.length == 0 ? null : fromTokens(tokens);
     if (command == null) {
       final String shown = query.length() > 80 ? query.substring(0, 80) + "..." : query;
@@ -97,6 +89,57 @@ record PostgresSessionCommand(Kind kind, String name) {
           PostgresCopyStatement.SQLSTATE_SYNTAX_ERROR);
     }
     return command;
+  }
+
+  /**
+   * The words of {@code query}, in order: a double-quoted name, which may hold blanks and doubled quotes, a back-quoted one, or
+   * else a run of non-blanks. A double-quoted name that is never closed by a single quote ends at the first quote of the last
+   * doubled one, and when it holds none either, what starts at its quote is a run of non-blanks. Read with a loop: the same words
+   * read by a regular expression recurse once per character of a quoted name, as far as the stack allows.
+   */
+  private static String[] tokensOf(final String query) {
+    final List<String> found = new ArrayList<>(4);
+    final int length = query.length();
+    int start = 0;
+    while (start < length) {
+      final char first = query.charAt(start);
+      if (PostgresStatementText.isBlank(first)) {
+        start++;
+        continue;
+      }
+
+      int end = first == '"' ? endOfDoubleQuoted(query, start) : first == '`' ? endOfBackQuoted(query, start) : -1;
+      if (end < 0) {
+        end = start + 1;
+        while (end < length && !PostgresStatementText.isBlank(query.charAt(end)))
+          end++;
+      }
+      found.add(query.substring(start, end));
+      start = end;
+    }
+    return found.toArray(new String[0]);
+  }
+
+  /** The end of the name that opens with the double quote at {@code open}, or -1 when it does not close. */
+  private static int endOfDoubleQuoted(final String query, final int open) {
+    int lastDoubled = -1;
+    int from = open + 1;
+    while (true) {
+      final int quote = query.indexOf('"', from);
+      if (quote < 0)
+        return lastDoubled < 0 ? -1 : lastDoubled + 1;
+      if (quote + 1 < query.length() && query.charAt(quote + 1) == '"') {
+        lastDoubled = quote;
+        from = quote + 2;
+      } else
+        return quote + 1;
+    }
+  }
+
+  /** The end of the name that opens with the back quote at {@code open}, or -1 when it does not close. */
+  private static int endOfBackQuoted(final String query, final int open) {
+    final int close = query.indexOf('`', open + 1);
+    return close < 0 ? -1 : close + 1;
   }
 
   /**

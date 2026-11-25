@@ -27,6 +27,7 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.security.SecurityDatabaseUser;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -179,7 +180,8 @@ public class BucketIndexBuilder extends IndexBuilder<Index> {
       if (indexName != null && !indexName.isEmpty()) {
         if (metadata == null)
           metadata = new IndexMetadata(typeName, propertyNames, -1);
-        metadata.typeIndexName = indexName;
+        // Only a name that differs from the derived one (issue #12774): the derived name of a REBUILD must not outlive a rename
+        metadata.typeIndexName = LocalDocumentType.manualIndexName(typeName, Arrays.asList(propertyNames), indexType, indexName);
       }
 
       // Asked before the transactions below, while the answer is still about the transaction that was already there

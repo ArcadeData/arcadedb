@@ -23,6 +23,7 @@ package com.arcadedb.query.sql.executor;
  */
 
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.index.StaleIndexException;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -84,6 +85,10 @@ public class InsertExecutionPlan extends SelectExecutionPlan {
         while (nextBlock.hasNext())
           result.add(nextBlock.next());
       }
+    } catch (final StaleIndexException e) {
+      // Issue #11835: refused with the retryable conflict, see UpdateExecutionPlan.executeInternal()
+      failure = e.asWriteConflict();
+      throw failure;
     } catch (final RuntimeException e) {
       failure = e;
       throw e;

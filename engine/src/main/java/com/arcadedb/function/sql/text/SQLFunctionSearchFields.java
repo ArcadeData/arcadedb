@@ -35,6 +35,7 @@ import com.arcadedb.query.sql.parser.FromClause;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.TypeHierarchy;
 
 import java.util.Collection;
 import java.util.List;
@@ -189,10 +190,15 @@ public class SQLFunctionSearchFields extends SQLFunctionAbstract implements Inde
   }
 
   @Override
+  public boolean continuesPastLimit() {
+    return true;
+  }
+
+  @Override
   public Object getScoringExplain(final FromClause target, final BinaryCompareOperator operator, final Object rightValue,
       final CommandContext context, final Expression[] oExpressions) {
     final FullTextFunctionSearch search = search(target, context, oExpressions);
-    return search != null ? search.explainScoring() : null;
+    return search != null ? search.explainScoring(context) : null;
   }
 
   @Override
@@ -236,8 +242,9 @@ public class SQLFunctionSearchFields extends SQLFunctionAbstract implements Inde
   private static void registerForHierarchy(final DocumentType type, final List<String> fieldNames, final String queryString,
       final FullTextFunctionSearch search, final CommandContext context) {
     context.setCachedValue(resolvedSearchKey(type.getName(), fieldNames, queryString), search);
-    for (final DocumentType subType : type.getSubTypes())
-      registerForHierarchy(subType, fieldNames, queryString, search, context);
+    // each type below once, whatever the number of paths that lead down to it
+    for (final DocumentType subType : TypeHierarchy.allSubTypes(type))
+      context.setCachedValue(resolvedSearchKey(subType.getName(), fieldNames, queryString), search);
   }
 
   /** Where the search resolved for a type is kept for the statement. */

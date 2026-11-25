@@ -100,7 +100,8 @@ final class ObjectColumnsRowSource implements TimeSeriesRowSource {
       throw unstorable(columnIndex, value);
     return switch (kind) {
       case TimeSeriesBatch.KIND_DOUBLE -> Double.doubleToRawLongBits(number.doubleValue());
-      case TimeSeriesBatch.KIND_FLOAT -> Float.floatToRawIntBits(number.floatValue());
+      // the staleness marker stays one in a FLOAT column (issue #12580)
+      case TimeSeriesBatch.KIND_FLOAT -> Float.floatToRawIntBits(TimeSeriesNaN.floatOf(number));
       case TimeSeriesBatch.KIND_INTEGER -> number.intValue();
       case TimeSeriesBatch.KIND_SHORT -> number.shortValue();
       case TimeSeriesBatch.KIND_BYTE -> number.byteValue();

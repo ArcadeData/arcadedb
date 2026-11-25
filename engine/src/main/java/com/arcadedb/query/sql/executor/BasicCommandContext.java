@@ -538,11 +538,19 @@ public class BasicCommandContext implements CommandContext {
     return parent != null ? parent.getRunningQuery() : null;
   }
 
+  /**
+   * A bare row (no record, no value, no property) does not count: it is the row a SELECT without a target runs its projection on,
+   * so {@code SELECT expand(vector.neighbors(..., { filter: (SELECT ...) }))} would otherwise scan its filter on one thread
+   * though there is nothing a worker could read concurrently (issue #12537). A real row further up the chain still counts.
+   */
   @Override
   public boolean isUnderEnclosingRow() {
     for (CommandContext ancestor = parent; ancestor != null; ancestor = ancestor.getParent())
-      if (ancestor instanceof BasicCommandContext basic && basic.variables != null && basic.variables.get("current") != null)
-        return true;
+      if (ancestor instanceof BasicCommandContext basic && basic.variables != null) {
+        final Object current = basic.variables.get("current");
+        if (current != null && !(current instanceof ResultInternal row && row.isBare()))
+          return true;
+      }
     return false;
   }
 
