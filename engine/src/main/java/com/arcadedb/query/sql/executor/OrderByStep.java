@@ -414,20 +414,32 @@ public class OrderByStep extends AbstractExecutionStep implements RowCapAwareSte
 
   /**
    * The heap the sort key of {@code row} holds beside the row: the holder ({@code holderBytes}), the array of several keys,
-   * and every key value the row does not hold itself. The column of a projected row IS the row's value, while the property of
+   * and every key value the row does not hold itself. The column of a projected row IS the row's value, and so is a column in
+   * the content of a row that keeps its record ({@code SELECT *, expr AS k}): both are counted with the row. The property of
    * a record is deserialized from its binary, and an expression or a modifier computes a value of its own.
    */
-  private static long keyBytes(final List<OrderByItem> items, final Result row, final Object key, final long holderBytes) {
-    final boolean projected = !row.isElement();
+  static long keyBytes(final List<OrderByItem> items, final Result row, final Object key, final long holderBytes) {
     if (items.size() == 1)
-      return key == null || (projected && items.getFirst().isColumnKey()) ? holderBytes : holderBytes + HeapEstimator.estimate(key);
+      return key == null || holdsKey(row, items.getFirst()) ? holderBytes : holderBytes + HeapEstimator.estimate(key);
 
     final Object[] keys = (Object[]) key;
     long bytes = holderBytes + HeapEstimator.OBJECT_BYTES + (long) keys.length * HeapEstimator.REFERENCE_BYTES;
     for (int i = 0; i < keys.length; i++)
-      if (keys[i] != null && !(projected && items.get(i).isColumnKey()))
+      if (keys[i] != null && !holdsKey(row, items.get(i)))
         bytes += HeapEstimator.estimate(keys[i]);
     return bytes;
+  }
+
+  /**
+   * Whether the key of {@code item} is a value {@code row} holds in its own content, which the row's estimate already counts.
+   * A row that keeps its record also answers a column from the record, deserialized from its binary: that is not held.
+   */
+  private static boolean holdsKey(final Result row, final OrderByItem item) {
+    if (!item.isColumnKey())
+      return false;
+    if (!row.isElement())
+      return true;
+    return row instanceof ResultInternal internal && item.getName() != null && internal.hasContentColumn(item.getName());
   }
 
   /** A row of the full sort with its sort key, extracted once when the row was read (issue #12860). */

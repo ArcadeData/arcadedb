@@ -213,6 +213,47 @@ class OrderByKeysOnceIssue12860Test extends TestHelper {
   }
 
   /**
+   * A column key is charged unless the row's own content holds that column: the row's estimate counts it already. A row that
+   * keeps its record and projects a column ({@code SELECT *, s AS k}) holds the column; a plain record row deserializes the
+   * property from its binary, which nothing else counts.
+   */
+  @Test
+  void aColumnKeyIsChargedUnlessTheRowsContentHoldsIt() {
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Held");
+      database.newDocument("Held").set("s", "x".repeat(100_000)).set("v", 1).save();
+    });
+    final long holder = 64L;
+    final List<OrderByItem> byK = List.of(item("k", null));
+    final List<OrderByItem> byS = List.of(item("s", null));
+
+    try (final ResultSet rs = database.query("sql", "SELECT *, s AS k FROM Held")) {
+      final Result projected = rs.next();
+      assertThat(projected.isElement()).isTrue();
+      final Object key = projected.getProperty("k");
+      assertThat(OrderByStep.keyBytes(byK, projected, key, holder)).as("element row projecting the key column").isEqualTo(holder);
+      assertThat(OrderByStep.keyBytes(List.of(item("k", null), item("v", null)), projected, new Object[] { key, 1 }, holder))
+          .as("the same column among several keys, with the one the record holds")
+          .isEqualTo(holder + HeapEstimator.OBJECT_BYTES + 2L * HeapEstimator.REFERENCE_BYTES);
+    }
+
+    try (final ResultSet rs = database.query("sql", "SELECT FROM Held")) {
+      final Result plain = rs.next();
+      final Object key = plain.getProperty("s");
+      assertThat(OrderByStep.keyBytes(byS, plain, key, holder)).as("plain record row, key deserialized from the record")
+          .isEqualTo(holder + HeapEstimator.estimate(key)).isGreaterThan(holder + 50_000);
+    }
+
+    try (final ResultSet rs = database.query("sql", "SELECT *, !v FROM Held")) {
+      final Result excluding = rs.next();
+      final Object key = excluding.getProperty("s");
+      // THE STAR OF THE PROJECTION PUT THE PROPERTIES IN THE ROW'S CONTENT: THE ROW HOLDS THE KEY AND ITS ESTIMATE COUNTS IT
+      assertThat(OrderByStep.keyBytes(byS, excluding, key, holder)).as("element row whose content holds the column").isEqualTo(holder);
+      assertThat(HeapEstimator.estimate(excluding)).as("the row's estimate counts it").isGreaterThan(50_000);
+    }
+  }
+
+  /**
    * The order is the one the per-comparison extraction gave: nulls first, mixed numeric types by value, strings, DESC, a
    * modifier, a direction parameter, several keys, ties in scan order, and the top-k heap with LIMIT and SKIP.
    */
