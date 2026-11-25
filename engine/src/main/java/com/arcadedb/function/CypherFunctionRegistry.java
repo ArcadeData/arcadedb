@@ -58,7 +58,9 @@ import java.util.logging.Level;
  * </p>
  * <p>
  * For Neo4j/APOC compatibility, functions can also be accessed using the "apoc." prefix.
- * For example, "apoc.text.indexOf" will automatically resolve to "text.indexOf".
+ * For example, "apoc.text.indexOf" will automatically resolve to "text.indexOf". A function registered under its own
+ * "apoc." name answers that name instead: "apoc.date.format" follows APOC while "date.format" keeps ArcadeDB's semantics
+ * (issue #12106).
  * </p>
  * <p>
  * Example usage:
@@ -173,9 +175,9 @@ public final class CypherFunctionRegistry {
    */
   private static String normalizeApocName(final String name) {
     final String lowerName = name.toLowerCase(Locale.ROOT);
-    if (lowerName.startsWith(APOC_PREFIX)) {
+    // a function registered under its apoc. name is that name's, so the prefix is stripped only when none is (issue #12106)
+    if (lowerName.startsWith(APOC_PREFIX) && !FUNCTIONS.containsKey(lowerName))
       return lowerName.substring(APOC_PREFIX.length());
-    }
     return lowerName;
   }
 
@@ -371,6 +373,14 @@ public final class CypherFunctionRegistry {
     register(new DateToISO8601());
     register(new DateFromISO8601());
     register(new DateSystemTimezone());
+    // issue #12106: the apoc. names answer as APOC does, the date. names keep ArcadeDB's semantics
+    register(new ApocDateFormat());
+    register(new ApocDateParse());
+    register(new ApocDateAdd());
+    register(new ApocDateConvert());
+    register(new ApocDateField());
+    register(new ApocDateFields());
+    register(new ApocDateToISO8601());
   }
 
   private static void registerUtilFunctions() {
