@@ -32,6 +32,8 @@ public class JVMUtils {
   // This is the name of the HotSpot Diagnostic MBean
   private static final    String                  HOTSPOT_BEAN_NAME = "com.sun.management:type=HotSpotDiagnostic";
   private static volatile HotSpotDiagnosticMXBean hotspotMBean;
+  /** The JVM-wide monitor of the soft heap limit's check-then-write: every server of the JVM goes through this class. */
+  private static final    Object                  SOFT_MAX_HEAP_LOCK = new Object();
 
   public static String generateThreadDump(final String filterInclude, final String filterExclude) {
     final String[] filterIncludeItems =
@@ -138,12 +140,16 @@ public class JVMUtils {
       final HotSpotDiagnosticMXBean bean = ManagementFactory.getPlatformMXBean(HotSpotDiagnosticMXBean.class);
       if (bean == null)
         return -1;
-      final VMOption.Origin origin = bean.getVMOption("SoftMaxHeapSize").getOrigin();
-      if (origin != VMOption.Origin.DEFAULT && origin != VMOption.Origin.ERGONOMIC)
-        return -1;
-      final long softMax = Long.parseLong(bean.getVMOption("MaxHeapSize").getValue()) / 100 * percent;
-      bean.setVMOption("SoftMaxHeapSize", Long.toString(softMax));
-      return softMax;
+      // THE OPTION'S ORIGIN IS READ AND THE OPTION WRITTEN UNDER ONE MONITOR: SERVERS STARTING AT ONCE EACH HOLD THEIR OWN
+      // LIFECYCLE LOCK, AND THE WRITE ITSELF NEVER LOOKS AT THE ORIGIN, SO THE SECOND START WOULD OVERWRITE THE FIRST
+      synchronized (SOFT_MAX_HEAP_LOCK) {
+        final VMOption.Origin origin = bean.getVMOption("SoftMaxHeapSize").getOrigin();
+        if (origin != VMOption.Origin.DEFAULT && origin != VMOption.Origin.ERGONOMIC)
+          return -1;
+        final long softMax = Long.parseLong(bean.getVMOption("MaxHeapSize").getValue()) / 100 * percent;
+        bean.setVMOption("SoftMaxHeapSize", Long.toString(softMax));
+        return softMax;
+      }
     } catch (final RuntimeException | LinkageError e) {
       return -1;
     }
