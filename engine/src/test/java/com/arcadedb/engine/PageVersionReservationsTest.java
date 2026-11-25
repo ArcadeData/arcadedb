@@ -29,6 +29,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -84,6 +86,141 @@ class PageVersionReservationsTest {
     db.setPageVersionReservations(null);
     increment(0);
     assertThat(db.lookupByRID(rid, true).asDocument().getLong("value")).isEqualTo(2L);
+  }
+
+  /**
+   * Issue #11921: the authority is told once per commit that the version checks are about to start, before the first
+   * reservation is read, so a lock it takes there covers the check of every page, the first one included. A commit with
+   * nothing to check does not call it.
+   */
+  @Test
+  void theAuthorityIsToldOnceBeforeTheFirstVersionCheck() {
+    final List<String> calls = new ArrayList<>();
+    db.setPageVersionReservations(new PageVersionReservations() {
+      @Override
+      public int reservedVersion(final PageId pageId) {
+        calls.add("reserved");
+        return -1;
+      }
+
+      @Override
+      public void beforeVersionChecks() {
+        calls.add("before");
+      }
+    });
+
+    increment(0);
+    assertThat(calls).as("one call, ahead of every reservation read").isNotEmpty().startsWith("before");
+    assertThat(calls.stream().filter("before"::equals).count()).isEqualTo(1);
+    assertThat(calls).contains("reserved");
+
+    calls.clear();
+    db.transaction(() -> db.lookupByRID(rid, true));
+    assertThat(calls).as("a commit that changed nothing checks no version").isEmpty();
+  }
+
+  /** Issue #11921: a failure raised there fails the commit like a refused version check, and nothing is published. */
+  @Test
+  void aRefusalBeforeTheVersionChecksFailsTheCommit() {
+    db.setPageVersionReservations(new PageVersionReservations() {
+      @Override
+      public int reservedVersion(final PageId pageId) {
+        return -1;
+      }
+
+      @Override
+      public void beforeVersionChecks() {
+        throw new ConcurrentModificationException("refused before the checks");
+      }
+    });
+
+    assertThatThrownBy(() -> increment(0)).isInstanceOf(ConcurrentModificationException.class);
+    db.setPageVersionReservations(null);
+    assertThat(db.lookupByRID(rid, true).asDocument().getLong("value")).isZero();
+    increment(0);
+    assertThat(db.lookupByRID(rid, true).asDocument().getLong("value")).as("the file locks of the refused commit were released")
+        .isEqualTo(1L);
+  }
+
+  /** Issue #12470: with no reservation installed (a standalone database, a replica) there is nothing to wait for. */
+  @Test
+  void awaitingAPageOfADatabaseWithoutReservationsAnswersAtOnce() throws Exception {
+    assertThat(db.getPageVersionReservations()).isNull();
+
+    assertThat(awaitApplied(60_000)).as("a hang here would run into the test's own timeout, not wait for the bound").isTrue();
+  }
+
+  /** Issue #12470: a reservation ahead of the local copy is waited for until the entry is applied, then the wait ends. */
+  @Test
+  void aReservationAheadOfTheLocalVersionIsWaitedForUntilItIsApplied() throws Exception {
+    final PageId counterPage = counterPage();
+    final AtomicInteger consultations = new AtomicInteger();
+    db.setPageVersionReservations(pageId -> {
+      assertThat(pageId).isEqualTo(counterPage);
+      return consultations.incrementAndGet() <= 5 ? Integer.MAX_VALUE : -1;
+    });
+
+    assertThat(awaitApplied(60_000)).isTrue();
+    assertThat(consultations.get()).as("polled until the reservation went away").isEqualTo(6);
+
+    // And what the wait answered true for is what the phase-1 check accepts
+    db.setPageVersionReservations(pageId -> -1);
+    increment(0);
+  }
+
+  /** Issue #12470: a reservation that fences nothing (at or below the local version) is not worth a wait, as in the check. */
+  @Test
+  void aReservationAtOrBelowTheLocalVersionIsNotWaitedFor() throws Exception {
+    final PageId counterPage = counterPage();
+    final int localVersion = PageManager.INSTANCE.getMostRecentVersionOfPage(counterPage, pageSizeOf(counterPage));
+    assertThat(localVersion).isPositive();
+    final AtomicInteger consultations = new AtomicInteger();
+    db.setPageVersionReservations(pageId -> {
+      consultations.incrementAndGet();
+      return localVersion;
+    });
+
+    assertThat(awaitApplied(60_000)).isTrue();
+    assertThat(consultations.get()).as("answered by the first look").isEqualTo(1);
+    // The same value does not refuse the check either
+    increment(0);
+  }
+
+  /** Issue #12470: a request nothing will ever apply must not hold the caller for ever: the wait gives up and says so. */
+  @Test
+  void theWaitGivesUpOnAReservationThatIsNeverApplied() throws Exception {
+    db.setPageVersionReservations(pageId -> Integer.MAX_VALUE);
+
+    assertThat(awaitApplied(30)).isFalse();
+    assertThat(awaitApplied(0)).as("no budget: one look, no sleep").isFalse();
+  }
+
+  /** Issue #12470: an interrupted wait ends at once, answers that it gave up and leaves the flag for the caller. */
+  @Test
+  void anInterruptedWaitEndsAndKeepsTheInterruptFlag() throws Exception {
+    db.setPageVersionReservations(pageId -> Integer.MAX_VALUE);
+
+    Thread.currentThread().interrupt();
+    try {
+      assertThat(awaitApplied(60_000)).isFalse();
+      assertThat(Thread.currentThread().isInterrupted()).isTrue();
+    } finally {
+      // Clears the flag so the rest of the class does not run interrupted
+      Thread.interrupted();
+    }
+  }
+
+  private PageId counterPage() {
+    return new PageId(db, rid.getBucketId(), 0);
+  }
+
+  private int pageSizeOf(final PageId pageId) {
+    return ((LocalBucket) db.getSchema().getFileById(pageId.getFileId())).getPageSize();
+  }
+
+  private boolean awaitApplied(final long timeoutMs) throws Exception {
+    final PageId counterPage = counterPage();
+    return db.getPageManager().awaitReservedVersionApplied(counterPage, pageSizeOf(counterPage), timeoutMs);
   }
 
   private void increment(final int retries) {

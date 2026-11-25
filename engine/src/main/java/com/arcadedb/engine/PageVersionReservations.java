@@ -27,6 +27,10 @@ package com.arcadedb.engine;
  * <p>
  * Installed on a {@link com.arcadedb.database.LocalDatabase} by the replication layer; a standalone database has
  * none, and the check costs nothing there.
+ * <p>
+ * A reservation ends when the entry that took it is applied here, one round trip of the log later, so a commit refused for
+ * one is refused again by every retry made at once (issue #12470). A caller that retries, or that cannot, waits first with
+ * {@link PageManager#awaitReservedVersionApplied}, which reads nothing but {@link #reservedVersion}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -36,4 +40,15 @@ public interface PageVersionReservations {
    * copy is current
    */
   int reservedVersion(PageId pageId);
+
+  /**
+   * Called once by the first phase of a leader commit, when it holds every file lock it is going to take and before it
+   * reads the version of its first page. An authority whose own assignments must not interleave with this commit's checks
+   * and with the publication that follows them takes its lock here (issue #11921): after the file locks, so the order is
+   * the one an ordinary commit follows, and before the first local version is read, so no page is checked against a copy
+   * the authority has moved since. Nothing to do by default.
+   */
+  default void beforeVersionChecks() {
+    // NO LOCK OF ITS OWN TO TAKE: THE RESERVATIONS ALONE ORDER THE COMMIT
+  }
 }

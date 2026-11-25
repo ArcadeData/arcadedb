@@ -24,7 +24,9 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.async.AsyncQuiesce;
 import com.arcadedb.exception.CommandSemanticException;
+import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.VirtualVertex;
 import com.arcadedb.index.Index;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
@@ -159,6 +161,9 @@ public final class Labels {
    * @return the vertex's labels, sorted alphabetically, empty for an unlabelled node
    */
   public static List<String> getLabels(final Vertex vertex) {
+    // A virtual node (create.vNode, meta.graph) has no schema type: its labels are its own list
+    if (vertex instanceof VirtualVertex virtual)
+      return virtual.getLabels();
     return getLabels(vertex.getType());
   }
 
@@ -390,6 +395,8 @@ public final class Labels {
    * @return true if the vertex has the specified label
    */
   public static boolean hasLabel(final Vertex vertex, final String label) {
+    if (vertex instanceof VirtualVertex virtual)
+      return virtual.getLabels().contains(label);
     return vertex.getType().instanceOf(label);
   }
 
@@ -411,6 +418,12 @@ public final class Labels {
    * @return true when the vertex satisfies the label constraint
    */
   public static boolean matches(final Vertex vertex, final List<String> labels, final boolean disjunction) {
+    if (vertex instanceof VirtualVertex virtual) {
+      if (labels == null || labels.isEmpty())
+        return true;
+      final List<String> own = virtual.getLabels();
+      return disjunction ? labels.stream().anyMatch(own::contains) : own.containsAll(labels);
+    }
     return matches(vertex.getType(), labels, disjunction);
   }
 
@@ -636,6 +649,103 @@ public final class Labels {
         throw new NoSuchElementException();
       return current.next();
     }
+  }
+
+  /**
+   * Appends the label(s) a Cypher 25 dynamic label expression evaluated to on a READ path - a pattern
+   * {@code (n:$(expr))}, a relationship type {@code [:$(expr)]}, a predicate {@code n:$(expr)}. Every read consumer resolves
+   * through here so a dynamic label means the same thing to all of them (issue #11776).
+   * <p>
+   * The value must be a {@code STRING NOT NULL} (one label) or a {@code LIST<STRING NOT NULL> NOT NULL} (that many labels,
+   * none for an empty list), as the Cypher manual states and Neo4j enforces. Anything else is a type error (issue #12338):
+   * {@code null} used to add no label, so a missing {@code $label} parameter turned {@code MATCH (n:$($label))} into a match of
+   * the whole graph (and a {@code DELETE} after it into a delete of it), and any other value was {@code toString()}-ed into a
+   * label name. The NAME is not validated: a label nobody carries matches nothing, which is the answer (see
+   * {@link #appendDynamicLabels} for the write side, which also checks that a type can be created under it).
+   *
+   * @param target the list to append to
+   * @param value  the value the dynamic label expression evaluated to
+   *
+   * @return false when the value is an empty list, which appends nothing: an operand of a disjunction that is the empty
+   * conjunction, true for every element, so the disjunction places no constraint at all
+   *
+   * @throws TypeMismatchException when the value is not a string or a list of strings
+   */
+  public static boolean appendDynamicMatchLabels(final List<String> target, final Object value) {
+    if (value instanceof String label)
+      return target.add(label);
+    final int before = target.size();
+    if (value instanceof Iterable<?> iterable) {
+      for (final Object item : iterable)
+        target.add(requireDynamicMatchLabel(item));
+    } else if (value instanceof Object[] array) {
+      for (final Object item : array)
+        target.add(requireDynamicMatchLabel(item));
+    } else
+      throw dynamicMatchLabelTypeError(value, false);
+    return target.size() > before;
+  }
+
+  /**
+   * Whether an element of {@code type} satisfies a dynamic label that evaluated to {@code value}: {@code $all(expr)} (the
+   * same as {@code $(expr)}) when {@code any} is false, {@code $any(expr)} when it is true. The value is checked as
+   * {@link #appendDynamicMatchLabels} checks it, every element of a list included, without building the label list: a
+   * per-row label predicate asks this for every element it filters. {@code $all} of an empty list holds and {@code $any} of
+   * one does not, as in Neo4j.
+   *
+   * @throws TypeMismatchException when the value is not a string or a list of strings
+   */
+  public static boolean matchesDynamicLabels(final DocumentType type, final Object value, final boolean any) {
+    if (value instanceof String label)
+      return type.instanceOf(label);
+    // the answer stays !any until one label decides it, and every element is still type-checked after that
+    boolean result = !any;
+    if (value instanceof Iterable<?> iterable) {
+      for (final Object item : iterable)
+        if (type.instanceOf(requireDynamicMatchLabel(item)) == any)
+          result = any;
+    } else if (value instanceof Object[] array) {
+      for (final Object item : array)
+        if (type.instanceOf(requireDynamicMatchLabel(item)) == any)
+          result = any;
+    } else
+      throw dynamicMatchLabelTypeError(value, false);
+    return result;
+  }
+
+  /**
+   * The same read as {@link #matchesDynamicLabels(DocumentType, Object, boolean)} for an element that has no schema type
+   * and carries exactly the labels {@code own}: a virtual node or relationship (issue #12109).
+   *
+   * @throws TypeMismatchException when the value is not a string or a list of strings
+   */
+  public static boolean matchesDynamicLabels(final Collection<String> own, final Object value, final boolean any) {
+    if (value instanceof String label)
+      return own.contains(label);
+    boolean result = !any;
+    if (value instanceof Iterable<?> iterable) {
+      for (final Object item : iterable)
+        if (own.contains(requireDynamicMatchLabel(item)) == any)
+          result = any;
+    } else if (value instanceof Object[] array) {
+      for (final Object item : array)
+        if (own.contains(requireDynamicMatchLabel(item)) == any)
+          result = any;
+    } else
+      throw dynamicMatchLabelTypeError(value, false);
+    return result;
+  }
+
+  private static String requireDynamicMatchLabel(final Object item) {
+    if (item instanceof String label)
+      return label;
+    throw dynamicMatchLabelTypeError(item, true);
+  }
+
+  private static TypeMismatchException dynamicMatchLabelTypeError(final Object offender, final boolean listElement) {
+    final String kind = offender == null ? "null" : offender.getClass().getSimpleName() + " (" + offender + ")";
+    return new TypeMismatchException("TypeError: a dynamic label or relationship type $(...) must evaluate to a STRING or a "
+        + "LIST<STRING> with no null element, but " + (listElement ? "the list contains " : "it evaluated to ") + kind);
   }
 
   /**

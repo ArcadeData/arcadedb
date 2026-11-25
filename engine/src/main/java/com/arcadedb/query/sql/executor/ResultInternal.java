@@ -41,6 +41,17 @@ import static com.arcadedb.schema.Property.RID_PROPERTY;
  * Created by luigidellaquila on 06/07/16.
  */
 public class ResultInternal implements Result {
+  /**
+   * The metadata key that marks a row a follower rebuilt from the JSON its leader answered a forwarded command with (issue
+   * #12519). Such a row is a plain projection made of the JSON map, whatever it stood for on the leader, so the record it was
+   * (its {@code @type} column) can no longer be told from a projection that only has a column of that name, except by this mark.
+   * The value is {@link Boolean#TRUE}.
+   * <p>
+   * The name starts with {@code @}, which no variable of a statement can: the metadata of a row is also where {@code LET} and
+   * the traversal depth ({@code $depth}) keep theirs, and a query must never read or shadow this one.
+   */
+  public static final String FORWARDED_ROW_METADATA = "@forwardedRow";
+
   // A new field that carries row state must also be checked by rewrapElement() and rebindSingleProperty(), or a filtered scan
   // moves it to another record
   protected final Database database;
@@ -115,6 +126,94 @@ public class ResultInternal implements Result {
     if (!(value instanceof Record) && value instanceof Identifiable identifiable && identifiable.getIdentity() != null)
       return identifiable.getIdentity();
     return value;
+  }
+
+  /**
+   * Every name {@code row}'s {@link Result#getPropertyNames()} lists, with the value its {@link Result#getProperty(String)}
+   * answers, for a consumer that reads the whole row: the HTTP and gRPC row serializers (issue #11738).
+   * <p>
+   * Asking for each name in turn reads a row backed by a stored record once per property, since
+   * {@code ImmutableDocument.get(name)} walks the record header from its first byte until it meets the name, so a row of P
+   * properties cost P walks. The values of a plain row come from {@link #toPropertyMap(boolean)} instead, which reads the
+   * record once (issue #10098), so the row costs two passes whatever its size: that one and the name list. A projection row
+   * (one that holds its own values) gets the map {@code toPropertyMap} built and nothing else: its names are that map's keys,
+   * so neither a name set nor a second map is built for it. The names still decide what a record row holds: the single read
+   * leaves out a property whose value does not decode (a damaged record), which a read by name answers with {@code null}.
+   * A subclass may answer a name differently from the fields {@code toPropertyMap} reads, so it is read name by name, as
+   * {@link #copyBindings} draws the same line.
+   *
+   * @return a map the caller may keep, in the order {@code getPropertyNames()} lists the names
+   */
+  public static Map<String, Object> propertiesOf(final Result row) {
+    return propertiesOf(row, Collections.emptySet());
+  }
+
+  /**
+   * {@link #propertiesOf(Result)} without the names in {@code excluded}, which are not read at all: a {@code SELECT *, !payload}
+   * projection must not decode the payload it drops (issue #12558). A record row the statement narrowed (by {@code excluded},
+   * by a removed property or by the exclusions an earlier projection recorded) is read once for the names it still lists, so
+   * a dropped value is never decoded, and a row with no name left is not read at all.
+   */
+  public static Map<String, Object> propertiesOf(final Result row, final Set<String> excluded) {
+    // EXACT CLASS ONLY, AS IN copyBindings(): A SUBCLASS MAY OVERRIDE getPropertyNames() OR getProperty() AND ANSWER A NAME
+    // DIFFERENTLY FROM THE content AND element FIELDS toPropertyMap() READS, SO ITS ROWS KEEP THE READ BY NAME
+    if (row.getClass() != ResultInternal.class) {
+      final Set<String> names = row.getPropertyNames();
+      final Map<String, Object> properties = new LinkedHashMap<>(names.size() * 4 / 3 + 1);
+      for (final String name : names)
+        if (!excluded.contains(name))
+          properties.put(name, row.getProperty(name));
+      return properties;
+    }
+
+    final ResultInternal plain = (ResultInternal) row;
+    // A projection row (content present) or a row without a record: its names are exactly the content keys toPropertyMap()
+    // walks, in that order, and its values are already in memory, so its map is the answer
+    if (plain.element == null || (plain.content != null && !plain.content.isEmpty()))
+      return plain.toPropertyMap(false);
+
+    // The names getPropertyNames() lists, minus the caller's exclusions, noting whether any stored name was dropped
+    final Set<String> names = new LinkedHashSet<>();
+    boolean narrowed = false;
+    for (final String name : plain.element.getPropertyNames())
+      if ((plain.tombstones != null && plain.tombstones.contains(name)) || plain.isExcludedFromElement(name) || excluded.contains(name))
+        narrowed = true;
+      else
+        names.add(name);
+
+    if (narrowed) {
+      if (names.isEmpty())
+        return new LinkedHashMap<>();
+      if (plain.element instanceof ImmutableDocument stored) {
+        final Map<String, Object> read = stored.propertiesAsMap(names.toArray(new String[0]));
+        final Map<String, Object> properties = new LinkedHashMap<>(names.size() * 4 / 3 + 1);
+        for (final String name : names)
+          properties.put(name, toPropertyValue(read.get(name)));
+        return properties;
+      }
+    }
+
+    final Map<String, Object> read = plain.toPropertyMap(false);
+    if (!narrowed && sameNamesInOrder(names, read))
+      return read;
+
+    // A damaged record, or a narrowed record whose values are already in memory: a value missing from the single read did not
+    // decode and was logged. A read by name would decode the same bytes, fail the same way, log it a second time and answer
+    // null, so the name takes null directly
+    final Map<String, Object> properties = new LinkedHashMap<>(names.size() * 4 / 3 + 1);
+    for (final String name : names)
+      properties.put(name, read.get(name));
+    return properties;
+  }
+
+  private static boolean sameNamesInOrder(final Set<String> names, final Map<String, Object> read) {
+    if (names.size() != read.size())
+      return false;
+    final Iterator<String> readNames = read.keySet().iterator();
+    for (final String name : names)
+      if (!name.equals(readNames.next()))
+        return false;
+    return true;
   }
 
   /**
@@ -427,6 +526,19 @@ public class ResultInternal implements Result {
   }
 
   /**
+   * {@link #getPropertyNames()}'s answer for one name, without the set it builds (issue #12340). A row with content lists
+   * exactly its content keys - the element is not consulted once there is content, and {@link #removeProperty(String)} takes
+   * the key out of the content - so the answer is one map look-up. A row that only wraps an element, and a subclass, which may
+   * list its names its own way, answer through the name set.
+   */
+  @Override
+  public boolean listsProperty(final String name) {
+    if (getClass() == ResultInternal.class && content != null && !content.isEmpty())
+      return content.containsKey(name);
+    return getPropertyNames().contains(name);
+  }
+
+  /**
    * The value of the only property of a row that wraps no record (a sub-query row such as {@code SELECT k FROM U}), or
    * {@code absent} when the row wraps a record or does not hold exactly one property. It answers what
    * {@link #getPropertyNames()} followed by {@link #getProperty(String)} would, without building the name set: an
@@ -491,6 +603,15 @@ public class ResultInternal implements Result {
   @Override
   public boolean isElement() {
     return this.element != null;
+  }
+
+  /**
+   * Whether this row carries nothing at all: no record, no value, no property. The row a SELECT without a target produces for its
+   * projection to run on (issue #12537), which a subquery evaluated under it cannot share with anything.
+   */
+  boolean isBare() {
+    return element == null && value == null && (content == null || content.isEmpty()) && (temporaryContent == null
+        || temporaryContent.isEmpty());
   }
 
   /**
@@ -687,7 +808,8 @@ public class ResultInternal implements Result {
   @Override
   public Optional<RID> getIdentity() {
     if (element != null)
-      return Optional.of(element.getIdentity());
+      // a record not saved yet has no identity: @rid read while an INSERT builds it is null, like a row with no record (#11850)
+      return Optional.ofNullable(element.getIdentity());
 
     if (hasProperty(RID_PROPERTY)) {
       final Object rid = getProperty(RID_PROPERTY);

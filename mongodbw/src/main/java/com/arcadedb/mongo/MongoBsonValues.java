@@ -49,11 +49,19 @@ import java.util.logging.Level;
  * The engine has no counterpart for a binary blob, a regular expression, a timestamp, MinKey, MaxKey or JavaScript code, and
  * its serializer drops a property whose value type it does not know. Such a value is therefore stored as an embedded map
  * tagged with {@link #TAG}, and turned back into the BSON object on the way out. A {@link Decimal128} is stored as a
- * {@link BigDecimal} (a DECIMAL) and read back as a Decimal128. A value the engine cannot hold at all is refused with an
- * error instead of being silently dropped.
+ * {@link BigDecimal} (a DECIMAL) and read back as a Decimal128, but for the ones a BigDecimal has no form for (a negative zero,
+ * NaN and the infinities), which are stored tagged with their 128 bits (issue #12073). A value the engine cannot hold at all is
+ * refused with an error instead of being silently dropped.
  * <p>
- * A tagged value is a map to the engine: equality and {@code $in} work, but a range operator or a sort on a timestamp, binary,
- * MinKey, MaxKey, regular expression or JavaScript field compares maps and does not follow BSON ordering. A DECIMAL beyond
+ * An {@link ObjectId} {@code _id} is stored as its bare hex string, the form the {@code _id} has always had, and a String {@code _id}
+ * that reads as such a hex string is stored escaped, so that the two are two values to the unique index, to the filters and to the
+ * reads (issue #12073). A bare hex {@code _id} stored before that reads back as an ObjectId, as it always did, and is that
+ * ObjectId to the filters and to the unique index: the bare form cannot tell whether it was written as a String, so it keeps the
+ * meaning every read has given it. A String filter (or insert) with that hex is therefore another value, as an ObjectId and a
+ * String are in {@code mongod}.
+ * <p>
+ * A tagged value is a map to the engine, so SQL compares maps: the plugin's own filters and sorts compare the BSON value it is
+ * read back as ({@link MongoQueryMatcher}, {@link MongoSortOrder}), a statement written in SQL does not. A DECIMAL beyond
  * Decimal128 (more than 34 digits) is read back as a double rather than failing the read.
  * <p>
  * The field name {@code $bson} is reserved for the tag: a map with a string {@code $bson} key written through SQL or another
@@ -78,6 +86,18 @@ final class MongoBsonValues {
   private static final String MAX_KEY = "maxKey";
   private static final String JAVASCRIPT = "javascript";
   private static final String LEGACY_UUID = "legacyUuid";
+  private static final String DECIMAL128  = "decimal128";
+
+  // the encoding of the special values of a Decimal128, read from its high 64 bits
+  private static final long DECIMAL_SPECIAL  = 0x7C00000000000000L;
+  private static final long DECIMAL_INFINITY = 0x7800000000000000L;
+
+  /**
+   * A value already in the form it is stored in, which the binding of a filter must not convert again: the bound of a filter on the
+   * {@code _id}, whose stored form (see {@link #idToStored}) is not the one of any other field.
+   */
+  record Stored(Object value) {
+  }
 
   private MongoBsonValues() {
   }
@@ -92,15 +112,19 @@ final class MongoBsonValues {
   }
 
   /**
-   * Converts a value used in a filter into the form it is stored in. A regular expression is left alone: as a filter value it
-   * is a pattern to match, not a value to compare. A Decimal128 NaN or Infinity is refused, as it is on insert.
+   * Converts a value used in a filter into the form it is stored in. A regular expression is left alone: only the matcher evaluates
+   * one, as a pattern or, under {@code $eq}, as a value compared with a stored regular expression, and it never narrows the SQL
+   * candidates. A Decimal128 NaN or Infinity is refused, as it is on insert.
    */
   static Object toBound(final Object value) {
+    if (value instanceof Stored stored)
+      return stored.value();
     return needsConversion(value) && !(value instanceof BsonRegularExpression) ? toStored(value) : value;
   }
 
   /**
-   * Converts a value received from a client into the form stored in the database. An {@link ObjectId} becomes the string {@code $oid:<hex>}; use {@link #toStored(String, Object)} for an {@code _id}.
+   * Converts a value received from a client into the form stored in the database. An {@link ObjectId} becomes the string
+   * {@code $oid:<hex>}; use {@link #toStored(String, Object)} for an {@code _id}.
    * A map or list is copied only when an element changes.
    *
    * @throws MongoServerError if the value (or an element nested in it) has a type that cannot be stored
@@ -115,7 +139,7 @@ final class MongoBsonValues {
     if (value instanceof ObjectId id)
       return OBJECT_ID_PREFIX + id.getHexData();
     if (value instanceof Decimal128 decimal)
-      return toBigDecimal(decimal);
+      return decimalToStored(decimal);
     if (value instanceof BinData bin)
       return tagged(BIN_DATA, "data", Base64.getEncoder().encodeToString(bin.getData()));
     if (value instanceof BsonRegularExpression regex)
@@ -141,20 +165,21 @@ final class MongoBsonValues {
 
   /**
    * Converts a value for the named top-level field. An {@code _id} keeps an {@link ObjectId} as its plain hex string, the form
-   * the primary key lookups and indexes match on; every other field stores it as a tagged map that keeps its type.
+   * the primary key lookups and indexes match on, and escapes a String that reads as one (see {@link #idToStored}); every other
+   * field stores an ObjectId as a prefixed string that keeps its type.
    */
   static Object toStored(final String field, final Object value) {
     return "_id".equals(field) ? idToStored(value) : toStored(value);
   }
 
   /**
-   * Replaces every {@link ObjectId} in a filter on {@code _id} (a plain value, an operator document or a list) with its hex
-   * string, so that it matches the stored {@code _id}.
+   * Replaces every value of a filter on {@code _id} (a plain value, an operator document or a list) with its stored form (see
+   * {@link #idToStored}), marked {@link Stored} so that the binding does not convert it again: the SQL then compares it with the
+   * stored {@code _id}. A regular expression and a null are left as they are: a pattern, and the absence of a value.
    */
-  @SuppressWarnings("unchecked")
   static Object idFilter(final Object value) {
-    if (value instanceof ObjectId id)
-      return id.getHexData();
+    if (value == null || value instanceof BsonRegularExpression)
+      return value;
     if (value instanceof Document document) {
       final Document converted = new Document();
       for (final Map.Entry<String, Object> entry : document.entrySet())
@@ -167,12 +192,20 @@ final class MongoBsonValues {
         converted.add(idFilter(item));
       return converted;
     }
-    return value;
+    return new Stored(idToStored(value));
   }
 
+  /**
+   * The stored form of an {@code _id}: an ObjectId is its bare hex string, the form the {@code _id} has always had. A String that
+   * reads as such a hex string is escaped, so that it is not the same key as the ObjectId and reads back as a String (issue
+   * #12073); any other string is escaped like a string of any field, only when it looks like an encoded value.
+   */
   private static Object idToStored(final Object value) {
-    // a string _id is escaped like any other string, so that filters (which escape too) and reads (which unescape) agree
-    return value instanceof ObjectId id ? id.getHexData() : toStored(value);
+    if (value instanceof ObjectId id)
+      return id.getHexData();
+    if (value instanceof String string && MongoDBToSqlTranslator.isObjectIdHex(string))
+      return ESCAPED_PREFIX + string;
+    return toStored(value);
   }
 
   /**
@@ -286,14 +319,67 @@ final class MongoBsonValues {
   }
 
   private static BigDecimal toBigDecimal(final Decimal128 decimal) {
+    if (isSpecial(decimal))
+      throw new MongoServerError(ErrorCode.BadValue, "The Decimal128 value " + decimal + " (NaN or Infinity) cannot be combined with a decimal");
     try {
       return decimal.toBigDecimal();
     } catch (final ArithmeticException e) {
-      // BigDecimal has no negative zero: store it as zero, which compares equal
-      if (decimal.doubleValue() == 0)
-        return BigDecimal.ZERO;
-      throw new MongoServerError(ErrorCode.BadValue, "The Decimal128 value " + decimal + " (NaN or Infinity) cannot be stored");
+      // BigDecimal has no negative zero: for arithmetic it is zero, which compares equal
+      return BigDecimal.ZERO;
     }
+  }
+
+  /**
+   * A Decimal128 as a DECIMAL, the form SQL compares as a number; tagged with its 128 bits when a BigDecimal has no form for it (a
+   * negative zero of any scale, NaN, an infinity), so that it reads back as it was written (issue #12073).
+   */
+  private static Object decimalToStored(final Decimal128 decimal) {
+    if (!isSpecial(decimal))
+      try {
+        final BigDecimal value = decimal.toBigDecimal();
+        // a negative zero converts to a zero without the sign (the sign bit is the top bit of the high word)
+        if (value.signum() != 0 || decimal.getHigh() >= 0)
+          return value;
+      } catch (final ArithmeticException e) {
+        // a negative zero the conversion refuses: tagged below
+      }
+    return tagged(DECIMAL128, "high", decimal.getHigh(), "low", decimal.getLow());
+  }
+
+  /** NaN or an infinity, read from the encoding of a Decimal128. */
+  private static boolean isSpecial(final Decimal128 decimal) {
+    final long special = decimal.getHigh() & DECIMAL_SPECIAL;
+    return special == DECIMAL_SPECIAL || special == DECIMAL_INFINITY;
+  }
+
+  /**
+   * The sum of an {@code $inc} with a decimal operand. NaN and the infinities follow the IEEE rules (NaN wins, opposite infinities
+   * make NaN), a finite sum is exact.
+   */
+  static Number addDecimal(final Number a, final Number b) {
+    final double specialA = specialValue(a);
+    final double specialB = specialValue(b);
+    if (specialA == 0D && specialB == 0D)
+      return toBigDecimal(a).add(toBigDecimal(b));
+    final double sum = specialA + specialB;
+    return Double.isNaN(sum) ? Decimal128.NaN : sum > 0 ? Decimal128.POSITIVE_INFINITY : Decimal128.NEGATIVE_INFINITY;
+  }
+
+  /** NaN or the infinity a number is, 0 for a finite number (which does not change a sum with one). */
+  private static double specialValue(final Number number) {
+    if (number instanceof Decimal128 decimal) {
+      final long special = decimal.getHigh() & DECIMAL_SPECIAL;
+      if (special == DECIMAL_SPECIAL)
+        return Double.NaN;
+      if (special == DECIMAL_INFINITY)
+        return decimal.getHigh() < 0 ? Double.NEGATIVE_INFINITY : Double.POSITIVE_INFINITY;
+      return 0D;
+    }
+    if (number instanceof Double || number instanceof Float) {
+      final double value = number.doubleValue();
+      return Double.isFinite(value) ? 0D : value;
+    }
+    return 0D;
   }
 
   /**
@@ -317,6 +403,8 @@ final class MongoBsonValues {
       case MAX_KEY -> MaxKey.getInstance();
       case JAVASCRIPT -> new BsonJavaScript((String) required(map, "code"));
       case LEGACY_UUID -> new LegacyUUID(UUID.fromString((String) required(map, "uuid")));
+      // the constructor takes the low 64 bits first
+      case DECIMAL128 -> new Decimal128(((Number) required(map, "low")).longValue(), ((Number) required(map, "high")).longValue());
       default -> map;
     };
   }

@@ -110,7 +110,8 @@ class SQLNodeFunctionsTest extends TestHelper {
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("direction")
         .hasMessageContaining("IN, OUT or BOTH");
-    assertThatThrownBy(() -> new NodeRelationshipTypes().execute(new Object[] { ada, "INCOMING2" }, context))
+    // the direction is the third argument since #12103: the second is APOC's relationship pattern
+    assertThatThrownBy(() -> new NodeRelationshipTypes().execute(new Object[] { ada, null, "INCOMING2" }, context))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("direction")
         .hasMessageContaining("IN, OUT or BOTH");

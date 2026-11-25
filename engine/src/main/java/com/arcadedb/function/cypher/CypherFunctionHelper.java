@@ -22,8 +22,10 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.TypeMismatchException;
+import com.arcadedb.function.geo.CypherPointFunction;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.ast.CypherTypeName;
 import com.arcadedb.query.opencypher.executor.CypherValues;
 import com.arcadedb.query.opencypher.temporal.CypherDate;
 import com.arcadedb.query.opencypher.temporal.CypherDateTime;
@@ -32,6 +34,7 @@ import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherLocalTime;
 import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
 import com.arcadedb.query.opencypher.temporal.CypherTime;
+import com.arcadedb.query.opencypher.temporal.TemporalMapFields;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -49,16 +52,18 @@ import java.time.Period;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
-import java.time.temporal.WeekFields;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 /**
@@ -87,6 +92,21 @@ public final class CypherFunctionHelper {
    * the value {@code timestamp()} answers with.
    */
   public static final String TIMESTAMP = "timestamp";
+
+  /**
+   * The type names Neo4j renders a union of list element types in, from the first to the last: the union of the element
+   * types of {@code [1,'a']} is rendered {@code "STRING NOT NULL | INTEGER NOT NULL"} and the union of the element types
+   * of {@code [1,'a',true]} adds BOOLEAN before the other two, whatever order the elements came in (issue #12395).
+   */
+  private static final List<String> TYPE_ORDER = List.of("BOOLEAN", "STRING", "INTEGER", "FLOAT", "DATE", "LOCAL TIME",
+      "ZONED TIME", "LOCAL DATETIME", "ZONED DATETIME", "DURATION", "POINT", "NODE", "RELATIONSHIP", "MAP", "LIST", "PATH");
+
+  /**
+   * The place every type of {@link #TYPE_ORDER} takes in it, so that the order is looked up and not searched.
+   */
+  private static final Map<String, Integer> TYPE_ORDER_INDEX = IntStream.range(0, TYPE_ORDER.size())
+      .boxed()
+      .collect(Collectors.toMap(TYPE_ORDER::get, index -> index));
 
   /**
    * A numeric Cypher function: its canonical spelling - the one the runtime check uses, so both the parse-time and the
@@ -192,6 +212,149 @@ public final class CypherFunctionHelper {
       case Map<?, ?> map -> CypherValues.isPointShaped(map) ? "POINT" : "MAP";
       default -> value.getClass().isArray() ? "LIST<ANY>" : value.getClass().getSimpleName().toUpperCase(Locale.ROOT);
     };
+  }
+
+  /**
+   * The type of a value, as Neo4j's {@code valueType()} renders it: the name of the type, followed by
+   * {@code " NOT NULL"} when the value is not null. A list reports the type of its elements the way Neo4j reports it:
+   * {@code LIST<INTEGER NOT NULL> NOT NULL} for {@code [1,2]}, {@code LIST<NOTHING> NOT NULL} for an empty list,
+   * {@code LIST<INTEGER> NOT NULL} for {@code [1,null]} and {@code LIST<STRING NOT NULL | INTEGER NOT NULL> NOT NULL}
+   * for {@code [1,'a']} (issue #12395).
+   */
+  public static String cypherValueType(final Object value) {
+    if (value == null)
+      return "NULL";
+    final List<?> list = listOrNull(value);
+    if (list != null)
+      return "LIST<" + listElementTypes(list).rendered + "> NOT NULL";
+    return cypherTypeName(value) + " NOT NULL";
+  }
+
+  /**
+   * The value as the list valueType() reports on: a List, or an array, which {@link #asListOrNull} already reads as a list
+   * (primitive arrays reach the engine as the value of a numeric-array parameter, issue #4284) and which {@link #cypherTypeName}
+   * already names a list. A Set or another collection keeps the name it had.
+   */
+  private static List<?> listOrNull(final Object value) {
+    if (value instanceof List<?> list)
+      return list;
+    return value != null && value.getClass().isArray() ? asListOrNull(value) : null;
+  }
+
+  /**
+   * The types of the elements of a list, as Neo4j renders the union of them: the member types joined with
+   * {@code " | "}, each one carrying its own {@code " NOT NULL"} suffix unless the list holds a null element - a list
+   * holding one has a nullable element type, and so has every member of it.
+   * <p>
+   * The member types are rendered in the order Neo4j renders a union of them, which is not the order the elements
+   * come in: the union of the element types of {@code [1,'a']} is {@code "STRING NOT NULL | INTEGER NOT NULL"}, and
+   * the union of the element types of {@code [1,'a',true]} adds BOOLEAN before the other two.
+   */
+  private static ElementTypes listElementTypes(final List<?> list) {
+    if (list.isEmpty())
+      return new ElementTypes("NOTHING", List.of());
+
+    final List<Member> members = new ArrayList<>();
+    boolean nullable = false;
+    for (final Object element : list) {
+      if (element == null) {
+        nullable = true;
+        continue;
+      }
+      members.add(elementMember(element));
+    }
+
+    // A list of null elements only: the element type is the null type itself
+    if (members.isEmpty())
+      return new ElementTypes("NULL", List.of());
+
+    // The same type twice is one member of the union, and the members are the ones Neo4j renders, in its order
+    final Map<String, Member> distinct = new LinkedHashMap<>();
+    for (final Member member : members)
+      distinct.putIfAbsent(member.rendered, member);
+    final List<Member> ordered = new ArrayList<>(distinct.values());
+    // Two members can share a key and differ in what they render - [1] and [1,null] are both a list of INTEGER, one with a nullable
+    // element type - so the key alone leaves their order to the order the elements came in, and the union would depend on it. The
+    // rendered text breaks the tie: ' ' sorts before '>', so the member with the NOT NULL element comes first, as Neo4j renders
+    // [[[1]],[[1,null]]] and [[[1,null]],[[1]]] alike
+    ordered.sort((first, second) -> {
+      final int byKey = compareKeys(first.key, second.key);
+      return byKey != 0 ? byKey : first.rendered.compareTo(second.rendered);
+    });
+
+    final StringBuilder rendered = new StringBuilder();
+    final List<Integer> key = new ArrayList<>();
+    boolean first = true;
+    for (final Member member : ordered) {
+      if (!first)
+        rendered.append(" | ");
+      first = false;
+      rendered.append(member.rendered);
+      if (!nullable)
+        rendered.append(" NOT NULL");
+      key.addAll(member.key);
+    }
+    return new ElementTypes(rendered.toString(), key);
+  }
+
+  /**
+   * The member a list element contributes to the union of the element types: the type it is rendered as, and the key
+   * that orders it. A list element is ordered by the types it holds, so that the union of the element types of
+   * {@code [[1],['a']]} renders {@code "LIST<STRING NOT NULL> NOT NULL | LIST<INTEGER NOT NULL> NOT NULL"}.
+   */
+  private static Member elementMember(final Object element) {
+    final List<?> nested = listOrNull(element);
+    if (nested != null) {
+      final ElementTypes inner = listElementTypes(nested);
+      final List<Integer> key = new ArrayList<>();
+      key.add(typeOrderIndex(CypherTypeName.LIST));
+      key.addAll(inner.key);
+      return new Member("LIST<" + inner.rendered + ">", key);
+    }
+    final String type = cypherTypeName(element);
+    return new Member(type, List.of(typeOrderIndex(type)));
+  }
+
+  /**
+   * Compares two type keys: the one whose first type comes first in the order wins, and a key that is a prefix of the
+   * other comes first.
+   */
+  private static int compareKeys(final List<Integer> first, final List<Integer> second) {
+    final int shared = Math.min(first.size(), second.size());
+    for (int i = 0; i < shared; i++) {
+      final int comparison = Integer.compare(first.get(i), second.get(i));
+      if (comparison != 0)
+        return comparison;
+    }
+    return Integer.compare(first.size(), second.size());
+  }
+
+  /**
+   * The place a type name takes in the order Neo4j renders a union of types: BOOLEAN, STRING, INTEGER, FLOAT, DATE,
+   * LOCAL TIME, ZONED TIME, LOCAL DATETIME, ZONED DATETIME, DURATION, POINT, NODE, RELATIONSHIP, MAP, LIST and PATH. A
+   * type the order does not name keeps its place at the end.
+   */
+  private static int typeOrderIndex(final String typeName) {
+    final Integer index = TYPE_ORDER_INDEX.get(typeName);
+    return index != null ? index : TYPE_ORDER.size();
+  }
+
+  /**
+   * A member of the union of the element types of a list: the type it is rendered as, and the key that orders it.
+   *
+   * @param rendered the type, without the {@code " NOT NULL"} suffix the union adds to it
+   * @param key      the place the member takes in the order Neo4j renders a union of types
+   */
+  private record Member(String rendered, List<Integer> key) {
+  }
+
+  /**
+   * The types of the elements of a list, and the key that orders them in a union.
+   *
+   * @param rendered the types, joined the way Neo4j joins them
+   * @param key      the place the types take in the order Neo4j renders a union of types
+   */
+  private record ElementTypes(String rendered, List<Integer> key) {
   }
 
   /**
@@ -538,6 +701,89 @@ public final class CypherFunctionHelper {
   }
 
   /**
+   * Splits {@code str} around every occurrence of any of the literal {@code delimiters}, as openCypher
+   * {@code split(original, splitDelimiters)} does (issue #12396): the text is cut at the leftmost place where any
+   * delimiter of the list is found and, when two of them are found at the same place, the first of the list wins. The
+   * delimiters are literals, never patterns, and the empty pieces are kept.
+   * <ul>
+   *   <li>An empty list of delimiters splits nothing: the text is the one piece.</li>
+   *   <li>An empty delimiter splits the text into its characters and the other delimiters of the list are cut out of
+   *   the text before that, as Neo4j 5 does: {@code split('abc', ['','a'])} is {@code ["b","c"]}.</li>
+   * </ul>
+   * As the single-delimiter split, a surrogate pair is never cut.
+   *
+   * @return an unmodifiable list
+   */
+  public static List<String> splitLiteral(final String str, final List<String> delimiters) {
+    if (delimiters.isEmpty())
+      return List.of(str);
+
+    boolean withEmptyDelimiter = false;
+    for (final String delimiter : delimiters)
+      if (delimiter.isEmpty()) {
+        withEmptyDelimiter = true;
+        break;
+      }
+
+    if (withEmptyDelimiter) {
+      String text = str;
+      for (final String delimiter : delimiters)
+        if (!delimiter.isEmpty())
+          text = replaceLiteral(text, delimiter, "");
+      // Cutting the other delimiters out of a text can leave nothing, and the characters of nothing are no piece, as in Neo4j 5:
+      // split('aaa', ['','a']) is [], while the empty text itself is the one empty piece, split('', ['']) is [""]
+      if (text.isEmpty() && !str.isEmpty())
+        return List.of();
+      return splitLiteral(text, "");
+    }
+
+    final String[] candidates = delimiters.toArray(new String[0]);
+    // The next place each delimiter is found at or after 'at': searched again only once 'at' has passed it, and never again once it
+    // is not found any more. Searching every delimiter from 'at' on each cut scanned the rest of the text for a delimiter that is
+    // absent after every cut, which was quadratic on a long text with a list like [",", ";"] (review of #12403)
+    final int[] nextIndex = new int[candidates.length];
+    Arrays.fill(nextIndex, -1);
+    final List<String> pieces = new ArrayList<>();
+    int from = 0;
+    int at = 0;
+    while (true) {
+      int foundAt = -1;
+      String found = null;
+      for (int i = 0; i < candidates.length; i++) {
+        final String delimiter = candidates[i];
+        if (nextIndex[i] < at) {
+          final int looked = str.indexOf(delimiter, at);
+          nextIndex[i] = looked < 0 ? Integer.MAX_VALUE : looked;
+        }
+        final int index = nextIndex[i];
+        if (index == Integer.MAX_VALUE)
+          continue;
+        if (foundAt < 0 || index < foundAt) {
+          foundAt = index;
+          found = delimiter;
+        } else if (index == foundAt && splitsSurrogatePair(str, foundAt, foundAt + found.length())
+            && !splitsSurrogatePair(str, index, index + delimiter.length()))
+          // the delimiter that comes first in the list would cut a surrogate pair, this one at the same place does not
+          found = delimiter;
+      }
+      if (foundAt < 0)
+        break;
+
+      final int end = foundAt + found.length();
+      if (splitsSurrogatePair(str, foundAt, end)) {
+        // no delimiter of the list can be used here: look for the next one
+        at = foundAt + 1;
+        continue;
+      }
+      pieces.add(str.substring(from, foundAt));
+      from = end;
+      at = end;
+    }
+    pieces.add(str.substring(from));
+    return Collections.unmodifiableList(pieces);
+  }
+
+  /**
    * Replaces every occurrence of the literal {@code search} in {@code str}, as {@code String.replace(CharSequence, CharSequence)}
    * does, except that a surrogate pair is never cut (issue #10485, #10484): an empty {@code search} puts the replacement before
    * every character and after the last - {@code "-a-😀-"} for {@code ("a😀", "", "-")}, never between the two halves of the emoji -
@@ -727,9 +973,17 @@ public final class CypherFunctionHelper {
 
   /**
    * The Cypher order of two maps, as Neo4j orders them: by size, then by their keys in ascending order, then by the values of
-   * those keys in that order, each compared by {@code values}.
+   * those keys in that order, each compared by {@code values}. Two points order as points, see {@link #comparePoints}, and an
+   * ordinary map sorts before a point, as Neo4j orders MAP before POINT: comparing a point with a map by its keys made the
+   * order cyclic.
    */
   public static int compareMaps(final Map<?, ?> a, final Map<?, ?> b, final Comparator<Object> values) {
+    final boolean pointA = CypherValues.isPointShaped(a);
+    final boolean pointB = CypherValues.isPointShaped(b);
+    if (pointA && pointB)
+      return comparePoints(a, b);
+    if (pointA != pointB)
+      return pointA ? 1 : -1;
     if (a.size() != b.size())
       return Integer.compare(a.size(), b.size());
     final List<Object> keysA = sortedKeys(a);
@@ -745,6 +999,42 @@ public final class CypherFunctionHelper {
         return cmp;
     }
     return 0;
+  }
+
+  /**
+   * The Cypher order of two points, as Neo4j orders them: by coordinate reference system (srid 4326, 4979, 7203, 9157), then
+   * by x, y and z. A point is a map in ArcadeDB, and the map order put a WGS-84 point's latitude before its longitude and
+   * points of different systems in the order of their key counts (issue #12274). A crs name that is not one of the four, on a point
+   * with no srid, sorts after them, and two such names order by the name: it is all there is to tell the systems apart.
+   */
+  public static int comparePoints(final Map<?, ?> a, final Map<?, ?> b) {
+    final double sridA = pointSrid(a);
+    int cmp = BinaryComparator.compareDoubles(sridA, pointSrid(b));
+    if (cmp == 0 && sridA == UNKNOWN_SRID)
+      cmp = BinaryComparator.compareStrings(String.valueOf(a.get("crs")), String.valueOf(b.get("crs")));
+    if (cmp != 0)
+      return cmp;
+    cmp = BinaryComparator.compareDoubles(((Number) a.get("x")).doubleValue(), ((Number) b.get("x")).doubleValue());
+    if (cmp != 0)
+      return cmp;
+    cmp = BinaryComparator.compareDoubles(((Number) a.get("y")).doubleValue(), ((Number) b.get("y")).doubleValue());
+    if (cmp != 0)
+      return cmp;
+    final Object za = a.get("z");
+    final Object zb = b.get("z");
+    if (za instanceof Number na && zb instanceof Number nb)
+      return BinaryComparator.compareDoubles(na.doubleValue(), nb.doubleValue());
+    return Boolean.compare(za instanceof Number, zb instanceof Number);
+  }
+
+  /** The srid of a point whose crs is not one of the four and that carries none: after every srid there is. */
+  private static final double UNKNOWN_SRID = Double.MAX_VALUE;
+
+  private static double pointSrid(final Map<?, ?> point) {
+    if (point.get("srid") instanceof Number srid)
+      return srid.doubleValue();
+    final Integer srid = point.get("crs") instanceof String crs ? CypherPointFunction.sridOfCrs(crs) : null;
+    return srid != null ? srid : UNKNOWN_SRID;
   }
 
   // The original keys sorted by their string form: a Java parameter map may hold non-String keys, and looking its values up by
@@ -771,9 +1061,11 @@ public final class CypherFunctionHelper {
     // by the Cypher class fromCoreJavaType wraps it in, so one rank is one class and the cast holds
     if (isTemporalTypeRank(rankA))
       return ((CypherTemporalValue) TemporalUtil.fromCoreJavaType(a)).compareTo((CypherTemporalValue) TemporalUtil.fromCoreJavaType(b));
-    // Same type category - compare within type
-    if (a instanceof Number && b instanceof Number)
-      return BinaryComparator.compareDoubles(((Number) a).doubleValue(), ((Number) b).doubleValue());
+    // Numbers by value: an INTEGER past 2^53 is not the double it rounds to, so reading both as double made 1500000000000000001 and
+    // 1500000000000000003 equal and min() / max() answered the first row (issue #12673). The numeric entry point, not compareTo:
+    // this runs once per row of every min() / max(), and compareTo tests a dozen other kinds before it reaches the numbers
+    if (a instanceof Number numberA && b instanceof Number numberB)
+      return BinaryComparator.compareNumbers(numberA, numberB);
     if (a instanceof String && b instanceof String)
       return BinaryComparator.compareStrings((String) a, (String) b);
     if (a instanceof Boolean && b instanceof Boolean)
@@ -914,57 +1206,40 @@ public final class CypherFunctionHelper {
   }
 
   /**
-   * Apply a map of adjustments to a truncated date.
-   * The map can contain: year, month, day, dayOfWeek, ordinalDay, dayOfQuarter.
+   * Apply a map of adjustments to a truncated date: every date field, the week, quarter and ordinal ones included, applied
+   * as a selection on the truncated value applies them ({@link TemporalMapFields}). Only the calendar fields and
+   * {@code dayOfWeek} used to apply, the rest were dropped (issue #12297).
    */
-  public static LocalDate applyDateMap(LocalDate date, final Map<String, Object> map) {
+  public static LocalDate applyDateMap(final LocalDate date, final Map<String, Object> map) {
     if (map == null || map.isEmpty())
       return date;
-    // Optimized: single map lookup instead of containsKey() + get()
-    Object value = map.get("year");
-    if (value != null)
-      date = date.withYear(TemporalUtil.toIntField("year", value));
-    value = map.get("month");
-    if (value != null)
-      date = date.withMonth(TemporalUtil.toIntField("month", value));
-    value = map.get("day");
-    if (value != null)
-      date = date.withDayOfMonth(TemporalUtil.toIntField("day", value));
-    value = map.get("dayOfWeek");
-    if (value != null)
-      date = date.with(WeekFields.ISO.dayOfWeek(), TemporalUtil.toIntField("dayOfWeek", value));
-    return date;
+    TemporalMapFields.checkAdjustmentKeys(map, true, false, false);
+    return TemporalMapFields.resolveDate(map, date, false);
   }
 
   /**
    * Apply a map of adjustments to a truncated time.
+   *
+   * @param zoned whether the truncated value has a zone, which the map's {@code timezone} then replaces
    */
-  public static LocalTime applyTimeMap(LocalTime time, final Map<String, Object> map) {
+  public static LocalTime applyTimeMap(final LocalTime time, final Map<String, Object> map, final boolean zoned) {
     if (map == null || map.isEmpty())
       return time;
-    // Optimized: single map lookup instead of containsKey() + get()
-    Object value = map.get("hour");
-    if (value != null)
-      time = time.withHour(TemporalUtil.toIntField("hour", value));
-    value = map.get("minute");
-    if (value != null)
-      time = time.withMinute(TemporalUtil.toIntField("minute", value));
-    value = map.get("second");
-    if (value != null)
-      time = time.withSecond(TemporalUtil.toIntField("second", value));
-    time = time.withNano(TemporalUtil.computeNanos(map, time.getNano(), true));
-    return time;
+    TemporalMapFields.checkAdjustmentKeys(map, false, true, zoned);
+    return TemporalMapFields.adjustTruncatedTime(time, map);
   }
 
   /**
    * Apply a map of adjustments to a truncated local datetime.
+   *
+   * @param zoned whether the truncated value has a zone, which the map's {@code timezone} then replaces
    */
-  public static LocalDateTime applyDateTimeMap(LocalDateTime dt, final Map<String, Object> map) {
+  public static LocalDateTime applyDateTimeMap(final LocalDateTime dt, final Map<String, Object> map, final boolean zoned) {
     if (map == null || map.isEmpty())
       return dt;
-    final LocalDate date = applyDateMap(dt.toLocalDate(), map);
-    final LocalTime time = applyTimeMap(dt.toLocalTime(), map);
-    return LocalDateTime.of(date, time);
+    TemporalMapFields.checkAdjustmentKeys(map, true, true, zoned);
+    return LocalDateTime.of(TemporalMapFields.resolveDate(map, dt.toLocalDate(), false),
+        TemporalMapFields.adjustTruncatedTime(dt.toLocalTime(), map));
   }
 
 }

@@ -24,6 +24,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.OperationProgress;
 import com.arcadedb.exception.CauseChain;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.DatabaseOperationInProgressException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.NeedRetryException;
@@ -84,7 +85,7 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
    * A table rather than a ladder of {@code instanceof} tests, because a ladder is what produced #10158: #10089 taught ONE
    * arm to look along the chain the engine wraps a failure in, and the other eleven still read the head frame, so one
    * wrapper turned "that name is taken" or "the quorum is momentarily unreachable" into {@code INTERNAL}. An arm added
-   * here is walked the same way as every other, and {@code Issue10158GrpcWrappedRefusalStatusTest} fails until it has a
+   * here is walked the same way as every other, and {@code GrpcRefusalStatusMappingTest} fails until it has a
    * case of its own.
    */
   static final RefusalArm[] REFUSAL_ARMS = {
@@ -132,6 +133,12 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
       // A rejected argument must not read as a server fault: an empty database name, an unparseable setting value or a
       // backup file name outside the backup directory are all the caller's to fix
       RefusalArm.generic(IllegalArgumentException.class, Status.Code.INVALID_ARGUMENT),
+      // The statement an admin RPC runs on the caller's behalf, refused by the database: today the ALIGN DATABASE refusal of
+      // #11796 (a CommandSemanticException), out of AlignDatabase. HTTP answers every CommandParsingException 400, and the data
+      // plane answers the same statement sent through ExecuteCommand INVALID_ARGUMENT (ErrorCategory.PARSING); without this arm
+      // the RPC answered INTERNAL, a server fault, and production mode concealed the sentence that says why (issue #12464).
+      // An ArcadeDB-authored sentence: the only statements this service runs are ones the control plane wrote
+      RefusalArm.own(CommandParsingException.class, Status.Code.INVALID_ARGUMENT),
       // The operation cannot run in this server's configuration at all - HA not enabled, connect cluster unsupported -
       // rather than having been attempted and failed. Only that subtype: a plain CommandExecutionException from here
       // means the operation ran and failed (a backup archive that could not be deleted), which is INTERNAL, not a
@@ -787,6 +794,8 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
   public void listBackups(final ListBackupsRequest req, final StreamObserver<ListBackupsResponse> resp) {
     respond(resp, "listBackups", () -> {
       requireServerAdmin(authenticate(req.getCredentials()));
+      // The leader's backup directory is the one RestoreBackup reads (issue #12417)
+      requireLeader("ListBackups");
 
       final JSONObject result = controlPlane.listBackups(req.getDatabase());
       final ListBackupsResponse.Builder builder = ListBackupsResponse.newBuilder()
@@ -813,6 +822,8 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
   public void triggerBackup(final TriggerBackupRequest req, final StreamObserver<TriggerBackupResponse> resp) {
     respond(resp, "triggerBackup", () -> {
       requireServerAdmin(authenticate(req.getCredentials()));
+      // The leader's backup directory is the one RestoreBackup reads (issue #12417)
+      requireLeader("TriggerBackup");
 
       final JSONObject result = controlPlane.triggerBackup(req.getDatabase());
       return TriggerBackupResponse.newBuilder().setBackupFile(result.getString("backupFile", "")).build();
@@ -823,6 +834,8 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
   public void deleteBackup(final DeleteBackupRequest req, final StreamObserver<DeleteBackupResponse> resp) {
     respond(resp, "deleteBackup", () -> {
       requireServerAdmin(authenticate(req.getCredentials()));
+      // The leader's backup directory is the one RestoreBackup reads (issue #12417)
+      requireLeader("DeleteBackup");
 
       controlPlane.deleteBackup(req.getDatabase(), req.getFileName());
       return DeleteBackupResponse.newBuilder().build();
@@ -1393,6 +1406,10 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
    * the leader - the pattern {@code graphBatchLoad} already established on this transport (issues #6091 and #6183).
    * Without it, {@code createUserClusterWide} would reach {@code HAServerPlugin.replicateSecurityUsers} on a follower,
    * which is exactly the state the HTTP path never gets into.
+   * <p>
+   * The backup RPCs take the same gate for a different reason (issue #12417): a backup directory is local to its
+   * node and {@code RestoreBackup} reads the leader's, so an archive triggered, listed or deleted on a follower is
+   * one no restore can reach.
    * <p>
    * A server with HA inactive is always allowed: there is no leader to be, and {@code getHA()} is null.
    */

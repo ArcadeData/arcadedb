@@ -20,6 +20,7 @@ package com.arcadedb.function.sql.vector;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 
 import org.assertj.core.data.Offset;
@@ -440,7 +441,7 @@ class SQLFunctionPhase3Test extends TestHelper {
     context.setDatabase(database);
 
     assertThatThrownBy(() -> function.execute(null, null, null, new Object[] {}, context))
-        .isInstanceOf(CommandSQLParsingException.class);
+        .isInstanceOf(CommandSemanticException.class); // issue #11944: the declared arity (at least 1), checked by checkArity
   }
 
   @Test

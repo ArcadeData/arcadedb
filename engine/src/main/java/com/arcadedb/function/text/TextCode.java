@@ -18,10 +18,12 @@
  */
 package com.arcadedb.function.text;
 
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
- * text.code(char) - Get Unicode code point of character.
+ * text.code(codepoint) - The one-character string of a Unicode code point, as {@code apoc.text.code} answers ({@code 65} is
+ * {@code 'A'}, issue #12104); null for a null argument or a number that is not a code point.
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -43,15 +45,18 @@ public class TextCode extends AbstractTextFunction {
 
   @Override
   public String getDescription() {
-    return "Get the Unicode code point of the first character";
+    return "Get the one-character string of a Unicode code point";
   }
 
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    final String str = asString(args[0]);
-    if (str == null || str.isEmpty())
+    if (args[0] == null)
       return null;
 
-    return (long) str.codePointAt(0);
+    // Every code point, as text.charAt() answers them (issue #10378): APOC stops at U+FFFF, the last one a Java char holds
+    final long codePoint = CypherFunctionHelper.requireWholeNumberOrTextArgument(args[0], getName(), "codepoint");
+    if (codePoint < 0 || codePoint > Character.MAX_CODE_POINT)
+      return null;
+    return Character.toString((int) codePoint);
   }
 }

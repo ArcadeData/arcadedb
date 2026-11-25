@@ -43,15 +43,24 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class ValidationExceptionKindCensusTest {
   private static final String AUTHORITY = "com/arcadedb/exception/ValidationException";
-  private static final String WITH_KIND = "(Lcom/arcadedb/exception/ValidationException$Kind;Ljava/lang/String;)V";
+  /** The constructors of the authority that take the kind, whatever follows it: the message, and the cause of the refusal. */
+  private static final String WITH_KIND = "(Lcom/arcadedb/exception/ValidationException$Kind;";
 
   /** The reviewed constructions with no kind, as {@code class#method} relative to {@code com/arcadedb}, each with why. */
   private static final Map<String, String> ALLOWED = new TreeMap<>(Map.ofEntries(//
       Map.entry("exception/RecordVetoedException#<init>", "a listener's veto of the whole record, not a declared constraint on a value"),
+      Map.entry("database/ExistingRecordsCheck#requireSamples",
+          "a MIN, MAX or REGEXP of a TIMESERIES column that stored samples break: TimeSeriesColumnConstraints answers its reason as "
+              + "one sentence whichever of them broke, as at SaveElementStep#refuseViolation (issue #12436). A missing MANDATORY or "
+              + "NOTNULL there passes its kind"),
       Map.entry("engine/timeseries/TimeSeriesStorableRows#refused",
           "the refusal of a TIMESERIES batch: one message for every row and column constraint the batch broke"),
       Map.entry("query/sql/executor/SaveElementStep#refuseViolation",
           "a TIMESERIES column constraint: TimeSeriesColumnConstraints answers its reason as one sentence for every constraint"),
+      Map.entry("database/DocumentIndexer#checkPartitionKeyUnchanged",
+          "a change of the partition key of a partitioned type (issue #12961): the bucket selection fixes it, no constraint is declared on the property"),
+      Map.entry("serializer/BinarySerializer#checkLinkTarget",
+          "a record linking itself before it has a position (issue #11850): a limit of record creation, no constraint declared"),
       Map.entry("remote/RemoteExceptionRebuilder#<clinit>",
           "the table of names rebuilt from a message alone; both drivers rebuild a ValidationException with its kind ahead of it")));
 
@@ -64,6 +73,9 @@ class ValidationExceptionKindCensusTest {
     // the scan still reaches the authority: the property validator, which raises every declared constraint through one helper
     assertThat(withKind).as("the census no longer reaches the constructions of " + AUTHORITY + " that pass a kind")
         .containsKey("database/DocumentValidator#throwValidationException");
+    // and the one that keeps the refusal it was raised from as the cause (issue #12037): a stored value refused by a declaration
+    assertThat(withKind).as("the census no longer reaches the constructions of " + AUTHORITY + " that pass a kind and a cause")
+        .containsKey("database/ExistingRecordsCheck#requireValues");
 
     final Map<String, Set<String>> withoutKind = constructions(classes, false);
     assertThat(CompiledClasses.unreviewed(withoutKind, ALLOWED)).as("pass the ValidationException.Kind of the constraint the value "
@@ -79,7 +91,7 @@ class ValidationExceptionKindCensusTest {
    */
   private static Map<String, Set<String>> constructions(final Map<String, byte[]> classes, final boolean passingAKind) {
     final Map<String, Set<String>> sites = new TreeMap<>(CompiledClasses.callSitesOf(classes,
-        (owner, name, descriptor) -> AUTHORITY.equals(owner) && "<init>".equals(name) && WITH_KIND.equals(descriptor) == passingAKind));
+        (owner, name, descriptor) -> AUTHORITY.equals(owner) && "<init>".equals(name) && descriptor.startsWith(WITH_KIND) == passingAKind));
     sites.keySet().removeIf(site -> site.startsWith("exception/ValidationException#"));
     return sites;
   }

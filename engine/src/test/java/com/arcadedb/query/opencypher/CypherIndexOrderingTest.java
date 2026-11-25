@@ -1243,4 +1243,193 @@ class CypherIndexOrderingTest {
       }
     }
   }
+
+  /**
+   * Issue #12141: the keyset page written through a WITH, {@code MATCH (d:Doc) WHERE d.key > $after WITH d ORDER BY d.key
+   * LIMIT k RETURN d.key}, sorted the whole range where the same page written with the ORDER BY on the RETURN read the index in
+   * order and stopped at the LIMIT (#8422). The first WITH the matched rows reach is now answered from the index the same way;
+   * what follows it is planned as before.
+   */
+  @Nested
+  class Issue12141CypherWithOrderByIndexOrder extends TestHelper {
+    private static final int VERTICES = 2_000;
+    private static final int NO_KEY_VERTICES = 2;
+    private static final Pattern WITH_ROWS = Pattern.compile("\\+ WITH [^\\n]*?(\\d[\\d,]*) rows?\\)");
+
+    @Override
+    protected void beginTest() {
+      database.command("sql", "CREATE VERTEX TYPE Doc");
+      database.command("sql", "CREATE PROPERTY Doc.key STRING");
+      database.command("sql", "CREATE PROPERTY Doc.n INTEGER");
+      database.command("sql", "CREATE INDEX ON Doc (key) UNIQUE");
+      database.transaction(() -> {
+        // Inserted in reverse order, so physical order and key order are opposite
+        for (int i = VERTICES - 1; i >= 0; i--)
+          database.newVertex("Doc").set("key", key(i)).set("n", i % 7).save();
+        // Two vertices with no key: the index holds neither, a range predicate never matches them, a whole-label scan does
+        for (int i = 0; i < NO_KEY_VERTICES; i++)
+          database.newVertex("Doc").set("n", 100 + i).save();
+      });
+    }
+
+    @Test
+    void aWithPageReadsTheRangeInIndexOrder() {
+      final String query = "MATCH (d:Doc) WHERE d.key > $after WITH d ORDER BY d.key LIMIT 5 RETURN d.key AS k";
+      assertThat(column(query, Map.of("after", key(100)))).containsExactlyElementsOf(keys(101, 106));
+      // The same page through the RETURN, which #8422 answered from the index already
+      assertThat(column("MATCH (d:Doc) WHERE d.key > $after RETURN d.key AS k ORDER BY d.key LIMIT 5", Map.of("after", key(100))))
+          .containsExactlyElementsOf(keys(101, 106));
+
+      final String profile = profile(query, Map.of("after", key(100)));
+      assertThat(profile).contains("NodeIndexRangeScan").contains("index order").doesNotContain("+ ORDER BY ");
+      // The LIMIT stops the read: the WITH takes a handful of rows, not the ~1,900 of the range (main sorted all of them)
+      assertThat(withRows(profile)).isLessThan(100);
+    }
+
+    @Test
+    void keysetPaginationThroughAWithWalksTheWholeTypeInOrder() {
+      final String query = "MATCH (d:Doc) WHERE d.key > $after WITH d ORDER BY d.key LIMIT 37 RETURN d.key AS k";
+      final List<Object> all = new ArrayList<>();
+      String after = "";
+      while (true) {
+        // Run twice: the second run takes the plan from the plan cache, against the statement parsed again
+        final List<Object> page = column(query, Map.of("after", after));
+        assertThat(column(query, Map.of("after", after))).isEqualTo(page);
+        if (page.isEmpty())
+          break;
+        all.addAll(page);
+        after = (String) page.getLast();
+      }
+      assertThat(all).containsExactlyElementsOf(keys(0, VERTICES));
+    }
+
+    @Test
+    void descendingSkipAndAProjectedColumn() {
+      assertThat(column("MATCH (d:Doc) WHERE d.key < $before WITH d ORDER BY d.key DESC LIMIT 3 RETURN d.key AS k",
+          Map.of("before", key(100)))).containsExactly(key(99), key(98), key(97));
+      assertThat(column("MATCH (d:Doc) WHERE d.key > $after WITH d ORDER BY d.key SKIP 2 LIMIT 3 RETURN d.key AS k",
+          Map.of("after", key(10)))).containsExactlyElementsOf(keys(13, 16));
+      final String projected = "MATCH (d:Doc) WHERE d.key >= $from WITH d.key AS k, d.n AS n ORDER BY k LIMIT 3 RETURN k, n";
+      assertThat(column(projected, Map.of("from", key(500)))).containsExactlyElementsOf(keys(500, 503));
+
+      assertThat(profile("MATCH (d:Doc) WHERE d.key < $before WITH d ORDER BY d.key DESC LIMIT 3 RETURN d.key AS k",
+          Map.of("before", key(100)))).contains("index order, descending").doesNotContain("+ ORDER BY ");
+      assertThat(profile(projected, Map.of("from", key(500)))).contains("index order").doesNotContain("+ ORDER BY ");
+    }
+
+    @Test
+    void whatFollowsTheWithIsPlannedAsBefore() {
+      // The RETURN sorts the page the WITH took from the index, the other way
+      final String query = "MATCH (d:Doc) WHERE d.key > $after WITH d ORDER BY d.key LIMIT 3 RETURN d.key AS k ORDER BY k DESC";
+      assertThat(column(query, Map.of("after", key(10)))).containsExactly(key(13), key(12), key(11));
+      assertThat(profile(query, Map.of("after", key(10)))).contains("index order").contains("+ ORDER BY ");
+
+      // The WHERE of the WITH filters the page its LIMIT took from the index (issue #11762): keys 6, 7 and 8, of which only 7 has n = 0
+      assertThat(column("MATCH (d:Doc) WHERE d.key > $after WITH d ORDER BY d.key LIMIT 3 WHERE d.n = 0 RETURN d.key AS k",
+          Map.of("after", key(5)))).containsExactly(key(7));
+    }
+
+    @Test
+    void aWithTheIndexCannotAnswerKeepsItsSort() {
+      final Map<String, Object> after = Map.of("after", key(10));
+      // ordered by another property, aggregated, de-duplicated, or reached through a second WITH
+      final String otherProperty = "MATCH (d:Doc) WHERE d.key > $after WITH d ORDER BY d.n, d.key LIMIT 3 RETURN d.key AS k";
+      assertThat(column(otherProperty, after)).containsExactly(key(14), key(21), key(28));
+      assertThat(profile(otherProperty, after)).contains("+ ORDER BY ");
+
+      final String distinct = "MATCH (d:Doc) WHERE d.key > $after WITH DISTINCT d ORDER BY d.key LIMIT 3 RETURN d.key AS k";
+      assertThat(column(distinct, after)).containsExactlyElementsOf(keys(11, 14));
+      assertThat(profile(distinct, after)).contains("+ ORDER BY ");
+
+      final String secondWith = "MATCH (d:Doc) WHERE d.key > $after WITH d WITH d ORDER BY d.key LIMIT 3 RETURN d.key AS k";
+      assertThat(column(secondWith, after)).containsExactlyElementsOf(keys(11, 14));
+      assertThat(profile(secondWith, after)).contains("+ ORDER BY ");
+
+      final String aggregated = "MATCH (d:Doc) WHERE d.key > $after WITH d.n AS n, count(*) AS c ORDER BY n LIMIT 2 RETURN n AS k, c";
+      assertThat(column(aggregated, after)).hasSize(2);
+      assertThat(profile(aggregated, after)).contains("+ ORDER BY ");
+
+      // A SKIP with no LIMIT reads the whole range anyway: it keeps its sort
+      final String skipOnly = "MATCH (d:Doc) WHERE d.key > $after WITH d ORDER BY d.key SKIP 1985 RETURN d.key AS k";
+      assertThat(column(skipOnly, after)).containsExactlyElementsOf(keys(1996, VERTICES));
+      assertThat(profile(skipOnly, after)).contains("+ ORDER BY ");
+    }
+
+    /**
+     * A WITH over the whole label reads the index from its first key, as the RETURN form does (#8724): the vertices with no
+     * key, which the index does not hold, follow the keys ascending and precede them descending (#11701).
+     */
+    @Test
+    void aWithOverTheWholeLabelPlacesTheVerticesWithNoKey() {
+      final Map<String, Object> none = Map.of();
+      final String ascending = "MATCH (d:Doc) WITH d ORDER BY d.key LIMIT 3 RETURN d.key AS k";
+      assertThat(column(ascending, none)).containsExactlyElementsOf(keys(0, 3));
+      final String ascendingProfile = profile(ascending, none);
+      assertThat(ascendingProfile).contains("index order").doesNotContain("+ ORDER BY ");
+      assertThat(withRows(ascendingProfile)).isLessThan(100);
+
+      final String acrossTheLastKey = "MATCH (d:Doc) WITH d ORDER BY d.key SKIP 1998 LIMIT 5 RETURN d.key AS k";
+      assertThat(column(acrossTheLastKey, none)).containsExactly(key(1998), key(1999), null, null);
+      assertThat(profile(acrossTheLastKey, none)).contains("index order").doesNotContain("+ ORDER BY ");
+
+      final String descending = "MATCH (d:Doc) WITH d ORDER BY d.key DESC LIMIT 4 RETURN d.key AS k";
+      assertThat(column(descending, none)).containsExactly(null, null, key(1999), key(1998));
+      assertThat(profile(descending, none)).contains("index order, descending").doesNotContain("+ ORDER BY ");
+    }
+
+    /** The Cypher 25 ORDER BY ... LIMIT clause on its own is a WITH * that pages: it takes the index order the same way. */
+    @Test
+    void aStandaloneOrderByLimitClause() {
+      final Map<String, Object> after = Map.of("after", key(100));
+      final String query = "MATCH (d:Doc) WHERE d.key > $after ORDER BY d.key LIMIT 4 RETURN d.key AS k";
+      assertThat(column(query, after)).containsExactlyElementsOf(keys(101, 105));
+      assertThat(profile(query, after)).contains("index order").doesNotContain("+ ORDER BY ");
+    }
+
+    /** The rows reach the WITH in index order through more than one MATCH clause on the anchor. */
+    @Test
+    void aWithAfterTwoMatchClauses() {
+      final Map<String, Object> after = Map.of("after", key(100));
+      final String query = "MATCH (d:Doc) WHERE d.key > $after MATCH (d) WHERE d.n >= 5 WITH d ORDER BY d.key LIMIT 4 RETURN d.key AS k";
+      // n = i % 7: from 101 on, the keys with n >= 5 are 103 (n = 5), 104, 110 and 111
+      assertThat(column(query, after)).containsExactly(key(103), key(104), key(110), key(111));
+      assertThat(profile(query, after)).contains("index order").doesNotContain("+ ORDER BY ");
+    }
+
+    private static String key(final int i) {
+      return "k%07d".formatted(i);
+    }
+
+    private static List<Object> keys(final int from, final int to) {
+      final List<Object> keys = new ArrayList<>();
+      for (int i = from; i < to; i++)
+        keys.add(key(i));
+      return keys;
+    }
+
+    /** The column {@code k} of every row, in order. */
+    private List<Object> column(final String query, final Map<String, Object> params) {
+      final List<Object> values = new ArrayList<>();
+      try (final ResultSet rs = database.query("opencypher", query, params)) {
+        while (rs.hasNext())
+          values.add(rs.next().getProperty("k"));
+      }
+      return values;
+    }
+
+    private String profile(final String query, final Map<String, Object> params) {
+      try (final ResultSet rs = database.query("opencypher", "PROFILE " + query, params)) {
+        while (rs.hasNext())
+          rs.next();
+        return rs.getExecutionPlan().get().prettyPrint(0, 2);
+      }
+    }
+
+    /** The rows the WITH step of the profile took from the operators. */
+    private static long withRows(final String profile) {
+      final Matcher matcher = WITH_ROWS.matcher(profile);
+      assertThat(matcher.find()).as(profile).isTrue();
+      return Long.parseLong(matcher.group(1).replace(",", ""));
+    }
+  }
 }

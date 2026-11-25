@@ -49,9 +49,9 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * one that can merge partial states ({@code count}, {@code sum}, {@code avg}, {@code min}, {@code max}, not DISTINCT).
  * Otherwise {@link #create} answers {@code null} and the step aggregates on the consuming thread, as before.
  * <p>
- * Accepted trade-off, as in SQL: the partials merge in worker order, not scan order, so a {@code sum} or {@code avg} of doubles is
- * not bit-for-bit reproducible (the addition order varies), and a {@code min} or {@code max} over values that compare equal but
- * differ in type (1 and 1.0) may answer either one.
+ * The partials merge in worker order, not scan order. A {@code sum} or {@code avg} of doubles does not depend on it: their
+ * totals are exact sums, merged exactly and rounded once ({@code NumericSum}, issue #12696). Accepted trade-off, as in SQL: a
+ * {@code min} or {@code max} over values that compare equal but differ in type (1 and 1.0) may answer either one.
  * <p>
  * PROFILE: the scan and filter steps feeding the aggregation are never pulled, so only this step reports time and rows.
  * <p>

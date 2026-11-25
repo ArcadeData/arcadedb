@@ -218,6 +218,29 @@ public class IndexMetadata {
   }
 
   /**
+   * The settings of the {@code METADATA} clause in force on this definition, by key in key order: every setting this index type
+   * has with the value it holds, the defaults included, which is what {@code schema:indexes} and {@code schema:index:<name>}
+   * report. A reader wants the value in force rather than the difference from a default, since a default can change between
+   * releases. A setting with no value on this definition is left out.
+   * <p>
+   * The values are plain ones (a boolean, a number, a string, an enum as its name, a JSON object as a map), so they read the
+   * same from a result set and over HTTP.
+   */
+  public Map<String, Object> getUserSettings() {
+    final Map<String, Object> settings = new TreeMap<>();
+    for (final String key : getUserSettingKeys()) {
+      final Object value = getUserMetadataValue(key);
+      if (value instanceof Enum<?> e)
+        settings.put(key, e.name());
+      else if (value instanceof JSONObject json)
+        settings.put(key, json.toMap());
+      else if (value != null)
+        settings.put(key, value);
+    }
+    return settings;
+  }
+
+  /**
    * The keys of the {@code METADATA} clause this definition has a value for. The default is {@link #getUserMetadataKeys()};
    * override where the key space is open-ended, to name the keys of it this definition carries.
    */
@@ -455,7 +478,9 @@ public class IndexMetadata {
       geoMetadata.setTokenization(GeoIndexMetadata.DEFAULT_TOKENIZATION);
       // re-tokenized from every record under the current reading of a shape (issue #10210)
       geoMetadata.setPlanar(true);
-    }
+    } else if (metadata instanceof FullTextIndexMetadata fullTextMetadata)
+      // every posting is written again, each property with its own analyzer (issue #12163)
+      fullTextMetadata.setFieldAnalyzersApplied(true);
     return metadata;
   }
 }

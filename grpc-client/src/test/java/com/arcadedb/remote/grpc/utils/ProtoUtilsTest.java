@@ -18,7 +18,15 @@
  */
 package com.arcadedb.remote.grpc.utils;
 
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.DatabaseRID;
+import com.arcadedb.database.Document;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.server.grpc.GrpcDecimal;
 import com.arcadedb.server.grpc.GrpcEmbedded;
 import com.arcadedb.server.grpc.GrpcLink;
@@ -141,6 +149,30 @@ class ProtoUtilsTest {
 
     assertThat(value.hasLinkValue()).isTrue();
     assertThat(value.getLinkValue().getRid()).isEqualTo("#10:5");
+  }
+
+  @Test
+  void toGrpcValueRecordWithIdentityIsALink() {
+    // Issue #12197: a persistent record set as a value matched no branch and was sent as its toString()
+    final GrpcValue value = ProtoUtils.toGrpcValue(new IdentifiableStub(new RID("#10:5")));
+
+    assertThat(value.getKindCase()).isEqualTo(GrpcValue.KindCase.LINK_VALUE);
+    assertThat(value.getLinkValue().getRid()).isEqualTo("#10:5");
+    assertThat(value.getLogicalType()).isEqualTo("rid");
+    // read back as a RID, the encoding of a link (issue #12195)
+    assertThat(ProtoUtils.fromGrpcValue(value)).isEqualTo(new RID(10, 5));
+  }
+
+  @Test
+  void toGrpcValueRecordsInsideACollectionAndAMapAreLinks() {
+    // Issue #12197: the nested values go through the same encoder
+    final GrpcValue list = ProtoUtils.toGrpcValue(List.of(new IdentifiableStub(new RID("#10:5"))));
+    assertThat(list.getListValue().getValues(0).getKindCase()).isEqualTo(GrpcValue.KindCase.LINK_VALUE);
+    assertThat(list.getListValue().getValues(0).getLinkValue().getRid()).isEqualTo("#10:5");
+
+    final GrpcValue map = ProtoUtils.toGrpcValue(Map.of("main", new IdentifiableStub(new RID("#10:6"))));
+    assertThat(map.getMapValue().getEntriesMap().get("main").getKindCase()).isEqualTo(GrpcValue.KindCase.LINK_VALUE);
+    assertThat(map.getMapValue().getEntriesMap().get("main").getLinkValue().getRid()).isEqualTo("#10:6");
   }
 
   @Test
@@ -399,7 +431,56 @@ class ProtoUtilsTest {
         .build();
 
     final Object result = ProtoUtils.fromGrpcValue(value);
-    assertThat(result).isEqualTo("#10:5");
+    // a RID, not its text: the embedded engine answers a link as one (issue #12195)
+    assertThat(result).isEqualTo(new RID(10, 5));
+  }
+
+  @Test
+  void fromGrpcValueListAndMapOfLinksAreRids() {
+    // a list and a map of links, as a record property carries them (issue #12195)
+    final GrpcValue link = GrpcValue.newBuilder().setLinkValue(GrpcLink.newBuilder().setRid("#10:5").build()).build();
+    final GrpcValue list = GrpcValue.newBuilder().setListValue(GrpcList.newBuilder().addValues(link).addValues(link).build()).build();
+    final GrpcValue map = GrpcValue.newBuilder().setMapValue(GrpcMap.newBuilder().putEntries("x", link).build()).build();
+
+    assertThat(ProtoUtils.fromGrpcValue(list)).isEqualTo(List.of(new RID(10, 5), new RID(10, 5)));
+    assertThat(ProtoUtils.fromGrpcValue(map)).isEqualTo(Map.of("x", new RID(10, 5)));
+  }
+
+  @Test
+  void fromGrpcValueBindsEveryLinkToTheGivenDatabase() {
+    // a link, a list, a map and an embedded value of links, bound to the database the caller decodes for (issue #12603)
+    final GrpcValue link = GrpcValue.newBuilder().setLinkValue(GrpcLink.newBuilder().setRid("#10:5").build()).build();
+    final GrpcValue list = GrpcValue.newBuilder().setListValue(GrpcList.newBuilder().addValues(link).build()).build();
+    final GrpcValue map = GrpcValue.newBuilder().setMapValue(GrpcMap.newBuilder().putEntries("x", link).build()).build();
+    final GrpcValue embedded = GrpcValue.newBuilder().setEmbeddedValue(GrpcEmbedded.newBuilder().putFields("y", link).build()).build();
+
+    final DatabaseFactory factory = new DatabaseFactory("./target/databases/ProtoUtilsTest12603");
+    if (factory.exists())
+      factory.open().drop();
+    final Database database = factory.create();
+    try {
+      assertBoundTo(ProtoUtils.fromGrpcValue(link, database), database);
+      assertBoundTo(((List<?>) ProtoUtils.fromGrpcValue(list, database)).getFirst(), database);
+      assertBoundTo(((Map<?, ?>) ProtoUtils.fromGrpcValue(map, database)).get("x"), database);
+      assertBoundTo(((Map<?, ?>) ProtoUtils.fromGrpcValue(embedded, database)).get("y"), database);
+
+      // without a database a link stays a plain RID
+      assertThat(ProtoUtils.fromGrpcValue(link, null).getClass()).isEqualTo(RID.class);
+    } finally {
+      database.drop();
+    }
+  }
+
+  private static void assertBoundTo(final Object value, final Database database) {
+    assertThat(value).isInstanceOf(DatabaseRID.class).isEqualTo(new RID(10, 5));
+    assertThat(((DatabaseRID) value).getBoundDatabase()).isSameAs(database);
+  }
+
+  @Test
+  void fromGrpcValueTextThatLooksLikeARidStaysText() {
+    // only a LINK_VALUE is a link: a string that merely looks like a rid is text
+    final GrpcValue value = GrpcValue.newBuilder().setStringValue("#10:5").build();
+    assertThat(ProtoUtils.fromGrpcValue(value)).isEqualTo("#10:5");
   }
 
   @Test
@@ -520,6 +601,63 @@ class ProtoUtilsTest {
     assertThat(result).isInstanceOf(LocalDateTime.class);
     assertThat((LocalDateTime) result)
         .isEqualTo(LocalDateTime.ofEpochSecond(1234567890L, 0, ZoneOffset.UTC));
+  }
+
+  /**
+   * A record reduced to what the encoder reads, its identity: a real one needs a database, and the branch under test
+   * only asks for the identity.
+   */
+  private static final class IdentifiableStub implements Identifiable {
+    private final RID rid;
+
+    private IdentifiableStub(final RID rid) {
+      this.rid = rid;
+    }
+
+    @Override
+    public RID getIdentity() {
+      return rid;
+    }
+
+    @Override
+    public Record getRecord(final boolean loadContent) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Record getRecord() {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Document asDocument() {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Document asDocument(final boolean loadContent) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Vertex asVertex() {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Vertex asVertex(final boolean loadContent) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Edge asEdge() {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Edge asEdge(final boolean loadContent) {
+      throw new UnsupportedOperationException();
+    }
   }
 
   private void assertRoundTrip(final Object original) {

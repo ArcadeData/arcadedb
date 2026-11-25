@@ -30,11 +30,25 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.function.Function;
 
 /**
  * @author Johann Sorel (Geomatys)
  */
 public abstract class AbstractSQLMethod implements SQLMethod {
+  /**
+   * The built-in methods that are pure functions of the value and arguments (#12466). Listed by name here, in one place, so that
+   * adding a method to the plan cache is a visible decision: the conversions that read the database's date and time settings
+   * ({@code asString}, {@code asDate}, {@code format}) and everything that reads the schema or the context are deliberately absent.
+   * <p>
+   * It is a list of names, so a subclass that reuses one of them inherits {@code true}: harmless, because the planner asks only the
+   * implementations the method factory registered itself ({@code DefaultSQLMethodFactory#isBuiltInDeterministic}). The census
+   * test {@code MethodCallPlanCacheIssue12466Test} pins the resulting set.
+   */
+  private static final Set<String> DETERMINISTIC = Set.of("size", "length", "tolowercase", "touppercase", "trim", "left", "right",
+      "substring", "charat", "indexof", "lastindexof", "prefix", "append", "capitalize", "first", "last", "keys", "values");
+
   private final String name;
   private final int    minParams;
   private final int    maxParams;
@@ -56,6 +70,11 @@ public abstract class AbstractSQLMethod implements SQLMethod {
   @Override
   public String getName() {
     return name;
+  }
+
+  @Override
+  public boolean isDeterministic() {
+    return DETERMINISTIC.contains(name);
   }
 
   @Override
@@ -159,6 +178,34 @@ public abstract class AbstractSQLMethod implements SQLMethod {
   }
 
   /**
+   * Parses the receiver of a numeric conversion method as the number {@code parser} reads, answering {@code null} when there is
+   * nothing to parse ({@link #numericTextOrNull}) and when the text is not a number of that width: {@code 'abc'},
+   * {@code '12abc'}, {@code '1e'}, or {@code '300'} as a byte.
+   * <p>
+   * The seven conversion methods each handed the text to {@code Integer.valueOf} and friends, and none caught the
+   * {@link NumberFormatException}: one non-numeric value in a column threw it out of the executor and aborted the whole
+   * ResultSet, although {@code asDecimal()}'s contract is "if the conversion is not possible, null is returned" (issue #12527).
+   * A receiver is data, not an argument the caller got wrong, so the value that cannot be converted is answered as null, like
+   * the blank one (#6825), and the other rows convert. One helper is what keeps the next hardening from reaching only one of
+   * the seven.
+   *
+   * @param value  the value the method was invoked on
+   * @param parser reads the trimmed text, throwing {@link NumberFormatException} for a text it cannot read
+   *
+   * @return the parsed number, or {@code null} when the value is null, blank or not a number of the width asked for
+   */
+  protected <T extends Number> T parseNumberOrNull(final Object value, final Function<String, T> parser) {
+    final String text = numericTextOrNull(value);
+    if (text == null)
+      return null;
+    try {
+      return parser.apply(text);
+    } catch (final NumberFormatException e) {
+      return null;
+    }
+  }
+
+  /**
    * Reads the receiver of a collection method ({@code join()}, {@code sort()}, {@code transform()}, ...) as a
    * {@link List}, answering {@code null} when the value is not a collection at all: {@code null}, a scalar, or a map.
    * <p>
@@ -249,11 +296,12 @@ public abstract class AbstractSQLMethod implements SQLMethod {
   }
 
   protected Object getParameterValue(final Identifiable iRecord, final String iValue) {
-    if (iValue == null) {
+    // an empty text names no field, and a lone quote is no quoted text: both used to fail with a
+    // StringIndexOutOfBoundsException, a server fault for the caller's argument (issue #12020)
+    if (iValue == null || iValue.isEmpty())
       return null;
-    }
 
-    if (iValue.charAt(0) == '\'' || iValue.charAt(0) == '"') {
+    if (iValue.length() > 1 && (iValue.charAt(0) == '\'' || iValue.charAt(0) == '"')) {
       // GET THE VALUE AS STRING
       return iValue.substring(1, iValue.length() - 1);
     }

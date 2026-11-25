@@ -33,7 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code RaftHAServer.getLivePeers()}, which substitutes the declared server list while the division cannot be read, so the
  * leader compared against a configuration it never had. Every membership change now receives a
  * {@code RaftClusterManager.CommittedConfiguration}, which only {@code readCommittedConfiguration} builds, and the behaviour is
- * pinned by {@code Issue10769MembershipChangeReadsCommittedConfigurationTest}.
+ * pinned by {@code MembershipChangeCommittedConfigurationTest}.
  * <p>
  * The census ranges over the authority (#11288): every call of the Ratis {@code setServersInCurrentConf}, the precondition
  * itself, in the compiled classes of every module ({@link CompiledClasses}), must sit in a method handed the committed

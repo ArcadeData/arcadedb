@@ -131,6 +131,69 @@ class EdgeWalkConcurrentChunkDeleteTest extends TestHelper {
     }
   }
 
+  /**
+   * Issue #12019: the walks of {@link EdgeLinkedList} that count or probe the chain without iterating it (the degree count, the
+   * containment probes, the JSON image) hopped through a resolver of their own, a raw lookup of the previous pointer, and answered
+   * the non-retryable {@link RecordNotFoundException} where the iterators resume.
+   */
+  @Test
+  void countAndContainmentWalksResumePastAChunkAConcurrentCommitDeleted() throws Exception {
+    final RID hub = buildHub();
+    final List<List<RID>> chunks = sourcesPerChunk(hub);
+    assertThat(chunks.size()).as("the hub's list must span at least three chunks").isGreaterThanOrEqualTo(3);
+
+    final List<RID> deleted = chunks.get(1);
+    final RID behindTheDeletedChunk = chunks.get(2).getFirst();
+    final int left = SOURCES - deleted.size();
+
+    database.begin();
+    try {
+      // THE WALKS START FROM AN IMAGE OF THE HEAD CHUNK READ BEFORE THE CONCURRENT COMMIT, WHICH STILL NAMES THE CHUNK IT DELETES
+      final EdgeLinkedList list = incomingList(hub);
+
+      deleteInAnotherTransaction(deleted);
+
+      assertThat(list.count()).isEqualTo(left);
+      assertThat(list.count("TRANSFERS")).isEqualTo(left);
+      final long[] counts = new long[1];
+      list.countInto(new EdgeBucketMask[] { null }, new EdgeBucketMask[] { null }, null, counts);
+      assertThat(counts[0]).isEqualTo(left);
+      assertThat(list.containsVertex(behindTheDeletedChunk, null)).isTrue();
+      assertThat(list.containsVertex(deleted.getFirst(), null)).isFalse();
+      assertThat(list.getFirstEdgeConnectedToVertex(behindTheDeletedChunk, null)).isNotNull();
+      final RID edge = list.getFirstEdgeConnectedToVertex(behindTheDeletedChunk, null);
+      assertThat(list.containsEdge(edge)).isTrue();
+      assertThat(list.toJSON().length()).isEqualTo(left);
+    } finally {
+      database.rollback();
+    }
+  }
+
+  /** Issue #12019: a count whose own chunk a concurrent commit deleted has lost its place in the chain, a conflict to retry. */
+  @Test
+  void countWhoseOwnChunkWasDeletedAnswersARetryableConflict() throws Exception {
+    final RID hub = buildHub();
+    final List<List<RID>> chunks = sourcesPerChunk(hub);
+    assertThat(chunks.size()).as("the hub's list must span at least four chunks").isGreaterThanOrEqualTo(4);
+
+    final List<RID> deleted = new ArrayList<>(chunks.get(1));
+    deleted.addAll(chunks.get(2));
+
+    database.begin();
+    try {
+      // A LIST WHOSE WALK STARTS ON THE SECOND CHUNK: THE CONCURRENT COMMIT EMPTIES IT AND THE THIRD, SO NEITHER IMAGE LEADS ANYWHERE
+      final EdgeSegment headChunk = (EdgeSegment) database.lookupByRID(incomingList(hub).getChainHeadRID(), true);
+      final EdgeLinkedList fromSecond = new EdgeLinkedList(hub.asVertex(true), Vertex.DIRECTION.IN,
+          (EdgeSegment) database.lookupByRID(headChunk.getPreviousRID(), true));
+
+      deleteInAnotherTransaction(deleted);
+
+      assertThatThrownBy(fromSecond::count).isInstanceOf(ConcurrentModificationException.class);
+    } finally {
+      database.rollback();
+    }
+  }
+
   @Test
   void aDanglingChainPointerIsStillReportedAsSuch() {
     final RID hub = buildHub();
@@ -150,7 +213,16 @@ class EdgeWalkConcurrentChunkDeleteTest extends TestHelper {
     database.transaction(() -> {
       final EdgeSegment head = (EdgeSegment) database.lookupByRID(((VertexInternal) hub.asVertex(true)).getInEdgesHeadChunk(), true);
       assertThatThrownBy(head::getPrevious).isInstanceOf(RecordNotFoundException.class);
+      // THE COUNT AND CONTAINMENT WALKS REPORT IT THE SAME WAY (#12019)
+      assertThatThrownBy(() -> incomingList(hub).count()).isInstanceOf(RecordNotFoundException.class);
     });
+  }
+
+  /** The hub's incoming list, its head chunk read now. */
+  private EdgeLinkedList incomingList(final RID hub) {
+    final Vertex vertex = hub.asVertex(true);
+    return new EdgeLinkedList(vertex, Vertex.DIRECTION.IN,
+        (EdgeSegment) database.lookupByRID(((VertexInternal) vertex).getInEdgesHeadChunk(), true));
   }
 
   private RID buildHub() {

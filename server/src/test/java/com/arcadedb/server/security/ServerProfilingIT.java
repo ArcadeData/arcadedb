@@ -455,13 +455,14 @@ class ServerProfilingIT {
       expectedSecurityException(() -> database.newVertex("Vertex1").save());
       expectedSecurityException(() -> database.newDocument("Document1").save());
 
+      // THE RECORD API IS NOT A QUERY: THE QUOTA CAPS THE ROWS A QUERY ANSWERS, NOT THE RECORDS A SCAN READS (ISSUE #12888)
       int count = 0;
       for (final Iterator<Record> iter = database.iterateType("Document1", true); iter.hasNext(); ) {
         iter.next();
         ++count;
       }
 
-      assertThat(count).isEqualTo(10);
+      assertThat(count).isEqualTo(15);
 
       count = 0;
       for (final ResultSet iter = database.query("sql", "select from Document1"); iter.hasNext(); ) {
@@ -470,6 +471,11 @@ class ServerProfilingIT {
       }
 
       assertThat(count).isEqualTo(10);
+
+      // THE QUOTA CAPS THE ROWS, NOT WHAT AN AGGREGATE READS: ONE ROW, COUNTED OVER EVERY RECORD
+      try (final ResultSet rs = database.query("sql", "select count(*) as c from Document1 where @rid is not null")) {
+        assertThat(rs.next().<Number>getProperty("c").intValue()).isEqualTo(15);
+      }
 
       // THE CAP IS ALBERT'S, NOT THE STATEMENT'S: ROOT RUNS THE SAME TEXT, OUT OF THE SAME STATEMENT CACHE, AND READS ALL 15
       setCurrentUser("root", database);

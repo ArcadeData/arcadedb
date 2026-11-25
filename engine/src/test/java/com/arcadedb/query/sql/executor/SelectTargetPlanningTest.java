@@ -24,9 +24,12 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.event.AfterRecordReadListener;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.index.IndexException;
+import com.arcadedb.query.ParallelScanProducerPool;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.parser.FromItem;
 import com.arcadedb.query.sql.parser.SelectStatement;
@@ -44,6 +47,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -102,6 +108,64 @@ class SelectTargetPlanningTest extends TestHelper {
 
       final Set<RID> returned = collectRids(result);
       assertThat(returned).containsExactly(seeds.getFirst());
+    });
+  }
+
+  /**
+   * Issue #11767: a remote driver binds a RID as its string (JSON and gRPC string values), and a list of them is the target it
+   * names, as a single bound RID string already was. It was refused with "Cannot use collection as target".
+   */
+  @Test
+  void selectFromBoundCollectionOfRidStrings() {
+    database.transaction(() -> {
+      final List<RID> seeds = createChain();
+
+      final ResultSet result = database.query("sql", "SELECT FROM :seeds",
+          Map.of("seeds", List.of(seeds.get(0).toString(), seeds.get(2).toString())));
+
+      assertThat(collectRids(result)).containsExactlyInAnyOrder(seeds.get(0), seeds.get(2));
+    });
+  }
+
+  /** Issue #11767: the TRAVERSE planner takes the same bound list of RID strings. */
+  @Test
+  void traverseFromBoundCollectionOfRidStrings() {
+    database.transaction(() -> {
+      final List<RID> seeds = createChain();
+
+      final ResultSet result = database.query("sql", "SELECT FROM (TRAVERSE out('" + EDGE + "') FROM :seeds MAXDEPTH 1)",
+          Map.of("seeds", List.of(seeds.get(1).toString())));
+
+      assertThat(collectRids(result)).containsExactlyInAnyOrder(seeds.get(1), seeds.get(2));
+    });
+  }
+
+  /** Issue #11767: a string in the list that is not a RID is still refused, as any other non-record element is. */
+  @Test
+  void aBoundCollectionWithAStringThatIsNotARidIsStillRefused() {
+    database.transaction(() -> {
+      final List<RID> seeds = createChain();
+
+      assertThatThrownBy(() -> database.query("sql", "SELECT FROM :seeds",
+          Map.of("seeds", List.of(seeds.getFirst().toString(), VERTEX))).stream().count())
+          .isInstanceOf(CommandExecutionException.class).hasMessageContaining("Cannot use collection as target");
+    });
+  }
+
+  /**
+   * Issue #11767: a string that passes the RID shape check but does not parse ("#1:2-3") is refused as a collection target by the
+   * SELECT and the TRAVERSE planner, rather than escaping as a NumberFormatException.
+   */
+  @Test
+  void aBoundCollectionWithAMalformedRidStringIsRefused() {
+    database.transaction(() -> {
+      final List<RID> seeds = createChain();
+      final Map<String, Object> params = Map.of("seeds", List.of(seeds.getFirst().toString(), "#1:2-3"));
+
+      assertThatThrownBy(() -> database.query("sql", "SELECT FROM :seeds", params).stream().count())
+          .isInstanceOf(CommandExecutionException.class).hasMessageContaining("Cannot use collection as target");
+      assertThatThrownBy(() -> database.query("sql", "TRAVERSE out('" + EDGE + "') FROM :seeds", params).stream().count())
+          .isInstanceOf(CommandExecutionException.class).hasMessageContaining("Cannot use collection as target");
     });
   }
 
@@ -701,13 +765,144 @@ class SelectTargetPlanningTest extends TestHelper {
     inner.setParent(outer);
     assertThat(ParallelTypeScan.isAllowed(inner)).as("a FROM-subquery or a LET of the whole statement: no row yet").isTrue();
 
-    outer.setVariable("current", new ResultInternal());
+    outer.setVariable("current", new ResultInternal(Map.of("n", 1)));
     assertThat(ParallelTypeScan.isAllowed(inner)).as("run once per row of the enclosing scan").isFalse();
 
     final BasicCommandContext deeper = new BasicCommandContext();
     deeper.setDatabase(db);
     deeper.setParent(inner);
     assertThat(ParallelTypeScan.isAllowed(deeper)).as("a row anywhere up the chain").isFalse();
+
+    // A bare row between the subquery and the real row (a SELECT without a target nested in a per-row subquery) hides nothing
+    inner.setVariable("current", new ResultInternal(db));
+    assertThat(ParallelTypeScan.isAllowed(deeper)).as("a real row above a bare one").isFalse();
+  }
+
+  // ---- #12537: a subquery under a SELECT without a target scans in parallel ----
+  /*
+   * Issue #12537: a SELECT without a target runs its projection on a bare row (EmptyDataGeneratorStep), which it binds as
+   * {@code current}. Since #10609 any {@code current} up the chain made a subquery scan on one thread, so the filter of
+   * {@code SELECT expand(vector.neighbors(..., { filter: (SELECT @rid FROM T WHERE ...).@rid }))} lost the parallel scan a
+   * standalone query gets, about 20 ms per query on 100k records. The bare row holds nothing a worker could read concurrently.
+   */
+
+  /** Regression test for issue #12537. */
+  @Test
+  void aStatementUnderTheBareRowOfASelectWithoutTargetMayScanInParallel() {
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final BasicCommandContext outer = new BasicCommandContext();
+    outer.setDatabase(db);
+
+    // THE ROW THE ENGINE ITSELF GIVES A SELECT WITHOUT A TARGET, BOUND AS `current` BY THE STEP THAT PRODUCES IT
+    final EmptyDataGeneratorStep step = new EmptyDataGeneratorStep(1, outer);
+    final Result bare = step.syncPull(outer, 1).next();
+    assertThat(outer.getVariable("current")).as("the step binds its row as current").isSameAs(bare);
+
+    final BasicCommandContext inner = new BasicCommandContext();
+    inner.setDatabase(db);
+    inner.setParent(outer);
+    assertThat(ParallelTypeScan.isAllowed(inner)).as("a subquery in the projection of a SELECT without a target").isTrue();
+
+    ((ResultInternal) bare).setProperty("n", 1);
+    assertThat(ParallelTypeScan.isAllowed(inner)).as("a row that holds a value is a real row").isFalse();
+
+    database.getSchema().createDocumentType("Row12537");
+    outer.setVariable("current", new ResultInternal(database.newDocument("Row12537")));
+    assertThat(ParallelTypeScan.isAllowed(inner)).as("a row that holds a record is a real row").isFalse();
+  }
+
+  /**
+   * Regression test for issue #12537: the filter subquery of {@code vector.neighbors}, in the projection of a SELECT without a
+   * target, scans in parallel and answers the same neighbours as its LET form. Which threads scan is observed by reading the
+   * records of the type from a read listener: a parallel scan reads them on the threads of the producer pool, a sequential
+   * one on the caller's thread only.
+   */
+  @Test
+  void aVectorNeighborsFilterSubqueryUnderASelectWithoutTargetScansInParallelAndAnswersAsItsLetForm() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Doc12537 BUCKETS 4");
+      database.command("sql", "CREATE PROPERTY Doc12537.embedding ARRAY_OF_FLOATS");
+      database.command("sql", "CREATE INDEX ON Doc12537 (embedding) LSM_VECTOR METADATA { dimensions: 4, similarity: 'COSINE' }");
+    });
+    database.transaction(() -> {
+      for (int i = 0; i < ROWS; i++)
+        database.newDocument("Doc12537").set("grp", i % 100)
+            .set("embedding", new float[] { i % 7 + 1, i % 3 + 1, i % 5 + 1, i % 11 + 1 }).save();
+    });
+
+    // The consumer of a parallel scan scans itself the units no worker had taken when it got there (#8594), so a scan that is parallel
+    // may still be read on the caller's thread alone. The caller therefore cedes: its first read of the type, until a producer has
+    // read one, waits for that producer, so a parallel scan is always seen on a producer thread and a sequential one never is.
+    final AtomicLong producerReads = new AtomicLong();
+    final AtomicBoolean patient = new AtomicBoolean(true);
+    final AfterRecordReadListener listener = record -> {
+      if (record instanceof Document document && "Doc12537".equals(document.getTypeName())) {
+        if (Thread.currentThread() instanceof ParallelScanProducerPool.ProducerThread)
+          producerReads.incrementAndGet();
+        else if (producerReads.get() == 0 && patient.get())
+          awaitAProducerRead(producerReads, patient);
+      }
+      return record;
+    };
+    database.getEvents().registerListener(listener);
+    try {
+      final float[] vector = { 1.0f, 2.0f, 3.0f, 1.0f };
+      final Set<RID> inScope = new HashSet<>();
+      try (final ResultSet rs = database.query("sql", "SELECT @rid FROM Doc12537 WHERE grp < 5")) {
+        rs.forEachRemaining(r -> inScope.add(r.getProperty("@rid")));
+      }
+      assertThat(inScope).hasSize(ROWS / 20);
+      assertThat(producerReads.getAndSet(0)).as("a standalone scan of the type must run in parallel, or this test proves nothing")
+          .isPositive();
+
+      final Set<RID> filtered = neighbours12537("""
+          SELECT expand(`vector.neighbors`('Doc12537[embedding]', ?, 20, { filter: (SELECT @rid FROM Doc12537 WHERE grp < 5).@rid }))""",
+          vector);
+      assertThat(producerReads.getAndSet(0)).as("the filter subquery under the bare row of a SELECT without a target").isPositive();
+
+      final Set<RID> viaLet = neighbours12537("""
+          SELECT expand(`vector.neighbors`('Doc12537[embedding]', ?, 20, { filter: $f.@rid }))
+          LET $f = (SELECT @rid FROM Doc12537 WHERE grp < 5)""", vector);
+      assertThat(producerReads.getAndSet(0)).as("the same subquery bound by a LET of the whole statement").isPositive();
+
+      assertThat(filtered).hasSize(20).isEqualTo(viaLet);
+      assertThat(inScope).containsAll(filtered);
+
+      try (final ResultSet rs = database.query("sql", "SELECT (SELECT count() AS c FROM Doc12537 WHERE grp < 5)[0].c AS c")) {
+        assertThat(rs.next().<Long>getProperty("c")).isEqualTo((long) inScope.size());
+      }
+      assertThat(producerReads.getAndSet(0)).as("a subquery in the projection of a SELECT without a target").isPositive();
+    } finally {
+      database.getEvents().unregisterListener(listener);
+    }
+  }
+
+  /**
+   * Waits for a producer thread to read a record. The bound is a hang detector, not a latency bound: it expires only when no
+   * producer reads at all (a sequential scan), and then the caller stops waiting for the rest of the test so it fails fast.
+   */
+  private static void awaitAProducerRead(final AtomicLong producerReads, final AtomicBoolean patient) {
+    final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+    try {
+      while (producerReads.get() == 0) {
+        if (System.nanoTime() > deadline) {
+          patient.set(false);
+          return;
+        }
+        Thread.sleep(1);
+      }
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      patient.set(false);
+    }
+  }
+
+  private Set<RID> neighbours12537(final String sql, final float[] vector) {
+    final Set<RID> rids = new HashSet<>();
+    try (final ResultSet rs = database.query("sql", sql, vector)) {
+      rs.forEachRemaining(r -> rids.add(r.getIdentity().orElseThrow()));
+    }
+    return rids;
   }
 
   // ---- #10655: a filtered scan reuses a rejected candidate ----

@@ -27,7 +27,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Regression tests for a gap CodeRabbit found reviewing #8105: {@code CypherSemanticValidator.checkExpressionScope}
+ * Regression tests for a gap CodeRabbit found reviewing #8105: {@code VariableScopeValidator.checkExpressionScope}
  * had no branch for {@code ReduceExpression} or {@code AllReduceExpression}, so a variable dropped from scope (or
  * never bound) referenced inside {@code reduce()}/{@code allReduce()} was silently accepted anywhere the surrounding
  * expression was scope-checked - {@code RETURN}, {@code WITH}, and now also a {@code FOREACH} list expression since
