@@ -294,7 +294,7 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
             // Track fetch source for metrics
             lsmIndex.metrics.incrementVectorFetchFromGraph();
 
-            cache(vectorId, vector);
+            cache(vectorId, vector, true);
 
             return vector;
           }
@@ -322,7 +322,7 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
           // Cache the result. The cache has a fixed capacity and evicts on collision, so it cannot grow
           // past its budget (issue #3144) and it adapts to the working set instead of freezing on the
           // first vectors loaded (issue #5412).
-          cache(vectorId, result);
+          cache(vectorId, result, true);
 
           return result;
         }
@@ -347,6 +347,14 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
     if (rid == null)
       return deletedSentinelVector;
 
+    // Whether what the record is about to answer may be kept in the index-scoped cache under this id (issue #13396): asked
+    // BEFORE the read, now that the id has been seen live, since a commit concluding between the read and the question would
+    // pass it. A record read is not keyed by the id, the way an entry of the index pages is: it answers the version the record
+    // holds as the reader sees it, which can be older than the one this id stands for. That read still answers the search
+    // that made it, as it always did; kept in the cache, it would score this id by the older vector for every later search
+    // until the next rebuild cleared the cache. See LSMVectorIndex.readsCommittedStateOf for the two reads concerned.
+    final boolean shareable = isShareableRecordRead(rid);
+
     try {
       // Where the record lies on its page first (issue #11298): two lookups, a copy of the record and a copy of the
       // property per vector otherwise. Only a usable vector is taken from there, and never the calling transaction's own
@@ -362,7 +370,7 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
           final VectorFloat<?> result = vts.createFloatVector(inPlace);
           lsmIndex.metrics.incrementVectorFetchFromDocuments();
           if (vectorCache != null || searchCache != null)
-            cache(vectorId, result);
+            cache(vectorId, result, shareable);
           return result;
         }
       }
@@ -417,7 +425,7 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
       // transaction's own view of its own write is not this method's business to withhold - it simply does not
       // become everybody else's.
       if ((vectorCache != null || searchCache != null) && !isWrittenByCallingTransaction(rid))
-        cache(vectorId, result);
+        cache(vectorId, result, shareable);
 
       return result;
 
@@ -432,13 +440,25 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
     }
   }
 
-  private void cache(final int vectorId, final VectorFloat<?> vector) {
+  /**
+   * Caches what was read for {@code vectorId}: in the build's own cache always, in the index-scoped search cache only when
+   * {@code shareable}, see {@link #isShareableRecordRead}.
+   */
+  private void cache(final int vectorId, final VectorFloat<?> vector, final boolean shareable) {
     if (buildVectorsReleased)
       return;
     if (vectorCache != null)
       vectorCache.put(vectorId, vector);
-    else if (searchCache != null)
+    else if (searchCache != null && shareable)
       searchCache.put(vectorId, vector);
+  }
+
+  /**
+   * Whether a read of the record {@code rid}, about to start, may be kept in the index-scoped search cache (issue #13396). Always
+   * true for a build, whose cache is its own and ends with it.
+   */
+  private boolean isShareableRecordRead(final RID rid) {
+    return searchCache == null || lsmIndex == null || lsmIndex.readsCommittedStateOf(rid);
   }
 
   /**

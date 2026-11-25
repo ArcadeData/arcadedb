@@ -933,6 +933,15 @@ public class TransactionContext implements Transaction {
     deletedRecordsInTx.forEach(target::add);
   }
 
+  /**
+   * Whether this transaction keeps a copy of {@code rid} of its own, written or read, which a read of the record through it answers
+   * instead of the newest committed state (issue #13396). Unlike {@link #getRecordFromCache(RID)} it records no read.
+   */
+  public boolean holdsRecordCopy(final RID rid) {
+    return modifiedRecordsCache.containsKey(rid) || immutableRecordsCache.containsKey(rid) || (updatedRecords != null
+        && updatedRecords.containsKey(rid));
+  }
+
   public Record getRecordFromCache(final RID rid) {
     Record rec = modifiedRecordsCache.get(rid);
     if (rec != null) {

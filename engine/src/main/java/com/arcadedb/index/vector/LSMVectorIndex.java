@@ -39,6 +39,7 @@ import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.Component;
 import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PageManager;
@@ -12127,6 +12128,36 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   public boolean isPutByCommitInFlight(final RID rid) {
     return bulkPutsInFlight.get() > 0 || putsInFlight.containsKey(rid);
+  }
+
+  /**
+   * Whether a read of the record {@code rid}, about to be made by the calling thread, reads the state of the record a vector id
+   * of it stands for, so that what it reads may be kept in the index-scoped search cache under that id (issue #13396). Asked
+   * BEFORE the read, by a caller that has just seen the id live. Two reads do not:
+   * <ul>
+   * <li>one of a record whose vector a commit that has not concluded put: the id is live from the commit's first phase, the
+   * record page is published in its second, so the read can find the version before. Concluded, its pages are published (or its
+   * vector taken back, the id with it), and a read that starts after that finds the version the id stands for, or a later one
+   * whose commit has already tombstoned the id;</li>
+   * <li>one through a transaction that holds the record's page or a copy of the record: the page a transaction wrote, or pinned
+   * under {@code REPEATABLE_READ}, is its own image, which hides what other transactions commit there afterwards (issue #12644),
+   * so a search inside a transaction that wrote a record of its own next to the record reads the record as it was then.</li>
+   * </ul>
+   * The read still answers the search that makes it: only the cache, shared by every later search, is denied it.
+   */
+  boolean readsCommittedStateOf(final RID rid) {
+    if (isPutByCommitInFlight(rid))
+      return false;
+    final DatabaseInternal database = getDatabase();
+    final TransactionContext transaction = database.getTransactionIfExists();
+    if (transaction == null || !transaction.isActive())
+      return true;
+    if (transaction.holdsRecordCopy(rid))
+      return false;
+    if (!(database.getSchema().getBucketByIdIfExists(rid.getBucketId()) instanceof LocalBucket bucket))
+      return false;
+    return transaction.getPinnedPage(new PageId(database, bucket.getFileId(), (int) (rid.getPosition() / bucket.getMaxRecordsInPage())))
+        == null;
   }
 
   /** Marks {@code rid} as put by a commit in flight, before its vector becomes visible. See {@link #isPutByCommitInFlight}. */
