@@ -188,6 +188,80 @@ class VertexEdgeListHeadUpdateTest extends TestHelper {
     assertThat(rid.asVertex().getString("uuid")).isEqualTo("u1");
   }
 
+  /**
+   * Two copies of one vertex taken before either is saved: the first renames it, the second only takes the first edge. The second
+   * replaces the first in the transaction, so the commit writes the stored name: the index has to follow it, not keep the rename.
+   */
+  @Test
+  void aHeadOnlyWriteThatReplacesAQueuedCopyKeepsTheIndexInStepWithTheRecord() {
+    createSchema();
+    final RID[] holder = createTwoVertices();
+
+    database.transaction(() -> {
+      final MutableVertex renamed = holder[0].asVertex().modify();
+      final MutableVertex linked = holder[0].asVertex().modify();
+      assertThat(linked).isNotSameAs(renamed);
+      renamed.set("name", "renamed").save();
+      // the head write of the graph engine, on the second copy (newEdge() would take the copy the transaction holds)
+      linked.setOutEdgesHeadChunk(new RID(9, 123L));
+      assertThat(linked.arePropertiesLoaded()).isFalse();
+      ((DatabaseInternal) database).updateRecordWithoutEvents(linked);
+    });
+
+    assertIndexAgreesWithRecord(holder[0]);
+    assertThat(((VertexInternal) holder[0].asVertex()).peekOutEdgesHeadChunk()).isEqualTo(new RID(9, 123L));
+
+    // the head was made up for the test: take it back, so the integrity check that ends it finds a vertex with no edge list
+    database.transaction(() -> {
+      final MutableVertex restored = holder[0].asVertex().modify();
+      restored.setOutEdgesHeadChunk(null);
+      ((DatabaseInternal) database).updateRecordWithoutEvents(restored);
+    });
+  }
+
+  /**
+   * A reload gives a queued vertex back the stored content while the index already holds the rename an earlier save brought it to.
+   * The first edge taken after it is no head-only write: the index has to be brought back to what the commit writes.
+   */
+  @Test
+  void aHeadOnlyWriteAfterAReloadKeepsTheIndexInStepWithTheRecord() {
+    createSchema();
+    final RID[] holder = createTwoVertices();
+
+    database.transaction(() -> {
+      final MutableVertex vertex = holder[0].asVertex().modify();
+      vertex.set("name", "renamed").save();
+      vertex.reload();
+      assertThat(vertex.arePropertiesLoaded()).isFalse();
+      vertex.newEdge("LINKS", holder[1]);
+    });
+
+    assertIndexAgreesWithRecord(holder[0]);
+    assertThat(holder[0].asVertex().countEdges(Vertex.DIRECTION.OUT, "LINKS")).isEqualTo(1);
+  }
+
+  private RID[] createTwoVertices() {
+    final RID[] holder = new RID[2];
+    database.transaction(() -> {
+      holder[0] = database.newVertex("Entity").set("uuid", "u1").set("name", "original").save().getIdentity();
+      holder[1] = database.newVertex("Entity").set("uuid", "u2").set("name", "other").save().getIdentity();
+    });
+    return holder;
+  }
+
+  private void assertIndexAgreesWithRecord(final RID rid) {
+    final String stored = rid.asVertex().getString("name");
+    for (final String name : new String[] { "original", "renamed" }) {
+      final List<RID> found = new ArrayList<>();
+      for (final var cursor = database.lookupByKey("Entity", "name", name); cursor.hasNext(); )
+        found.add(cursor.next().getIdentity());
+      if (name.equals(stored))
+        assertThat(found).as("index entries for the stored name '%s'", name).containsExactly(rid);
+      else
+        assertThat(found).as("index entries for '%s', which the record does not hold (it holds '%s')", name, stored).isEmpty();
+    }
+  }
+
   @Test
   void aVertexWhoseStoredPropertyBreaksALaterConstraintStillTakesItsFirstEdge() {
     createSchema();
