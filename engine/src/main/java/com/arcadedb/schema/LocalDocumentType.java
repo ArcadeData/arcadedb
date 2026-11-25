@@ -1650,8 +1650,14 @@ public class LocalDocumentType implements DocumentType {
       // The OF type is refused BEFORE the property is built, for the same reason the construction below stays after the checks: the
       // constructor registers the name in the dictionary, a commit of its own that a refusal after it leaves behind. On a Raft leader
       // that commit is a page version no other node has, and the refused statement was quarantining the leader (issue #12958)
-      if (ofType != null)
-        LocalProperty.resolveOfType(schema, name, propertyName, propertyType, ofType);
+      final String resolvedOfType = ofType != null ? LocalProperty.resolveOfType(schema, name, propertyName, propertyType, ofType) : null;
+
+      // ...and the other direction: a type below that declares the name with another type (issue #12732)
+      final Property otherKind = findDeclarationOfAnotherKind(propertyName, propertyType, resolvedOfType, null);
+      if (otherKind != null)
+        throw new AlreadyExistsException(AlreadyExistsException.Kind.PROPERTY,
+            "Cannot create the property '" + propertyName + "' in type '" + name + "' as " + describeKind(propertyType, resolvedOfType)
+                + otherKindReason(otherKind));
 
       // The construction stays HERE, after the checks and inside the callback, although the constructor reaches
       // Dictionary.getIdByName(name, true) - which, for a name the dictionary has not seen, opens and commits a
@@ -1738,8 +1744,27 @@ public class LocalDocumentType implements DocumentType {
       if (p.getType().equals(propertyType) && Objects.equals(p.getOfType(), ofType))
         return p;
 
-      // DIFFERENT TYPE: DROP THE PROPERTY AND CREATE A NEW ONE
-      dropProperty(propertyName);
+      // DIFFERENT TYPE: DROP THE PROPERTY AND CREATE A NEW ONE, in one frame. The replacement is checked against the rest of the
+      // hierarchy BEFORE the drop (issue #12732): refused after it, the call left the type without the property it had
+      checkForSchemaMutation();
+      return recordFileChanges(() -> {
+        // read again under the lock: a concurrent call may have replaced it since
+        final Property current = getPolymorphicPropertyIfExists(propertyName);
+        if (current == null)
+          return createProperty(propertyName, propertyType, ofType);
+        if (current.getType().equals(propertyType) && Objects.equals(current.getOfType(), ofType))
+          return current;
+
+        final String resolvedOfType = ofType != null ? LocalProperty.resolveOfType(schema, name, propertyName, propertyType, ofType) : null;
+        final Property otherKind = findDeclarationOfAnotherKind(propertyName, propertyType, resolvedOfType, current);
+        if (otherKind != null)
+          throw new AlreadyExistsException(AlreadyExistsException.Kind.PROPERTY,
+              "Cannot replace the property '" + propertyName + "' in type '" + name + "' with one of type " + describeKind(propertyType,
+                  resolvedOfType) + otherKindReason(otherKind));
+
+        dropProperty(propertyName);
+        return createProperty(propertyName, propertyType, ofType);
+      });
     }
     return createProperty(propertyName, propertyType, ofType);
   }
@@ -1779,20 +1804,143 @@ public class LocalDocumentType implements DocumentType {
   }
 
   private void collectSubTypeIndexesOnProperty(final String propertyName, final List<TypeIndex> result) {
+    collectSubTypeIndexesOnProperty(this, properties.get(propertyName), propertyName, result);
+  }
+
+  private void collectSubTypeIndexesOnProperty(final LocalDocumentType changed, final Property changedDeclaration, final String propertyName,
+      final List<TypeIndex> result) {
     for (final LocalDocumentType subType : subTypes) {
-      if (subType.getPropertyIfExists(propertyName) != null)
-        // addSuperType lets a subtype declare its own property under a name a super type already uses - a
-        // conflict it only warns about, never refuses. From here down, propertyName resolves to THIS subtype's
+      if (subType.getPropertyIfExists(propertyName) != null || subType.keepsDeclarationOfTheSameKind(propertyName, changed, changedDeclaration,
+          new HashSet<>()))
+        // addSuperType lets a subtype declare its own property under a name a super type already uses - with the
+        // same type, an overlap it only warns about (another type is refused, issue #12732). From here down, propertyName resolves to THIS subtype's
         // own, independently-declared property, not the one above being renamed or dropped: an index in this
-        // branch belongs to that shadowing property, so it is not a reason to refuse the change higher up.
+        // branch belongs to that shadowing property, so it is not a reason to refuse the change higher up. The same
+        // for a declaration OF THE SAME KIND the subtype reaches through another super type (issue #12732): it keeps
+        // it whatever happens to the one above, and its index keys stay what they are, so a refused CREATE PROPERTY
+        // could not even be undone. A declaration of another kind (a database written before #12732) does not count:
+        // the index would be left keyed by the type of the declaration that went.
         continue;
 
       for (final TypeIndex index : subType.getAllIndexes(false))
         if (index.getPropertyNames().contains(propertyName) && !result.contains(index))
           result.add(index);
 
-      subType.collectSubTypeIndexesOnProperty(propertyName, result);
+      subType.collectSubTypeIndexesOnProperty(changed, changedDeclaration, propertyName, result);
     }
+  }
+
+  private static final int KEPT_SAME_KIND  = 1;
+  private static final int KEPT_OTHER_KIND = 2;
+
+  /**
+   * Whether this type keeps a declaration of {@code propertyName} once {@code declaration}, the one {@code excluded} is changing, is
+   * gone, and every declaration it keeps has its type and OF type ({@code false} when there is no declaration to compare with). Every
+   * kept declaration has to agree, not only one: which of them the type resolves the name to depends on the order of its super types,
+   * and a database written before #12732 can hold some of another kind. Each type is visited once, so a lattice of diamonds costs its
+   * size.
+   */
+  private boolean keepsDeclarationOfTheSameKind(final String propertyName, final LocalDocumentType excluded, final Property declaration,
+      final Set<LocalDocumentType> visited) {
+    return declaration != null && keptDeclarationKinds(propertyName, excluded, declaration, visited) == KEPT_SAME_KIND;
+  }
+
+  /** The kinds of the declarations of {@code propertyName} the super types of this type keep without {@code excluded}, as flags. */
+  private int keptDeclarationKinds(final String propertyName, final LocalDocumentType excluded, final Property declaration,
+      final Set<LocalDocumentType> visited) {
+    if (!visited.add(this))
+      return 0;
+    int kinds = 0;
+    for (final LocalDocumentType superType : superTypes) {
+      // the declaration that goes is passed over, not the types above its owner: what they declare is what the name resolves to
+      // through that path once it is gone
+      final Property declared = superType == excluded ? null : superType.properties.get(propertyName);
+      if (declared != null)
+        kinds |= isOfKind(declared, declaration.getType(), declaration.getOfType()) ? KEPT_SAME_KIND : KEPT_OTHER_KIND;
+      else
+        kinds |= superType.keptDeclarationKinds(propertyName, excluded, declaration, visited);
+    }
+    return kinds;
+  }
+
+  /**
+   * A declaration of {@code propertyName} that a record of this type, or of a type below it, sees and that does not mean what a
+   * declaration of {@code type} and {@code ofType} means, or {@code null} (issue #12732). One name with two types in a hierarchy
+   * has two meanings: an index on the upper declaration is keyed by its type, and the rows of the type below are written into it
+   * under keys of the other one, so lookups miss them, and two encodings that cannot be read as one another corrupt the index file.
+   * <p>
+   * The declarations seen are the ones of this type and of every type below it, and of every type above any of them: a super type
+   * a sub type has besides this one counts too. {@code self}, the declaration being changed, is passed over. Walks the {@link
+   * #subTypes} and {@link #superTypes} lists, so it runs inside a {@link #recordFileChanges} frame (issue #7672). Each type is
+   * visited once per direction, so a lattice of diamonds costs its size and not its number of paths.
+   */
+  Property findDeclarationOfAnotherKind(final String propertyName, final Type type, final String ofType, final Property self) {
+    return findDeclarationOfAnotherKindBelow(propertyName, type, ofType, self, new HashSet<>(), new HashSet<>());
+  }
+
+  private Property findDeclarationOfAnotherKindBelow(final String propertyName, final Type type, final String ofType,
+      final Property self, final Set<LocalDocumentType> visitedBelow, final Set<LocalDocumentType> visitedAbove) {
+    if (!visitedBelow.add(this))
+      return null;
+
+    Property found = findDeclarationOfAnotherKindAbove(propertyName, type, ofType, self, visitedAbove);
+    if (found != null)
+      return found;
+
+    for (final LocalDocumentType subType : subTypes) {
+      found = subType.findDeclarationOfAnotherKindBelow(propertyName, type, ofType, self, visitedBelow, visitedAbove);
+      if (found != null)
+        return found;
+    }
+    return null;
+  }
+
+  private Property findDeclarationOfAnotherKindAbove(final String propertyName, final Type type, final String ofType,
+      final Property self, final Set<LocalDocumentType> visitedAbove) {
+    if (!visitedAbove.add(this))
+      return null;
+
+    final Property declared = properties.get(propertyName);
+    if (declared != null && declared != self && !isOfKind(declared, type, ofType))
+      return declared;
+
+    for (final LocalDocumentType superType : superTypes) {
+      final Property found = superType.findDeclarationOfAnotherKindAbove(propertyName, type, ofType, self, visitedAbove);
+      if (found != null)
+        return found;
+    }
+    return null;
+  }
+
+  /**
+   * Whether {@code declared} has the type {@code type} and the OF type {@code ofType}. Two OF names that are both names of a type of the
+   * schema are compared by the type they resolve to, so an alias and the type's own name are one kind; the scalar OF of a LIST or a MAP
+   * ({@code LIST OF STRING}) by its name.
+   */
+  private boolean isOfKind(final Property declared, final Type type, final String ofType) {
+    if (declared.getType() != type)
+      return false;
+    final String declaredOfType = declared.getOfType();
+    if (Objects.equals(declaredOfType, ofType))
+      return true;
+    if (declaredOfType == null || ofType == null)
+      return false;
+    // a LIST or a MAP gives a scalar name precedence over a type of that name, as LocalProperty.resolveOfType does
+    if ((type == Type.LIST || type == Type.MAP) && (Type.getTypeByName(declaredOfType) != null || Type.getTypeByName(ofType) != null))
+      return false;
+    final LocalDocumentType declaredOf = schema.getTypeOrNull(declaredOfType);
+    return declaredOf != null && declaredOf == schema.getTypeOrNull(ofType);
+  }
+
+  private static String describeKind(final Type type, final String ofType) {
+    return ofType != null ? type + " OF " + ofType : type.toString();
+  }
+
+  /** The end of a refusal for {@link #findDeclarationOfAnotherKind}'s answer {@code other}. */
+  static String otherKindReason(final Property other) {
+    return " because type '" + ((AbstractProperty) other).owner.getName() + "' declares it as " + describeKind(other.getType(), other.getOfType())
+        + " in the same type hierarchy, and one name cannot have two types there: an index on one declaration would key the records"
+        + " of the other with the wrong type";
   }
 
   /**
@@ -1995,6 +2143,13 @@ public class LocalDocumentType implements DocumentType {
         throw new AlreadyExistsException(AlreadyExistsException.Kind.PROPERTY,
             "Cannot rename the property '" + propertyName + "' in type '" + name + "' to '" + newPropertyName
                 + "' because it is already defined in a super type");
+
+      // a type below that declares the new name with another type (issue #12732)
+      final Property otherKind = findDeclarationOfAnotherKind(newPropertyName, property.getType(), property.getOfType(), null);
+      if (otherKind != null)
+        throw new AlreadyExistsException(AlreadyExistsException.Kind.PROPERTY,
+            "Cannot rename the property '" + propertyName + "' in type '" + name + "' to '" + newPropertyName + "'" + otherKindReason(
+                otherKind));
 
       final TypeIndex indexOnProperty = findIndexOnProperty(propertyName);
       if (indexOnProperty != null)
@@ -2708,6 +2863,20 @@ public class LocalDocumentType implements DocumentType {
   public static String defaultIndexName(final String typeName, final List<String> propertyNames, final Schema.INDEX_TYPE family) {
     final String base = typeName + propertyNames.toString().replace(" ", "");
     return family == Schema.INDEX_TYPE.COLUMNAR ? base + COLUMNAR_NAME_SUFFIX : base;
+  }
+
+  /**
+   * The user-supplied name an index of {@code typeName} on {@code propertyNames} is created under: {@code name} when it differs from
+   * the name {@link #defaultIndexName} derives, {@code null} otherwise. A name that IS the derived one (a REBUILD hands it back, and
+   * a user may spell it out) is no manual name and must not travel in the index metadata: the metadata outlives a rename of the type,
+   * and a copy of it made afterwards (TRUNCATE TYPE re-creating the index) would then compare the stale name with the derived one of
+   * the NEW type name and take it for a manual name (issue #12774).
+   */
+  public static String manualIndexName(final String typeName, final List<String> propertyNames, final Schema.INDEX_TYPE family,
+      final String name) {
+    if (name == null || name.isEmpty() || name.equals(defaultIndexName(typeName, propertyNames, family)))
+      return null;
+    return name;
   }
 
   @Override
@@ -3755,12 +3924,61 @@ public class LocalDocumentType implements DocumentType {
           LocalEdgeType.checkCanBeLightweight(lightweight.getName(), superType);
       }
 
+      // A name the super type declares with another type than this type, or a type below it, does (issue #12732): the super type's
+      // indexes would be propagated over buckets whose records hold the other kind of value. Before the stored records are read
+      checkInheritedPropertiesKeepTheirKind(superType);
+
       // Last, being the one that reads the records: the stored records of this type and of its sub types must meet what they are about
       // to inherit, as CREATE PROPERTY and ALTER PROPERTY require of them (issue #12030). It stays after every structural refusal of
       // this method, a refusal of a link that closes a cycle included: it walks the polymorphic properties of the super type and the
       // polymorphic buckets of this type, which only an acyclic hierarchy can answer
       checkStoredRecordsMeetInheritedProperties(superType);
     }
+  }
+
+  /**
+   * Refuses a super type that declares a property with another type (or another OF type) than a declaration this type, or a type below
+   * it, already sees (issue #12732): the super type's indexes would be propagated over buckets whose records hold the other kind of
+   * value, keyed by the super type's declaration, so lookups would miss them, an index kind the other declaration cannot hold (BY KEY,
+   * BY ITEM, GEOSPATIAL) would fail to build or refuse every write, and two encodings that cannot be read as one another would corrupt
+   * the index file. A property this type already sees through another path is nothing new: the re-attachment of a dropped type's sub
+   * types links them to what they already inherit, and must not be refused for an overlap a database written before the check holds.
+   * A same-kind overlap stays accepted, with the warning {@link #addSuperTypeInternal} logs.
+   */
+  private void checkInheritedPropertiesKeepTheirKind(final LocalDocumentType superType) {
+    // By identity: getPolymorphicProperties() is a set by equals, where two declarations of one name and kind are one, and a separate
+    // declaration of the same kind is a new overlap, which a declaration of another kind below this type can still refuse
+    final Set<Property> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+    collectDeclarationsAbove(seen, new HashSet<>());
+    final Set<Property> inheritedDeclarations = Collections.newSetFromMap(new IdentityHashMap<>());
+    superType.collectDeclarationsAbove(inheritedDeclarations, new HashSet<>());
+
+    // A declaration already seen adds nothing, unless the link brings an index on its name this type does not reach yet: that index
+    // is about to be propagated over the buckets of this type and of the types below it, which have to hold its kind
+    final Set<String> newlyIndexedNames = new HashSet<>();
+    final Collection<TypeIndex> reachedAlready = getAllIndexes(true);
+    for (final TypeIndex index : superType.getAllIndexes(true))
+      if (!reachedAlready.contains(index))
+        for (final String indexedName : index.getPropertyNames())
+          newlyIndexedNames.add(Index.basePropertyName(indexedName));
+
+    for (final Property inherited : inheritedDeclarations) {
+      if (seen.contains(inherited) && !newlyIndexedNames.contains(inherited.getName()))
+        continue;
+      final Property otherKind = findDeclarationOfAnotherKind(inherited.getName(), inherited.getType(), inherited.getOfType(), null);
+      if (otherKind != null)
+        throw new SchemaException("Cannot make type '" + name + "' a sub type of '" + superType.getName() + "', which declares the property '"
+            + inherited.getName() + "' as " + describeKind(inherited.getType(), inherited.getOfType()) + otherKindReason(otherKind));
+    }
+  }
+
+  /** Every declaration of this type and of the types above it, each type visited once. */
+  private void collectDeclarationsAbove(final Set<Property> result, final Set<LocalDocumentType> visited) {
+    if (!visited.add(this))
+      return;
+    result.addAll(properties.values());
+    for (final LocalDocumentType superType : superTypes)
+      superType.collectDeclarationsAbove(result, visited);
   }
 
   /**
@@ -3922,6 +4140,8 @@ public class LocalDocumentType implements DocumentType {
       // the super type's (mutable) superTypes lists, which linkSuperType/unlinkSuperType structurally modify, so a
       // walk outside the write lock can raise a ConcurrentModificationException out of an unrelated ALTER TYPE -
       // a spurious failure of a call that was going to succeed (issue #7918, the same exposure createProperty had).
+      // A NEW linkage over a name declared with another type was refused by checkCanAddSuperType above (issue #12732): what is
+      // left to warn about is a same-kind overlap, which is harmless.
       final Set<String> allProperties = getPropertyNames();
       for (final String p : superType.getPolymorphicPropertyNames())
         if (allProperties.contains(p))
