@@ -1335,6 +1335,38 @@ class FullTextSearchPlanningTest {
       assertThat(rids("SELECT FROM Doc WHERE " + either + " AND @rid NOT IN :ids", Map.of("ids", mixed))).hasSize(DOCUMENTS - 1);
     }
 
+    /**
+     * A {@code Set} of RID text keeps the condition's own set membership, and a RID text that is no valid RID (a bucket past the
+     * int range) is not constructed eagerly: the fetch answers both exactly as the condition does without the RID filter.
+     */
+    @ParameterizedTest
+    @ValueSource(strings = { "BM25_1", "BM25_4" })
+    void aSetOrAnUnconstructableRidTextKeepsTheConditionsOwnAnswer(final String variant) {
+      createCorpus(variant);
+      final String either = "(" + SEARCH + " OR SEARCH_INDEX('Doc[content]', 'filler') = true)";
+      final List<RID> all = rids("SELECT FROM Doc WHERE " + SEARCH + " ORDER BY @rid");
+      final List<String> texts = new ArrayList<>();
+      for (int i = 0; i < all.size(); i += 4)
+        texts.add(all.get(i).toString());
+      // every record the search finds is in the list before the text that is no RID: the condition decides each of them at its own
+      // element and never reads that text, so the statement answers where an eager conversion of the whole list would fail
+      final List<String> everyMatchThenUnconstructable = new ArrayList<>();
+      for (final RID rid : rids("SELECT FROM Doc WHERE " + either + " ORDER BY @rid"))
+        everyMatchThenUnconstructable.add(rid.toString());
+      everyMatchThenUnconstructable.add("#2147483648:0");
+
+      final List<Map<String, Object>> bindings = List.of(Map.of("ids", new HashSet<>(texts)),
+          Map.of("ids", everyMatchThenUnconstructable));
+      for (final Map<String, Object> binding : bindings)
+        for (final String test : new String[] { "IN", "NOT IN" }) {
+          // the same condition under an OR is evaluated for each record, which is the answer the RID filter has to give
+          final List<RID> expected = rids(
+              "SELECT FROM Doc WHERE " + either + " AND (@rid " + test + " :ids OR content = '__none__') ORDER BY @rid", binding);
+          assertThat(rids("SELECT FROM Doc WHERE " + either + " AND @rid " + test + " :ids ORDER BY @rid", binding))
+              .as(test + " " + binding.get("ids").getClass().getSimpleName()).isEqualTo(expected);
+        }
+    }
+
     private String plan(final String query, final Map<String, Object> params) {
       try (final ResultSet rs = database.query("sql", query, params)) {
         return rs.getExecutionPlan().orElseThrow().prettyPrint(0, 2);

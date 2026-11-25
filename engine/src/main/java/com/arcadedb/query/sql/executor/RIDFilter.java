@@ -317,10 +317,12 @@ public final class RIDFilter {
   /**
    * The RIDs of an IN right-hand side made of RIDs only, or null when any element is something else: the whole condition is
    * then evaluated per RID, with its own semantics for every element. Dropping the elements that are not RIDs instead would
-   * change the answer of a NOT IN, which they can make true or unknown. A string that spells a RID counts as that RID: the
-   * equality of the condition reads it so ({@code QueryOperatorEquals.comparesValues}), and it is how a client whose parameters
-   * have no RID type (JSON, protobuf) binds one; left to the per-RID evaluation, a list of them costs a scan of the whole list for
-   * every match.
+   * change the answer of a NOT IN, which they can make true or unknown. A string that spells a RID counts as that RID in a list or
+   * an array: the equality of the condition reads it so ({@code QueryOperatorEquals.comparesValues}), and it is how a client whose
+   * parameters have no RID type (JSON, protobuf) binds one; left to the per-RID evaluation, a list of them costs a scan of the
+   * whole list for every match. Not in a {@link Set}, which the condition probes by the RID itself, as is, so a string it holds
+   * is no RID there; and not a string that {@code RID.is} accepts but no RID can be made of (a bucket past the int range): the
+   * condition decides it, for the elements it reaches.
    */
   private static Set<RID> ridsOf(final Object value) {
     if (value instanceof final RID rid)
@@ -337,9 +339,13 @@ public final class RIDFilter {
       final Object element = iterator.next();
       if (element instanceof final RID rid)
         rids.add(rid);
-      else if (element instanceof final String text && RID.is(text))
-        rids.add(new RID(text));
-      else
+      else if (element instanceof final String text && !(value instanceof Set) && RID.is(text)) {
+        try {
+          rids.add(new RID(text));
+        } catch (final IllegalArgumentException e) {
+          return null;
+        }
+      } else
         return null;
     }
     return rids;
