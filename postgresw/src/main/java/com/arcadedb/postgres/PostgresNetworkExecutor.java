@@ -847,13 +847,15 @@ public class PostgresNetworkExecutor extends Thread {
    * it to every later Bind/Execute without describing again, which is what pgjdbc does from its prepareThreshold-th
    * execution on (issue #9009). The layout just announced is therefore recorded as the statement's own, so the later
    * portals serialize their rows under it instead of under the columns of whichever rows they return. Only such a client's
-   * description promises a layout every record fits ({@link #mayKeepDescribedLayout}); a later portal of a statement whose
-   * client describes every portal is described again, from its own rows, and its Execute sends them under that answer.
+   * description promises a layout every record fits, and only it is recorded ({@link #mayKeepDescribedLayout}). The portal of a
+   * statement prepared on its own was typed from its own rows (v as an int4, say), which is no promise for the next portal's
+   * rows: recorded, it would hold a later 5000000000, bool or list to that int4 and a later Describe('S') would announce it
+   * (issue #11838). Such a statement's later portals are described again, each from its own rows.
    */
   private static void rememberDescribedLayout(final PostgresPortal portal) {
     final PostgresPortal statement = portal.statement;
-    if (statement == null || !statement.namedStatement || statement.columnsDescribed || portal.catalogQuery
-        || portal.columns == null || portal.columns.isEmpty())
+    if (!mayKeepDescribedLayout(portal) || statement.columnsDescribed || portal.catalogQuery || portal.columns == null
+        || portal.columns.isEmpty())
       return;
     // a copy: the portal keeps adjusting its own map, the statement's layout is a promise that must not move
     statement.columns = new LinkedHashMap<>(portal.columns);
@@ -975,6 +977,45 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   /**
+   * True when the client may keep the description of this portal for every later portal of its statement, executed with no
+   * Describe of its own: pgjdbc from its prepareThreshold-th execution, Npgsql's auto-prepare. Both prepare a statement in the
+   * exchange that first runs it, Parse, Bind, Describe('P') and Execute before one Sync, and so does node-postgres for a named
+   * query, which describes every portal but cannot be told apart from them. A row type promised to them for an undeclared
+   * property must hold for the rows of every later execution, whatever its parameters, which only text does (issue #9009): a
+   * schemaless property can hold an int4 in one record and an int8, a float8, a bool or a list in the next, and a 0A000 there,
+   * which only pgjdbc outside a transaction block answers by preparing again, failed every other client (issue #11838).
+   * <p>
+   * A statement prepared on its own, Parse (and maybe Describe('S')) then Sync, is described portal by portal from the rows, as
+   * the unnamed statement is: its client - libpq's PQexecPrepared, psycopg, pgx's ExecPrepared - describes each portal it runs,
+   * and the clients that keep one description for it (pgx's statement cache, Npgsql's Prepare(), asyncpg, tokio-postgres) keep
+   * the answer to that Describe('S'), which names the columns from the schema, undeclared properties as text, and which every
+   * later portal is held to ({@link PostgresPortal#columnsDescribed}).
+   * <p>
+   * <b>What a wrong guess costs.</b> The wire does not say what a client does with a description, so the split can be wrong in
+   * two directions:
+   * <ul>
+   * <li>A client that describes every portal is taken for one that keeps the first answer: node-postgres's named query, libpq in
+   * pipeline mode (psycopg's pipeline can put Parse and the first Bind before one Sync), a preparing exchange whose Bind an
+   * earlier error had the server skip (the flag is set before the skip, so it counts), a Bind sent before the Sync of its Parse
+   * for any other reason. The cost is the #9009 layout: an undeclared property read as text where a native type was possible.
+   * Text carries every value, so this never fails and never misreads a value, and it is what main answered for every named
+   * statement.</li>
+   * <li>A client that keeps one portal's description is taken for one that describes every portal: it would have to Parse
+   * and Sync on its own, describe a portal, then run later portals with no Describe of their own and decode them with that
+   * first answer. No driver known to do so: libpq always describes the portal it runs, and the drivers that keep a description
+   * either take it from Describe('S') (pinned to the schema, above) or prepare in the exchange that runs the statement (pgjdbc,
+   * Npgsql). Such a client would get each later portal under its own rows' types and could fail to decode one whose types
+   * changed: that direction is not covered, and no layout chosen at the first Describe('P') could cover it without giving up
+   * native types for libpq, since the two send the same messages until the later Execute.</li>
+   * </ul>
+   * The flag is settled by the first Bind of the exchange that parsed the statement, before that Bind's portal can be
+   * described, and a later exchange never changes it: every portal of one statement is classified the same way.
+   */
+  private static boolean mayKeepDescribedLayout(final PostgresPortal portal) {
+    return portal.statement != null && portal.statement.namedStatement && portal.statement.preparedWhileRunning;
+  }
+
+  /**
    * Resolves the columns a materialized portal must be announced under, from the rows it actually produced.
    * A catalog answer keeps its own columns, which are fixed by the catalog table being emulated rather than
    * by whichever rows happened to match; a query that came back empty falls back to the schema, so a client
@@ -986,24 +1027,6 @@ public class PostgresNetworkExecutor extends Thread {
    *                  Otherwise, and on an Execute, which announces nothing, the columns are typed from the rows themselves,
    *                  as the unnamed statement's are (issue #11838).
    */
-  /**
-   * True when the client may keep the description of this portal for every later portal of its statement, executed with no
-   * Describe of its own: pgjdbc from its prepareThreshold-th execution, Npgsql's auto-prepare. Both prepare a statement in the
-   * exchange that first runs it, Parse, Bind, Describe('P') and Execute before one Sync, and so does node-postgres for a named
-   * query, which describes every portal but cannot be told apart from them. A row type promised to them for an undeclared
-   * property must hold for the rows of every later execution, whatever its parameters, which only text does (issue #9009): a
-   * schemaless property can hold an int4 in one record and an int8, a float8, a bool or a list in the next, and a 0A000 there,
-   * which only pgjdbc outside a transaction block answers by preparing again, failed every other client (issue #11838).
-   * <p>
-   * A statement prepared on its own, Parse (and maybe Describe('S')) then Sync, is described portal by portal from the rows, as
-   * the unnamed statement is: its client - libpq's PQexecPrepared, psycopg, pgx's ExecPrepared - describes each portal it runs,
-   * and the clients that keep one description for it (pgx's statement cache, Npgsql's Prepare(), asyncpg) keep the answer to
-   * that Describe('S'), which names the columns from the schema, undeclared properties as text.
-   */
-  private static boolean mayKeepDescribedLayout(final PostgresPortal portal) {
-    return portal.statement != null && portal.statement.namedStatement && portal.statement.preparedWhileRunning;
-  }
-
   private void resolvePortalColumns(final PostgresPortal portal, final boolean announced) {
     final List<Result> rows = portal.fullResultSet != null ? portal.fullResultSet : Collections.emptyList();
     final boolean stableLayout = announced && mayKeepDescribedLayout(portal);

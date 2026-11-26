@@ -110,11 +110,11 @@ class Issue11838PreparedSchemalessTypesIT extends PostgresWireProtocolTestBase {
       // Npgsql, which does not prepare again), each value sent as the text the layout announced
       for (int round = 0; round < 2; round++)
         for (final String[] expected : new String[][] { { "int", "42" }, { "double", "2.5" }, { "bool", "t" } }) {
-          messages = executeWithoutDescribe(out, in, expected[0]);
+          messages = executeWithoutDescribe(out, in, "S1", expected[0]);
           assertThat(messageTypesOf(messages)).as(expected[0]).containsExactly('2', 'D', 'C', 'Z');
           assertThat(firstDataRowValue(messages)).as(expected[0]).isEqualTo(expected[1]);
         }
-      messages = executeWithoutDescribe(out, in, "list");
+      messages = executeWithoutDescribe(out, in, "S1", "list");
       assertThat(messageTypesOf(messages)).containsExactly('2', 'D', 'C', 'Z');
 
       // a later portal described all the same is answered with the same layout: such a statement keeps one for life
@@ -148,6 +148,112 @@ class Issue11838PreparedSchemalessTypesIT extends PostgresWireProtocolTestBase {
       // pgconn.ExecPrepared and libpq's PQexecPrepared describe every portal of it: each one is answered from its own rows
       assertThat(columnTypeOid(describeAndExecute(out, in, "S2", "int"))).isEqualTo(PostgresType.INTEGER.code);
       assertThat(columnTypeOid(describeAndExecute(out, in, "S2", "bool"))).isEqualTo(PostgresType.BOOLEAN.code);
+    });
+  }
+
+  @Test
+  void aPortalOfAStatementPreparedOnItsOwnPromisesNothingToTheNext() throws Exception {
+    createRecords();
+    withConnection((out, in) -> {
+      // libpq's PQprepare, then PQexecPrepared: the first portal is described from its rows, v as an int4
+      sendParse(out, "S3", QUERY);
+      sendSync(out);
+      assertThat(messageTypesOf(readUntilReadyForQuery(in))).containsExactly('1', 'Z');
+      List<WireMessage> messages = describeAndExecute(out, in, "S3", "int");
+      assertThat(columnTypeOid(messages)).isEqualTo(PostgresType.INTEGER.code);
+      assertThat(firstDataRowValue(messages)).isEqualTo("42");
+
+      // that answer is the portal's, not the statement's: a later portal is typed from its own rows, whatever they hold
+      messages = describeAndExecute(out, in, "S3", "long");
+      assertThat(messageTypesOf(messages)).containsExactly('2', 'T', 'D', 'C', 'Z');
+      assertThat(columnTypeOid(messages)).isEqualTo(PostgresType.LONG.code);
+      assertThat(firstDataRowValue(messages)).isEqualTo("5000000000");
+      messages = describeAndExecute(out, in, "S3", "bool");
+      assertThat(columnTypeOid(messages)).isEqualTo(PostgresType.BOOLEAN.code);
+      assertThat(firstDataRowValue(messages)).isEqualTo("t");
+      messages = executeWithoutDescribe(out, in, "S3", "long");
+      assertThat(messageTypesOf(messages)).containsExactly('2', 'D', 'C', 'Z');
+      assertThat(firstDataRowValue(messages)).isEqualTo("5000000000");
+
+      // and a description of the statement, which a client keeps for every later execution, still names v as text
+      sendDescribe(out, 'S', "S3");
+      sendSync(out);
+      messages = readUntilReadyForQuery(in);
+      assertThat(messageTypesOf(messages)).containsExactly('t', 'T', 'Z');
+      assertThat(columnTypeOid(messages)).isEqualTo(PostgresType.VARCHAR.code);
+    });
+  }
+
+  @Test
+  void aStatementWhoseParseAndBindAreSplitByASyncIsDescribedPortalByPortal() throws Exception {
+    createRecords();
+    withConnection((out, in) -> {
+      // the Sync between Parse and Bind is what tells a statement prepared on its own from one prepared while it runs
+      sendParse(out, "S4", QUERY);
+      sendSync(out);
+      readUntilReadyForQuery(in);
+      for (final String[] expected : new String[][] { { "bool", "t" }, { "long", "5000000000" }, { "int", "42" } }) {
+        sendBind(out, "", "S4", expected[0]);
+        sendDescribe(out, 'P', "");
+        sendExecute(out, "");
+        sendSync(out);
+        final List<WireMessage> messages = readUntilReadyForQuery(in);
+        assertThat(messageTypesOf(messages)).as(expected[0]).containsExactly('2', 'T', 'D', 'C', 'Z');
+        assertThat(columnTypeOid(messages)).as(expected[0]).isNotEqualTo(PostgresType.VARCHAR.code);
+        assertThat(firstDataRowValue(messages)).as(expected[0]).isEqualTo(expected[1]);
+      }
+    });
+  }
+
+  @Test
+  void aStatementWhoseFirstBindAnErrorSkippedStillCountsAsPreparedWhileRunning() throws Exception {
+    createRecords();
+    withConnection((out, in) -> {
+      // pgjdbc's preparing exchange, failed before its Bind ran: an earlier message's error has the server skip the rest
+      sendParse(out, "S5", QUERY);
+      sendParse(out, "", "SELEC nothing");
+      sendBind(out, "", "S5", "bool");
+      sendDescribe(out, 'P', "");
+      sendExecute(out, "");
+      sendSync(out);
+      assertThat(messageTypesOf(readUntilReadyForQuery(in))).containsExactly('1', 'E', 'Z');
+
+      // the client that sent it may keep the description of the next portal for every later one: the layout fits any row
+      List<WireMessage> messages = describeAndExecute(out, in, "S5", "int");
+      assertThat(messageTypesOf(messages)).containsExactly('2', 'T', 'D', 'C', 'Z');
+      assertThat(columnTypeOid(messages)).isEqualTo(PostgresType.VARCHAR.code);
+      assertThat(firstDataRowValue(messages)).isEqualTo("42");
+      for (final String[] expected : new String[][] { { "long", "5000000000" }, { "bool", "t" }, { "double", "2.5" } }) {
+        messages = executeWithoutDescribe(out, in, "S5", expected[0]);
+        assertThat(messageTypesOf(messages)).as(expected[0]).containsExactly('2', 'D', 'C', 'Z');
+        assertThat(firstDataRowValue(messages)).as(expected[0]).isEqualTo(expected[1]);
+      }
+    });
+  }
+
+  @Test
+  void aStatementPreparedWhileItRunsAnswersEveryDescribedPortalWithTheSameLayout() throws Exception {
+    createRecords();
+    withConnection((out, in) -> {
+      // node-postgres's named query: Parse in the exchange that first runs it, then Bind, Describe('P') and Execute on every
+      // execution. It cannot be told apart from pgjdbc, so it gets pgjdbc's layout: text, for every portal, and never an error
+      sendParse(out, "S6", QUERY);
+      sendBind(out, "", "S6", "int");
+      sendDescribe(out, 'P', "");
+      sendExecute(out, "");
+      sendSync(out);
+      List<WireMessage> messages = readUntilReadyForQuery(in);
+      assertThat(messageTypesOf(messages)).containsExactly('1', '2', 'T', 'D', 'C', 'Z');
+      assertThat(columnTypeOid(messages)).isEqualTo(PostgresType.VARCHAR.code);
+
+      for (final String[] expected : new String[][] { { "long", "5000000000" }, { "bool", "t" }, { "double", "2.5" }, { "int", "42" } }) {
+        messages = describeAndExecute(out, in, "S6", expected[0]);
+        assertThat(messageTypesOf(messages)).as(expected[0]).containsExactly('2', 'T', 'D', 'C', 'Z');
+        assertThat(columnTypeOid(messages)).as(expected[0]).isEqualTo(PostgresType.VARCHAR.code);
+        assertThat(firstDataRowValue(messages)).as(expected[0]).isEqualTo(expected[1]);
+      }
+      messages = describeAndExecute(out, in, "S6", "list");
+      assertThat(messageTypesOf(messages)).containsExactly('2', 'T', 'D', 'C', 'Z');
     });
   }
 
@@ -209,6 +315,7 @@ class Issue11838PreparedSchemalessTypesIT extends PostgresWireProtocolTestBase {
       database.getSchema().createDocumentType(TYPE);
       database.newDocument(TYPE).set("name", "bool").set("v", true).save();
       database.newDocument(TYPE).set("name", "int").set("v", 42).save();
+      database.newDocument(TYPE).set("name", "long").set("v", 5_000_000_000L).save();
       database.newDocument(TYPE).set("name", "double").set("v", 2.5).save();
       database.newDocument(TYPE).set("name", "list").set("v", List.of(1, 2, 3)).save();
       database.newDocument(TYPE).set("name", "date").set("v", LocalDateTime.of(2026, 1, 2, 0, 0)).save();
@@ -235,9 +342,9 @@ class Issue11838PreparedSchemalessTypesIT extends PostgresWireProtocolTestBase {
     return readUntilReadyForQuery(in);
   }
 
-  private static List<WireMessage> executeWithoutDescribe(final DataOutputStream out, final DataInputStream in, final String name)
-      throws Exception {
-    sendBind(out, "", "S1", name);
+  private static List<WireMessage> executeWithoutDescribe(final DataOutputStream out, final DataInputStream in, final String statement,
+      final String name) throws Exception {
+    sendBind(out, "", statement, name);
     sendExecute(out, "");
     sendSync(out);
     return readUntilReadyForQuery(in);

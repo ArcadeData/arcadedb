@@ -28,14 +28,13 @@ Describe portal, Execute) for a prepared statement, so every execution from the
 """
 
 import os
-import time
 import uuid
-from time import sleep
 
 import psycopg
 import pytest
 import requests
 from testcontainers.core.container import DockerContainer
+from testcontainers.core.wait_strategies import HttpWaitStrategy
 
 ROOT_PASSWORD = "playwithdata"
 DATABASE = "pgprepared11838"
@@ -57,6 +56,8 @@ EXPECTED = {
 
 arcadedb = (DockerContainer(os.environ.get("ARCADEDB_DOCKER_IMAGE") or "arcadedata/arcadedb:latest")
             .with_exposed_ports(2480, 5432)
+            # the server answers 204 once it is ready: start() returns then, no polling loop of our own
+            .waiting_for(HttpWaitStrategy(2480, "/api/v1/ready").for_status_code(204).with_startup_timeout(120))
             .with_env("JAVA_OPTS",
                       f"-Darcadedb.server.rootPassword={ROOT_PASSWORD} "
                       "-Darcadedb.server.plugins=PostgresProtocolPlugin"))
@@ -64,19 +65,6 @@ arcadedb = (DockerContainer(os.environ.get("ARCADEDB_DOCKER_IMAGE") or "arcadeda
 
 def http_base():
     return f"http://{arcadedb.get_container_host_ip()}:{arcadedb.get_exposed_port(2480)}"
-
-
-def wait_for_ready(timeout=60):
-    url = http_base() + "/api/v1/ready"
-    start = time.time()
-    while time.time() - start < timeout:
-        try:
-            if requests.get(url, timeout=2).status_code == 204:
-                return
-        except (requests.ConnectionError, requests.Timeout):
-            pass
-        sleep(1)
-    raise TimeoutError(f"ArcadeDB did not become ready at {url} within {timeout}s")
 
 
 def http_command(path, body):
@@ -88,7 +76,6 @@ def http_command(path, body):
 def setup():
     arcadedb.start()
     try:
-        wait_for_ready()
         http_command("/api/v1/server", {"command": f"create database {DATABASE}"})
         command = f"/api/v1/command/{DATABASE}"
         http_command(command, {"language": "sql", "command": f"CREATE DOCUMENT TYPE {TYPE}"})

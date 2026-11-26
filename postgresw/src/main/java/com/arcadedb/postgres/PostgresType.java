@@ -1898,19 +1898,51 @@ public enum PostgresType {
   /**
    * A uuid parameter (issue #11838), which psycopg binds for a {@code uuid.UUID} and pgjdbc for a {@code java.util.UUID}. ArcadeDB
    * has no uuid type and stores one as its text, so the parameter is read as the canonical text PostgreSQL itself prints, lower
-   * case with hyphens, from any spelling PostgreSQL accepts: upper case, without hyphens or between braces.
+   * case with hyphens, from exactly the spellings PostgreSQL's uuid input accepts (string_to_uuid() in
+   * src/backend/utils/adt/uuid.c, documented in "UUID Type"): 32 hex digits of either case, an optional hyphen after any group of
+   * four digits but the last ({@code a0ee-bc99-9c0b-4ef8-bb6d-6bb9-bd38-0a11} is valid), the whole optionally between a MATCHED
+   * pair of braces, and nothing else, no surrounding blank either. Parsed in place, without a copy of the text.
    */
   static String parseUuidText(final String value) {
-    String hex = value.trim();
-    if (hex.startsWith("{") && hex.endsWith("}"))
-      hex = hex.substring(1, hex.length() - 1);
-    hex = hex.replace("-", "");
-    boolean valid = hex.length() == 32;
-    for (int i = 0; valid && i < hex.length(); i++)
-      valid = Character.digit(hex.charAt(i), 16) >= 0;
-    if (!valid)
-      throw new PostgresProtocolException("Invalid input syntax for type uuid: '" + value + "'");
-    return new UUID(Long.parseUnsignedLong(hex.substring(0, 16), 16), Long.parseUnsignedLong(hex.substring(16), 16)).toString();
+    final int length = value.length();
+    final boolean braces = length > 0 && value.charAt(0) == '{';
+    int position = braces ? 1 : 0;
+    long mostSignificant = 0;
+    long leastSignificant = 0;
+    for (int digit = 0; digit < 32; digit++) {
+      final int nibble = position < length ? hexDigit(value.charAt(position++)) : -1;
+      if (nibble < 0)
+        throw invalidUuid(value);
+      if (digit < 16)
+        mostSignificant = mostSignificant << 4 | nibble;
+      else
+        leastSignificant = leastSignificant << 4 | nibble;
+      if ((digit & 3) == 3 && digit < 31 && position < length && value.charAt(position) == '-')
+        position++;
+    }
+    if (braces) {
+      if (position >= length || value.charAt(position) != '}')
+        throw invalidUuid(value);
+      position++;
+    }
+    if (position != length)
+      throw invalidUuid(value);
+    return new UUID(mostSignificant, leastSignificant).toString();
+  }
+
+  /** An ASCII hex digit's value, or -1: PostgreSQL reads uuid digits with isxdigit(), so no other script's digits count. */
+  private static int hexDigit(final char c) {
+    if (c >= '0' && c <= '9')
+      return c - '0';
+    if (c >= 'a' && c <= 'f')
+      return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F')
+      return c - 'A' + 10;
+    return -1;
+  }
+
+  private static PostgresProtocolException invalidUuid(final String value) {
+    return new PostgresProtocolException("Invalid input syntax for type uuid: '" + value + "'");
   }
 
   private static Object deserializeBinary(final long code, final byte[] valueAsBytes) {
