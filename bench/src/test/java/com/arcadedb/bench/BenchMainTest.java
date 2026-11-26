@@ -393,6 +393,56 @@ class BenchMainTest {
     }
   }
 
+  /** A workload whose case list at S leaves out every case but the first. */
+  private static Workload firstCaseOnlyAtS(final String name, final List<String> all) {
+    return new Workload() {
+      @Override
+      public String name() {
+        return name;
+      }
+
+      @Override
+      public List<String> cases() {
+        return all;
+      }
+
+      @Override
+      public List<String> cases(final Scale scale) {
+        return scale == Scale.S ? all.subList(0, 1) : all;
+      }
+
+      @Override
+      public void prepare(final WorkloadContext ctx, final String caseName) {
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) {
+        return new Measurement(List.of());
+      }
+    };
+  }
+
+  @Test
+  void casesAreTheOnesOfTheRunScaleWhetherTheServerStartsOrNot() throws Exception {
+    final int[] calls = { 0 };
+    final int code = BenchMain.run(new String[] { "run", "--workload", "all", "--scale", "S", "--image", "i", "--variant", "jvm",
+            "--reps", "1", "--warmup", "0", "--skip-idle-check", "--server-cpus", "none", "--client-cpus", "none", "--out",
+            tmp.toString() }, List.of(firstCaseOnlyAtS("alpha", List.of("a1", "a2")), firstCaseOnlyAtS("beta", List.of("b1", "b2"))),
+        (image, cpuset, mem, heap) -> {
+          if (calls[0]++ == 0)
+            throw new IllegalStateException("boom");
+          return null;
+        }, new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8));
+    assertThat(code).isZero();
+    try (final Stream<Path> files = Files.list(tmp)) {
+      final RunResult result = RunResult.read(files.filter(p -> p.toString().endsWith(".json")).findFirst().orElseThrow());
+      // alpha's server failed to start, beta's ran: either way a case left out at S is not recorded
+      assertThat(result.results()).extracting(CaseResult::caseName).containsExactly("a1", "b1");
+      assertThat(result.results().get(0).status()).isEqualTo(CaseResult.Status.FAILED);
+      assertThat(result.results().get(1).status()).isEqualTo(CaseResult.Status.OK);
+    }
+  }
+
   /** Counts server starts and answers each liveness check from a script, one entry per call (null = alive). */
   private static final class DyingServers implements BenchMain.ServerFactory {
     final List<String>  reasons;

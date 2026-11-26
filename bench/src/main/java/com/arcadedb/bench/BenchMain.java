@@ -473,7 +473,7 @@ public final class BenchMain {
       try {
         server = serverFactory.start(image, serverCpus, memLimitGb, heap);
       } catch (final Throwable t) {
-        for (final String caseName : w.cases())
+        for (final String caseName : w.cases(scale))
           results.add(new CaseResult(w.name(), caseName, scale.name(), params, reps, warmup, List.of(), CaseResult.Status.FAILED,
               "server start failed: " + t.getClass().getName() + ": " + t.getMessage()));
         file.write(results, false);

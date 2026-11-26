@@ -18,6 +18,8 @@
  */
 package com.arcadedb.bench.runner;
 
+import com.arcadedb.bench.workload.Scale;
+
 import java.util.List;
 
 /**
@@ -26,7 +28,16 @@ import java.util.List;
 public interface Workload {
   String name();
 
+  /** Every case of the workload, at any scale. */
   List<String> cases();
+
+  /**
+   * The cases a run at this scale measures. A case that cannot measure anything at a scale (shorter than its own jitter) is left
+   * out there rather than recorded as noise.
+   */
+  default List<String> cases(final Scale scale) {
+    return cases();
+  }
 
   void prepare(WorkloadContext ctx, String caseName) throws Exception;
 
