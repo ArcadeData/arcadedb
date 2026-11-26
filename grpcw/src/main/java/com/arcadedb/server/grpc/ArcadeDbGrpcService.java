@@ -1043,6 +1043,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             while (rs.hasNext()) {
 
               Result result = rs.next();
+              if (emitted == 0)
+                out.addAllColumnNames(projectionColumns(result));
 
               if (result.isElement()) {
                 affected++;
@@ -1876,6 +1878,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         while (resultSet.hasNext()) {
 
           Result result = resultSet.next();
+          if (count == 0)
+            resultBuilder.addAllColumnNames(projectionColumns(result));
 
           // THE ROW BY ITS SHAPE, NOT ITS CONTENT: SEE LOG_SHOW_VALUES (#9984)
           if (LogManager.instance().isLoggable(this, Level.FINE))
@@ -6467,6 +6471,17 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    */
   GrpcRecord convertResultToGrpcRecord(Result result, Database db, ProjectionConfig projectionConfig) {
     return convertResultToGrpcRecord(result, db, projectionConfig, newEncodingBudget());
+  }
+
+  /**
+   * The column names of a projection row in projection order, which GrpcRecord.properties (a protobuf map) cannot carry (issue #13464).
+   * A row that is a single node or relationship (RETURN n) goes out as that record, whose properties are not columns: its one column
+   * is named by the projection, so a client can wrap the record under it. Empty for any other record row.
+   */
+  private static List<String> projectionColumns(final Result result) {
+    if (result.isElement())
+      return result.getMetadata(FinalProjectionStep.PROJECTION_NAME_METADATA) instanceof String name ? List.of(name) : List.of();
+    return new ArrayList<>(result.getPropertyNames());
   }
 
   /**
