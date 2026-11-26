@@ -21,6 +21,7 @@ package com.arcadedb.bench.runner;
 import com.arcadedb.bench.workload.Scale;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * A named group of benchmark cases.
@@ -45,6 +46,15 @@ public interface Workload {
    * Runs one repetition and returns one value per metric.
    */
   Measurement measure(WorkloadContext ctx, String caseName) throws Exception;
+
+  /**
+   * Server settings this workload needs (setting name to value), for example the plugins of a wire protocol. A key declared here
+   * replaces the default of the same name, it does not extend it: declaring {@code arcadedb.server.plugins} drops the plugins the
+   * default list holds unless they are named again. The server of each workload is started with them, and so is its replacement after a death.
+   */
+  default Map<String, String> serverSettings() {
+    return Map.of();
+  }
 
   default void teardown(WorkloadContext ctx) {
   }

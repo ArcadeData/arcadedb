@@ -65,7 +65,7 @@ class BenchMainTest {
   private static final List<Workload> REGISTRY = List.of(new Fake("alpha", List.of("a1", "a2")), new Fake("beta", List.of("b1")));
 
   private int run(final ByteArrayOutputStream buf, final String... args) {
-    return BenchMain.run(args, REGISTRY, (image, cpuset, mem, heap) -> null,
+    return BenchMain.run(args, REGISTRY, (image, cpuset, mem, heap, settings) -> null,
         new PrintStream(buf, true, StandardCharsets.UTF_8));
   }
 
@@ -124,7 +124,7 @@ class BenchMainTest {
     final ByteArrayOutputStream buf = new ByteArrayOutputStream();
     final int code = BenchMain.run(new String[] { "run", "--workload", "spy", "--scale", "XS", "--image", "img:1", "--variant", "jvm",
         "--reps", "1", "--warmup", "0", "--skip-idle-check", "--server-cpus", "none", "--client-cpus", "none", "--commit",
-        "abc1234567", "--out", tmp.toString() }, List.of(spy), (image, cpuset, mem, heap) -> null, new PrintStream(buf, true, StandardCharsets.UTF_8));
+        "abc1234567", "--out", tmp.toString() }, List.of(spy), (image, cpuset, mem, heap, settings) -> null, new PrintStream(buf, true, StandardCharsets.UTF_8));
     assertThat(code).isZero();
     assertThat(seen).hasSize(1);
     assertThat(seen.getFirst().complete()).isFalse();
@@ -374,7 +374,7 @@ class BenchMainTest {
     final int[] calls = { 0 };
     final int code = BenchMain.run(new String[] { "run", "--workload", "all", "--scale", "XS", "--image", "i", "--variant", "jvm",
         "--reps", "1", "--warmup", "0", "--skip-idle-check", "--server-cpus", "none", "--client-cpus", "none", "--out",
-        tmp.toString() }, REGISTRY, (image, cpuset, mem, heap) -> {
+        tmp.toString() }, REGISTRY, (image, cpuset, mem, heap, settings) -> {
       if (calls[0]++ == 0)
         throw new IllegalStateException("boom");
       return null;
@@ -428,7 +428,7 @@ class BenchMainTest {
     final int code = BenchMain.run(new String[] { "run", "--workload", "all", "--scale", "S", "--image", "i", "--variant", "jvm",
             "--reps", "1", "--warmup", "0", "--skip-idle-check", "--server-cpus", "none", "--client-cpus", "none", "--out",
             tmp.toString() }, List.of(firstCaseOnlyAtS("alpha", List.of("a1", "a2")), firstCaseOnlyAtS("beta", List.of("b1", "b2"))),
-        (image, cpuset, mem, heap) -> {
+        (image, cpuset, mem, heap, settings) -> {
           if (calls[0]++ == 0)
             throw new IllegalStateException("boom");
           return null;
@@ -447,6 +447,7 @@ class BenchMainTest {
   private static final class DyingServers implements BenchMain.ServerFactory {
     final List<String>  reasons;
     final List<Boolean> histogramsAsked = new ArrayList<>();
+    final List<Map<String, String>> startSettings = new ArrayList<>();
     int starts;
     int checks;
     int diagnosed;
@@ -456,8 +457,10 @@ class BenchMainTest {
     }
 
     @Override
-    public ServerUnderTest start(final String image, final String cpuset, final int memLimitGb, final String heap) {
+    public ServerUnderTest start(final String image, final String cpuset, final int memLimitGb, final String heap,
+        final Map<String, String> settings) {
       starts++;
+      startSettings.add(settings);
       return null;
     }
 
@@ -485,6 +488,37 @@ class BenchMainTest {
     try (final Stream<Path> files = Files.list(dir)) {
       return RunResult.read(files.filter(p -> p.toString().endsWith(".json")).findFirst().orElseThrow());
     }
+  }
+
+  /** A workload declaring its own server settings. */
+  private record Configured(String name, List<String> cases, Map<String, String> serverSettings) implements Workload {
+    @Override
+    public void prepare(final WorkloadContext ctx, final String caseName) {
+    }
+
+    @Override
+    public Measurement measure(final WorkloadContext ctx, final String caseName) {
+      return new Measurement(List.of());
+    }
+  }
+
+  @Test
+  void eachWorkloadStartsItsServerWithItsOwnSettings() throws Exception {
+    final Map<String, String> declared = Map.of("arcadedb.server.plugins", "X");
+    final List<Workload> registry = List.of(new Configured("alpha", List.of("a1"), declared), new Fake("beta", List.of("b1")));
+    final DyingServers servers = new DyingServers();
+    assertThat(runAll(registry, servers, tmp)).isZero();
+    assertThat(servers.startSettings).containsExactly(declared, Map.of());
+  }
+
+  @Test
+  void aRestartKeepsTheWorkloadSettings() throws Exception {
+    final Map<String, String> declared = Map.of("arcadedb.server.plugins", "X");
+    final List<Workload> registry = List.of(new Configured("alpha", List.of("a1", "a2"), declared));
+    final DyingServers servers = new DyingServers("OOMKilled");
+    assertThat(runAll(registry, servers, tmp)).isZero();
+    assertThat(servers.starts).isEqualTo(2);
+    assertThat(servers.startSettings).containsExactly(declared, declared);
   }
 
   @Test
@@ -539,7 +573,7 @@ class BenchMainTest {
         return new Measurement(List.of());
       }
     };
-    assertThat(runAll(List.of(clearing), (image, cpuset, mem, heap) -> null, out)).isZero();
+    assertThat(runAll(List.of(clearing), (image, cpuset, mem, heap, settings) -> null, out)).isZero();
     assertThat(measured).containsExactly("a1", "a2", "a3");
     final RunResult result = onlyRunFile(out);
     assertThat(result.complete()).isTrue();
@@ -572,7 +606,7 @@ class BenchMainTest {
         return new Measurement(List.of());
       }
     };
-    assertThat(runAll(List.of(w), (image, cpuset, mem, heap) -> null, out)).isEqualTo(1);
+    assertThat(runAll(List.of(w), (image, cpuset, mem, heap, settings) -> null, out)).isEqualTo(1);
     assertThat(measured).containsExactly("a1", "a2");
   }
 
@@ -610,7 +644,8 @@ class BenchMainTest {
   void diagnosticsLandUnderTheWorkloadName() throws Exception {
     final BenchMain.ServerFactory servers = new BenchMain.ServerFactory() {
       @Override
-      public ServerUnderTest start(final String image, final String cpuset, final int memLimitGb, final String heap) {
+      public ServerUnderTest start(final String image, final String cpuset, final int memLimitGb, final String heap,
+        final Map<String, String> settings) {
         return null;
       }
 
@@ -636,7 +671,8 @@ class BenchMainTest {
   private BenchMain.Guard dumpingGuard(final BenchMain.RunFile file) {
     final BenchMain.ServerFactory servers = new BenchMain.ServerFactory() {
       @Override
-      public ServerUnderTest start(final String image, final String cpuset, final int memLimitGb, final String heap) {
+      public ServerUnderTest start(final String image, final String cpuset, final int memLimitGb, final String heap,
+        final Map<String, String> settings) {
         return null;
       }
 
@@ -650,7 +686,7 @@ class BenchMainTest {
         return true;
       }
     };
-    return new BenchMain.Guard(servers, null, "alpha", file, "i", "", 1, "1g", Scale.XS, 1L, new JSONObject());
+    return new BenchMain.Guard(servers, null, "alpha", file, "i", "", 1, "1g", Map.of(), Scale.XS, 1L, new JSONObject());
   }
 
   private BenchMain.RunFile runFile(final Map<String, String> options) {
