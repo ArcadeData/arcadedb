@@ -145,6 +145,21 @@ final class BooleanExpressionBuilder {
   }
 
   /**
+   * Recursively finds a pattern expression that is NOT the argument of a function-style {@code exists(pattern)} predicate: a bare
+   * pattern that would project a path. A pattern inside {@code exists()} is a boolean check, so it is skipped.
+   */
+  Cypher25Parser.PatternExpressionContext findBarePatternExpression(final ParseTree node) {
+    if (node instanceof Cypher25Parser.PatternExpressionContext pattern)
+      return isArgumentOfExistsFunction(pattern) ? null : pattern;
+    for (int i = 0; i < node.getChildCount(); i++) {
+      final Cypher25Parser.PatternExpressionContext found = findBarePatternExpression(node.getChild(i));
+      if (found != null)
+        return found;
+    }
+    return null;
+  }
+
+  /**
    * True when {@code pattern} is all of {@code operand}, or all of the single argument of an {@code exists()} call that is
    * all of {@code operand}.
    */

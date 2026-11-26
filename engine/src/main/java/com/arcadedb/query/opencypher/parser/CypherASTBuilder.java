@@ -516,8 +516,9 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
     for (final Cypher25Parser.SetItemContext itemCtx : ctx.setItem()) {
       if (itemCtx instanceof Cypher25Parser.SetPropContext propCtx) {
-        // Pattern expressions (e.g., (n)-[:REL]->()) are not allowed in SET values
-        if (booleans.findPatternExpressionRecursive(propCtx.expression()) != null)
+        // Bare pattern expressions (e.g., (n)-[:REL]->()) are not allowed in SET values; one inside a
+        // function-style exists(pattern) is a boolean check and is (issue #13466)
+        if (booleans.findBarePatternExpression(propCtx.expression()) != null)
           throw new CommandParsingException("UnexpectedSyntax: Pattern expressions are not allowed in SET values");
         final Cypher25Parser.PropertyExpressionContext propExprCtx = propCtx.propertyExpression();
         final Expression valueExpr = expressionBuilder.parseExpression(propCtx.expression());
@@ -550,7 +551,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         }
       } else if (itemCtx instanceof Cypher25Parser.SetDynamicPropContext dynCtx) {
         // SET n[keyExpr] = value — dynamic property assignment (issue #5141)
-        if (booleans.findPatternExpressionRecursive(dynCtx.expression()) != null)
+        if (booleans.findBarePatternExpression(dynCtx.expression()) != null)
           throw new CommandParsingException("UnexpectedSyntax: Pattern expressions are not allowed in SET values");
         final Cypher25Parser.DynamicPropertyExpressionContext dynPropExpr = dynCtx.dynamicPropertyExpression();
         final Expression keyExpr = expressionBuilder.parseExpression(dynPropExpr.dynamicProperty().expression());
