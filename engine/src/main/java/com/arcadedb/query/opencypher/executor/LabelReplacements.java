@@ -118,6 +118,19 @@ public final class LabelReplacements {
   private       boolean          positionsReleased;
   // HOW MANY VERTICES {@link #replace} REWROTE: A CHANGE DETECTOR, SO A CALLER RE-WALKS ITS ROW ONLY WHEN SOMETHING MOVED
   private       long             replacements;
+  // WHAT EVERY PUT ON THE FOUR MAPS ABOVE REPLACED, IN ORDER, SO A SNAPSHOT IS A POSITION HERE AND RESTORING IT UNDOES THE TAIL
+  private final List<Undo> journal = new ArrayList<>();
+
+  private record Undo(Map<Object, Object> map, Object key, Object previous) {
+  }
+
+  /** Puts {@code key} in one of the replacement maps and journals the value it replaced, for {@link #restore}. */
+  @SuppressWarnings("unchecked")
+  private <K, V> V put(final Map<K, V> map, final K key, final V value) {
+    final V previous = map.put(key, value);
+    journal.add(new Undo((Map<Object, Object>) map, key, previous));
+    return previous;
+  }
 
   /**
    * The replacement map of the statement {@code context} belongs to, created on first use.
@@ -309,7 +322,7 @@ public final class LabelReplacements {
   }
 
   /**
-   * Returns an independent snapshot of the current replacement state.
+   * Returns a snapshot of the current replacement state: a position in the undo journal, taken in constant time.
    * <p>
    * Mirrors {@code QueryStatistics.copy()}: a step that retries its own auto-commit mini-transaction
    * (issue #6367) needs to undo whatever a failed, rolled-back attempt recorded here before re-running,
@@ -320,7 +333,7 @@ public final class LabelReplacements {
    * would then hand back to the retried attempt as if it were live.
    */
   public Snapshot copy() {
-    return new Snapshot(new HashMap<>(vertices), new HashMap<>(edges), new HashMap<>(origins), new IdentityHashMap<>(lightweightOrigins));
+    return new Snapshot(journal.size());
   }
 
   /**
@@ -328,43 +341,31 @@ public final class LabelReplacements {
    * taken - the counterpart of {@code QueryStatistics.restore(snapshot)}.
    */
   public void restore(final Snapshot snapshot) {
-    // The rolled-back attempt deleted nothing in the end, so the positions it held are given back
-    if (database != null && !positionsReleased) {
-      for (final RID rid : vertices.keySet())
-        if (!snapshot.vertices.containsKey(rid))
-          releasePosition(rid);
-      for (final RID rid : edges.keySet())
-        if (!snapshot.edges.containsKey(rid))
-          releasePosition(rid);
+    // Undo, newest first, what was recorded since the snapshot: the rolled-back attempt deleted nothing in the end, so the
+    // positions it held are given back, and an entry it overwrote gets its old value back
+    for (int i = journal.size() - 1; i >= snapshot.mark; --i) {
+      final Undo undo = journal.remove(i);
+      if (undo.previous != null)
+        undo.map.put(undo.key, undo.previous);
+      else {
+        undo.map.remove(undo.key);
+        // The replacements of the rolled-back attempt never existed: their RIDs may be handed to unrelated records later
+        final Object map = undo.map;
+        if (database != null && !positionsReleased && (map == vertices || map == edges))
+          releasePosition((RID) undo.key);
+      }
     }
-    vertices.clear();
-    vertices.putAll(snapshot.vertices);
-    edges.clear();
-    edges.putAll(snapshot.edges);
-    // The replacements of the rolled-back attempt never existed: their RIDs may be handed to unrelated records later
-    origins.clear();
-    origins.putAll(snapshot.origins);
-    lightweightOrigins.clear();
-    lightweightOrigins.putAll(snapshot.lightweightOrigins);
   }
 
   /**
-   * Opaque, immutable capture of {@link #vertices}/{@link #edges} at one point in time. The constructor is
-   * private and {@link #copy()} always defensively copies, so a caller can never hold a snapshot that
-   * changes under it as later replacements are recorded.
+   * A position in the journal of what {@link #replace} recorded ({@link #copy()}). Not a copy of the maps: one is taken for every
+   * input row of a MERGE, and a copy of a map that holds one entry per node relabelled so far made the statement O(n^2) (issue #13476).
    */
   public static final class Snapshot {
-    private final Map<RID, Vertex> vertices;
-    private final Map<RID, Edge>   edges;
-    private final Map<RID, Identifiable> origins;
-    private final Map<Edge, Edge>        lightweightOrigins;
+    private final int mark;
 
-    private Snapshot(final Map<RID, Vertex> vertices, final Map<RID, Edge> edges, final Map<RID, Identifiable> origins,
-        final Map<Edge, Edge> lightweightOrigins) {
-      this.vertices = vertices;
-      this.edges = edges;
-      this.origins = origins;
-      this.lightweightOrigins = lightweightOrigins;
+    private Snapshot(final int mark) {
+      this.mark = mark;
     }
   }
 
@@ -613,10 +614,10 @@ public final class LabelReplacements {
       }
 
     vertex.delete();
-    if (vertices.put(originalRid, newVertex) == null)
+    if (put(vertices, originalRid, newVertex) == null)
       holdPosition(database, originalRid);
     final Identifiable vertexOrigin = originOf(vertex);
-    origins.put(newVertex.getIdentity(), vertexOrigin != null ? vertexOrigin : vertex);
+    put(origins, newVertex.getIdentity(), vertexOrigin != null ? vertexOrigin : vertex);
     ++replacements;
 
     // Counted while migrating rather than measured up front: the count is exact and costs nothing, and a report of
@@ -676,15 +677,15 @@ public final class LabelReplacements {
     // the same one. Only the null is guarded: an edge that came out of getEdges() always has a bucket.
     if (rid == null)
       return;
-    if (edges.put(rid, replacement) == null)
+    if (put(edges, rid, replacement) == null)
       holdPosition(original.getDatabase(), rid);
     final Identifiable origin = originOf(original);
     final Identifiable root = origin != null ? origin : original;
     final RID replacementRid = replacement.getIdentity();
     if (replacementRid instanceof LightEdgeRID)
-      lightweightOrigins.put(replacement, (Edge) root);
+      put(lightweightOrigins, replacement, (Edge) root);
     else if (replacementRid != null)
-      origins.put(replacementRid, root);
+      put(origins, replacementRid, root);
   }
 
   /**
