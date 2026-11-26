@@ -2721,19 +2721,20 @@ public class PageManager extends LockContext {
           // An older copy of this page can still be in the asynchronous pipeline: committed before the database
           // switched to synchronous flush, or by a commit that asked for async flush. Written after this page it would
           // revert it on disk (issue #13441), so it leaves the pipeline first and is never written.
-          final List<MutablePage> superseded = thread != null ? thread.detachCopiesSupersededBy(page) : List.of();
+          final List<MutablePage> superseded = thread != null ? thread.detachCopiesSupersededBy(page) : null;
           try {
-            flushPage(page, superseded.isEmpty() ? null : thread);
+            flushPage(page, superseded != null ? thread : null);
           } catch (final IOException | RuntimeException e) {
             // The copies are out of the pipeline and the newer image is not on disk: after an eviction a read would get
             // the file's older image. Only the WAL holds their content now (their acks are kept), so the database goes
             // to recovery, as a commit whose page write fails does
-            if (!superseded.isEmpty() && ((DatabaseInternal) page.getPageId().getDatabase()).getEmbedded() instanceof LocalDatabase localDatabase)
+            if (superseded != null && !superseded.isEmpty() && ((DatabaseInternal) page.getPageId().getDatabase()).getEmbedded() instanceof LocalDatabase localDatabase)
               localDatabase.fenceForRecovery("a synchronous page write that superseded pending copies failed", e);
             throw e;
           }
           // Only now that the newer image is on disk: until then the WAL is what holds the content of the copies
-          releaseWALOfSupersededCopies(superseded);
+          if (superseded != null)
+            releaseWALOfSupersededCopies(superseded);
           // ADD THE PAGE IN TO READ CACHE. FROM THIS POINT THE PAGE IS NEVER MODIFIED, SO IT CAN BE CACHED
           putPageInReadCache(new CachedPage(page, false));
           if (i++ == half)
@@ -2812,9 +2813,9 @@ public class PageManager extends LockContext {
   }
 
   /**
-   * @param recordSyncWriteIn not null for a synchronous write that took older copies of the page out of the pipeline:
-   *                          the write is recorded there under the page's I/O lock, so that no copy the detach could not
-   *                          reach lands after it (issue #13441)
+   * @param recordSyncWriteIn not null for a synchronous write that found the page pending: the write is recorded there
+   *                          under the page's I/O lock, so that no copy the detach could not reach lands after it (issue
+   *                          #13441)
    */
   private boolean flushPage(final MutablePage page, final PageManagerFlushThread recordSyncWriteIn) throws IOException {
     final DatabaseInternal database = (DatabaseInternal) page.getPageId().getDatabase();

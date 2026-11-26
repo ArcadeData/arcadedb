@@ -186,12 +186,16 @@ public class PageManagerFlushThread extends Thread {
    * the copies {@link #detachCopiesSupersededBy} cannot reach: those of a batch this thread has polled from
    * {@link #queue} but not yet published in {@link #nextPagesToFlush}.
    * <p>
-   * Empty in the steady state: an entry is only taken by a synchronous write that took older copies out. It is cleared
-   * when the pipeline drains (versions only grow, so an entry can only ever skip copies OLDER than a write already on
-   * disk, but a file id or a database path reused with fresh page versions must not inherit it), and by the purges of
-   * a closed database and of a dropped file.
+   * Each entry is {version, flush cycle it was recorded in}, and lives one flush cycle (one poll of {@link #run}, with
+   * the batch it returned): the only batch out of the detach's reach is the one this thread held between poll and
+   * publication when the write was recorded, which that cycle finishes. Every later batch was in {@link #queue} when the
+   * detach walked it, so {@link #endFlushCycle} drops the entries of the cycles before. Empty in the steady state: an
+   * entry is only taken by a synchronous write that found the page pending. The purges of a closed database and of a
+   * dropped file drop theirs too, so a file id or a database path reused with fresh page versions never inherits one.
    */
-  private final        ConcurrentHashMap<PageId, Long>            syncWrittenVersions = new ConcurrentHashMap<>();
+  private final        ConcurrentHashMap<PageId, long[]>          syncWrittenVersions = new ConcurrentHashMap<>();
+  // Flush cycles completed by run(): see syncWrittenVersions
+  private volatile     long                                       flushCycles         = 0;
 
   /**
    * Maximum bytes of dirty pages that may sit deferred (in {@link #deferredByDatabase}) while flushing is
@@ -686,8 +690,21 @@ public class PageManagerFlushThread extends Thread {
         running = false;
       } catch (final Throwable e) {
         LogManager.instance().log(this, Level.SEVERE, "Error on processing page flush requests", e);
+      } finally {
+        endFlushCycle();
       }
     }
+  }
+
+  /**
+   * Ends a flush cycle (issue #13441): the batch this thread held when an entry of {@link #syncWrittenVersions} was
+   * recorded has been processed by now, so the entries of the cycles before this one cannot stop anything any more.
+   */
+  private void endFlushCycle() {
+    final long ended = flushCycles;
+    flushCycles = ended + 1;
+    if (!syncWrittenVersions.isEmpty())
+      syncWrittenVersions.values().removeIf(entry -> entry[1] <= ended);
   }
 
   /**
@@ -769,9 +786,6 @@ public class PageManagerFlushThread extends Thread {
     // suspended databases directly, before that lock is taken - see awaitDeferredBacklogUnderCap - and this thread
     // always drains.
     final PagesToFlush pagesToFlush = queue.poll(timeout, TimeUnit.MILLISECONDS);
-
-    if (pagesToFlush == null && Thread.currentThread() == this)
-      forgetSyncWritesIfIdle();
 
     if (pagesToFlush != null) {
       // A slot of THIS batch's database is free again (issue #6281): give it back and admit a committer waiting for
@@ -2222,9 +2236,10 @@ public class PageManagerFlushThread extends Thread {
    * the caller is about to write it, but it is neither marked nor returned: marking it would make
    * {@link PageManager#flushPage} skip the synchronous write itself and lose the page.
    *
-   * @return the OTHER copies taken out, to be released by the caller after its write, which also records it with
-   *     {@link #recordSyncWrite} when there is any; empty, without allocating, when the page has nothing pending, which
-   *     is the steady state of a database that flushes synchronously.
+   * @return {@code null}, without allocating, when the page has nothing pending, which is the steady state of a
+   *     database that flushes synchronously; otherwise the OTHER copies taken out (possibly none, when the only one was
+   *     the instance written), to be released by the caller after its write, which records it with
+   *     {@link #recordSyncWrite} in either case: an older copy can still sit in a batch polled but not yet published.
    */
   List<MutablePage> detachCopiesSupersededBy(final MutablePage page) {
     final PageId pageId = page.getPageId();
@@ -2237,7 +2252,7 @@ public class PageManagerFlushThread extends Thread {
     // reverts the page on its own, whatever happens here; the full walk of detachPendingPages is kept for the replay
     // path, which must not trust this.
     if (pageIndex.get(pageId) == null && (failedFlushPages.isEmpty() || failedFlushPages.get(pageId) == null))
-      return Collections.emptyList();
+      return null;
 
     final List<MutablePage> detached = detachPendingPages((Database) pageId.getDatabase(), pageId);
     for (int i = detached.size() - 1; i >= 0; i--) {
@@ -2256,7 +2271,8 @@ public class PageManagerFlushThread extends Thread {
    * on its file while older copies of it could still be in the pipeline (issue #13441). See {@link #syncWrittenVersions}.
    */
   void recordSyncWrite(final MutablePage page) {
-    syncWrittenVersions.merge(page.getPageId(), page.getVersion(), Math::max);
+    syncWrittenVersions.merge(page.getPageId(), new long[] { page.getVersion(), flushCycles },
+        (a, b) -> new long[] { Math.max(a[0], b[0]), Math.max(a[1], b[1]) });
   }
 
   /**
@@ -2267,19 +2283,8 @@ public class PageManagerFlushThread extends Thread {
   boolean isOlderThanASyncWrite(final MutablePage page) {
     if (syncWrittenVersions.isEmpty())
       return false;
-    final Long written = syncWrittenVersions.get(page.getPageId());
-    return written != null && page.getVersion() < written;
-  }
-
-  /**
-   * Forgets the synchronous writes once nothing is pending anywhere: no older copy can be left for them to stop. Called
-   * by the flush thread itself after a poll that found nothing, so it holds no batch of its own between poll and
-   * publication.
-   */
-  private void forgetSyncWritesIfIdle() {
-    if (!syncWrittenVersions.isEmpty() && pageIndex.isEmpty() && queue.isEmpty() && deferredRAMBytes.get() == 0
-        && failedFlushPages.isEmpty() && deferredByDatabase.isEmpty() && resumingDatabases.isEmpty())
-      syncWrittenVersions.clear();
+    final long[] written = syncWrittenVersions.get(page.getPageId());
+    return written != null && page.getVersion() < written[0];
   }
 
   private void forgetSyncWrites(final Database database, final int fileId) {
