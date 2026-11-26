@@ -23,7 +23,7 @@ import com.arcadedb.bench.runner.Workload;
 import java.util.List;
 
 /**
- * The workloads of the suite in a fixed order: ingestion, graph-oltp, vector, fulltext, facet. Workloads register here as they
+ * The workloads of the suite in a fixed order: ingestion, graph-oltp, vector, fulltext, facet, timeseries. Workloads register here as they
  * are added.
  */
 public final class WorkloadRegistry {
@@ -32,6 +32,6 @@ public final class WorkloadRegistry {
 
   public static List<Workload> all() {
     return List.of(new IngestionWorkload(), new GraphOltpWorkload(), new VectorWorkload(), new FullTextWorkload(),
-        new FacetWorkload());
+        new FacetWorkload(), new TimeSeriesWorkload());
   }
 }
