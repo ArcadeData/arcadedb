@@ -127,6 +127,13 @@ class GroupedTopUpPlannerOracleTest {
     planner.addSource(List.of(new RID(1, 2)), new float[] { 6f }, List.of('B'), true);
     // A peaks at 10 (its best sighting), so B at 6 is no winner and nobody is asked about it
     assertThat(planner.plan()).isEmpty();
+
+    // the better sighting may come last
+    final GroupedTopUpPlanner lastBest = new GroupedTopUpPlanner(1, 1);
+    assertThat(lastBest.addSource(List.of(shared), new float[] { 4f }, List.of('A'), true)).isEqualTo(0);
+    assertThat(lastBest.addSource(List.of(shared), new float[] { 10f }, List.of('A'), true)).isEqualTo(1);
+    assertThat(lastBest.addSource(List.of(new RID(1, 2)), new float[] { 6f }, List.of('B'), true)).isEqualTo(2);
+    assertThat(lastBest.plan()).isEmpty();
   }
 
   @Test
