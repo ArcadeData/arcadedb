@@ -175,6 +175,8 @@ their ports (other workloads keep today's server).
 **Open-loop ramp** (`ramp`, project 4). On the graph OLTP point lookup: arrivals on a fixed schedule, latency measured from
 the scheduled start (no coordinated omission), the rate raised in steps of 25% until p99 over 50 ms, errors over 0.1% or
 dropped arrivals. Metric `knee_per_s` (higher is better) and the p99 at the knee.
+The ramp runs from M up (every Saturday), not at S: one ramp took about 5 minutes at S on a laptop and the case runs four,
+which the weeknight S lane (close to its 240-minute budget once every phase 2 workload runs) has no room for.
 
 **HA** (`ha`, project 5). Three server containers on one Docker network (`ContainersTestTemplate` HA settings), the server
 cores split in three cpusets, the client on its own cores. On one host the network is a loopback bridge: the numbers track

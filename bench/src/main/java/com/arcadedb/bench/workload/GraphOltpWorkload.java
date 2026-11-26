@@ -141,6 +141,11 @@ public class GraphOltpWorkload implements Workload {
     queryIds = sampleIds(userIds, ctx.seed() + 7, QUERIES_PER_REP);
   }
 
+  /** The ids of every user of the graph, loaded by {@link #prepare}; null before it and after {@link #teardown}. */
+  int[] userIds() {
+    return userIds;
+  }
+
   @Override
   public void teardown(final WorkloadContext ctx) {
     userIds = null;

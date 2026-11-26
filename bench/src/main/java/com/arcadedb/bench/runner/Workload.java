@@ -22,6 +22,7 @@ import com.arcadedb.bench.workload.Scale;
 
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalInt;
 
 /**
  * A named group of benchmark cases.
@@ -38,6 +39,19 @@ public interface Workload {
    */
   default List<String> cases(final Scale scale) {
     return cases();
+  }
+
+  /**
+   * The measured repetitions of each case of this workload, overriding the run's; empty to take the run's. A workload whose
+   * single repetition is long (a whole ramp) declares fewer.
+   */
+  default OptionalInt reps() {
+    return OptionalInt.empty();
+  }
+
+  /** The discarded warm-ups of each case of this workload, overriding the run's; empty to take the run's. */
+  default OptionalInt warmup() {
+    return OptionalInt.empty();
   }
 
   void prepare(WorkloadContext ctx, String caseName) throws Exception;

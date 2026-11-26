@@ -140,6 +140,24 @@ class RuleTest {
         .isEqualTo(Verdict.Kind.WORSE);
   }
 
+  @Test
+  void informationalUnitsAreNeverJudged() {
+    assertThat(Rule.absoluteFloor("flag")).isEqualTo(Double.POSITIVE_INFINITY);
+    assertThat(Rule.absoluteFloor("steps")).isEqualTo(Double.POSITIVE_INFINITY);
+    // a flag from a zero baseline either way, in either direction of better
+    assertThat(cmp(point(0, new double[] { 0, 0 }, "flag", "lower"), point(1, new double[] { 1, 1 }, "flag", "lower")))
+        .isEqualTo(Verdict.Kind.SAME);
+    assertThat(cmp(point(1, new double[] { 1, 1 }, "flag", "lower"), point(0, new double[] { 0, 0 }, "flag", "lower")))
+        .isEqualTo(Verdict.Kind.SAME);
+    // more steps is a higher knee, not a regression: +13% is over the 10% band of any other unit
+    assertThat(cmp(point(23, new double[] { 23, 23 }, "steps", "lower"), point(26, new double[] { 26, 26 }, "steps", "lower")))
+        .isEqualTo(Verdict.Kind.SAME);
+    // the judged units keep their floors
+    assertThat(Rule.absoluteFloor("ms")).isEqualTo(1.0);
+    assertThat(cmp(factor(1.1), factor(4.0))).isEqualTo(Verdict.Kind.WORSE);
+    assertThat(cmp(ms(10), ms(20))).isEqualTo(Verdict.Kind.WORSE);
+  }
+
   private static Point factor(final double v) {
     return point(v, new double[] { v, v }, "factor", "lower");
   }

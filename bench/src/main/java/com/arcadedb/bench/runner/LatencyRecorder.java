@@ -73,8 +73,19 @@ public final class LatencyRecorder {
       Arrays.sort(samples, 0, count);
       sorted = true;
     }
+    return percentileOfSorted(samples, count, p);
+  }
+
+  /**
+   * Nearest-rank percentile, p in (0, 100], of the first {@code count} entries of {@code sorted}, which must be in ascending
+   * order. Returns 0 when {@code count} is 0. For a caller that gathers its samples itself (and counts its own
+   * {@link Progress}).
+   */
+  public static long percentileOfSorted(final long[] sorted, final int count, final double p) {
+    if (count == 0)
+      return 0L;
     final int rank = (int) Math.ceil(p / 100.0 * count);
-    return samples[Math.min(Math.max(rank, 1), count) - 1];
+    return sorted[Math.min(Math.max(rank, 1), count) - 1];
   }
 
   /**

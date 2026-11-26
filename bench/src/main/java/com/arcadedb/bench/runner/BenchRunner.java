@@ -46,7 +46,8 @@ import java.util.function.Predicate;
 
 /**
  * Runs the cases of a workload: prepare, warm-ups (discarded), then the measured repetitions. A failing or timed-out case is
- * recorded and the run goes on with the next case.
+ * recorded and the run goes on with the next case. A workload that declares its own repetitions or warm-ups
+ * ({@link Workload#reps()}, {@link Workload#warmup()}) runs those instead of the run's, and its cases record them.
  * <p>
  * Each step has its own timeout: {@code prepare} (which may load the data set) is bounded by the prepare timeout, and every
  * warm-up and repetition by the step timeout. An optional case cap bounds the whole case, as a hang detector over the sum. A
@@ -426,6 +427,12 @@ public final class BenchRunner {
 
   private CaseResult execute(final Workload w, final WorkloadContext ctx, final String caseName, final AtomicBoolean cancelled,
       final AtomicReference<Step> step) throws Exception {
+    final int reps = repsOf(w);
+    final int warmup = warmupOf(w);
+    if (reps < 1)
+      throw new IllegalArgumentException("workload '" + w.name() + "' declares reps " + reps + ", must be at least 1");
+    if (warmup < 0)
+      throw new IllegalArgumentException("workload '" + w.name() + "' declares warmup " + warmup + ", must not be negative");
     w.prepare(ctx, caseName);
     final long stepNanos = stepTimeout.toNanos();
     for (int i = 0; i < warmup; i++) {
@@ -484,6 +491,16 @@ public final class BenchRunner {
   private CaseResult result(final Workload w, final WorkloadContext ctx, final String caseName, final List<Metric> metrics,
       final CaseResult.Status status, final String error) {
     final JSONObject params = ctx.params() == null ? new JSONObject() : ctx.params();
-    return new CaseResult(w.name(), caseName, ctx.scale().name(), params, reps, warmup, metrics, status, error);
+    return new CaseResult(w.name(), caseName, ctx.scale().name(), params, repsOf(w), warmupOf(w), metrics, status, error);
+  }
+
+  /** The repetitions a case of the workload runs: its own when it declares them, the run's otherwise. */
+  public int repsOf(final Workload w) {
+    return w.reps().orElse(reps);
+  }
+
+  /** The warm-ups a case of the workload runs: its own when it declares them, the run's otherwise. */
+  public int warmupOf(final Workload w) {
+    return w.warmup().orElse(warmup);
   }
 }
