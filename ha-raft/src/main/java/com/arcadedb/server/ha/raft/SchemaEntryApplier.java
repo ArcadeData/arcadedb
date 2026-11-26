@@ -55,6 +55,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Lock;
 import java.util.logging.Level;
@@ -71,6 +72,18 @@ import java.util.zip.CRC32;
  */
 final class SchemaEntryApplier {
   private final ArcadeStateMachine sm;
+
+  /**
+   * Per database, the ids of the files created by the delivery-only entries of a schema change still being delivered (issue
+   * #13484). A change too large for one Raft entry names the files it creates on its FIRST chunk only
+   * ({@link RaftTransactionBroker#splitSchemaEntry}), and a recording session that ships its WAL in instalments drains the files
+   * it created so far into each instalment: in both shapes the entry that publishes the change no longer names them, and it is
+   * the one that has to know which vector graphs the change shipped. Collected here and handed to the publishing entry, which
+   * takes them out. Only the Raft apply thread touches it; a sequence cut short by a leadership change leaves a few ids behind
+   * until the next publishing entry of the database, which is harmless: a graph is certified only on its own evidence (see
+   * {@link LSMVectorIndex#certifyGraphShippedByReplicatedCompaction}).
+   */
+  private final Map<String, Set<Integer>> filesCreatedByUnpublishedChunks = new ConcurrentHashMap<>();
 
   SchemaEntryApplier(final ArcadeStateMachine sm) {
     this.sm = sm;
@@ -165,6 +178,9 @@ final class SchemaEntryApplier {
     // standalone DDL that adds files without changing the schema version - and skipping the reload for
     // that would leave the new files unregistered in the schema.
     final boolean deliveryOnlyEntry = decoded.moreChunksFollow();
+
+    // The files the whole change creates, whichever of its entries named them (issue #13484): asked by the publishing entry below
+    final Set<Integer> filesCreatedByTheChange = filesCreatedByTheChange(decoded, deliveryOnlyEntry);
 
     final SchemaEntryRecorder schemaEntryRecorder = ArcadeStateMachine.TEST_SCHEMA_ENTRY_COUNTER;
     if (schemaEntryRecorder != null && !deliveryOnlyEntry)
@@ -328,15 +344,16 @@ final class SchemaEntryApplier {
         if (refusal != null)
           loadSchemaInFull(schema, decoded, entryIndex, refusal, retiring);
 
-        // A vector compaction shipped its graph without the manifest and the ordinal map that certify it (plain files next to
-        // it). This is the one moment the follower can certify it exactly, before a later entry writes on top of the rewrite
-        // (issue #13484): otherwise the first deletion sends every compacted piece to a rebuild from scratch on this node
-        if (!isEmptyMap(decoded.filesToAdd()))
-          certifyGraphsShippedByCompaction(schema, decoded.filesToAdd().keySet());
-
         // The reload read the index and dictionary files again, on the apply thread (issue #11518): a copy that turns up
         // damaged here is quarantined before the next entry is applied to it, as the startup scan does for one found at open
         sm.quarantine.quarantineIfLocalCopyDamaged(decoded.databaseName(), db);
+
+        // A vector compaction shipped its graph without the manifest and the ordinal map that certify it (plain files next to
+        // it). This is the one moment the follower can certify it exactly, before a later entry writes on top of the rewrite
+        // (issue #13484): otherwise the first deletion sends every compacted piece to a rebuild from scratch on this node. After
+        // the damage check, and never on a quarantined copy: the resync replaces it, and what it holds certifies nothing
+        if (!filesCreatedByTheChange.isEmpty() && !sm.isDatabaseDiverged(decoded.databaseName()))
+          certifyGraphsShippedByCompaction(schema, filesCreatedByTheChange);
       }
 
       // Whichever path published above: the incremental refresh refuses every entry that retires a file (FILE_RETIRED), so a
@@ -383,9 +400,33 @@ final class SchemaEntryApplier {
   }
 
   /**
-   * Asks every vector index whose graph file the applied entry created to certify the graph that came with it (issue #13484). An
-   * index whose graph file is not among them answers at once, so the cost is one look per vector index for an entry that adds
-   * files. A failure here only costs the index a rebuild on first use, as before, and never fails the apply.
+   * The ids of the files the schema change {@code decoded} belongs to creates, over all of its entries (issue #13484). A
+   * delivery-only entry adds the files it names to those of its database's change in progress and answers an empty set: nothing
+   * is published yet. The publishing entry takes them out and answers them with its own.
+   */
+  // @VisibleForTesting
+  Set<Integer> filesCreatedByTheChange(final RaftLogEntryCodec.DecodedEntry decoded, final boolean deliveryOnlyEntry) {
+    final String databaseName = decoded.databaseName();
+    final Map<Integer, String> named = decoded.filesToAdd();
+    if (deliveryOnlyEntry) {
+      if (!isEmptyMap(named) && databaseName != null)
+        filesCreatedByUnpublishedChunks.computeIfAbsent(databaseName, k -> new HashSet<>()).addAll(named.keySet());
+      return Collections.emptySet();
+    }
+
+    final Set<Integer> delivered = databaseName != null ? filesCreatedByUnpublishedChunks.remove(databaseName) : null;
+    if (delivered == null)
+      return isEmptyMap(named) ? Collections.emptySet() : named.keySet();
+    if (!isEmptyMap(named))
+      delivered.addAll(named.keySet());
+    return delivered;
+  }
+
+  /**
+   * Asks every vector index whose graph file the published change created to certify the graph that came with it (issue
+   * #13484), whether the change came in one entry or in several (see {@link #filesCreatedByTheChange}). An index whose graph
+   * file is not among them answers at once, so the cost is one look per vector index for a change that adds files. A failure
+   * here only costs the index a rebuild on first use, as before, and never fails the apply.
    */
   private void certifyGraphsShippedByCompaction(final LocalSchema schema, final Set<Integer> addedFileIds) {
     try {

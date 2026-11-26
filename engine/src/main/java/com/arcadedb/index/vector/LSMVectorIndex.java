@@ -5313,14 +5313,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * <p>
    * Here, and only here, the map is known exactly rather than guessed. The compaction rewrote the data file with the live
    * vectors renumbered densely from 0 (issue #5870) and built the graph over those ids, ascending, minus any its
-   * validation refused; and the entry applied just before this call is the whole content of the new data file. So when
+   * validation refused; and the change applied just before this call (one entry, or the chunks and instalments a large one
+   * ships in) is the whole content of the new data file. So when
    * the location index holds no tombstone, its live ids are exactly {@code [0, N)} and the graph has {@code N} nodes,
    * the build refused nothing and ordinal {@code i} is vector id {@code i}. Any other shape (a refused vector, a write
    * already on top of the rewrite after a replay, a manifest already present, PRODUCT quantization, whose codes are not
    * shipped either) leaves the index as it was, to the ordinary load path. The ordinals the leader's build left
    * unreachable are not shipped either, and are found again here with the same walk the build runs.
    *
-   * @param addedFileIds the ids of the files the applied entry created
+   * @param addedFileIds the ids of the files the applied change created, over all of its entries
    *
    * @return whether the shipped graph is now certified
    */
@@ -5343,6 +5344,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // Something already resolved the graph of this instance: nothing left to certify for it
         return false;
 
+      // Timed because it runs on the apply thread every database of the node shares. It reads back the data and graph pages the
+      // change has just written (one parse of the locations, one walk of the graph), the same order of work as applying them
+      final long startNanos = System.nanoTime();
       final VectorLocationIndex locations = vectorIndex();
       if (locations.getDeletedCount() > 0)
         return false;
@@ -5365,8 +5369,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       manifest.write(liveIds, locations::getRid, true, unreachableOrdinals, 0L);
       LogManager.instance().log(this, Level.INFO,
-          "Certified the graph a replicated compaction shipped for index %s: %d nodes over the vector ids [0, %d) (issue "
-              + "#13484)", indexName, liveIds.length, liveIds.length);
+          "Certified the graph a replicated compaction shipped for index %s: %d nodes over the vector ids [0, %d), %d "
+              + "unreachable, in %d ms (issue #13484)", indexName, liveIds.length, liveIds.length, unreachableOrdinals.length,
+          TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos));
       return true;
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING,

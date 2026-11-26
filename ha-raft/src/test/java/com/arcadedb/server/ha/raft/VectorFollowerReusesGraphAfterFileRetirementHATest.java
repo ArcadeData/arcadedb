@@ -134,6 +134,56 @@ class VectorFollowerReusesGraphAfterFileRetirementHATest extends BaseRaftHATest 
   }
 
   /**
+   * The production shape of the report: a piece the leader never compacted, holding deleted vectors, and a follower reloading
+   * every index each time another index retires its files. The follower built and persisted that graph itself, with its
+   * manifest and ordinal map, so every later reload must reuse it through that map, whatever was deleted since, instead of
+   * rebuilding it once per reload.
+   */
+  @Test
+  void aFollowerReusesTheGraphItBuiltItselfAcrossReloadsWithDeletionsOnTop() throws Exception {
+    final int leaderIndex = requireLeaderIndex();
+    final Database leader = getServerDatabase(leaderIndex, getDatabaseName());
+    final String indexName = createVectorType(leader, TYPE, 1, DIMENSIONS);
+    final String churnIndex = createVectorType(leader, CHURN, 1, DIMENSIONS);
+
+    final Random random = new Random(134841);
+    insert(leader, TYPE, random, RECORDS);
+    insert(leader, CHURN, random, RECORDS);
+    waitForAll();
+    // Every node builds its graph over the live set and persists it next to its manifest
+    searchEverywhere(indexName, random);
+    leader.transaction(() -> leader.command("sql", "DELETE FROM " + TYPE + " LIMIT 100"));
+
+    final long[] followerRebuildsPerRound = new long[3];
+    for (int round = 0; round < followerRebuildsPerRound.length; round++) {
+      leader.transaction(() -> leader.command("sql", "DELETE FROM " + TYPE + " LIMIT 20"));
+      // Another index retires its files: every follower reloads the whole schema, and this index comes back cold
+      leader.transaction(() -> leader.command("sql", "DELETE FROM " + CHURN + " LIMIT 300"));
+      insert(leader, CHURN, random, 300);
+      compactOnLeader(churnIndex);
+      waitForAll();
+
+      final Vertex probe = leader.query("sql", "SELECT FROM " + TYPE + " LIMIT 1").next().getVertex().orElseThrow();
+      final float[] query = (float[]) probe.get("embedding");
+      final int r = round;
+      testEachServer(serverIndex -> {
+        if (serverIndex == leaderIndex)
+          return;
+        final LSMVectorIndex piece = piece(serverIndex, indexName);
+        assertThat(piece.getStats().get("compactionCount")).as("compactions of the piece on follower %d", serverIndex).isZero();
+        assertThat(piece.getStats().get("deletedVectors")).as("deleted vectors on follower %d", serverIndex).isPositive();
+        final long before = piece.getStats().get("graphRebuildCount");
+        final List<Pair<RID, Float>> neighbours = piece.findNeighborsFromVector(query, 10);
+        followerRebuildsPerRound[r] += piece.getStats().get("graphRebuildCount") - before;
+        assertThat(neighbours.getFirst().getFirst()).as("nearest neighbour of a stored vector on follower %d", serverIndex)
+            .isEqualTo(probe.getIdentity());
+      });
+    }
+    assertThat(followerRebuildsPerRound).as("graph rebuilds on the followers per reload %s",
+        Arrays.toString(followerRebuildsPerRound)).containsOnly(0L);
+  }
+
+  /**
    * The shape of the report: four pieces, every vector deleted and replaced through openCypher while the leader compacts the
    * pieces that cross the bloat factor on its own. A follower must count what the leader counts, and search the compacted
    * pieces without rebuilding them.
