@@ -149,7 +149,7 @@ class LocaleSensitivityTest {
     // Same bug as UtilCompress - "GZIP".toLowerCase(tr_TR) -> "gzıp"
     final UtilCompress compress = new UtilCompress();
     final UtilDecompress decompress = new UtilDecompress();
-    final String compressed = (String) compress.execute(new Object[]{"hello world", "gzip"}, null);
+    final Object compressed = compress.execute(new Object[]{"hello world", "gzip"}, null);
     final Object resultUpper = decompress.execute(new Object[]{compressed, "GZIP"}, null);
     final Object resultLower = decompress.execute(new Object[]{compressed, "gzip"}, null);
     assertThat(resultUpper).isEqualTo(resultLower).isEqualTo("hello world");
