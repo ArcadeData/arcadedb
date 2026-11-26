@@ -27,14 +27,16 @@ only, so it runs offline and adds no npm dependency to Studio:
   - every entry except the root "", those marked `dev: true` and `link: true` symlinks (their target
     entry is the package, and dependencies on the link resolve to it) becomes a library component with
     name, version, purl pkg:npm/<name>@<version> (a scope's @ encoded as %40), the `integrity`
-    hashes converted from base64 to hex (sha512 -> SHA-512, sha384 -> SHA-384, sha256 -> SHA-256)
-    and the `license` the lockfile recorded: one SPDX id as a license id, anything compound as an
-    expression, anything else as a license name
+    hashes converted from base64 to hex (sha512 -> SHA-512, sha256 -> SHA-256: the two the release
+    check accepts; sha384 and sha1 are left out) and the `license` the lockfile recorded: an id from
+    KNOWN_SPDX_IDS as a license id (CycloneDX restricts `license.id` to the SPDX list), anything
+    compound as an expression, anything else (`Proprietary`, an id not pinned here) as a license name
   - `dependencies` follows each entry's dependencies, optionalDependencies and peerDependencies with
     Node's resolution (the nearest node_modules up the tree), the root's going to the metadata
     component
-  - a shipped package with no `license` or no `integrity` fails the run with its lockfile path: a
-    license is never made up, and the strict SBOM check would reject a component without either
+  - a shipped package with no `license`, or no sha512/sha256 `integrity` (sha384 or sha1 only), fails
+    the run with its lockfile path: a license is never made up, and the strict SBOM check would reject
+    a component without either
 
 The bom-ref of a component is its lockfile path, the one key that is unique when two versions of a
 package are installed side by side. metadata.timestamp honours SOURCE_DATE_EPOCH, and the serial
@@ -54,16 +56,27 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-HASH_ALGS = {"sha512": "SHA-512", "sha384": "SHA-384", "sha256": "SHA-256"}
-SPDX_ID = re.compile(r"^[A-Za-z0-9.+-]+$")
+# Only the algorithms check-sbom-fields.py accepts: an npm component with nothing else would fail the release check.
+HASH_ALGS = {"sha512": "SHA-512", "sha256": "SHA-256"}
+# SPDX license ids emitted as `license.id`; any other single value becomes `license.name`. Pinned rather than
+# pattern-matched, because CycloneDX validates `license.id` against the SPDX list and `Proprietary` looks like an id.
+KNOWN_SPDX_IDS = frozenset((
+    "0BSD", "AFL-2.1", "AFL-3.0", "Apache-1.1", "Apache-2.0", "Artistic-2.0", "BlueOak-1.0.0", "BSD-1-Clause",
+    "BSD-2-Clause", "BSD-3-Clause", "BSL-1.0", "CC-BY-3.0", "CC-BY-4.0", "CC-BY-SA-4.0", "CC0-1.0", "CDDL-1.0",
+    "CDDL-1.1", "EPL-1.0", "EPL-2.0", "GPL-2.0-only", "GPL-2.0-or-later", "GPL-3.0-only", "GPL-3.0-or-later", "ISC",
+    "LGPL-2.1-only", "LGPL-2.1-or-later", "LGPL-3.0-only", "LGPL-3.0-or-later", "MIT", "MIT-0", "MPL-1.1", "MPL-2.0",
+    "OFL-1.1", "Python-2.0", "Unicode-3.0", "Unicode-DFS-2016", "Unlicense", "UPL-1.0", "W3C", "WTFPL", "Zlib",
+))
 EXPRESSION = re.compile(r"\s(AND|OR|WITH)\s|[()]")
 
 
 def purl(name, version):
+    """pkg:npm purl of a package, the scope's @ encoded."""
     return f"pkg:npm/{quote(name, safe='/')}@{quote(version, safe='')}"
 
 
 def package_name(path, entry):
+    """The package name of a lockfile entry: its `name`, else the path after the last node_modules/."""
     if entry.get("name"):
         return entry["name"]
     if "node_modules/" in path:
@@ -72,6 +85,7 @@ def package_name(path, entry):
 
 
 def hashes(integrity):
+    """The SHA-512 and SHA-256 digests of an npm `integrity` value, as CycloneDX hashes in hex."""
     out = []
     for token in (integrity or "").split():
         alg, _, digest = token.partition("-")
@@ -81,6 +95,7 @@ def hashes(integrity):
 
 
 def licenses(value):
+    """The CycloneDX licenses of an npm `license` value: a known SPDX id, an expression or a name."""
     if isinstance(value, dict):  # legacy {"type": "MIT", "url": ...}
         value = value.get("type")
     if not isinstance(value, str) or not value.strip():
@@ -88,7 +103,7 @@ def licenses(value):
     value = value.strip()
     if EXPRESSION.search(value):
         return [{"expression": value}]
-    if SPDX_ID.match(value):
+    if value in KNOWN_SPDX_IDS:
         return [{"license": {"id": value}}]
     return [{"license": {"name": value}}]
 
@@ -108,12 +123,14 @@ def resolve(packages, from_path, dependency):
 
 
 def timestamp():
+    """metadata.timestamp: SOURCE_DATE_EPOCH when set, else now (UTC)."""
     epoch = os.environ.get("SOURCE_DATE_EPOCH")
     moment = datetime.fromtimestamp(int(epoch), timezone.utc) if epoch else datetime.now(timezone.utc)
     return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def convert(lock):
+    """The CycloneDX BOM of a lockfile; ValueError lists every shipped package it cannot describe."""
     packages = lock.get("packages") if isinstance(lock, dict) else None
     if not isinstance(packages, dict):
         raise ValueError("no `packages` map: lockfileVersion 2 or 3 is required (run npm install with npm 7 or later)")
@@ -135,12 +152,13 @@ def convert(lock):
         if not component["licenses"]:
             problems.append(f"{path}: no license in the lockfile")
         if not component["hashes"]:
-            problems.append(f"{path}: no sha256/sha384/sha512 integrity in the lockfile")
+            problems.append(f"{path}: no sha512 or sha256 integrity in the lockfile (the release check accepts no other)")
         components.append(component)
     if problems:
         raise ValueError("\n".join(problems))
 
     def edges(from_path, entry):
+        """The shipped packages an entry depends on, resolved as Node resolves them."""
         out = []
         for key in ("dependencies", "optionalDependencies", "peerDependencies"):
             for dependency in entry.get(key) or {}:
@@ -173,6 +191,7 @@ def convert(lock):
 
 
 def main(argv):
+    """Converts the lockfile named on the command line; returns the exit status."""
     if len(argv) != 2:
         print("Usage: npm-lock-to-cdx.py <package-lock.json> <out.cdx.json>", file=sys.stderr)
         return 2
@@ -183,8 +202,12 @@ def main(argv):
         print(f"{argv[0]}: {e}", file=sys.stderr)
         return 1
     out = Path(argv[1])
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(bom, indent=2) + "\n", encoding="utf-8")
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(bom, indent=2) + "\n", encoding="utf-8")
+    except OSError as e:
+        print(f"{out}: cannot write the SBOM ({e})", file=sys.stderr)
+        return 1
     return 0
 
 

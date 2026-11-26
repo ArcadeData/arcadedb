@@ -26,9 +26,11 @@ grype, vexctl, Python 3 guard scripts.
   available, else SHA-256), license, dependencies, author/tool, timestamp.
 - Gate: fail only on severity **critical** with a **fix available**, not marked `not_affected` in
   `vex/arcadedb.openvex.json`.
-- Signer identity regexp, used verbatim everywhere:
-  `^https://github\.com/ArcadeData/arcadedb/\.github/workflows/[^@]+@refs/(heads/main|tags/[0-9][^/]*)$`, issuer
-  `https://token.actions.githubusercontent.com`.
+- Signer identity regexp, used verbatim everywhere (the four release workflows only: other workflows on main also
+  hold `id-token: write`, and `[^@]+` would accept their certificates):
+  `^https://github\.com/ArcadeData/arcadedb/\.github/workflows/(mvn-release|native-image|release-assets|publish-contract)\.yml@refs/(heads/main|tags/[0-9][^/]*)$`,
+  issuer `https://token.actions.githubusercontent.com`. CycloneDX `makeBom` needs network (`requiresOnline`), so the
+  SBOM commands below run without `-o`.
 - Signing/attesting runs only for releases (`mvn-release.yml`, `release` events, `attach_to_release`), never nightly.
 - New dependencies: cyclonedx-maven-plugin (Apache-2.0), @cyclonedx/cyclonedx-npm (Apache-2.0) -> add both to
   `ATTRIBUTIONS.md`. CI tools (cosign, syft, grype, vexctl) are not shipped.
@@ -85,15 +87,15 @@ grype, vexctl, Python 3 guard scripts.
   `includeProvidedScope false`, `includeSystemScope false`, `includeLicenseText false`, `organizationalEntity` name
   `Arcade Data Ltd` / url `https://arcadedb.com`, `outputTimestamp` from `project.build.outputTimestamp` if set.
 
-- [ ] **Step 1:** Run `./mvnw -o -Pdeploy -DskipTests -pl engine,bolt -am package` and confirm no
+- [ ] **Step 1:** Run `./mvnw -Pdeploy -DskipTests -pl engine,bolt -am package` and confirm no
   `*-cyclonedx.json` exists (baseline).
 - [ ] **Step 2:** Add the plugin config.
 - [ ] **Step 3:** Rerun step 1. Expected: `engine/target/arcadedb-engine-*-cyclonedx.json` exists;
   `.github/scripts/check-sbom-fields.py engine/target/*-cyclonedx.json bolt/target/*-cyclonedx.json` exits 0.
 - [ ] **Step 4:** Review Focus #5: `jq -e '[.components[].name] | index("arcadedb-server") | not' bolt/target/*-cyclonedx.json`
   exits 0.
-- [ ] **Step 5:** `./mvnw -o -Pdeploy -DskipTests package -pl e2e -am` produces no SBOM for `e2e`.
-- [ ] **Step 6:** `./mvnw -o -Pdeploy -DskipTests -pl engine install` then confirm
+- [ ] **Step 5:** `./mvnw -Pdeploy -DskipTests package -pl e2e -am` produces no SBOM for `e2e`.
+- [ ] **Step 6:** `./mvnw -Pdeploy -DskipTests -pl engine install` then confirm
   `~/.m2/.../arcadedb-engine-<v>-cyclonedx.json` is installed (proves it is attached, hence GPG-signed and bundled by
   central-publishing on a real deploy). Run `python3 .github/scripts/check-license-allowlist.py` if it runs locally.
 
@@ -124,7 +126,7 @@ grype, vexctl, Python 3 guard scripts.
 - [ ] **Step 2:** Implement `merge-sbom.py`; rerun -> PASS.
 - [ ] **Step 3:** Add the npm devDependency; `cd studio && npm test` -> PASS (license allow-list test includes it).
 - [ ] **Step 4:** Wire Studio + package poms and assembly descriptors.
-- [ ] **Step 5:** `./mvnw -o -Pdeploy -DskipTests -pl package -am package`; then
+- [ ] **Step 5:** `./mvnw -Pdeploy -DskipTests -pl package -am package`; then
   `tar tzf package/target/arcadedb-<v>.tar.gz | grep sbom/` lists the SBOM; `check-sbom-fields.py` passes on all four;
   the `base` SBOM has no `arcadedb-studio` component if `base.xml` excludes Studio; for each assembly, the set of jar
   names under `lib/` equals the set of SBOM components of type `library` with a matching file name (write this

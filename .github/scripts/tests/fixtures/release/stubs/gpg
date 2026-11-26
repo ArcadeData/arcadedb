@@ -20,7 +20,8 @@
 # Stub `gpg` for test-ci-scripts.sh. Logs each call to $STUB_DIR/calls.log. `--detach-sign --output <o>` writes <o>;
 # `--verify` fails when $STUB_DIR/fail-gpg exists, and otherwise prints a VALIDSIG status line (as with
 # `--status-fd 1`) for the key in $STUB_DIR/gpg-signer (default STUB_GPG_FPR below, with the primary key
-# fingerprint STUB_GPG_PRIMARY); everything else (e.g. `--import`) succeeds.
+# fingerprint STUB_GPG_PRIMARY); `--import <file>` fails when <file> does not exist (as gpg does); everything else
+# succeeds.
 
 set -euo pipefail
 
@@ -41,6 +42,10 @@ for a in "$@"; do
         [[ -f "$STUB_DIR/gpg-signer" ]] && signer="$(cat "$STUB_DIR/gpg-signer")"
         echo "[GNUPG:] GOODSIG ${signer: -16} Stub <stub@example.invalid>"
         echo "[GNUPG:] VALIDSIG $signer 2026-11-26 1795000000 0 4 0 1 10 00 $STUB_GPG_PRIMARY"
+    fi
+    if [[ $prev == --import && ! -e $a ]]; then
+        echo "gpg: can't open '$a': No such file or directory" >&2
+        exit 2
     fi
     [[ $prev == --output ]] && echo "-----BEGIN PGP SIGNATURE-----" >"$a"
     prev="$a"

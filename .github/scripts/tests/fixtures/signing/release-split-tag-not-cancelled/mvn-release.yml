@@ -1,0 +1,27 @@
+name: release-to-maven-central
+on:
+  workflow_dispatch:
+    inputs:
+      releaseversion:
+        required: true
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build and push Docker images
+        run: ./mvnw -Pdocker -DskipPublishing=true --batch-mode -pl package -am deploy
+  sign-image:
+    needs: docker
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sign the image
+        run: cosign sign --yes --recursive "${NS}/arcadedb@${DIGEST}"
+  tag:
+    needs: sign-image
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Tag and commit release version
+        run: |
+          git tag "${RELEASE_VERSION}"
+          git push origin "${RELEASE_VERSION}"

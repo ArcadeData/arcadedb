@@ -21,6 +21,9 @@
 #               image SBOMs as the `release-image-sbom` artifact. Runs no code from the repository (no checkout).
 #   tag         commits and tags the release, then commits the next development version.
 #
+# Dispatch it from main ("Use workflow from: main"), for a release and for a fork's rehearsal alike: `preflight` refuses
+# any other ref, because the signer identity every verifier accepts is refs/heads/main.
+#
 # Recovery:
 #   - `preflight` failed: nothing was published. Fix the dependency (or record a justified not_affected statement in
 #     vex/arcadedb.openvex.json) and dispatch again.
@@ -44,7 +47,7 @@
 #   - `tag` failed: use "Re-run failed jobs" if it failed before pushing the tag. If "Commit next development version"
 #     failed (a merge conflict with what reached main meanwhile), the release is tagged and complete: finish the
 #     version bump by hand (set the next version, commit, push to main). release-assets.yml still works, because it
-#     needs only this run's successful `attest` job and its `release-image-sbom` artifact, not a green run.
+#     needs only this run's successful `attest` and `sign-image` jobs, not a green run.
 #
 # Rehearsal: ticking `rehearsal` runs `preflight`, and in `central` the same build with `package` instead of `deploy`,
 # without credentials and without -Pdeploy-central, then attests the result. It never reaches Maven Central. It
@@ -61,7 +64,7 @@ on:
   workflow_dispatch:
     inputs:
       releaseversion:
-        description: "Release version"
+        description: "Release version (dispatch from main: any other ref is refused)"
         required: true
       nextversion:
         description: "Next development version (e.g. 30.1.1-SNAPSHOT)"
@@ -85,6 +88,16 @@ jobs:
     permissions:
       contents: read
     steps:
+      # Every signature and attestation of the release carries the ref this workflow was dispatched from, and every
+      # verifier (release-assets.sh, verify-release.sh) accepts only refs/heads/main or a release tag. A dispatch from
+      # any other branch would publish to Central and then leave a release nobody can verify, so it stops here, before
+      # anything is published. A fork rehearses from its own main too.
+      - name: Refuse a dispatch from a ref other than main
+        if: ${{ github.ref != 'refs/heads/main' }}
+        run: |
+          echo "::error::dispatch mvn-release.yml from main (got ${GITHUB_REF}); the release signer identity accepts only refs/heads/main" >&2
+          exit 1
+
       # A rehearsal attests, and an attestation is signed with this repository's identity, which then vouches for a
       # build that is not a release. Only a fork may rehearse.
       - name: Refuse a rehearsal in the main repository

@@ -29,6 +29,7 @@
 #   $STUB_DIR/runs/<run id>-run.json        what `gh api repos/<o>/<r>/actions/runs/<run id>` prints (absent: 404)
 #                                           A query string (`?per_page=100`) on any of the three is ignored.
 #   $STUB_DIR/fail-attestation              ERE; `gh attestation verify <file>` fails when the file name matches
+#   $STUB_DIR/fail-run-list                 present: `gh run list` fails (an API error)
 #   $STUB_DIR/calls.log                     one line per call: `gh <args>`; uploads also log `upload <asset>`
 
 set -euo pipefail
@@ -53,6 +54,10 @@ release="$STUB_DIR/release"
 
 case "$1 $2" in
 "run list")
+    if [[ -f "$STUB_DIR/fail-run-list" ]]; then
+        echo "gh: Server Error (HTTP 502)" >&2
+        exit 1
+    fi
     workflow="$(flag --workflow "$@")"
     if [[ -f "$STUB_DIR/runs/$workflow.json" ]]; then cat "$STUB_DIR/runs/$workflow.json"; else echo '[]'; fi
     ;;

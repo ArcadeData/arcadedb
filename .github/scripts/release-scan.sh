@@ -19,7 +19,7 @@
 #
 # Pre-release vulnerability gate. Builds the release artifacts exactly as the release does, then scans every SBOM and
 # the JVM image of each platform with grype. The gate fails only on a CRITICAL vulnerability that has a fix available
-# and is not marked not_affected in vex/arcadedb.openvex.json: a release must not ship a critical hole that an upgrade
+# and is not marked not_affected in vex/arcadedb.openvex.json (only its not_affected statements reach grype): a release must not ship a critical hole that an upgrade
 # would close, but an unfixable or already-assessed one must not block it forever.
 #
 # Every scan runs even when an earlier one fails, so one run reports everything that is wrong; the exit status is
@@ -46,6 +46,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 readonly ROOT
 readonly SCAN_DIR="${ROOT}/package/target/scan"
 readonly VEX="${ROOT}/vex/arcadedb.openvex.json"
+# What grype gets: VEX reduced to its not_affected statements (grype would also suppress on a `fixed` statement).
+readonly GATE_VEX="${SCAN_DIR}/vex-not-affected.json"
 readonly BUILDER="${SCAN_BUILDER:-arcadedb-scan}"
 
 cd "${ROOT}" || exit 1
@@ -84,6 +86,12 @@ fail() {
     FAILED=1
 }
 
+# Validated before the build, so a malformed VEX fails in seconds; the copy keeps only the justified exemptions.
+if ! .github/scripts/check-vex.sh "${VEX}" "${GATE_VEX}"; then
+    echo "::error::${VEX} is not a valid VEX document for the release gate" >&2
+    exit 1
+fi
+
 # The build needs network (cyclonedx makeBom skips itself offline) and python3 (merge-sbom.py).
 echo "== Building release artifacts for ${VERSION}"
 if ! ./mvnw -Pdeploy -DskipTests --batch-mode --errors --show-version -pl package -am package; then
@@ -104,11 +112,13 @@ echo "== Checking SBOM fields"
 python3 .github/scripts/check-sbom-fields.py "${SBOMS[@]}" || fail "an SBOM misses required fields"
 
 # scan <label> <grype source> : the gate and the report share one run, so the table in the summary is what gated.
+# --show-suppressed keeps the findings --only-fixed and the VEX hide in the table (the JSON keeps them in
+# ignoredMatches); it changes no verdict.
 scan() {
     local label="$1" source="$2" table rc
     table="${SCAN_DIR}/${label}.txt"
     echo "== Scanning ${label}"
-    grype "${source}" --vex "${VEX}" --only-fixed --fail-on critical \
+    grype "${source}" --vex "${GATE_VEX}" --only-fixed --fail-on critical --show-suppressed \
         -o "json=${SCAN_DIR}/${label}.json" -o "table=${table}"
     rc=$?
     cat "${table}" 2> /dev/null

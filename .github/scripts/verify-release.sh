@@ -18,8 +18,8 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Verifies a published release end to end, the way a consumer would: every asset against the signed SHA256SUMS, the
-# cosign and gpg signatures of SHA256SUMS, the build provenance of every archive and contract file, and the signatures
-# and SBOM attestations of the Docker images. Each signature must come from one of the four release workflows of this
+# cosign and gpg signatures of SHA256SUMS, the build provenance of every archive and contract file, and the signatures,
+# SBOM attestations and SLSA build provenance of the Docker images. Each signature must come from one of the four release workflows of this
 # repository, on main or on a release tag: other workflows in the repository can also mint OIDC certificates
 # (load-tests, benchmarks), and a pattern accepting any workflow would accept theirs.
 #
@@ -31,8 +31,9 @@
 #       DOCKER_NAMESPACE     Docker Hub namespace of the JVM and native images (default arcadedata); a fork that
 #                            rehearses a release sets it to its scratch namespace, as its workflows push there
 #       NATIVE_ARCHES        per-arch native image tags (default "amd64 arm64"), as native-image.yml pushes them
-#       GPG_PUBLIC_KEY_FILE  ASCII-armored public key to check SHA256SUMS.asc against, in a throwaway keyring. Unset:
-#                            the caller's own keyring (a consumer who imported the ArcadeDB release key)
+#       GPG_PUBLIC_KEY_FILE  ASCII-armored public key to check SHA256SUMS.asc against, in a throwaway keyring; a
+#                            relative path is relative to the caller's directory. Unset: the caller's own keyring (a
+#                            consumer who imported the ArcadeDB release key)
 #       RELEASE_GPG_FINGERPRINT  REQUIRED: fingerprint of the release signing key. A valid signature by any other key
 #                            in the keyring is a failure (case and spaces ignored; the signing subkey's or the primary
 #                            key's fingerprint both match, as gpg reports both)
@@ -55,6 +56,12 @@ if [[ ! "${REPO}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
     exit 2
 fi
 readonly NS="${DOCKER_NAMESPACE:-arcadedata}"
+# Resolved now: the checks below run inside the download directory.
+GPG_KEY_FILE="${GPG_PUBLIC_KEY_FILE:-}"
+if [[ -n "${GPG_KEY_FILE}" && "${GPG_KEY_FILE}" != /* ]]; then
+    GPG_KEY_FILE="${PWD}/${GPG_KEY_FILE}"
+fi
+readonly GPG_KEY_FILE
 read -r -a ARCHES <<<"${NATIVE_ARCHES:-amd64 arm64}"
 readonly ARCHES
 
@@ -134,11 +141,11 @@ if [[ -f SHA256SUMS ]]; then
         fail "set the repository variable RELEASE_GPG_FINGERPRINT to the release signing key fingerprint"
     elif [[ -f SHA256SUMS.asc ]]; then
         gpg_cmd=(gpg --batch)
-        if [[ -n "${GPG_PUBLIC_KEY_FILE:-}" ]]; then
+        if [[ -n "${GPG_KEY_FILE}" ]]; then
             keyring="$(mktemp -d "${DIR}/gnupg.XXXXXX")"
             chmod 700 "${keyring}"
             gpg_cmd=(env "GNUPGHOME=${keyring}" gpg --batch)
-            "${gpg_cmd[@]}" --import "${GPG_PUBLIC_KEY_FILE}" || fail "could not import the public key ${GPG_PUBLIC_KEY_FILE}"
+            "${gpg_cmd[@]}" --import "${GPG_KEY_FILE}" || fail "could not import the public key ${GPG_KEY_FILE}"
         fi
         if status="$("${gpg_cmd[@]}" --status-fd 1 --verify SHA256SUMS.asc SHA256SUMS)"; then
             # [GNUPG:] VALIDSIG <signing key fpr> ... <primary key fpr>
@@ -179,10 +186,13 @@ done
 for image in "${signed[@]}"; do
     cosign verify "${cosign_identity[@]}" "${image}" >/dev/null || fail "${image} has no verified signature"
 done
-# The `-native` manifest list carries a signature only; the SBOMs are attested on the per-arch images it lists.
+# The `-native` manifest list carries a signature only; the SBOMs and the SLSA build provenance are attested on the
+# JVM image and the per-arch images it lists. The provenance is pushed to the registry under index.docker.io, the
+# subject name the workflows give actions/attest-build-provenance; `gh attestation verify` defaults to its predicate.
 for image in "${with_sbom[@]}"; do
     cosign verify-attestation --type cyclonedx "${cosign_identity[@]}" "${image}" >/dev/null ||
         fail "${image} has no verified CycloneDX SBOM attestation"
+    attest "oci://index.docker.io/${image}" || fail "${image} has no verified build provenance"
 done
 
 echo

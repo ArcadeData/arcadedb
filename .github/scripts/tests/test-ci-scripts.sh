@@ -3088,6 +3088,21 @@ def only_publisher(name):
     return m
 write("publisher-only", only_publisher("Arcade Data Ltd"))
 write("publisher-other", only_publisher("Someone Else"))
+write("tools-components-int", lambda b: b["metadata"].update(tools={"components": 1}))
+write("tools-int", lambda b: b["metadata"].update(tools=1))
+write("deps-null", lambda b: b.update(dependencies=[None]))
+write("deps-no-ref", lambda b: b.update(dependencies=[{"dependsOn": []}]))
+write("deps-bad-dependson", lambda b: b.update(dependencies=[{"ref": "x", "dependsOn": [1]}]))
+write("deps-leaf", lambda b: b.update(dependencies=[{"ref": "x"}]))
+write("hash-short", lambda b: [c.update(hashes=[{"alg": "SHA-512", "content": "a"}]) for c in b["components"]])
+write("hash-256-as-512", lambda b: [c.update(hashes=[{"alg": "SHA-512", "content": "a" * 64}]) for c in b["components"]])
+write("hash-256", lambda b: [c.update(hashes=[{"alg": "SHA-256", "content": "ab" * 32}]) for c in b["components"]])
+def other_supplier_arcade_manufacturer(b):
+    b["metadata"]["supplier"] = {"name": "Third Party"}
+    b["metadata"]["manufacturer"] = {"name": "Arcade Data Ltd"}
+    b["metadata"].setdefault("component", {}).pop("supplier", None)
+    b["metadata"]["component"].pop("publisher", None)
+write("supplier-other-manufacturer-arcade", other_supplier_arcade_manufacturer)
 PY
 echo '{ not json' >"$work/sbom-broken.json"
 expect "specVersion 1.4 fails" 1 "missing specVersion" "$SBOMFIELDS" "$work/sbom-spec14.json"
@@ -3108,6 +3123,20 @@ expect "--module still checks the other fields" 1 "missing dependencies" "$SBOMF
 expect "components as a dict is malformed" 1 "malformed components" "$SBOMFIELDS" "$work/sbom-components-dict.json"
 expect "a component that is not an object is malformed" 1 "malformed components[0]" "$SBOMFIELDS" "$work/sbom-component-string.json"
 expect "no argument exits 2" 2 "Usage" "$SBOMFIELDS"
+expect "metadata.tools.components that is not an array is malformed, not a traceback" 1 "malformed metadata.tools.components" \
+    "$SBOMFIELDS" "$work/sbom-tools-components-int.json"
+expect "a malformed tool collection does not stop the BOMs after it" 1 "$work/sbom-publisher-other.json: metadata: missing supplier" \
+    "$SBOMFIELDS" "$work/sbom-tools-components-int.json" "$work/sbom-publisher-other.json"
+expect "metadata.tools that is neither an array nor an object is malformed" 1 "malformed metadata.tools" "$SBOMFIELDS" "$work/sbom-tools-int.json"
+expect "a dependency record that is not an object is malformed" 1 "malformed dependencies[0]" "$SBOMFIELDS" "$work/sbom-deps-null.json"
+expect "a dependency record without a ref is malformed" 1 "malformed dependencies[0].ref" "$SBOMFIELDS" "$work/sbom-deps-no-ref.json"
+expect "a dependsOn that is not an array of strings is malformed" 1 "malformed dependencies[0].dependsOn" "$SBOMFIELDS" "$work/sbom-deps-bad-dependson.json"
+expect "a leaf dependency record without dependsOn passes" 0 "" "$SBOMFIELDS" "$work/sbom-deps-leaf.json"
+expect "a hash whose content is not a digest of its algorithm fails" 1 "missing hashes" "$SBOMFIELDS" "$work/sbom-hash-short.json"
+expect "a SHA-256-long digest declared as SHA-512 fails" 1 "missing hashes" "$SBOMFIELDS" "$work/sbom-hash-256-as-512.json"
+expect "a 64-hex-digit SHA-256 passes" 0 "" "$SBOMFIELDS" "$work/sbom-hash-256.json"
+expect "a matching manufacturer satisfies the supplier although metadata.supplier names someone else" 0 "" \
+    "$SBOMFIELDS" "$work/sbom-supplier-other-manufacturer-arcade.json"
 
 # The distribution SBOMs are built from the package module's BOM: filtered to the jars one assembly
 # puts under lib/, with Studio's npm tree nested under an `arcadedb-studio` application component,
@@ -3230,8 +3259,41 @@ mkdir -p "$work/lib-stale"
 printf 'not the engine\n' >"$work/lib-stale/arcadedb-engine-26.12.1.jar"
 expect "a shipped jar whose hash differs from the BOM fails" 1 "hash" \
     "$MERGE" --root "$MERGEJVM" --lib-dir "$work/lib-stale" --out "$work/merge-stale.cdx.json"
-expect "an empty lib dir fails rather than writing an empty BOM" 1 "no jar" \
+mkdir -p "$work/lib-empty"
+expect "an empty lib dir fails rather than writing an empty BOM" 1 "lib-empty: no jar" \
+    "$MERGE" --root "$MERGEJVM" --lib-dir "$work/lib-empty" --out "$work/merge-empty.cdx.json"
+expect "a missing lib dir fails too" 1 "no jar" \
     "$MERGE" --root "$MERGEJVM" --lib-dir "$work/lib-empty-missing" --out "$work/merge-empty.cdx.json"
+
+# Orphans are found by reachability from the root, not by "has no incoming edge": with root -> studio -> engine ->
+# gremlin -> engine and the studio jar not shipped, engine and gremlin both keep an incoming edge yet neither is
+# reachable. The first of them in document order gets the root edge, and the other stays reachable through it.
+python3 - "$MERGEJVM" "$work/merge-jvm-cycle.json" <<'PY'
+import json, sys
+bom = json.load(open(sys.argv[1]))
+ref = {c["name"]: c["bom-ref"] for c in bom["components"]}
+root = bom["metadata"]["component"]["bom-ref"]
+bom["dependencies"] = [
+    {"ref": root, "dependsOn": [ref["arcadedb-studio"]]},
+    {"ref": ref["arcadedb-studio"], "dependsOn": [ref["arcadedb-engine"]]},
+    {"ref": ref["arcadedb-engine"], "dependsOn": [ref["arcadedb-gremlin"]]},
+    {"ref": ref["arcadedb-gremlin"], "dependsOn": [ref["arcadedb-engine"]]},
+]
+json.dump(bom, open(sys.argv[2], "w"))
+PY
+mkdir -p "$work/lib-cycle"
+cp "$work/lib-full/arcadedb-engine-26.12.1.jar" "$work/lib-full/arcadedb-gremlin-26.12.1-shaded.jar" "$work/lib-cycle/"
+"$MERGE" --root "$work/merge-jvm-cycle.json" --lib-dir "$work/lib-cycle" "${RELEASE_ARGS[@]}" \
+    --out "$work/merge-cycle.cdx.json" || true
+bom_expect "a retained cycle cut off from the root by a filtered jar is re-attached to the root" "$work/merge-cycle.cdx.json" '
+root = bom["metadata"]["component"]["bom-ref"]
+seen, todo = set(), [root]
+while todo:
+    r = todo.pop()
+    if r not in seen:
+        seen.add(r)
+        todo.extend(deps.get(r, []))
+ok = set(refs) <= seen and deps[root] == [top["arcadedb-engine"]["bom-ref"]]'
 
 # The hash check must not fail open: a component with no usable hash cannot vouch for the jar shipped
 # under its name, and a SHA-512-only component (what a newer generator may write) must still be checked.
@@ -3500,6 +3562,36 @@ expect "a document without a packages map (lockfile v1) is refused" 1 "lockfileV
     "$NPMCDX" "$SBOMFIX/merge-jvm.cdx.json" "$work/npm-v1.cdx.json"
 expect "npm-lock-to-cdx.py without arguments exits 2" 2 "Usage" "$NPMCDX"
 
+# Policy shared with check-sbom-fields.py: only SHA-512 and SHA-256 count, so a sha384- or sha1-only package fails here,
+# by name, instead of producing a BOM the release check rejects with a bare `hashes`.
+python3 - "$NPMLOCK" "$work" <<'PY'
+import base64, hashlib, json, sys
+lock = json.load(open(sys.argv[1]))
+def write(name, mutate):
+    l = json.loads(json.dumps(lock))
+    mutate(l["packages"])
+    json.dump(l, open(f"{sys.argv[2]}/npm-{name}.json", "w"))
+b64 = lambda alg, data: base64.b64encode(hashlib.new(alg, data).digest()).decode()
+write("sha384", lambda p: p["node_modules/left"].update(integrity="sha384-" + b64("sha384", b"left")))
+write("sha1", lambda p: p["node_modules/left"].update(integrity="sha1-" + b64("sha1", b"left")))
+write("sha384-and-512", lambda p: p["node_modules/left"].update(
+    integrity="sha384-" + b64("sha384", b"left") + " sha512-" + b64("sha512", b"left")))
+write("proprietary", lambda p: p["node_modules/left"].update(license="Proprietary"))
+PY
+expect "a sha384-only package fails, naming it" 1 "node_modules/left: no sha512 or sha256 integrity" \
+    "$NPMCDX" "$work/npm-sha384.json" "$work/npm-sha384.cdx.json"
+expect "a sha1-only package fails, naming it" 1 "node_modules/left: no sha512 or sha256 integrity" \
+    "$NPMCDX" "$work/npm-sha1.json" "$work/npm-sha1.cdx.json"
+"$NPMCDX" "$work/npm-sha384-and-512.json" "$work/npm-sha384-and-512.cdx.json" || true
+bom_expect "of sha384 and sha512, only the SHA-512 hash is emitted" "$work/npm-sha384-and-512.cdx.json" \
+    '[h["alg"] for c in bom["components"] if c["name"] == "left" for h in c["hashes"]] == ["SHA-512"]'
+"$NPMCDX" "$work/npm-proprietary.json" "$work/npm-proprietary.cdx.json" || true
+bom_expect "a license that is not a known SPDX id is a license name, not an id" "$work/npm-proprietary.cdx.json" \
+    '[c["licenses"] for c in bom["components"] if c["name"] == "left"] == [[{"license": {"name": "Proprietary"}}]]'
+mkdir -p "$work/npm-out-is-a-dir.cdx.json"
+expect "an output path that cannot be written fails, naming the destination" 1 "$work/npm-out-is-a-dir.cdx.json: cannot write the SBOM" \
+    "$NPMCDX" "$NPMLOCK" "$work/npm-out-is-a-dir.cdx.json"
+
 # A `link: true` entry is a symlink in node_modules, not a package: what ships is its target entry.
 python3 - "$NPMLOCK" "$work/npm-link.json" <<'PY'
 import base64, hashlib, json, sys
@@ -3536,6 +3628,23 @@ vex_variant ".statements = [$stmt}]"
 expect "a not_affected with neither fails" 1 "not_affected" "$CHECKVEX" "$work/vex.json"
 vex_variant '.statements = [{"vulnerability":{"name":"CVE-2026-2"},"products":[{"@id":"pkg:maven/a/b@1"}],"status":"under_investigation"}]'
 expect "a status other than not_affected needs no justification" 0 "OK" "$CHECKVEX" "$work/vex.json"
+vex_variant '.statements = [{}]'
+expect "an empty statement fails instead of being skipped" 1 "statement 0: needs vulnerability.name" "$CHECKVEX" "$work/vex.json"
+vex_variant '.statements = [null]'
+expect "a statement that is not an object fails" 1 "statement 0: not an object" "$CHECKVEX" "$work/vex.json"
+for partial in affect "" not_affected_x; do
+    vex_variant ".statements = [{\"vulnerability\":{\"name\":\"CVE-2026-7\"},\"products\":[{\"@id\":\"pkg:maven/a/b@1\"}],\"status\":\"$partial\"}]"
+    expect "status '$partial' is refused (exact match, not a substring)" 1 "is not one of not_affected" "$CHECKVEX" "$work/vex.json"
+done
+vex_variant '.statements = [{"vulnerability":{"name":"CVE-2026-3"},"products":[{"@id":"pkg:maven/a/b@1"}],"status":"fixed"}]'
+expect "a fixed statement is refused (grype would suppress a fixable critical with it)" 1 \
+    'statement 0 (CVE-2026-3): status "fixed" is not one of not_affected, affected, under_investigation' "$CHECKVEX" "$work/vex.json"
+vex_variant '.statements = [{"vulnerability":{"name":"CVE-2026-4"},"products":[],"status":"affected"}]'
+expect "a statement with no products fails" 1 "needs a non-empty products array" "$CHECKVEX" "$work/vex.json"
+vex_variant '.statements = [{"vulnerability":{"name":"CVE-2026-5"},"products":[{"name":"b"}],"status":"affected"}]'
+expect "a product without an @id fails" 1 "each with an @id" "$CHECKVEX" "$work/vex.json"
+vex_variant ".statements = [$stmt,\"justification\":[\"component_not_present\"],\"impact_statement\":\"unused\"}]"
+expect "a justification that is not a string fails" 1 "must be strings" "$CHECKVEX" "$work/vex.json"
 vex_variant '.["@context"] = "https://openvex.dev/ns/v0.1.0"'
 expect "a wrong @context fails" 1 "OpenVEX" "$CHECKVEX" "$work/vex.json"
 vex_variant 'del(.author)'
@@ -3548,6 +3657,25 @@ vex_variant '.statements = {}'
 expect "statements that is not an array fails" 1 "statements" "$CHECKVEX" "$work/vex.json"
 echo '{' > "$work/vex.json"
 expect "unparseable JSON fails" 1 "OpenVEX" "$CHECKVEX" "$work/vex.json"
+# The gate copy release-scan.sh hands grype keeps only the not_affected statements.
+vex_variant ".statements = [$stmt,\"justification\":\"component_not_present\",\"impact_statement\":\"unused\"},
+    {\"vulnerability\":{\"name\":\"CVE-2026-6\"},\"products\":[{\"@id\":\"pkg:maven/a/b@1\"}],\"status\":\"under_investigation\"}]"
+expect "check-vex.sh writes the gate copy of a valid document" 0 "OK" "$CHECKVEX" "$work/vex.json" "$work/vex-gate.json"
+if [[ "$(jq -c '[.statements[] | [.vulnerability.name, .status]]' "$work/vex-gate.json")" == '[["CVE-2026-1","not_affected"]]' ]]; then
+    pass "the gate copy carries only the not_affected statements"
+else
+    fail "the gate copy carries only the not_affected statements" "$(cat "$work/vex-gate.json")"
+fi
+rm -f "$work/vex-gate.json"
+vex_variant '.statements = [{"vulnerability":{"name":"CVE-2026-3"},"products":[{"@id":"pkg:maven/a/b@1"}],"status":"fixed"}]'
+expect "an invalid document writes no gate copy" 1 "fixed" "$CHECKVEX" "$work/vex.json" "$work/vex-gate.json"
+if [[ -e "$work/vex-gate.json" ]]; then fail "an invalid document writes no gate copy (file)"; else pass "an invalid document writes no gate copy (file)"; fi
+if grep -q -- '--vex "${GATE_VEX}"' "$SCRIPTS/release-scan.sh" && grep -q 'check-vex.sh "${VEX}" "${GATE_VEX}"' "$SCRIPTS/release-scan.sh" \
+    && ! grep -q -- '--vex "${VEX}"' "$SCRIPTS/release-scan.sh"; then
+    pass "release-scan.sh hands grype only the validated not_affected copy"
+else
+    fail "release-scan.sh hands grype only the validated not_affected copy"
+fi
 
 echo
 echo "check-release-signing.py"
@@ -3566,6 +3694,19 @@ expect "accepts docker/build-push-action with push: true followed by cosign sign
 expect "ignores docker/build-push-action with push: false" 0 "" "$SIGNING" "$SIGNFIX/action-nopush.yml"
 expect "rejects a ref guard placed after the signing step" 1 "guard-after.yml:j:Sign: (c)" "$SIGNING" "$SIGNFIX/guard-after.yml"
 expect "rejects a ref guard that only echoes" 1 "guard-echo.yml:j:Sign: (c)" "$SIGNING" "$SIGNFIX/guard-echo.yml"
+# A guard counts only if it fails the run off main: the predicate, a non-zero exit, and no continue-on-error.
+expect "rejects an off-main if: guard whose run does not exit non-zero" 1 "guard-if-no-exit.yml:j:Sign: (c)" "$SIGNING" "$SIGNFIX/guard-if-no-exit.yml"
+expect "rejects a run guard that only writes an ::error:: annotation" 1 "guard-annotation-only.yml:j:Sign: (c)" "$SIGNING" "$SIGNFIX/guard-annotation-only.yml"
+expect "rejects an off-main guard with continue-on-error" 1 "guard-continue-on-error.yml:j:Sign: (c)" "$SIGNING" "$SIGNFIX/guard-continue-on-error.yml"
+expect "accepts a run guard that names the ref and main and exits 2" 0 "" "$SIGNING" "$SIGNFIX/guard-run-exit.yml"
+expect "rejects an inverted if: guard (== main fires ON main)" 1 "guard-inverted.yml:j:Sign: (c)" "$SIGNING" "$SIGNFIX/guard-inverted.yml"
+expect "rejects an inverted run guard (== main)" 1 "guard-run-inverted.yml:j:Sign: (c)" "$SIGNING" "$SIGNFIX/guard-run-inverted.yml"
+expect "rejects a guard whose ref test exists only in a comment" 1 "guard-comment-only.yml:j:Sign: (c)" "$SIGNING" "$SIGNFIX/guard-comment-only.yml"
+expect "rejects an off-main if: guard whose exit exists only in a comment" 1 "guard-comment-exit.yml:j:Sign: (c)" "$SIGNING" "$SIGNFIX/guard-comment-exit.yml"
+# A signing step counts only if it runs on a release and its failure fails the job.
+expect "rejects a push whose cosign sign step is skipped by if: false" 1 "action-push-sign-skipped.yml:j:<step 1>: (a)" "$SIGNING" "$SIGNFIX/action-push-sign-skipped.yml"
+expect "rejects a push whose cosign sign step has continue-on-error" 1 "action-push-sign-continue.yml:j:<step 1>: (a)" "$SIGNING" "$SIGNFIX/action-push-sign-continue.yml"
+expect "accepts a cosign sign step gated by exactly the release gate" 0 "" "$SIGNING" "$SIGNFIX/action-push-sign-gated.yml"
 expect "labels an unnamed step by its 1-based index" 1 "unnamed.yml:j:<step 2>: (a)" "$SIGNING" "$SIGNFIX/unnamed.yml"
 expect "a missing workflow is a usage error" 2 "" "$SIGNING" "$SIGNFIX/does-not-exist.yml"
 # SIGNED_IN_LATER_JOB: native-image.yml's `docker` push is signed by `sign-native-images`, and each condition is verified.
@@ -3575,7 +3716,11 @@ expect "rejects a mapped signing job that does not exist" 1 "which does not exis
 expect "rejects a mapped signing job not gated to releases" 1 "which is not gated by" "$SIGNING" "$SIGNFIX/later-job-ungated/native-image.yml"
 expect "rejects a mapped signing job whose gate merely contains the release test" 1 "which is not gated by exactly" "$SIGNING" "$SIGNFIX/later-job-always/native-image.yml"
 expect "accepts the release gate with other whitespace and line breaks" 0 "" "$SIGNING" "$SIGNFIX/later-job-spacing/native-image.yml"
-expect "rejects a mapped signing job with no cosign sign step" 1 "which has no \`cosign sign\` step" "$SIGNING" "$SIGNFIX/later-job-unsigned/native-image.yml"
+expect "accepts the release gate in another case (GitHub expressions ignore case)" 0 "" "$SIGNING" "$SIGNFIX/later-job-gate-case/native-image.yml"
+expect "rejects a mapped signing job with no cosign sign step" 1 "which has no effective \`cosign sign\` step" "$SIGNING" "$SIGNFIX/later-job-unsigned/native-image.yml"
+expect "rejects a mapped signing job whose cosign sign step is skipped by if: false" 1 "which has no effective \`cosign sign\` step" "$SIGNING" "$SIGNFIX/later-job-step-skipped/native-image.yml"
+expect "rejects a mapped signing job whose cosign sign step has continue-on-error" 1 "which has no effective \`cosign sign\` step" "$SIGNING" "$SIGNFIX/later-job-step-continue/native-image.yml"
+expect "rejects a mapped signing job with a job-level continue-on-error" 1 "which has a job-level \`continue-on-error\`" "$SIGNING" "$SIGNFIX/later-job-job-continue/native-image.yml"
 expect "the mapping applies only to the workflow it names" 1 "later-job-other-workflow.yml:docker:Push per-arch image: (a) image push with no later" "$SIGNING" "$SIGNFIX/later-job-other-workflow.yml"
 # mvn-release.yml: `docker` pushes, `sign-image` signs with no job-level gate (the workflow is release-only), `tag` tags.
 expect "accepts the release-only split: push job, ungated signing job, tag job after it" 0 "" "$SIGNING" "$SIGNFIX/release-split-ok/mvn-release.yml"
@@ -3587,6 +3732,15 @@ expect "a job-level if on the release-only signing job is refused" 1 "which must
 expect "a tag job that does not need the signing job is refused" 1 \
     "mvn-release.yml:tag:Tag and commit release version: (b) tags the release without needing \`sign-image\`, which signs the image" \
     "$SIGNING" "$SIGNFIX/release-split-tag-unordered/mvn-release.yml"
+expect "a tag job with if: always() is refused although it needs the signing job" 1 \
+    "mvn-release.yml:tag:Tag and commit release version: (b) tags the release in a job whose \`if:\` runs it after the signing failed" \
+    "$SIGNING" "$SIGNFIX/release-split-tag-always/mvn-release.yml"
+expect "a tag job with if: !cancelled() is refused although it needs the signing job" 1 \
+    "mvn-release.yml:tag:Tag and commit release version: (b) tags the release in a job whose \`if:\` runs it after the signing failed" \
+    "$SIGNING" "$SIGNFIX/release-split-tag-not-cancelled/mvn-release.yml"
+expect "a tag job with if: Always() is refused (function names are case-insensitive)" 1 \
+    "mvn-release.yml:tag:Tag and commit release version: (b) tags the release in a job whose \`if:\` runs it after the signing failed" \
+    "$SIGNING" "$SIGNFIX/release-split-tag-always-case/mvn-release.yml"
 expect "the live release workflows pass the signing check" 0 "release signing is enforced in 2 workflow(s)" "$SIGNING"
 
 echo
@@ -3601,10 +3755,9 @@ RELTAG="26.12.1"
 
 # A fresh stub world: the release already carries what native-image.yml and publish-contract.yml upload, and one
 # mvn-release run on main (id 101) holds both artifacts. Run 101 FAILED overall (its `tag` job hit a merge conflict),
-# but its `attest` job succeeded and it has the image SBOM artifact, which is all a release needs. Listed before it,
-# each with different bytes so picking one shows: a run of the same title dispatched from a branch (103), a rehearsal
-# (102, usable in every other respect), a newer run whose `attest` failed (104) and one whose image SBOM never got
-# uploaded (105).
+# but its `attest` and `sign-image` jobs succeeded, which is all a release needs. Listed before it, each with different
+# bytes so picking one shows: a run of the same title dispatched from a branch (103), a rehearsal (102, usable in every
+# other respect), a newer run whose `attest` failed (104) and one whose image was never pushed and signed (105).
 release_world() {
     local d="$1" v="$RELTAG"
     rm -rf "$d"
@@ -3772,6 +3925,14 @@ rm "$rw/runs/native-image.yml.json"
 expect "an upstream that never ran for the tag is not finished" 0 "native-image.yml for $RELTAG is missing" \
     run_release_assets "$rw" GITHUB_EVENT_NAME=workflow_run
 release_world "$rw"
+echo '[ {"databaseId": 201, "status": "in_progress"' >"$rw/runs/native-image.yml.json"
+expect "an unparseable upstream run list is an error, not a pending upstream" 1 \
+    "::error::the native-image.yml run list for $RELTAG is not a JSON array" run_release_assets "$rw" GITHUB_EVENT_NAME=workflow_run
+release_world "$rw"
+touch "$rw/fail-run-list"
+expect "a failed upstream run list is an error, not a pending upstream" 1 \
+    "::error::could not list the native-image.yml runs for $RELTAG" run_release_assets "$rw" GITHUB_EVENT_NAME=workflow_run
+release_world "$rw"
 expect "release-assets.sh on workflow_run proceeds once both upstreams succeeded" 0 "release $RELTAG complete" \
     run_release_assets "$rw" GITHUB_EVENT_NAME=workflow_run GITHUB_OUTPUT="$rw/github-output"
 if [[ "$(cat "$rw/github-output")" == "completed=true" ]]; then
@@ -3829,26 +3990,42 @@ cat >"$rw/runs/mvn-release.yml.json" <<JSON
   {"databaseId": 103, "displayTitle": "release $RELTAG", "headBranch": "feature/x"} ]
 JSON
 expect "a rehearsal or branch run is never a source of release files" 1 \
-    "no mvn-release.yml run on main titled 'release $RELTAG' with a successful attest job" run_release_assets "$rw"
+    "no mvn-release.yml run on main titled 'release $RELTAG' with successful attest and sign-image jobs" run_release_assets "$rw"
 if grep -q '^upload ' "$rw/calls.log"; then
     fail "without a release run nothing is uploaded" "$(cat "$rw/calls.log")"
 else
     pass "without a release run nothing is uploaded"
 fi
 
-# The run selection: only `attest` and the image SBOM artifact matter, never the run's own conclusion.
+# The run selection: only the `attest` and `sign-image` jobs matter, never the run's own conclusion nor its artifact
+# records (GitHub stops listing expired artifacts, while the jobs stay).
 rw="$work/release-g"
 release_world "$rw"
-echo '{"jobs": [ {"name": "attest", "conclusion": "failure"} ]}' >"$rw/runs/101-jobs.json"
-expect "a run whose attest job failed is not a release run" 1 "with a successful attest job" run_release_assets "$rw"
+echo '{"jobs": [ {"name": "attest", "conclusion": "failure"}, {"name": "sign-image", "conclusion": "success"} ]}' >"$rw/runs/101-jobs.json"
+expect "a run whose attest job failed is not a release run" 1 "with successful attest and sign-image jobs" run_release_assets "$rw"
+echo '{"jobs": [ {"name": "attest", "conclusion": "success"}, {"name": "sign-image", "conclusion": "failure"} ]}' >"$rw/runs/101-jobs.json"
+expect "a run whose sign-image job failed is not a release run" 1 "with successful attest and sign-image jobs" run_release_assets "$rw"
 release_world "$rw"
 run_release_assets "$rw" >/dev/null 2>&1
-echo '{"artifacts": [ {"name": "release-dist", "expired": true}, {"name": "release-image-sbom", "expired": true} ]}' \
-    >"$rw/runs/101-artifacts.json"
+echo '{"artifacts": []}' >"$rw/runs/101-artifacts.json"
 rm -rf "$rw/artifacts/101"
 : >"$rw/calls.log"
-expect "an expired image SBOM artifact still counts: run 101 is selected and falls back to the release" 0 \
+expect "a run whose artifacts are no longer listed at all is still selected and falls back to the attested release files" 0 \
     "the artifacts of mvn-release run 101 have expired" run_release_assets "$rw"
+expect_logged "with the artifact list empty, SHA256SUMS is still replaced" 1 "upload SHA256SUMS" "$rw/calls.log"
+if [[ "$(grep -cE "$attested_re" "$rw/calls.log")" == 4 ]]; then
+    pass "with the artifact list empty, the release files are trusted only after their attestations verify"
+else
+    fail "with the artifact list empty, the release files are trusted only after their attestations verify" "$(cat "$rw/calls.log")"
+fi
+echo '{"artifacts": [ {"name": "release-image-sbom", "expired": true} ]}' >"$rw/runs/101-artifacts.json"
+expect "a release-dist record absent from a non-empty list counts as expired" 0 \
+    "the artifacts of mvn-release run 101 have expired" run_release_assets "$rw"
+expect_logged "the artifact list is filtered by name, so no page of it can hide release-dist" 1 \
+    "gh api repos/ArcadeData/arcadedb/actions/runs/101/artifacts?name=release-dist&per_page=100" "$rw/calls.log"
+rm "$rw/runs/101-artifacts.json"
+expect "after a download failure, an unreadable artifact list fails instead of falling back" 1 \
+    "could not list the artifacts of mvn-release run 101" run_release_assets "$rw"
 release_world "$rw"
 rm "$rw/runs/101-jobs.json"
 expect "an unreadable job list fails instead of skipping the run" 1 "could not list the jobs of mvn-release run 101" \
@@ -3862,10 +4039,10 @@ expect_logged "mvn_release_run_id skips the search" 0 \
     "gh run list --workflow mvn-release.yml --limit 200 --json databaseId,displayTitle,headBranch" "$rw/calls.log"
 release_world "$rw"
 expect "mvn_release_run_id naming a run whose attest failed is refused" 1 \
-    "mvn-release run 104 has no successful \`attest\` job or no release-image-sbom artifact" run_release_assets "$rw" MVN_RELEASE_RUN_ID=104
+    "mvn-release run 104 has no successful \`attest\` and \`sign-image\` jobs" run_release_assets "$rw" MVN_RELEASE_RUN_ID=104
 echo '{"id": 105, "path": ".github/workflows/mvn-release.yml", "head_branch": "main", "display_title": "release '"$RELTAG"'"}' \
     >"$rw/runs/105-run.json"
-expect "mvn_release_run_id naming a run without the image SBOM artifact is refused" 1 \
+expect "mvn_release_run_id naming a run whose image was never signed is refused" 1 \
     "mvn-release run 105 has no successful" run_release_assets "$rw" MVN_RELEASE_RUN_ID=105
 expect "mvn_release_run_id naming a branch run is refused" 1 \
     "run 103 is not an mvn-release.yml run on main titled 'release $RELTAG'" run_release_assets "$rw" MVN_RELEASE_RUN_ID=103
@@ -3943,6 +4120,27 @@ expect_logged "the per-arch native image SBOM attestation is verified" 1 \
 expect_logged "the native manifest list is checked for a signature only" 0 \
     "cosign verify-attestation --type cyclonedx --certificate-identity-regexp ^https://github\.com/ArcadeData/arcadedb/\.github/workflows/(mvn-release|native-image|release-assets|publish-contract)\.yml@refs/(heads/main|tags/[0-9][^/]*)$ --certificate-oidc-issuer https://token.actions.githubusercontent.com arcadedata/arcadedb:$RELTAG-native" \
     "$rw/calls.log"
+for ref in "arcadedata/arcadedb:$RELTAG" "arcadedata/arcadedb:$RELTAG-native-amd64" "arcadedata/arcadedb:$RELTAG-native-arm64"; do
+    expect_logged "the SLSA provenance of image $ref is verified with the release identity" 1 \
+        "gh attestation verify oci://index.docker.io/$ref --repo ArcadeData/arcadedb --cert-identity-regex ^https://github\.com/ArcadeData/arcadedb/\.github/workflows/(mvn-release|native-image|release-assets|publish-contract)\.yml@refs/(heads/main|tags/[0-9][^/]*)$ --cert-oidc-issuer https://token.actions.githubusercontent.com" \
+        "$rw/calls.log"
+done
+if grep -q "^gh attestation verify oci://index.docker.io/arcadedata/arcadedb:$RELTAG-native " "$rw/calls.log"; then
+    fail "the native manifest list is not checked for provenance (it carries a signature only)" "$(grep oci:// "$rw/calls.log")"
+else
+    pass "the native manifest list is not checked for provenance (it carries a signature only)"
+fi
+echo "arcadedb:$RELTAG-native-arm64\$" >"$rw/fail-attestation"
+expect "an image that lost its SLSA provenance fails" 1 \
+    "arcadedata/arcadedb:$RELTAG-native-arm64 has no verified build provenance" run_verify
+rm "$rw/fail-attestation"
+mkdir -p "$rw/consumer"
+echo "stub key" >"$rw/consumer/release-key.asc"
+: >"$rw/calls.log"
+expect "a relative GPG_PUBLIC_KEY_FILE is read from the caller's directory, not the download directory" 0 "every check passed" \
+    bash -c 'cd "$1" && shift && "$@"' _ "$rw/consumer" env PATH="$RELSTUBS:$PATH" STUB_DIR="$rw" GITHUB_REPOSITORY=ArcadeData/arcadedb \
+    GPG_PUBLIC_KEY_FILE=release-key.asc RELEASE_GPG_FINGERPRINT="$RELFPR" "$PWD/$VERIFYREL" "$RELTAG"
+expect_logged "the relative key file is imported by its absolute path" 1 "gpg --batch --import $rw/consumer/release-key.asc" "$rw/calls.log"
 : >"$rw/calls.log"
 expect "a fork verifies against its own identity and namespace" 0 "every check passed" \
     env PATH="$RELSTUBS:$PATH" STUB_DIR="$rw" GITHUB_REPOSITORY=someone/arcadedb DOCKER_NAMESPACE=someone \

@@ -35,17 +35,20 @@
 # Derived files (the SPDX conversions, the VEX copy, SHA256SUMS*) are replaced on every run: they are not attested,
 # and a recovery run (native-image.yml `refresh-release-assets`) must re-sign checksums over replaced assets.
 #
-# When the mvn-release run's `release-dist` artifact has EXPIRED (90 days retention; GitHub reports `expired: true`),
-# the CI-built files already on the release are used instead, so a late recovery can still refresh SHA256SUMS. They
-# are trusted only after `gh attestation verify` proves each JVM archive and distribution SBOM was attested by a release
-# workflow of this repository; a missing or unverified one fails. Any other failure to find the run or download its
-# artifacts fails: falling back then would sign whatever the release happens to carry.
+# When the mvn-release run's `release-dist` artifact has EXPIRED (90 days retention), the CI-built files already on
+# the release are used instead, so a late recovery can still refresh SHA256SUMS. Expired means: the download fails AND
+# the run's artifact list either reports `release-dist` with `expired: true` or no longer lists it at all (GitHub stops
+# returning expired artifacts through the API). Those files are trusted only after `gh attestation verify` proves each
+# JVM archive and distribution SBOM was attested by mvn-release.yml on main; a missing or unverified one fails. A
+# download failure while `release-dist` is still listed and not expired fails, as does any other failure to find the
+# run or list its artifacts: falling back then would sign whatever the release happens to carry.
 #
 # On a workflow_run trigger (GITHUB_EVENT_NAME=workflow_run) it first checks that BOTH upstream workflows finished
 # successfully for the tag and exits 0 otherwise: each of them triggers this script when it completes, and only the
 # second may sign, or the checksums would miss the other's assets. An upstream still running is a notice (its own
 # completion triggers the run that signs); an upstream that concluded in failure is a warning, because nothing will
-# produce SHA256SUMS until it is fixed and re-run.
+# produce SHA256SUMS until it is fixed and re-run. A failed or unparseable `gh run list` is an error (exit 1), never
+# "still running": if both upstreams already finished, no later completion would retry.
 #
 # Usage: release-assets.sh <tag> <workdir>
 #   env GH_REPO         owner/repo of the release (set by the workflow; default GITHUB_REPOSITORY, then
@@ -98,7 +101,14 @@ sha256_of() {
 upstream_finished() {
     local tag="$1" workflow run status conclusion
     for workflow in "${UPSTREAM_WORKFLOWS[@]}"; do
-        run="$(gh run list --workflow "${workflow}" --event release --branch "${tag}" --limit 1 --json databaseId,status,conclusion)"
+        run="$(gh run list --workflow "${workflow}" --event release --branch "${tag}" --limit 1 --json databaseId,status,conclusion)" || {
+            echo "::error::could not list the ${workflow} runs for ${tag}" >&2
+            exit 1
+        }
+        if ! jq -e 'type == "array"' <<<"${run}" >/dev/null 2>&1; then
+            echo "::error::the ${workflow} run list for ${tag} is not a JSON array" >&2
+            exit 1
+        fi
         status="$(jq -r '.[0].status // "missing"' <<<"${run}")"
         conclusion="$(jq -r '.[0].conclusion // ""' <<<"${run}")"
         if [[ "${status}" == completed && "${conclusion}" != success ]]; then
@@ -126,22 +136,19 @@ release_titles() {
 }
 
 # Succeeds when run <id> can supply the release files: its `attest` job concluded success (so `central` uploaded
-# `release-dist` and attested it) and it has a `release-image-sbom` artifact, expired or not (so the image was pushed
-# and signed). The run's overall conclusion does not matter: a failure in `tag` after that (a merge conflict on the
-# next-version commit) leaves a complete, published release. Any API failure fails the script rather than skipping
-# the run.
+# `release-dist` and attested it) and its `sign-image` job concluded success (so the image was pushed and signed, and
+# `release-image-sbom` uploaded). Jobs, not artifact records: the jobs of a run stay listed after its artifacts expired
+# and vanished from the API. The run's overall conclusion does not matter: a failure in `tag` after that (a merge
+# conflict on the next-version commit) leaves a complete, published release. Any API failure fails the script rather
+# than skipping the run.
 run_usable() {
-    local id="$1" jobs artifacts
+    local id="$1" jobs
     jobs="$(gh api "repos/${REPO}/actions/runs/${id}/jobs?per_page=100")" || {
         echo "::error::could not list the jobs of mvn-release run ${id}" >&2
         exit 1
     }
-    artifacts="$(gh api "repos/${REPO}/actions/runs/${id}/artifacts?per_page=100")" || {
-        echo "::error::could not list the artifacts of mvn-release run ${id}" >&2
-        exit 1
-    }
-    jq -e 'any(.jobs[]; .name == "attest" and .conclusion == "success")' <<<"${jobs}" >/dev/null &&
-        jq -e 'any(.artifacts[]; .name == "release-image-sbom")' <<<"${artifacts}" >/dev/null
+    jq -e 'any(.jobs[]; .name == "attest" and .conclusion == "success") and
+        any(.jobs[]; .name == "sign-image" and .conclusion == "success")' <<<"${jobs}" >/dev/null
 }
 
 # Database id of the mvn-release.yml run that released <tag>: the latest run dispatched on main, titled as
@@ -167,7 +174,7 @@ release_run_id() {
             exit 1
         fi
         if ! run_usable "${MVN_RELEASE_RUN_ID}"; then
-            echo "::error::mvn-release run ${MVN_RELEASE_RUN_ID} has no successful \`attest\` job or no release-image-sbom artifact" >&2
+            echo "::error::mvn-release run ${MVN_RELEASE_RUN_ID} has no successful \`attest\` and \`sign-image\` jobs" >&2
             exit 1
         fi
         echo "${MVN_RELEASE_RUN_ID}"
@@ -183,10 +190,16 @@ release_run_id() {
     done
 }
 
-# "true" when the run's release-dist artifact exists and GitHub reports it expired.
+# "true" when the run's release-dist artifact is gone: listed with `expired: true`, or not listed at all (GitHub no
+# longer returns expired artifacts). "false" while it is listed and not expired. An API failure fails the script.
 release_dist_expired() {
-    gh api "repos/${REPO}/actions/runs/$1/artifacts" |
-        jq -r 'any(.artifacts[]; .name == "release-dist" and .expired == true)'
+    local artifacts
+    # Filtered by name, so the answer does not depend on which page of a long artifact list release-dist is on.
+    artifacts="$(gh api "repos/${REPO}/actions/runs/$1/artifacts?name=release-dist&per_page=100")" || {
+        echo "::error::could not list the artifacts of mvn-release run $1" >&2
+        exit 1
+    }
+    jq -r 'all(.artifacts[]; .name != "release-dist" or .expired == true)' <<<"${artifacts}"
 }
 
 if [[ "${GITHUB_EVENT_NAME:-workflow_dispatch}" == workflow_run ]] && ! upstream_finished "${TAG}"; then
@@ -223,7 +236,7 @@ SRC="${WORK}/src"
 mkdir -p "${SRC}"
 run_id="$(release_run_id "${TAG}")"
 if [[ -z "${run_id}" ]]; then
-    echo "::error::no mvn-release.yml run on main titled 'release ${TAG}' with a successful attest job and a release-image-sbom artifact" >&2
+    echo "::error::no mvn-release.yml run on main titled 'release ${TAG}' with successful attest and sign-image jobs" >&2
     exit 1
 fi
 from_ci=0
@@ -231,11 +244,14 @@ if gh run download "${run_id}" --name release-dist --dir "${WORK}/ci/dist" &&
     gh run download "${run_id}" --name release-image-sbom --dir "${WORK}/ci/image"; then
     from_ci=1
     echo "[assets] CI-built files from mvn-release run ${run_id}"
-elif [[ "$(release_dist_expired "${run_id}")" == true ]]; then
-    echo "::warning::the artifacts of mvn-release run ${run_id} have expired; using the CI-built files already on release ${TAG}, once their attestations verify" >&2
 else
-    echo "::error::could not download the artifacts of mvn-release run ${run_id}, and they have not expired" >&2
-    exit 1
+    # set -e: an API failure inside the substitution fails this assignment, and with it the script.
+    expired="$(release_dist_expired "${run_id}")"
+    if [[ "${expired}" != true ]]; then
+        echo "::error::could not download the artifacts of mvn-release run ${run_id}, and they have not expired" >&2
+        exit 1
+    fi
+    echo "::warning::the artifacts of mvn-release run ${run_id} have expired; using the CI-built files already on release ${TAG}, once their attestations verify" >&2
 fi
 
 missing=()

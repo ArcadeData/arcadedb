@@ -12,7 +12,8 @@
 # (there is no branch), which is also what `gh run list --branch` filters on in the upstream check.
 #
 # The JVM files come from the mvn-release.yml run of the release: the latest one on main titled `release <tag>` whose
-# `attest` job succeeded and which has a `release-image-sbom` artifact. Its overall result does not matter, so a
+# `attest` and `sign-image` jobs both succeeded (jobs, not artifact records: GitHub stops listing expired artifacts,
+# while a run's jobs stay). Its overall result does not matter, so a
 # release whose `tag` job failed after the images were signed (a next-version merge conflict) still completes. On a
 # fork the rehearsal title `release <tag> (rehearsal)` counts too; in ArcadeData/arcadedb it never does.
 #
@@ -48,7 +49,7 @@ on:
         required: true
       # Normally the run is found by its title. Name it when the search picks the wrong one or none (more than 200
       # mvn-release runs since the release). It is checked exactly like a found run: mvn-release.yml, dispatched on
-      # main, titled `release <tag>`, with a successful `attest` job and a `release-image-sbom` artifact.
+      # main, titled `release <tag>`, with successful `attest` and `sign-image` jobs.
       mvn_release_run_id:
         description: "Optional: database id of the mvn-release.yml run of this release (default: found by its title)"
         required: false

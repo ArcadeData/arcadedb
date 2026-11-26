@@ -330,7 +330,7 @@ Decisions taken while building this, each already reflected in the sections abov
   job mapping, accepts an ungated signing job only in the dispatch-only `mvn-release.yml`, and requires a tagging job to
   need every signing job.
 - Release-assets run selection: `release-assets.sh` takes the JVM files from the latest `mvn-release.yml` run on `main`
-  titled `release <tag>` whose `attest` job succeeded and which has a `release-image-sbom` artifact, whatever the run's
+  titled `release <tag>` whose `attest` and `sign-image` jobs succeeded (jobs stay listed after artifacts expire), whatever the run's
   overall result, so a failed next-version commit does not block the release; `mvn_release_run_id` names the run on a
   dispatch and is checked the same way. JVM jars whose `attest` never ran (central failed after PUBLISHED) ship without
   provenance; the fix is a new patch release, never hand-made attestations.

@@ -83,10 +83,11 @@ from urllib.parse import unquote
 
 
 class MergeError(Exception):
-    pass
+    """A merge that must fail with a message, not a traceback."""
 
 
 def load(path):
+    """Reads a CycloneDX JSON document, failing with the path when it cannot."""
     try:
         bom = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
@@ -110,6 +111,7 @@ def jar_name(component):
 
 
 def file_digest(path, algorithm):
+    """Hex digest of a file with the named hashlib algorithm."""
     digest = hashlib.new(algorithm)
     with open(path, "rb") as f:
         for block in iter(lambda: f.read(1 << 20), b""):
@@ -164,6 +166,7 @@ POM_NS = {"m": "http://maven.apache.org/POM/4.0.0"}
 
 
 def purl_qualifiers(component):
+    """The qualifiers of the component's purl as a dict."""
     query = (component.get("purl") or "").partition("?")[2]
     return dict(part.partition("=")[::2] for part in query.split("&") if "=" in part)
 
@@ -243,14 +246,17 @@ def nest_shaded(bom, modules):
 
 
 def local_name(element):
+    """An XML tag without its namespace."""
     return element.tag.rpartition("}")[2]
 
 
 def child(element, name):
+    """The first child element with the given local name, or None."""
     return next((c for c in element if local_name(c) == name), None)
 
 
 def child_text(element, name):
+    """The stripped text of the first child element with the given local name, or an empty string."""
     found = child(element, name) if element is not None else None
     return (found.text or "").strip() if found is not None and found.text else ""
 
@@ -360,10 +366,12 @@ def embedded_coordinates(jar):
 
 
 def purl_base(component):
+    """The component's purl without its qualifiers."""
     return (component.get("purl") or "").partition("?")[0]
 
 
 def all_components(components):
+    """Every component of the list, nested ones included, depth first."""
     for component in components or []:
         yield component
         yield from all_components(component.get("components"))
@@ -419,6 +427,7 @@ def add_embedded(bom, shipped, repo):
 
 
 def all_refs(components):
+    """The bom-ref of every component of the list, nested ones included."""
     for component in components or []:
         if component.get("bom-ref"):
             yield component["bom-ref"]
@@ -426,7 +435,11 @@ def all_refs(components):
 
 
 def prune_dependencies(bom):
-    """Drops edges to removed components and re-attaches orphans to the root, so nothing kept is unreachable."""
+    """Drops edges to removed components and re-attaches what the root no longer reaches, so nothing kept is unreachable.
+
+    Reachability is a traversal from the root, not "has an incoming edge": once a filter removed X from
+    root -> X -> A -> B -> A, both A and B still have an incoming edge, and neither is reachable.
+    """
     root_ref = ((bom.get("metadata") or {}).get("component") or {}).get("bom-ref")
     known = set(all_refs(bom.get("components")))
     if root_ref:
@@ -435,30 +448,42 @@ def prune_dependencies(bom):
     for entry in bom.get("dependencies") or []:
         if entry.get("ref") in known:
             deps.append({"ref": entry["ref"], "dependsOn": [r for r in entry.get("dependsOn") or [] if r in known]})
-    if root_ref:
-        reached = {r for d in deps if d["ref"] != root_ref for r in d["dependsOn"]}
-        root_entry = next((d for d in deps if d["ref"] == root_ref), None)
-        if root_entry is None:
-            root_entry = {"ref": root_ref, "dependsOn": []}
-            deps.insert(0, root_entry)
-        reached.update(root_entry["dependsOn"])
-        for component in bom.get("components") or []:
-            ref = component.get("bom-ref")
-            if ref and ref not in reached:
-                root_entry["dependsOn"].append(ref)
-    # A nested component nothing points at (a shaded-in library reached only through an artifact the
-    # shade excluded) belongs to the component it is nested in.
-    reached = {r for d in deps for r in d["dependsOn"]}
     by_ref = {d["ref"]: d for d in deps}
-    for parent in bom.get("components") or []:
-        orphans = [c.get("bom-ref") for c in parent.get("components") or []
-                   if c.get("bom-ref") and c.get("bom-ref") not in reached]
-        if orphans and parent.get("bom-ref"):
-            entry = by_ref.get(parent["bom-ref"])
+    reached = set()
+
+    def reach(start):
+        """Adds `start` and everything it depends on, directly or not, to `reached`."""
+        todo = [start]
+        while todo:
+            ref = todo.pop()
+            if ref in reached:
+                continue
+            reached.add(ref)
+            todo.extend((by_ref.get(ref) or {}).get("dependsOn") or [])
+
+    def attach(parent_ref, children):
+        """Gives each child the root (or its parent) does not reach yet an edge from `parent_ref`, in document order."""
+        entry = by_ref.get(parent_ref)
+        for ref in children:
+            if not ref or ref in reached:
+                continue
             if entry is None:
-                entry = by_ref[parent["bom-ref"]] = {"ref": parent["bom-ref"], "dependsOn": []}
-                deps.append(entry)
-            entry["dependsOn"].extend(orphans)
+                entry = by_ref[parent_ref] = {"ref": parent_ref, "dependsOn": []}
+                if parent_ref == root_ref:
+                    deps.insert(0, entry)
+                else:
+                    deps.append(entry)
+            entry["dependsOn"].append(ref)
+            reach(ref)
+
+    if root_ref:
+        reach(root_ref)
+        attach(root_ref, [c.get("bom-ref") for c in bom.get("components") or []])
+    # A nested component the root does not reach (a shaded-in library reached only through an artifact the
+    # shade excluded) belongs to the component it is nested in.
+    for parent in bom.get("components") or []:
+        if parent.get("bom-ref"):
+            attach(parent["bom-ref"], [c.get("bom-ref") for c in parent.get("components") or []])
     bom["dependencies"] = deps
 
 
@@ -480,6 +505,7 @@ def merge_tools(bom, nested):
 
 
 def dedupe(components, seen):
+    """Drops components whose bom-ref already appeared, keeping the first."""
     out = []
     for component in components or []:
         ref = component.get("bom-ref")
@@ -541,12 +567,14 @@ def merge_dependencies(deps):
 
 
 def timestamp():
+    """metadata.timestamp: SOURCE_DATE_EPOCH when set, else now (UTC)."""
     epoch = os.environ.get("SOURCE_DATE_EPOCH")
     moment = datetime.fromtimestamp(int(epoch), timezone.utc) if epoch else datetime.now(timezone.utc)
     return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def build(args):
+    """The merged BOM for the parsed arguments."""
     bom = load(args.root)
     shipped = filter_to_lib(bom, args.lib_dir) if args.lib_dir else []
     if args.module_boms:
@@ -581,6 +609,7 @@ def build(args):
 
 
 def main(argv):
+    """Parses the arguments, merges and writes the BOM; returns the exit status."""
     parser = argparse.ArgumentParser(prog="merge-sbom.py", description=__doc__.split("\n")[0])
     parser.add_argument("--root", required=True)
     parser.add_argument("--nested")

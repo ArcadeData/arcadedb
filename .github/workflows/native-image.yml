@@ -53,6 +53,13 @@ on:
       # replaced archives. Requires `ref` to name the release's tag and the dispatch to run from
       # `main` (signer identity); uploads are --clobber and image tags are overwritten, so a
       # mistaken run replaces rather than adds junk.
+      #
+      # A recovery run CANCELLED after it replaced an archive skips `refresh-release-assets`
+      # (`!cancelled()`), and release-assets.yml does not start on its own after a dispatch, so the
+      # release's SHA256SUMS no longer matches. To finish it: dispatch this workflow again from main
+      # with the same `ref` and attach_to_release (it redoes every upload, signature and attestation
+      # and then refreshes SHA256SUMS), or, when only the refresh is missing, dispatch
+      # release-assets.yml from main with `tag` set to the release.
       attach_to_release:
         description: "Upload the built archives to the GitHub release named by `ref` and push its native Docker images. Off by default. PUBLISHES PUBLICLY."
         type: boolean
@@ -106,6 +113,16 @@ permissions:
 # event it fires pushes there and never needs credentials for arcadedata.
 env:
   DOCKER_NAMESPACE: ${{ vars.DOCKER_NAMESPACE || 'arcadedata' }}
+
+# Two runs that publish the same release (the `release` event and a recovery dispatch, or two recovery
+# dispatches) must never overlap: the per-arch tags they push are mutable, so one run's manifest and
+# signing jobs, which read the digests back from the registry by tag, could stitch, sign and attest
+# the other run's images. Publishing runs of one tag therefore queue in one group (never cancelled:
+# a cancelled run leaves a half-replaced release); every other run, the nightly included, gets a
+# group of its own and runs exactly as before.
+concurrency:
+  group: ${{ (github.event_name == 'release' || inputs.attach_to_release) && format('native-release-{0}', github.event.release.tag_name || inputs.ref) || format('native-image-run-{0}', github.run_id) }}
+  cancel-in-progress: false
 
 jobs:
   # The build matrix is computed here instead of written inline so the macOS arm64 leg can be added
@@ -710,8 +727,11 @@ jobs:
         run: |
           set -euo pipefail
           for c in $CHANNELS; do
-            echo "[docker] pushing ${DOCKER_NAMESPACE}/arcadedb:${c}-native-${{ matrix.arch }}"
-            docker push "${DOCKER_NAMESPACE}/arcadedb:${c}-native-${{ matrix.arch }}"
+            image="${DOCKER_NAMESPACE}/arcadedb:${c}-native-${{ matrix.arch }}"
+            echo "[docker] pushing ${image}"
+            docker push "${image}"
+            # For audit: the digest this run pushed, to compare with what the signing jobs signed.
+            echo "- \`${image}\` pushed as \`$(docker image inspect --format '{{join .RepoDigests " "}}' "${image}" 2>/dev/null || echo unknown)\`" >> "${GITHUB_STEP_SUMMARY}"
           done
 
   # Stitches the per-arch tags pushed by the `docker` job above into one multi-arch manifest per
@@ -820,7 +840,8 @@ jobs:
   # Signs and attests each per-arch image `docker` pushed, and attaches its SBOMs to the release.
   # The arch list is the one `docker`'s matrix pushes and `manifest` stitches (amd64, arm64); keep
   # the three in step. The digest is read back from the registry by tag, because the signature,
-  # the SBOM attestation and the provenance bind to what consumers pull.
+  # the SBOM attestation and the provenance bind to what consumers pull; the workflow-level
+  # concurrency group keeps another publishing run of the same tag from moving it meanwhile.
   sign-native-images:
     name: sign-native-image-${{ matrix.arch }}
     needs: docker
