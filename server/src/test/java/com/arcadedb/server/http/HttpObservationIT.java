@@ -28,7 +28,11 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.net.HttpURLConnection;
+import java.net.URI;
 import java.net.URL;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -102,6 +106,48 @@ class HttpObservationIT extends BaseGraphServerTest {
     // The path tag must be the bounded route template, never the concrete URI.
     assertThat(tag(httpContext, "path")).isNotNull();
     assertThat(tag(httpContext, "status")).isEqualTo("204");
+  }
+
+  @Test
+  void methodOutsideTheStandardSetIsReportedAsBoundedValue() throws Exception {
+    // The low-cardinality "method" key feeds every handler that turns it into a meter, so it takes a bounded set of
+    // values: the standard methods, and one constant for every other token of the request line.
+    final List<Observation.Context> stopped = new CopyOnWriteArrayList<>();
+
+    final ObservationHandler<Observation.Context> probe = new ObservationHandler<>() {
+      @Override
+      public boolean supportsContext(final Observation.Context context) {
+        return probeActive.get();
+      }
+
+      @Override
+      public void onStop(final Observation.Context context) {
+        if (probeActive.get())
+          stopped.add(context);
+      }
+    };
+    getServer(0).getObservationRegistry().observationConfig().observationHandler(probe);
+
+    final HttpClient client = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).build();
+    for (int i = 0; i < 5; i++) {
+      final HttpRequest request = HttpRequest.newBuilder(URI.create(getServerHttpUrl("/probe/" + i)))
+          .method("XMETHOD" + i, HttpRequest.BodyPublishers.noBody()).build();
+      client.send(request, HttpResponse.BodyHandlers.discarding());
+    }
+
+    // The Observation is stopped in the handler's finally block, which can complete just after the client
+    // receives the response: poll for all five.
+    for (int attempt = 0; attempt < 200 && httpObservations(stopped).size() < 5; attempt++)
+      Thread.sleep(20);
+
+    final List<Observation.Context> observed = httpObservations(stopped);
+    assertThat(observed).hasSize(5);
+    for (final Observation.Context context : observed)
+      assertThat(tag(context, "method")).isEqualTo("OTHER");
+  }
+
+  private static List<Observation.Context> httpObservations(final List<Observation.Context> stopped) {
+    return stopped.stream().filter(ctx -> "arcadedb.http.server.requests".equals(ctx.getName())).toList();
   }
 
   private static String tag(final Observation.Context context, final String key) {
