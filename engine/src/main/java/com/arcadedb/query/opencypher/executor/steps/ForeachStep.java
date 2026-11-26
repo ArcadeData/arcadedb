@@ -42,6 +42,7 @@ import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.OperationHeapLimit;
+import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -295,6 +296,10 @@ public class ForeachStep extends AbstractExecutionStep {
       iterable = (Collection<?>) listValue;
     else if (listValue instanceof Iterable)
       iterable = (Iterable<?>) listValue;
+    else if (MultiValue.isSequenceArray(listValue))
+      // Any array but a byte[] is a sequence, the same decision UNWIND takes: the stored value of an ARRAY_OF_* property or an
+      // array passed as a parameter runs the body once per element, not once with the whole array bound to the variable
+      iterable = MultiValue.getMultiValueIterable(listValue);
     else
       iterable = List.of(listValue);
 
