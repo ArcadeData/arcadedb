@@ -19,11 +19,13 @@
 package com.arcadedb.database;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #13479: the transaction context of a thread is reused by every transaction the thread runs on the database, for the life of
@@ -91,11 +93,7 @@ class TransactionContextRetainedCapacityTest extends TestHelper {
     // A second bulk statement of the same transaction that fails on its last row (duplicated id 0) is taken back whole: the journal
     // grows again past what was kept, and every entry it queued is undone
     final String failing = bulkInsert(ROWS, ROWS) + ", (0, 0)";
-    try {
-      database.command("sql", failing).close();
-    } catch (final RuntimeException expected) {
-      // DuplicatedKeyException
-    }
+    assertThatThrownBy(() -> database.command("sql", failing).close()).isInstanceOf(DuplicatedKeyException.class);
     assertThat(count()).isEqualTo(ROWS);
     database.commit();
 
@@ -104,5 +102,26 @@ class TransactionContextRetainedCapacityTest extends TestHelper {
       assertThat(rs.next().<Number>getProperty("c").longValue()).isZero();
     }
     assertThat(tx.getIndexChanges().getRetainedUndoHolders()).isLessThanOrEqualTo(TransactionIndexContext.MAX_RETAINED_UNDO_HOLDERS);
+  }
+
+  @Test
+  void aStatementReadingTheUpdatesOfAnEarlierOneKeepsNoSnapshotRoomBehind() {
+    database.transaction(() -> database.command("sql", bulkInsert(0, ROWS)).close());
+
+    database.begin();
+    final TransactionContext tx = ((DatabaseInternal) database).getTransaction();
+    // The first statement queues an update of every record, the second reads each of them again: the savepoint keeps what every
+    // queued record held before the second statement, one slot per record, to put it back if the statement fails
+    database.command("sql", "UPDATE T SET k = k + 1").close();
+    database.command("sql", "UPDATE T SET k = k + 1").close();
+
+    final StatementSavepoint savepoint = tx.getPooledStatement();
+    assertThat(savepoint).isNotNull();
+    assertThat(savepoint.getPendingCapacity()).isLessThanOrEqualTo(StatementSavepoint.MAX_RETAINED_JOURNAL);
+    database.commit();
+
+    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM T WHERE k = (id % 100) + 2")) {
+      assertThat(rs.next().<Number>getProperty("c").longValue()).isEqualTo(ROWS);
+    }
   }
 }

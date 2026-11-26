@@ -81,7 +81,7 @@ public final class StatementSavepoint implements PageUndoLog.GrainBudget {
   private static final byte OP_CORPUS          = 11;
 
   /** Larger log buffers are not kept for the next statement. */
-  private static final int  MAX_RETAINED_JOURNAL = 4096;
+  static final         int  MAX_RETAINED_JOURNAL = 4096;
   private static final int  MAX_RETAINED_LOGS    = 64;
 
   private final TransactionContext tx;
@@ -229,6 +229,11 @@ public final class StatementSavepoint implements PageUndoLog.GrainBudget {
 
   int getNewRecordsMark() {
     return newRecordsMark;
+  }
+
+  /** How many records the snapshot arrays of the queued records hold room for: what is kept between statements is bounded (issue #13479). */
+  int getPendingCapacity() {
+    return pendingDirty.length;
   }
 
   // ------------------------------------------------------------------------------------------------------------------------------

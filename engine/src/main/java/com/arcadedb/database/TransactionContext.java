@@ -1223,6 +1223,11 @@ public class TransactionContext implements Transaction {
     return newRecords.capacity();
   }
 
+  /** The savepoint object the statements of this context reuse, or null when none ran yet. */
+  StatementSavepoint getPooledStatement() {
+    return pooledStatement;
+  }
+
   int getInsertReservationCount() {
     return insertReservationCount;
   }

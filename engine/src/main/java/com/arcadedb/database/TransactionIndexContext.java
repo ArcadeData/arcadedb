@@ -953,12 +953,13 @@ public class TransactionIndexContext {
 
   /** Stops journalling and drops what was journalled, unless a statement journals too: its entries stay. Idempotent. */
   public void disarmRecordUndo() {
+    // No trim here: this runs once per indexed record, and without a statement journal the list holds the entries of ONE record, so a
+    // record with more index keys than the cap would drop and re-allocate its holders on every write. The statement end, the abandon
+    // and the reset trim instead (issue #13479)
     if (statementJournal)
       recordUndoMark = recordUndoSize;
-    else {
+    else
       recordUndoSize = -1;
-      trimRetainedUndoHolders();
-    }
   }
 
   /**
@@ -1103,6 +1104,9 @@ public class TransactionIndexContext {
     statementJournal = false;
     statementJournalBroken = true;
     trimRetainedUndoHolders();
+    // Removing the prefix leaves the list small but its backing array as long as the journal limit (100,000 slots by default), which
+    // the trim above does not see: the abandon happens once per oversized statement, so the array is always shrunk here
+    recordUndo.trimToSize();
   }
 
   public void reset() {
