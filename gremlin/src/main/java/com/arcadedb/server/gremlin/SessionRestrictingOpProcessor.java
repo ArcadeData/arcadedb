@@ -32,7 +32,7 @@ import org.apache.tinkerpop.gremlin.util.function.ThrowingConsumer;
 import org.apache.tinkerpop.gremlin.util.message.ResponseMessage;
 import org.apache.tinkerpop.gremlin.util.message.ResponseStatusCode;
 
-import java.lang.reflect.Field;
+import java.lang.invoke.MethodHandles;
 import java.util.Map;
 
 /**
@@ -46,7 +46,10 @@ import java.util.Map;
  * channelizer, as the processor is selected by name from TinkerPop's processor table.
  * <p>
  * TinkerPop fills that table from the {@code ServiceLoader} when {@link OpLoader} is first used, and offers no way to
- * change it, so the entry is replaced through its field. The plugin does not start when that is not possible.
+ * change it, so the entry is replaced through its field. The plugin does not start when that is not possible, which is how
+ * an upgrade of TinkerPop that renames the field shows up ({@code GremlinSessionRequestsIT} checks it). The table is
+ * static: the restriction applies to every Gremlin Server of the JVM, and {@link #install()} runs before the one of the
+ * plugin is built, so nothing reads the table while it is changed.
  *
  * @author lvca (l.garulli@arcadedata.com)
  */
@@ -76,9 +79,8 @@ final class SessionRestrictingOpProcessor implements OpProcessor {
   @SuppressWarnings("unchecked")
   private static Map<String, OpProcessor> processorTable() {
     try {
-      final Field field = OpLoader.class.getDeclaredField("processors");
-      field.setAccessible(true);
-      return (Map<String, OpProcessor>) field.get(null);
+      return (Map<String, OpProcessor>) MethodHandles.privateLookupIn(OpLoader.class, MethodHandles.lookup())
+          .findStaticVarHandle(OpLoader.class, "processors", Map.class).get();
     } catch (final ReflectiveOperationException | RuntimeException e) {
       throw new ServerException("Cannot restrict the sessions of the Gremlin Server: " + e, e);
     }

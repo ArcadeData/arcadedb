@@ -50,7 +50,7 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  * @author lvca (l.garulli@arcadedata.com)
  */
 class GremlinSessionRequestsIT extends AbstractGremlinServerIT {
-  private static final String REFUSAL         = "sessions are reserved to the server administrator";
+  private static final String REFUSAL         = SessionRestrictingOpProcessor.REFUSAL;
   private static final String DENIED_USER     = "gremlinSessionDenied";
   private static final String DENIED_PASSWORD = "gremlinSessionDenied1";
   private static final String READER_USER     = "gremlinSessionReader";
