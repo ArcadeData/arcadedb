@@ -52,6 +52,7 @@ import com.arcadedb.utility.LongHashSet;
 import com.arcadedb.utility.LongObjectHashMap;
 
 import java.util.Arrays;
+import java.util.BitSet;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -903,6 +904,13 @@ public class GraphBatch implements AutoCloseable {
     // about what the type-cache lookups above already do.
     database.checkPermissionsOnFile(typeBucketId, SecurityDatabaseUser.ACCESS.CREATE_RECORD);
 
+    // The edge is linked into the edge lists of its endpoints, which belong to their vertex types: the same update grant an
+    // edge created one at a time through Vertex.newEdge() needs on them, asked here for the same reason as the create grant
+    // above. Only a bidirectional type keeps an incoming side, so only then is the destination written.
+    database.checkPermissionsOnFile(sourceVertexRID.getBucketId(), SecurityDatabaseUser.ACCESS.UPDATE_RECORD);
+    if (typeIsBidirectional && destVertexRID.getBucketId() != sourceVertexRID.getBucketId())
+      database.checkPermissionsOnFile(destVertexRID.getBucketId(), SecurityDatabaseUser.ACCESS.UPDATE_RECORD);
+
     edgeHasProperties[idx] = hasProps;
     this.edgeProperties[idx] = hasProps ? propertyPairs(edgeProperties) : null;
     edgeIsLightweight[idx] = isLightweight;
@@ -1027,6 +1035,10 @@ public class GraphBatch implements AutoCloseable {
     flushDurableOutRanges = null;
 
     try {
+      // The user bound to the thread is not necessarily the one that buffered these edges: the update grant of the vertex types
+      // they connect is asked again before anything is written or committed, so a refusal leaves nothing behind
+      checkBufferedEndpointGrants();
+
       // --- PHASE 1: Create edge records for edges that need them (non-light) ---
       // Hoisted out of PHASE 1 so the failure paths in PHASE 3 can reclaim the records this flush created but
       // never linked (issue #6083 item 2).
@@ -1134,6 +1146,33 @@ public class GraphBatch implements AutoCloseable {
       edgeCount = 0;
       throw e;
     }
+  }
+
+  /**
+   * Asks the update grant of every vertex type the buffered edges write to: the source vertices, whose out edge lists they join,
+   * and the destination vertices of the edges of a bidirectional type, whose incoming edge lists they join. Once per bucket.
+   */
+  private void checkBufferedEndpointGrants() {
+    final BitSet asked = new BitSet();
+    for (int i = 0; i < edgeCount; i++) {
+      askEndpointGrantOnce(asked, edgeSrcBucketIds[i]);
+      if (edgeIsBidirectional[i])
+        askEndpointGrantOnce(asked, edgeDstBucketIds[i]);
+    }
+  }
+
+  /** The same, for the destination vertices of the first {@code count} deferred incoming edges. */
+  private void checkDeferredIncomingGrants(final int count) {
+    final BitSet asked = new BitSet();
+    for (int i = 0; i < count; i++)
+      askEndpointGrantOnce(asked, inDstBucketIds[i]);
+  }
+
+  private void askEndpointGrantOnce(final BitSet asked, final int bucketId) {
+    if (asked.get(bucketId))
+      return;
+    asked.set(bucketId);
+    database.checkPermissionsOnFile(bucketId, SecurityDatabaseUser.ACCESS.UPDATE_RECORD);
   }
 
   /**
@@ -1993,6 +2032,17 @@ public class GraphBatch implements AutoCloseable {
     final long[] sortedKeys = deferredHeads.keys();
     Arrays.parallelSort(sortedKeys);
 
+    // Asked for every bucket before the first vertex is written, so a refusal leaves no vertex updated. The keys are sorted, and
+    // the bucket is their high part: the vertices of one bucket are consecutive
+    int askedBucket = -1;
+    for (final long vertexKey : sortedKeys) {
+      final int bucketId = (int) (vertexKey >>> 40);
+      if (bucketId != askedBucket) {
+        askedBucket = bucketId;
+        database.checkPermissionsOnFile(bucketId, SecurityDatabaseUser.ACCESS.UPDATE_RECORD);
+      }
+    }
+
     beginTx();
     int updated = 0;
 
@@ -2339,6 +2389,11 @@ public class GraphBatch implements AutoCloseable {
     // of the loop below, against their own freshly-built index.
     while (inEdgeCount > 0) {
       final int prefix = inEdgesDrainPrefix > 0 ? inEdgesDrainPrefix : inEdgeCount;
+
+      // The incoming edge lists of the destination vertices are written from here on, by whichever user is bound now, which is
+      // not necessarily the one that buffered the edges: asked before the first segment is written, and before the pin below
+      checkDeferredIncomingGrants(prefix);
+
       inEdgesDrainPrefix = prefix;
 
       LogManager.instance().log(this, Level.INFO,
