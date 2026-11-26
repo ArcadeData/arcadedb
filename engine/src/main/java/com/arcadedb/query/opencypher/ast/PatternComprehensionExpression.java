@@ -157,9 +157,10 @@ public class PatternComprehensionExpression implements Expression {
     // is not bound to a vertex): iterate over candidate vertices in the graph
     // (issue #4106).
     if (startVertex == null) {
-      // A leading variable in scope but bound to null (an OPTIONAL MATCH miss, WITH null AS a) matches nothing; only a
-      // variable not in scope at all is an uncorrelated start (issue #11685).
-      if (hopIndex == 0 && !isBoundToNull(startNodePattern, currentResult))
+      // A leading variable in scope but bound to null (an OPTIONAL MATCH miss, WITH null AS a) or to a value that is not a
+      // node (a link, a string) matches nothing; only a variable not in scope at all is an uncorrelated start (issues #11685,
+      // #13534).
+      if (hopIndex == 0 && !isBoundToNonNode(startNodePattern, currentResult))
         traverseUncorrelatedStart(baseResult, context, currentResult, resultList, pathElements, usedEdges, startNodePattern);
       return;
     }
@@ -427,10 +428,14 @@ public class PatternComprehensionExpression implements Expression {
     // bound in the outer scope, the candidate target must equal that vertex.
     if (baseResult != null && endNodePattern.getVariable() != null) {
       final Object bound = baseResult.getProperty(endNodePattern.getVariable());
-      if (bound instanceof Vertex boundVertex && !boundVertex.getIdentity().equals(vertex.getIdentity()))
+      if (bound instanceof Vertex boundVertex) {
+        if (!boundVertex.getIdentity().equals(vertex.getIdentity()))
+          return false;
+      } else if (bound != null)
+        // An end variable bound to a value that is not a node (a link, a string) matches no vertex (issue #13534)
         return false;
-      // An end variable in scope but bound to null matches no vertex (issue #11685)
-      if (bound == null && baseResult.hasProperty(endNodePattern.getVariable()))
+      else if (baseResult.hasProperty(endNodePattern.getVariable()))
+        // An end variable in scope but bound to null matches no vertex (issue #11685)
         return false;
     }
     // Inline WHERE predicate, e.g. the WHERE x.v = 2 in [(a)-[:E]->(x:A WHERE x.v = 2) | x] (issue #5480).
@@ -628,9 +633,16 @@ public class PatternComprehensionExpression implements Expression {
     return null;
   }
 
-  private static boolean isBoundToNull(final NodePattern nodePattern, final Result result) {
+  /**
+   * Whether the node variable is in scope bound to something no vertex is: null (an OPTIONAL MATCH miss, issue #11685) or a value
+   * that is not a node, such as a link or a string a WITH projected (issue #13534). Such a node matches nothing.
+   */
+  private static boolean isBoundToNonNode(final NodePattern nodePattern, final Result result) {
     final String variable = nodePattern.getVariable();
-    return variable != null && !variable.isEmpty() && result.hasProperty(variable) && result.getProperty(variable) == null;
+    if (variable == null || variable.isEmpty())
+      return false;
+    final Object value = result.getProperty(variable);
+    return value == null ? result.hasProperty(variable) : !(value instanceof Vertex);
   }
 
   @Override

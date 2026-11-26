@@ -60,8 +60,9 @@ public class PatternPredicateExpression implements BooleanExpression {
   private final boolean parenthesizedVariable;
   // A one-hop pattern the edge list of the bound vertex answers without loading an edge (issue #11891)
   private final OneHopPattern oneHop;
-  // THE NAMED NODE AND RELATIONSHIP VARIABLES OF THE PATTERN, DECIDED ONCE (issue #13124)
-  private final String[] namedVariables;
+  // THE NAMED NODE AND RELATIONSHIP VARIABLES OF THE PATTERN, DECIDED ONCE (issues #13124, #13534)
+  private final String[] namedNodeVariables;
+  private final String[] namedRelationshipVariables;
 
   public PatternPredicateExpression(final PathPattern pathPattern, final boolean isNegated) {
     this(pathPattern, isNegated, null);
@@ -73,7 +74,8 @@ public class PatternPredicateExpression implements BooleanExpression {
     this.patternText = patternText;
     this.parenthesizedVariable = computeParenthesizedVariable(pathPattern);
     this.oneHop = OneHopPattern.of(pathPattern);
-    this.namedVariables = namedVariablesOf(pathPattern);
+    this.namedNodeVariables = namedVariablesOf(pathPattern, true);
+    this.namedRelationshipVariables = namedVariablesOf(pathPattern, false);
   }
 
   @Override
@@ -112,14 +114,16 @@ public class PatternPredicateExpression implements BooleanExpression {
     return node.getVariable() != null && !node.hasLabels() && !node.hasProperties();
   }
 
-  private static String[] namedVariablesOf(final PathPattern pathPattern) {
+  private static String[] namedVariablesOf(final PathPattern pathPattern, final boolean nodes) {
     if (pathPattern == null)
       return new String[0];
     final List<String> names = new ArrayList<>();
-    for (int i = 0; i < pathPattern.getNodeCount(); i++)
-      addNamed(names, pathPattern.getNode(i).getVariable());
-    for (int i = 0; i < pathPattern.getRelationshipCount(); i++)
-      addNamed(names, pathPattern.getRelationship(i).getVariable());
+    if (nodes)
+      for (int i = 0; i < pathPattern.getNodeCount(); i++)
+        addNamed(names, pathPattern.getNode(i).getVariable());
+    else
+      for (int i = 0; i < pathPattern.getRelationshipCount(); i++)
+        addNamed(names, pathPattern.getRelationship(i).getVariable());
     return names.toArray(new String[0]);
   }
 
@@ -130,14 +134,20 @@ public class PatternPredicateExpression implements BooleanExpression {
 
   /**
    * Whether the pattern names a node or relationship variable the row carries with a null value, which is what an earlier
-   * OPTIONAL MATCH that matched nothing leaves. A null node is the end of no relationship, so no path can hold the
-   * pattern: it is false, and {@code NOT} of it true (issue #13124). A variable the row does not carry at all is unbound
-   * and stands for any node, as an anonymous one does.
+   * OPTIONAL MATCH that matched nothing leaves, or a node variable the row carries with a value that is not a node, such as a
+   * link or a string a WITH projected. A null node, or a value that is no node, is the end of no relationship, so no path can
+   * hold the pattern: it is false, and {@code NOT} of it true (issues #13124, #13534), as a {@code MATCH} of the same pattern
+   * finds nothing. A variable the row does not carry at all is unbound and stands for any node, as an anonymous one does.
    */
-  private boolean namesNullBoundVariable(final Result result) {
+  private boolean namesUnmatchableBoundVariable(final Result result) {
     if (result == null)
       return false;
-    for (final String variable : namedVariables)
+    for (final String variable : namedNodeVariables) {
+      final Object value = result.getProperty(variable);
+      if (value == null ? result.hasProperty(variable) : !(value instanceof Vertex))
+        return true;
+    }
+    for (final String variable : namedRelationshipVariables)
       if (result.getProperty(variable) == null && result.hasProperty(variable))
         return true;
     return false;
@@ -163,7 +173,7 @@ public class PatternPredicateExpression implements BooleanExpression {
       return false;
     }
 
-    if (namesNullBoundVariable(result))
+    if (namesUnmatchableBoundVariable(result))
       return false;
 
     // The edge walk below loads the relationship records, so the user's permission to read them is still asked

@@ -191,8 +191,8 @@ public class ExpandPathStep extends AbstractExecutionStep implements DistinctEnd
       if (!(row.getProperty(sourceVariable) instanceof Vertex source))
         continue;
       final Object boundTargetValue = row.getProperty(targetVariable);
-      // A target an earlier OPTIONAL MATCH left null is bound, and a null vertex cannot be reached (#12728)
-      if (boundTargetValue == null && row.hasProperty(targetVariable))
+      // A target an earlier clause bound to null or to a value that is not a node cannot be reached (#12728, #13534)
+      if (isUnmatchableBoundTarget(row, boundTargetValue))
         continue;
       final Vertex boundTarget = boundTargetValue instanceof Vertex vertex ? vertex : null;
       final boolean boundPath = GraphTraverser.isBoundRelationshipList(row, relationshipVariable);
@@ -377,13 +377,13 @@ public class ExpandPathStep extends AbstractExecutionStep implements DistinctEnd
             lastResult = prevResults.next();
             final Object sourceObj = lastResult.getProperty(sourceVariable);
 
-            // Check if target variable is already bound (e.g., from a previous MATCH). A target an earlier OPTIONAL MATCH left
-            // null is bound too, and a null vertex cannot be reached (#12728)
+            // Check if target variable is already bound (e.g., from a previous MATCH). A target an earlier clause bound to null
+            // (an OPTIONAL MATCH that found nothing) or to a value that is not a node (a link or a string a WITH projected) is
+            // bound too, and no vertex can be reached as it (#12728, #13534)
             final Object targetObj = lastResult.getProperty(targetVariable);
             boundTarget = targetObj instanceof Vertex vertex ? vertex : null;
-            final boolean nullBoundTarget = targetObj == null && lastResult.hasProperty(targetVariable);
 
-            if (sourceObj instanceof Vertex && !nullBoundTarget) {
+            if (sourceObj instanceof Vertex && !isUnmatchableBoundTarget(lastResult, targetObj)) {
               final Vertex sourceVertex = (Vertex) sourceObj;
               // A relationship list an earlier clause bound to this variable is the whole path: expanding the
               // graph instead ignored the binding and returned every walk the pattern allows (issue #9828)
@@ -412,6 +412,17 @@ public class ExpandPathStep extends AbstractExecutionStep implements DistinctEnd
         ExpandPathStep.this.close();
       }
     };
+  }
+
+  /**
+   * Whether the row binds the target variable to something no vertex can be: null, as an OPTIONAL MATCH that found nothing leaves
+   * it (#12728), or a value that is not a node, such as a link or a string a WITH projected (#13534). The walk then has no end to
+   * reach for the row, as a bare {@code (m)} over the same binding matches nothing ({@link BoundNodeCheckStep}).
+   */
+  private boolean isUnmatchableBoundTarget(final Result row, final Object boundTargetValue) {
+    if (boundTargetValue == null)
+      return row.hasProperty(targetVariable);
+    return !(boundTargetValue instanceof Vertex);
   }
 
   /**
