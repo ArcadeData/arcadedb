@@ -92,10 +92,9 @@ public class ArcadeGremlinAuthorizer implements Authorizer {
    */
   @Override
   public void authorize(final AuthenticatedUser user, final RequestMessage msg) throws AuthorizationException {
-    // Session-based requests execute on a per-session executor that the principal-binding pool does not
-    // cover, so the engine's per-database/per-type ACLs cannot be enforced for them. Reject them:
-    // ArcadeDB does not use Gremlin sessions and TinkerPop's SessionOpProcessor is deprecated
-    // (GHSA-c287-v325-j5jx). The processor is also stripped from the server settings as defense-in-depth.
+    // A script is not evaluated in a session, for any user: ArcadeDB does not use Gremlin sessions for scripts and
+    // TinkerPop's SessionOpProcessor is deprecated. The bytecode requests of a session do not reach this method:
+    // they go to the session processor, which SessionRestrictingOpProcessor serves to the server administrator only
     if ("session".equals(msg.getProcessor()) || msg.getArgs().containsKey(Tokens.ARGS_SESSION))
       throw new AuthorizationException("Gremlin sessions are not supported");
 
