@@ -114,4 +114,37 @@ class RuleTest {
     assertThat(Rule.spread(10, new double[] { 10 })).isEqualTo(0);
     assertThat(Rule.spread(100, new double[] { 80, 100, 120 })).isEqualTo(0.4);
   }
+
+  @Test
+  void factorWobbleIsNotReported() {
+    assertThat(Rule.absoluteFloor("factor")).isEqualTo(1.0);
+    assertThat(cmp(factor(1.1), factor(1.9))).isEqualTo(Verdict.Kind.SAME);
+  }
+
+  @Test
+  void factorJumpIsReported() {
+    assertThat(cmp(factor(1.1), factor(4.0))).isEqualTo(Verdict.Kind.WORSE);
+  }
+
+  @Test
+  void exponentFloor() {
+    assertThat(Rule.absoluteFloor("exponent")).isEqualTo(0.25);
+    assertThat(cmp(exponent(0.45), exponent(0.6))).isEqualTo(Verdict.Kind.SAME);
+    assertThat(cmp(exponent(0.45), exponent(1.2))).isEqualTo(Verdict.Kind.WORSE);
+  }
+
+  @Test
+  void recallRatioKeepsNoFloor() {
+    assertThat(Rule.absoluteFloor("ratio")).isEqualTo(0.0);
+    assertThat(cmp(point(0.99, new double[] { 0.99, 0.99 }, "ratio", "higher"), point(0.85, new double[] { 0.85, 0.85 }, "ratio", "higher")))
+        .isEqualTo(Verdict.Kind.WORSE);
+  }
+
+  private static Point factor(final double v) {
+    return point(v, new double[] { v, v }, "factor", "lower");
+  }
+
+  private static Point exponent(final double v) {
+    return point(v, new double[] { v, v }, "exponent", "lower");
+  }
 }
