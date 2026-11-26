@@ -39,11 +39,16 @@ import org.graalvm.polyglot.Source;
 import org.graalvm.polyglot.Value;
 import org.graalvm.polyglot.io.IOAccess;
 
+import java.io.DataInput;
+import java.io.DataOutput;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.RandomAccessFile;
-import java.nio.channels.FileChannel;
+import java.io.Reader;
+import java.io.Writer;
+import java.nio.channels.Channel;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Collections;
@@ -76,6 +81,9 @@ public class GraalPolyglotEngine implements AutoCloseable {
   public final         Context             context;
   private static volatile Set<String>      supportedLanguages;
 
+  /** How long a termination waits for a guest program to unwind before giving up on it (issue #9689). */
+  private static final Duration   TERMINATION_INTERRUPT_GRACE = Duration.ofSeconds(5);
+
   /**
    * Host-access policy for scripts. It starts from {@link HostAccess#ALL} (so the bound {@code database} object's public
    * API is usable from a script) but denies the reflection surface that would let a script escape the {@code allowedPackages}
@@ -100,10 +108,10 @@ public class GraalPolyglotEngine implements AutoCloseable {
    * {@code database.command(...)} and {@code database.query(...)}. The rest of what the bound objects hand out is for host
    * code: the query engine instances and their registry, the process, thread and executor handles of the JVM, and the file
    * handles of the host and of the database files. They are denied as whole types too, so a method that returns one of
-   * them to a script, whichever object it is called on, leaves the script with a value it cannot call anything on.
+   * them to a script, whichever object it is called on, leaves the script with a value it cannot call anything on. The
+   * data, channel and stream interfaces of the file handles are denied with them: a member that one of those interfaces
+   * declares too stays callable when only the class is denied.
    */
-  /** How long a termination waits for a guest program to unwind before giving up on it (issue #9689). */
-  private static final Duration   TERMINATION_INTERRUPT_GRACE = Duration.ofSeconds(5);
   private static final HostAccess SANDBOXED_HOST_ACCESS = HostAccess.newBuilder(HostAccess.ALL)//
       .denyAccess(Class.class)//
       .denyAccess(ClassLoader.class)//
@@ -129,9 +137,17 @@ public class GraalPolyglotEngine implements AutoCloseable {
       .denyAccess(File.class)//
       .denyAccess(Path.class)//
       .denyAccess(RandomAccessFile.class)//
-      .denyAccess(FileChannel.class)//
       .denyAccess(FileManager.class)//
       .denyAccess(ComponentFile.class)//
+      // THE INTERFACES AND THE STREAMS A HANDLE ALSO ANSWERS THROUGH: A MEMBER THAT AN INTERFACE DECLARES TOO IS STILL CALLABLE
+      // THROUGH IT WHEN ONLY THE CLASS IS DENIED
+      .denyAccess(DataInput.class)//
+      .denyAccess(DataOutput.class)//
+      .denyAccess(Channel.class)//
+      .denyAccess(InputStream.class)//
+      .denyAccess(OutputStream.class)//
+      .denyAccess(Reader.class)//
+      .denyAccess(Writer.class)//
       .build();
 
   private GraalPolyglotEngine(final Database database, final Engine engine, final String language, final OutputStream output,
