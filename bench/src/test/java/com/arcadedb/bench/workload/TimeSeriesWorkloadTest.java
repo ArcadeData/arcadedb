@@ -22,6 +22,8 @@ import com.arcadedb.test.support.TimeSeriesDatabaseWrapper.AggResult;
 import org.junit.jupiter.api.Test;
 
 import java.util.DoubleSummaryStatistics;
+import java.util.HashSet;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -46,6 +48,33 @@ class TimeSeriesWorkloadTest {
     for (final Scale scale : Scale.values()) {
       assertThat(TimeSeriesWorkload.sensors(scale)).as(scale.name()).isGreaterThan(0);
       assertThat(TimeSeriesWorkload.pointsPerSensor(scale)).as(scale.name()).isGreaterThan(TimeSeriesWorkload.POINTS_PER_WINDOW);
+    }
+  }
+
+  /**
+   * The in-dataset burst of {@code aggregate-continuous} writes into the dataset's sensors between their one-second points. Every
+   * point of one repetition must land on its own (sensor, timestamp), inside the dataset's hours and off its whole seconds, or the
+   * burst overwrites points and the arrival check after the clock fails the case.
+   */
+  @Test
+  void theInDatasetBurstNeverWritesTheSameSensorAndTimestampTwice() {
+    for (final Scale scale : Scale.values()) {
+      final int sensors = TimeSeriesWorkload.sensors(scale);
+      final int perSensor = TimeSeriesWorkload.pointsPerSensor(scale);
+      final int points = TimeSeriesWorkload.pointsPerRep(scale);
+      assertThat((points + sensors - 1) / sensors).as("%s: a sensor receives more points than it has slots", scale)
+          .isLessThanOrEqualTo(perSensor);
+      // the first slot of repetition 0 is one millisecond after the dataset's first point
+      final long base = TimeSeriesWorkload.burstTimestamp(0, 0, sensors, perSensor, 0) - 1;
+      final Set<String> seen = new HashSet<>(points * 2);
+      for (int i = 0; i < points; i++) {
+        final int batch = i / TimeSeriesWorkload.BATCH;
+        final long ts = TimeSeriesWorkload.burstTimestamp(batch, i % TimeSeriesWorkload.BATCH, sensors, perSensor, 3);
+        assertThat(seen.add((batch % sensors) + "@" + ts)).as("%s: point %d repeats a (sensor, timestamp)", scale, i).isTrue();
+        assertThat(ts % 1_000L).as("%s: point %d lands on a dataset second", scale, i).isNotZero();
+        assertThat(ts - base).as("%s: point %d leaves the dataset's hours", scale, i)
+            .isBetween(0L, perSensor * 1_000L - 1);
+      }
     }
   }
 
