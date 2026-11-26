@@ -20,10 +20,15 @@ package com.arcadedb.query.polyglot;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
+import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.engine.FileManager;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.QueryEngine;
+import com.arcadedb.query.QueryEngineManager;
 import com.arcadedb.query.RunningQuery;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityUser;
+import com.arcadedb.utility.DedicatedThreadPool;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Engine;
 import org.graalvm.polyglot.EnvironmentAccess;
@@ -34,14 +39,19 @@ import org.graalvm.polyglot.Source;
 import org.graalvm.polyglot.Value;
 import org.graalvm.polyglot.io.IOAccess;
 
+import java.io.File;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.io.RandomAccessFile;
+import java.nio.channels.FileChannel;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.Executor;
 import java.util.concurrent.TimeoutException;
 import java.util.logging.Level;
 
@@ -85,6 +95,12 @@ public class GraalPolyglotEngine implements AutoCloseable {
    * persisted or replicated. Denied as whole types rather than method by method, so any other path that returns one of
    * these objects to a script ends at the same wall, and at no cost to the Java callers that authorize every request
    * through them: a {@link HostAccess} only governs what a guest language can reach.
+   * <p>
+   * A script works with the records, the schema, the transactions and the statements of its database, through
+   * {@code database.command(...)} and {@code database.query(...)}. The rest of what the bound objects hand out is for host
+   * code: the query engine instances and their registry, the process, thread and executor handles of the JVM, and the file
+   * handles of the host and of the database files. They are denied as whole types too, so a method that returns one of
+   * them to a script, whichever object it is called on, leaves the script with a value it cannot call anything on.
    */
   /** How long a termination waits for a guest program to unwind before giving up on it (issue #9689). */
   private static final Duration   TERMINATION_INTERRUPT_GRACE = Duration.ofSeconds(5);
@@ -96,6 +112,26 @@ public class GraalPolyglotEngine implements AutoCloseable {
       .denyAccess(DatabaseContext.DatabaseContextTL.class)//
       .denyAccess(SecurityDatabaseUser.class)//
       .denyAccess(SecurityUser.class)//
+      // QUERY ENGINES: A SCRIPT RUNS STATEMENTS THROUGH database.command()/query(), NEVER THROUGH AN ENGINE INSTANCE
+      .denyAccess(QueryEngine.class)//
+      .denyAccess(QueryEngine.QueryEngineFactory.class)//
+      .denyAccess(QueryEngineManager.class)//
+      .denyAccess(DedicatedThreadPool.class)//
+      // PROCESS, THREAD AND EXECUTOR HANDLES OF THE JVM
+      .denyAccess(Runtime.class)//
+      .denyAccess(Process.class)//
+      .denyAccess(ProcessBuilder.class)//
+      .denyAccess(ProcessHandle.class)//
+      .denyAccess(Thread.class)//
+      .denyAccess(ThreadGroup.class)//
+      .denyAccess(Executor.class)//
+      // FILE HANDLES OF THE HOST AND OF THE DATABASE FILES
+      .denyAccess(File.class)//
+      .denyAccess(Path.class)//
+      .denyAccess(RandomAccessFile.class)//
+      .denyAccess(FileChannel.class)//
+      .denyAccess(FileManager.class)//
+      .denyAccess(ComponentFile.class)//
       .build();
 
   private GraalPolyglotEngine(final Database database, final Engine engine, final String language, final OutputStream output,
