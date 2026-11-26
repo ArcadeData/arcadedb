@@ -4705,15 +4705,17 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       final PositionalParameter param = new PositionalParameter();
       param.paramNumber = sequentialParamNumber(ctx, ctx.HOOK().getSymbol());
       return param;
-    } else if (ctx.COLON() != null && (ctx.identifier() != null || ctx.FROM() != null)) {
-      // Named parameter: :name or :from (keyword used as param name)
+    } else if (ctx.COLON() != null && (ctx.identifier() != null || ctx.MAXDEPTH() != null || ctx.mapKeyword() != null)) {
+      // Named parameter: :name, or a keyword used as the name (#12140), spelled as written like an identifier is. :from
+      // keeps the lower case it was always bound under
       final String paramName;
       if (ctx.identifier() != null) {
         final Identifier id = (Identifier) visit(ctx.identifier());
         paramName = id.getValue();
-      } else {
-        paramName = ctx.FROM().getText().toLowerCase(Locale.ROOT);
-      }
+      } else if (ctx.mapKeyword() != null && ctx.mapKeyword().FROM() != null)
+        paramName = ctx.mapKeyword().getText().toLowerCase(Locale.ROOT);
+      else
+        paramName = ctx.MAXDEPTH() != null ? ctx.MAXDEPTH().getText() : ctx.mapKeyword().getText();
       final NamedParameter param = new NamedParameter();
       param.paramName = paramName;
       // an extracted literal is bound by name only: no number that could pick up a caller's positional value
