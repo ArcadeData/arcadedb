@@ -629,8 +629,8 @@ final class SecurityCatchUp implements AutoCloseable {
         // "Any OTHER member": this node refuses to add itself (SelfJoinNotSupportedException), so the node that logs
         // this line is the one place the advice would not work (issue #13447).
         LogManager.instance().log(this, Level.SEVERE,
-            "After %s this node asked the leader %d times to re-seed the cluster security documents and these did "
-                + "not commit: %s. Until they do, this node serves requests against its own copy of them - which can "
+            "After %s this node tried %d times to have the leader re-seed the cluster security documents, and at the "
+                + "last try these did not commit: %s. Until they do, this node serves requests against its own copy of them - which can "
                 + "still hold a user dropped, a group narrowed or a token revoked while it was away. This node asks "
                 + "again at the next leader change, and the leader runs the seed again, for as long as it leads, once "
                 + "every peer advertises the security entry capabilities (issue #7511); its own log says which peer "

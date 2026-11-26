@@ -896,6 +896,45 @@ class MembershipSecuritySeederTest {
     assertThat(seed.calls()).isEqualTo(1);
   }
 
+  // Regression for #13447: a check that saw an older debt does not drop the one owed since
+  /**
+   * The leadership is read outside the seeder's monitor, so a debt can be paid and a new one owed while it is being
+   * read, and two catch-ups of one node carry the same reason. The "no longer leads" answer belongs to the debt that
+   * was read: applied to the newer one by comparing the reason text, it dropped a seed nothing ran again.
+   */
+  @Test
+  void aCheckThatSawAnOlderDebtDoesNotDropTheOneOwedSince() {
+    final RecordingSeed seed = new RecordingSeed();
+    final AtomicBoolean leader = new AtomicBoolean(true);
+    final AtomicBoolean betweenTheReadAndTheAnswer = new AtomicBoolean();
+    final MembershipSecuritySeeder[] seeder = new MembershipSecuritySeeder[1];
+    seeder[0] = new MembershipSecuritySeeder(() -> {
+      if (!betweenTheReadAndTheAnswer.compareAndSet(true, false))
+        return leader.get();
+      // While the re-run check is asking: the debt it read is paid, and the same node's next catch-up is refused.
+      seed.failures = List.of();
+      seeder[0].seedNowAndReport("an unrelated seed", 1_000L, false);
+      seed.failures = List.of("groups");
+      seeder[0].seedNowAndReport("a catch-up", 1_000L, false);
+      return false;
+    }, () -> BUDGET_MS, seed, new Withholding(), SAME_THREAD);
+
+    seed.failures = List.of("groups");
+    seeder[0].seedNowAndReport("a catch-up", 1_000L, false);
+    assertThat(seeder[0].owedSeedReasonForTest()).isEqualTo("a catch-up");
+
+    betweenTheReadAndTheAnswer.set(true);
+    assertThat(seeder[0].rerunOwedSeedIfDue()).as("the node did not lead when the older debt was checked").isFalse();
+    assertThat(seed.calls()).isEqualTo(3);
+    assertThat(seeder[0].owedSeedReasonForTest()).as("the debt owed since is not the one that answer was about")
+        .isEqualTo("a catch-up");
+
+    seed.failures = List.of();
+    assertThat(seeder[0].rerunOwedSeedIfDue()).as("and it is run again at the next round").isTrue();
+    assertThat(seed.calls()).isEqualTo(4);
+    assertThat(seeder[0].owedSeedReasonForTest()).isNull();
+  }
+
   // Regression for #13447: an owed seed is not run again while one is outstanding
   @Test
   void anOwedSeedIsNotRunAgainWhileOneIsOutstanding() throws Exception {

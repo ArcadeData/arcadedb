@@ -204,6 +204,16 @@ public class MembershipSecuritySeeder implements AutoCloseable {
   private       String                           owedSeedReason;
   /** How many times {@link #rerunOwedSeedIfDue} has run the owed seed again. Guarded by {@code this}. */
   private       int                              owedSeedReruns;
+  /**
+   * Which debt {@link #owedSeedReason} is, counted up every time a seed becomes owed. Guarded by {@code this}.
+   * <p>
+   * {@link #rerunOwedSeedIfDue} reads the debt, leaves the monitor to ask Ratis and the capability registry, and comes
+   * back to clear it or to run it again. The reason text cannot tell it whether the debt it finds then is the one it
+   * read: two catch-ups of the same node carry the same reason, so a debt dropped and owed again in between (the
+   * leadership lost and regained, and a new seed refused) would be cleared by the check that saw the old one, and never
+   * run again.
+   */
+  private       long                             owedSeedGeneration;
 
   /**
    * Production form: seeds on a dedicated single daemon worker.
@@ -634,6 +644,7 @@ public class MembershipSecuritySeeder implements AutoCloseable {
     if (owedSeedReason == null) {
       owedSeedReason = reason;
       owedSeedReruns = 0;
+      owedSeedGeneration++;
       return Owed.NEW;
     }
     if (owedSeedReruns < OWED_SEED_RERUNS)
@@ -673,25 +684,31 @@ public class MembershipSecuritySeeder implements AutoCloseable {
    */
   boolean rerunOwedSeedIfDue() {
     final String reason;
+    final long generation;
     synchronized (this) {
       if (owedSeedReason == null || closed)
         return false;
       if (outstandingSeed != null && !outstandingSeed.isDone())
         return false;
       reason = owedSeedReason;
+      generation = owedSeedGeneration;
     }
 
-    // Both read Ratis or the capability registry, so neither runs under this monitor
+    // Both read Ratis or the capability registry, so neither runs under this monitor. What they decide is applied
+    // only to the debt read above (see owedSeedGeneration): one owed since is left for the next round.
     if (!isLeader.getAsBoolean()) {
+      final boolean dropped;
       synchronized (this) {
-        if (reason.equals(owedSeedReason)) {
+        dropped = owedSeedReason != null && generation == owedSeedGeneration;
+        if (dropped) {
           owedSeedReason = null;
           owedSeedReruns = 0;
         }
       }
-      LogManager.instance().log(this, Level.INFO,
-          "This node no longer leads, so it will not run again the security seed for %s that could not commit; "
-              + "the node it was for asks the new leader itself (issue #13447)", reason);
+      if (dropped)
+        LogManager.instance().log(this, Level.INFO,
+            "This node no longer leads, so it will not run again the security seed for %s that could not commit; "
+                + "the node it was for asks the new leader itself (issue #13447)", reason);
       return false;
     }
     final List<String> withholding = peersWithholdingSecurityEntries();
@@ -705,7 +722,7 @@ public class MembershipSecuritySeeder implements AutoCloseable {
     final int rerun;
     final boolean spent;
     synchronized (this) {
-      if (!reason.equals(owedSeedReason) || closed)
+      if (owedSeedReason == null || generation != owedSeedGeneration || closed)
         return false;
       // Checked here as well as in oweSeed: a re-run that THROWS reports no documents, so it never reaches oweSeed
       // and would otherwise be started again on every capability round.
