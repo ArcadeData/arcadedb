@@ -110,7 +110,7 @@
 
         <testcontainers.version>2.0.5</testcontainers.version>
         <logback-classic.version>1.6.7</logback-classic.version>
-        <micrometer.version>1.17.2</micrometer.version>
+        <micrometer.version>1.18.0</micrometer.version>
         <micrometer-tracing.version>1.7.2</micrometer-tracing.version>
         <opentelemetry.version>1.68.0</opentelemetry.version>
         <postgres.version>42.7.14</postgres.version>
