@@ -93,6 +93,11 @@ public class MutablePage extends BasePage implements TrackableContent {
   // which nothing may write to it again, so the read cache can share its array instead of copying the whole page.
   // Written before the hand-off (a concurrent map/queue insertion) and read only after it, which orders the two.
   private              boolean published                  = false;
+  // #13441: set when a synchronous commit wrote a NEWER image of the same page straight to its file while this copy was still in
+  // the asynchronous flush pipeline. The flush thread can still be holding this copy (polled but not yet published as in
+  // flight), so it checks the flag under the page's I/O lock and skips the write: written after the synchronous image, it
+  // would revert the page on disk. Volatile because it is written by the committer and read by the flush thread.
+  private volatile     boolean supersededOnDisk           = false;
   // #9483: whether EVERY write this transaction made to the page was a hole-free one (see beginPackedWrite), so the
   // commit may skip the proof that the page has no hole. Same single-owner contract as the fields above. The sticky
   // flag is the dangerous direction, which is why it is opt-IN: a write is presumed to be able to leave a hole until its
@@ -404,6 +409,15 @@ public class MutablePage extends BasePage implements TrackableContent {
   /** Whether {@link #markPublished()} has been called, i.e. whether this image can be shared without a copy. */
   public boolean isPublished() {
     return published;
+  }
+
+  /** #13441: a newer image of this page was written to the file synchronously, so this pending copy must never be. */
+  void markSupersededOnDisk() {
+    this.supersededOnDisk = true;
+  }
+
+  boolean isSupersededOnDisk() {
+    return supersededOnDisk;
   }
 
   public void updateMetadata() {

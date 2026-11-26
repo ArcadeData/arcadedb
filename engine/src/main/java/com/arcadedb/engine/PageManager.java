@@ -2711,9 +2711,16 @@ public class PageManager extends LockContext {
             flushSlotReserved ? updatedPages.getFirst().getPageId().getDatabase() : null);
       } else {
         // SYNCHRONOUS FLUSH
+        final PageManagerFlushThread thread = flushThread;
         int i = 0;
         for (final MutablePage page : updatedPages) {
+          // An older copy of this page can still be in the asynchronous pipeline: committed before the database
+          // switched to synchronous flush, or by a commit that asked for async flush. Written after this page it would
+          // revert it on disk (issue #13441), so it leaves the pipeline first and is never written.
+          final List<MutablePage> superseded = thread != null ? thread.detachCopiesSupersededBy(page.pageId) : List.of();
           flushPage(page);
+          // Only now that the newer image is on disk: until then the WAL is what holds the content of the copies
+          releaseWALOfSupersededCopies(superseded);
           // ADD THE PAGE IN TO READ CACHE. FROM THIS POINT THE PAGE IS NEVER MODIFIED, SO IT CAN BE CACHED
           putPageInReadCache(new CachedPage(page, false));
           if (i++ == half)
@@ -2726,6 +2733,20 @@ public class PageManager extends LockContext {
         // was never reached, so the slot goes back rather than being held by a publication that is not going to
         // happen. Unlike its twin in publishPages this one IS reachable today - putPageInReadCache does I/O.
         releaseFlushQueueSlot(updatedPages);
+    }
+  }
+
+  /**
+   * Releases the WAL acks of the pending copies a synchronous write superseded (issue #13441): they will never be
+   * written, and the pending count they hold would otherwise keep their WAL files alive forever (the close-time ack
+   * gate, #4928). takeWALFile makes the release exactly-once against the flush thread, which may be holding one of
+   * them and skips it.
+   */
+  private static void releaseWALOfSupersededCopies(final List<MutablePage> superseded) {
+    for (int i = 0; i < superseded.size(); i++) {
+      final WALFile walFile = superseded.get(i).takeWALFile();
+      if (walFile != null)
+        walFile.notifyPageFlushed();
     }
   }
 
@@ -2826,6 +2847,10 @@ public class PageManager extends LockContext {
       // The WAL rule under group commit (arcadedb.txWalGroupCommit): the commit published this page before flushing the WAL
       // that describes it, so the page waits for that flush - or runs it - before it reaches the data file. A page on disk
       // with no durable WAL behind it would be a partial transaction after a power loss, with nothing for recovery to replay
+      if (page.isSupersededOnDisk())
+        // Taken out by a synchronous commit (issue #13441): nothing to wait for, nothing to write
+        return false;
+
       final long walSyncTicket = page.getWALSyncTicket();
       if (walSyncTicket > 0)
         try {
@@ -2844,6 +2869,10 @@ public class PageManager extends LockContext {
       try {
         // ACQUIRE A LOCK ON THE I/O OPERATION TO AVOID PARTIAL READS/WRITES
         concurrentPageAccess(page.pageId, true, () -> {
+          // Read under the lock the synchronous write takes too (issue #13441): either this copy lands before the
+          // newer image, or it is marked by now and never lands
+          if (page.isSupersededOnDisk())
+            return;
           final int written = file.write(page);
           totalPagesWrittenSize.addAndGet(written);
         });
@@ -2870,6 +2899,11 @@ public class PageManager extends LockContext {
         discardPageOfDroppedFile(page, file, e);
         return false;
       }
+
+      if (page.isSupersededOnDisk())
+        // A synchronous commit took this copy out of the pipeline (issue #13441), whether or not it was written above:
+        // the newer image is on disk or about to be, and its writer releases this copy's WAL ack once it is
+        return false;
 
       try {
         final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileByIdIfExists(fileId);
