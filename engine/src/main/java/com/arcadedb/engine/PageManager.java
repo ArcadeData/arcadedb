@@ -2717,8 +2717,17 @@ public class PageManager extends LockContext {
           // An older copy of this page can still be in the asynchronous pipeline: committed before the database
           // switched to synchronous flush, or by a commit that asked for async flush. Written after this page it would
           // revert it on disk (issue #13441), so it leaves the pipeline first and is never written.
-          final List<MutablePage> superseded = thread != null ? thread.detachCopiesSupersededBy(page.pageId) : List.of();
-          flushPage(page);
+          final List<MutablePage> superseded = thread != null ? thread.detachCopiesSupersededBy(page) : List.of();
+          try {
+            flushPage(page, superseded.isEmpty() ? null : thread);
+          } catch (final IOException | RuntimeException e) {
+            // The copies are out of the pipeline and the newer image is not on disk: after an eviction a read would get
+            // the file's older image. Only the WAL holds their content now (their acks are kept), so the database goes
+            // to recovery, as a commit whose page write fails does
+            if (!superseded.isEmpty() && ((DatabaseInternal) page.getPageId().getDatabase()).getEmbedded() instanceof LocalDatabase localDatabase)
+              localDatabase.fenceForRecovery("a synchronous page write that superseded pending copies failed", e);
+            throw e;
+          }
           // Only now that the newer image is on disk: until then the WAL is what holds the content of the copies
           releaseWALOfSupersededCopies(superseded);
           // ADD THE PAGE IN TO READ CACHE. FROM THIS POINT THE PAGE IS NEVER MODIFIED, SO IT CAN BE CACHED
@@ -2795,6 +2804,15 @@ public class PageManager extends LockContext {
    * fenced or dropped database or file) and it was released instead.
    */
   protected boolean flushPage(final MutablePage page) throws IOException {
+    return flushPage(page, null);
+  }
+
+  /**
+   * @param recordSyncWriteIn not null for a synchronous write that took older copies of the page out of the pipeline:
+   *                          the write is recorded there under the page's I/O lock, so that no copy the detach could not
+   *                          reach lands after it (issue #13441)
+   */
+  private boolean flushPage(final MutablePage page, final PageManagerFlushThread recordSyncWriteIn) throws IOException {
     final DatabaseInternal database = (DatabaseInternal) page.getPageId().getDatabase();
 
     if (!database.isOpen() || (database.isFencedForRecovery() && isReplayedByRecovery(page))) {
@@ -2873,8 +2891,23 @@ public class PageManager extends LockContext {
           // newer image, or it is marked by now and never lands
           if (page.isSupersededOnDisk())
             return;
+          if (recordSyncWriteIn == null) {
+            // A synchronous write already put a newer image there (issue #13441): a copy the flush thread held between
+            // poll and publication, out of reach of the detach. Skipped like a detached one, and released here, since
+            // no writer has it in its list: the newer image is already on disk
+            final PageManagerFlushThread thread = flushThread;
+            if (thread != null && thread.isOlderThanASyncWrite(page)) {
+              page.markSupersededOnDisk();
+              final WALFile walFile = page.takeWALFile();
+              if (walFile != null)
+                walFile.notifyPageFlushed();
+              return;
+            }
+          }
           final int written = file.write(page);
           totalPagesWrittenSize.addAndGet(written);
+          if (recordSyncWriteIn != null)
+            recordSyncWriteIn.recordSyncWrite(page);
         });
       } catch (final IllegalArgumentException | FileNotFoundException e) {
         // The two - and only two - ways PaginatedComponentFile.write() reports "the file went away under me",

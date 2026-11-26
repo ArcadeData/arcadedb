@@ -21,6 +21,7 @@ package com.arcadedb.engine;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
@@ -85,11 +86,12 @@ class SyncCommitSupersedesPendingFlushTest {
       assertThat(held.await(30, TimeUnit.SECONDS)).as("the flush thread must be held on the blocker's batch").isTrue();
 
       try {
-        final Database db = new DatabaseFactory(DATABASE_PATH).create();
-        final Map<String, Integer> before = declareSchemaSynchronously(db);
-        // The queued copy of create() is written now, after the synchronous rewrites of the dictionary page
-        release.countDown();
-        db.close();
+        final Map<String, Integer> before;
+        try (final Database db = new DatabaseFactory(DATABASE_PATH).create()) {
+          before = declareSchemaSynchronously(db);
+          // The queued copy of create() is written now, after the synchronous rewrites of the dictionary page
+          release.countDown();
+        }
         assertSurvivesReopen(before);
       } finally {
         release.countDown();
@@ -118,7 +120,8 @@ class SyncCommitSupersedesPendingFlushTest {
     });
 
     final Thread releaser = new Thread(() -> {
-      // Released by time, not by the test thread: with the fix the synchronous write waits for this very write
+      // Released by time, not by the test thread: with the fix the synchronous write waits for this very write. The
+      // 500 ms only widen the window in which the synchronous write races the held one; the assertions hold either way
       awaitQuietly(held, 30);
       try {
         Thread.sleep(500);
@@ -129,15 +132,123 @@ class SyncCommitSupersedesPendingFlushTest {
     });
     releaser.start();
     try {
-      final Database db = new DatabaseFactory(DATABASE_PATH).create();
-      final Map<String, Integer> before = declareSchemaSynchronously(db);
-      assertThat(held.getCount()).as("the flush thread must have been held on dictionary page 0").isZero();
-      release.countDown();
-      db.close();
+      final Map<String, Integer> before;
+      try (final Database db = new DatabaseFactory(DATABASE_PATH).create()) {
+        before = declareSchemaSynchronously(db);
+        assertThat(held.getCount()).as("the flush thread must have been held on dictionary page 0").isZero();
+        release.countDown();
+      }
       assertSurvivesReopen(before);
     } finally {
       release.countDown();
       releaser.join();
+    }
+  }
+
+  /**
+   * The page written synchronously can be the very instance still queued for its asynchronous write: a compaction
+   * writes each data page asynchronously when it fills, then writes the same pages again synchronously with the root of
+   * the series. That instance is not a superseded copy: taken out of the pipeline as one, and marked, it was skipped by
+   * the synchronous write too, and the page never reached the file.
+   */
+  @Test
+  @Timeout(value = 2, unit = TimeUnit.MINUTES)
+  void theSameInstanceQueuedAsynchronouslyAndThenWrittenSynchronouslyReachesTheFile() throws Exception {
+    final Database blocker = new DatabaseFactory(BLOCKER_PATH).create();
+    try {
+      final CountDownLatch held = new CountDownLatch(1);
+      final CountDownLatch release = new CountDownLatch(1);
+      final String blockerName = blocker.getName();
+      PageManager.setPageWriteFaultInjector(pageId -> {
+        if (isFlushThread() && blockerName.equals(pageId.getDatabase().getName())) {
+          held.countDown();
+          awaitQuietly(release, 30);
+        }
+      });
+
+      blocker.transaction(() -> blocker.getSchema().createDocumentType("Blocker"));
+      assertThat(held.await(30, TimeUnit.SECONDS)).as("the flush thread must be held on the blocker's batch").isTrue();
+
+      final PageId pageId;
+      final int pageSize;
+      final int markerOffset;
+      try (final DatabaseInternal db = (DatabaseInternal) new DatabaseFactory(DATABASE_PATH).create()) {
+        final PaginatedComponent bucket = (PaginatedComponent) db.getSchema().createDocumentType("Item").getBuckets(false)
+            .getFirst();
+        pageSize = bucket.getPageSize();
+        pageId = new PageId(db, bucket.getFileId(), bucket.getTotalPages());
+
+        final MutablePage page = new MutablePage(pageId, pageSize);
+        markerOffset = page.getMaxContentSize() - Integer.BYTES;
+        page.writeInt(markerOffset, 13441);
+
+        final PageManager pageManager = db.getPageManager();
+        pageManager.updatePageVersion(page, true);
+        // Queued behind the held batch of the blocker, then the same instance is written synchronously
+        pageManager.writePages(List.of(page), true);
+        pageManager.writePages(List.of(page), false);
+
+        release.countDown();
+      } finally {
+        release.countDown();
+      }
+
+      PageManager.setPageWriteFaultInjector(null);
+      try (final Database db = new DatabaseFactory(DATABASE_PATH).open()) {
+        final PageId reopened = new PageId(db, pageId.getFileId(), pageId.getPageNumber());
+        final ImmutablePage page = ((DatabaseInternal) db).getPageManager().getImmutablePage(reopened, pageSize, false, false);
+        assertThat(page).as("the page must have reached the file").isNotNull();
+        assertThat(page.readInt(markerOffset)).as("the page on disk must hold the content written").isEqualTo(13441);
+      }
+    } finally {
+      PageManager.setPageWriteFaultInjector(null);
+      blocker.drop();
+    }
+  }
+
+  /**
+   * A copy the flush thread polled but had not yet published as in flight is out of reach of the detach, so the
+   * synchronous write records its version under the page's I/O lock, and the flush thread skips any OLDER copy it
+   * writes after that. Driven directly, since the poll-to-publication window is a few instructions wide.
+   */
+  @Test
+  @Timeout(value = 2, unit = TimeUnit.MINUTES)
+  void aCopyOlderThanARecordedSynchronousWriteIsNeverWrittenAfterIt() throws Exception {
+    final PageId pageId;
+    final int pageSize;
+    final int markerOffset;
+    try (final DatabaseInternal db = (DatabaseInternal) new DatabaseFactory(DATABASE_PATH).create()) {
+      db.setAsyncFlush(false);
+      final PaginatedComponent bucket = (PaginatedComponent) db.getSchema().createDocumentType("Item").getBuckets(false)
+          .getFirst();
+      pageSize = bucket.getPageSize();
+      pageId = new PageId(db, bucket.getFileId(), bucket.getTotalPages());
+      final PageManager pageManager = db.getPageManager();
+
+      final MutablePage older = new MutablePage(pageId, pageSize);
+      markerOffset = older.getMaxContentSize() - Integer.BYTES;
+      older.writeInt(markerOffset, 1);
+      pageManager.updatePageVersion(older, true);
+      pageManager.writePages(List.of(older), false);
+
+      final MutablePage newer = pageManager.getImmutablePage(pageId, pageSize, false, false).modify();
+      newer.writeInt(markerOffset, 2);
+      pageManager.updatePageVersion(newer, false);
+      assertThat(newer.getVersion()).isGreaterThan(older.getVersion());
+
+      // The synchronous write of the newer image, as recorded when it found older copies pending
+      assertThat(pageManager.flushPage(newer)).isTrue();
+      pageManager.getFlushThread().recordSyncWrite(newer);
+
+      // The older copy reaches the flush thread only now: it must not land over the newer image
+      assertThat(pageManager.flushPage(older)).as("the older copy must be skipped").isFalse();
+      assertThat(older.isSupersededOnDisk()).isTrue();
+    }
+
+    try (final Database db = new DatabaseFactory(DATABASE_PATH).open()) {
+      final PageId reopened = new PageId(db, pageId.getFileId(), pageId.getPageNumber());
+      final ImmutablePage page = ((DatabaseInternal) db).getPageManager().getImmutablePage(reopened, pageSize, false, false);
+      assertThat(page.readInt(markerOffset)).as("the file must hold the newer image").isEqualTo(2);
     }
   }
 
@@ -149,7 +260,7 @@ class SyncCommitSupersedesPendingFlushTest {
       type.createProperty(p, Type.STRING);
     db.transaction(() -> {
       for (int v = 0; v < 3; v++) {
-        final var vertex = db.newVertex("Item");
+        final MutableVertex vertex = db.newVertex("Item");
         for (final String p : PROPERTIES)
           vertex.set(p, p + "-" + v);
         vertex.save();

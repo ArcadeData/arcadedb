@@ -179,6 +179,19 @@ public class PageManagerFlushThread extends Thread {
   private final        ConcurrentHashMap<PageId, MutablePage>     failedFlushPages = new ConcurrentHashMap<>();
   private static final long                                       FAILED_FLUSH_RETRY_INTERVAL_MS = 1_000L;
   private              long                                       lastFailedFlushRetryMs;
+  /**
+   * Issue #13441: per page, the version a SYNCHRONOUS write put on its file while older copies of the page could still
+   * be in this pipeline. Recorded under the page's I/O lock right after that write (see {@link #recordSyncWrite}) and
+   * read under the same lock before every write of a pending copy, which is skipped when it is older. It is what covers
+   * the copies {@link #detachCopiesSupersededBy} cannot reach: those of a batch this thread has polled from
+   * {@link #queue} but not yet published in {@link #nextPagesToFlush}.
+   * <p>
+   * Empty in the steady state: an entry is only taken by a synchronous write that took older copies out. It is cleared
+   * when the pipeline drains (versions only grow, so an entry can only ever skip copies OLDER than a write already on
+   * disk, but a file id or a database path reused with fresh page versions must not inherit it), and by the purges of
+   * a closed database and of a dropped file.
+   */
+  private final        ConcurrentHashMap<PageId, Long>            syncWrittenVersions = new ConcurrentHashMap<>();
 
   /**
    * Maximum bytes of dirty pages that may sit deferred (in {@link #deferredByDatabase}) while flushing is
@@ -756,6 +769,9 @@ public class PageManagerFlushThread extends Thread {
     // suspended databases directly, before that lock is taken - see awaitDeferredBacklogUnderCap - and this thread
     // always drains.
     final PagesToFlush pagesToFlush = queue.poll(timeout, TimeUnit.MILLISECONDS);
+
+    if (pagesToFlush == null && Thread.currentThread() == this)
+      forgetSyncWritesIfIdle();
 
     if (pagesToFlush != null) {
       // A slot of THIS batch's database is free again (issue #6281): give it back and admit a committer waiting for
@@ -1979,6 +1995,9 @@ public class PageManagerFlushThread extends Thread {
    *                close preserves the WAL for the next open to replay.
    */
   public void removeAllPagesOfDatabase(final Database database, final boolean dropped) {
+    // A database reopened at the same path starts its pages at fresh versions: it must not inherit these (#13441)
+    forgetSyncWrites(database, -1);
+
     // Reference identity ON PURPOSE (issue #6440), not database.equals(pagesToFlush.database): LocalDatabase
     // compares by PATH, so a database dropped and immediately reopened at the same path (a restore, a
     // re-provision, or simply a test's @BeforeEach/@AfterEach hammering one fixed path) would otherwise have
@@ -2082,6 +2101,9 @@ public class PageManagerFlushThread extends Thread {
 
   /** Drops every pending {@link MutablePage} of a single dropped file from the queue, the deferred batches and the index. */
   public void removeAllPagesOfFile(final Database database, final int fileId) {
+    // A file id reused after the drop starts its pages at fresh versions: it must not inherit these (#13441)
+    forgetSyncWrites(database, fileId);
+
     for (final PagesToFlush pagesToFlush : queue.stream().toList())
       removePagesOfFileFromBatch(pagesToFlush, database, fileId);
 
@@ -2187,30 +2209,83 @@ public class PageManagerFlushThread extends Thread {
    * succeeded, and not before: until then the WAL is what still holds their content.
    * <p>
    * {@link #detachPendingPages} cannot see a batch the flush thread has polled from {@link #queue} but not yet
-   * published in {@link #nextPagesToFlush}, and that batch still holds the indexed copy. The mark covers it:
-   * {@link PageManager#flushPage} reads it under the page's I/O lock, the one the synchronous write takes too, so the
-   * flush thread either wrote the copy before the synchronous image or finds it marked and skips it.
+   * published in {@link #nextPagesToFlush}. The marks cover the copy of it that is indexed, and the version the caller
+   * records under the page's I/O lock right after its write ({@link #recordSyncWrite}) covers any other one: the flush
+   * thread reads both under that same lock, so it either wrote the copy before the synchronous image or skips it.
    * <p>
    * The detach's assumption holds here: the committer holds the commit lock of the page's file, so no other commit
    * can schedule a flush of this page meanwhile.
+   * <p>
+   * The page being written can itself be one of the pending copies: a compaction writes a data page asynchronously
+   * when it fills, then writes the same {@link MutablePage} instance again synchronously with the rest of its series
+   * ({@code LSMTreeIndexCompactedStreamWriter.finishSeries}). That instance leaves the pipeline like the others, since
+   * the caller is about to write it, but it is neither marked nor returned: marking it would make
+   * {@link PageManager#flushPage} skip the synchronous write itself and lose the page.
    *
-   * @return the copies taken out, to be released by the caller after its write; empty, without allocating, when the
-   *     page has nothing pending, which is the steady state of a database that flushes synchronously.
+   * @return the OTHER copies taken out, to be released by the caller after its write, which also records it with
+   *     {@link #recordSyncWrite} when there is any; empty, without allocating, when the page has nothing pending, which
+   *     is the steady state of a database that flushes synchronously.
    */
-  List<MutablePage> detachCopiesSupersededBy(final PageId pageId) {
-    // O(1) fast path, per page and not per database, so a database that mixes the two modes walks the pipeline only
-    // for the pages it actually has pending. The newest pending copy of a page stays indexed until it reaches the
-    // disk (removeFromFlushIndex runs AFTER the write), and older copies queued with it are flushed before it in
-    // FIFO order, while a failed copy is kept in failedFlushPages. A copy can only outlive its entry when a NEWER copy
-    // was written first, and that copy already reverts the page on its own, whatever happens here; the full walk of
-    // detachPendingPages is kept for the replay path, which must not trust this.
+  List<MutablePage> detachCopiesSupersededBy(final MutablePage page) {
+    final PageId pageId = page.getPageId();
+    // O(1) fast path, per page and not per database, so a database that mixes the two modes (an index compaction
+    // writes synchronously while the commits of the same database flush asynchronously) walks the pipeline only for
+    // the pages it actually has pending. The newest pending copy of a page stays indexed until it reaches the disk
+    // (removeFromFlushIndex runs AFTER the write), and older copies queued with it are flushed before it in FIFO
+    // order, while a failed copy is kept in failedFlushPages. A copy can only outlive its entry when a NEWER copy was
+    // written first (the backlog of a suspension, re-enqueued behind the commits made since), and that copy already
+    // reverts the page on its own, whatever happens here; the full walk of detachPendingPages is kept for the replay
+    // path, which must not trust this.
     if (pageIndex.get(pageId) == null && (failedFlushPages.isEmpty() || failedFlushPages.get(pageId) == null))
       return Collections.emptyList();
 
     final List<MutablePage> detached = detachPendingPages((Database) pageId.getDatabase(), pageId);
-    for (int i = 0; i < detached.size(); i++)
-      detached.get(i).markSupersededOnDisk();
+    for (int i = detached.size() - 1; i >= 0; i--) {
+      final MutablePage copy = detached.get(i);
+      if (copy == page)
+        // The very instance the caller writes now: not a superseded copy
+        detached.remove(i);
+      else
+        copy.markSupersededOnDisk();
+    }
     return detached;
+  }
+
+  /**
+   * Records, under the page's I/O lock and right after the write, that a synchronous write put this version of the page
+   * on its file while older copies of it could still be in the pipeline (issue #13441). See {@link #syncWrittenVersions}.
+   */
+  void recordSyncWrite(final MutablePage page) {
+    syncWrittenVersions.merge(page.getPageId(), page.getVersion(), Math::max);
+  }
+
+  /**
+   * Whether a synchronous write already put a NEWER version of this page on its file. Read under the page's I/O lock
+   * before a pending copy is written, so the copy never lands after that write (issue #13441). One emptiness check in
+   * the steady state.
+   */
+  boolean isOlderThanASyncWrite(final MutablePage page) {
+    if (syncWrittenVersions.isEmpty())
+      return false;
+    final Long written = syncWrittenVersions.get(page.getPageId());
+    return written != null && page.getVersion() < written;
+  }
+
+  /**
+   * Forgets the synchronous writes once nothing is pending anywhere: no older copy can be left for them to stop. Called
+   * by the flush thread itself after a poll that found nothing, so it holds no batch of its own between poll and
+   * publication.
+   */
+  private void forgetSyncWritesIfIdle() {
+    if (!syncWrittenVersions.isEmpty() && pageIndex.isEmpty() && queue.isEmpty() && deferredRAMBytes.get() == 0
+        && failedFlushPages.isEmpty() && deferredByDatabase.isEmpty() && resumingDatabases.isEmpty())
+      syncWrittenVersions.clear();
+  }
+
+  private void forgetSyncWrites(final Database database, final int fileId) {
+    if (!syncWrittenVersions.isEmpty())
+      syncWrittenVersions.keySet()
+          .removeIf(pageId -> pageId.getDatabase() == database && (fileId < 0 || pageId.getFileId() == fileId));
   }
 
   private static boolean containsInstance(final List<MutablePage> pages, final MutablePage page) {
