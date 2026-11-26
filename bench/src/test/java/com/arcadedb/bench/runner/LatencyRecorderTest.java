@@ -49,6 +49,39 @@ class LatencyRecorderTest {
   }
 
   @Test
+  void addAllKeepsEverySample() {
+    final LatencyRecorder a = new LatencyRecorder(16);
+    a.record(5L);
+    a.record(70L);
+    a.record(3L);
+    final LatencyRecorder b = new LatencyRecorder(16);
+    b.record(9L);
+    b.record(90L);
+    b.record(1L);
+    b.record(40L);
+    a.addAll(b);
+    assertThat(a.count()).isEqualTo(7);
+    assertThat(a.percentile(100)).isEqualTo(90L);
+    assertThat(a.percentile(1)).isEqualTo(1L);
+    assertThat(a.totalNanos()).isEqualTo(5L + 70 + 3 + 9 + 90 + 1 + 40);
+    // the source is left as it was
+    assertThat(b.count()).isEqualTo(4);
+  }
+
+  @Test
+  void addAllGrowsPastTheCapacity() {
+    final LatencyRecorder a = new LatencyRecorder(16);
+    final LatencyRecorder b = new LatencyRecorder(16);
+    for (int i = 0; i < 100; i++) {
+      a.record(i);
+      b.record(1000 + i);
+    }
+    a.addAll(b);
+    assertThat(a.count()).isEqualTo(200);
+    assertThat(a.percentile(100)).isEqualTo(1099L);
+  }
+
+  @Test
   void everySampleIsProgressForTheStallWatchdog() {
     final LatencyRecorder recorder = new LatencyRecorder(16);
     final long before = Progress.count();

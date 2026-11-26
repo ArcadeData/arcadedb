@@ -279,13 +279,13 @@ public class GraphOltpWorkload implements Workload {
     }
   }
 
-  private static void flush(final RemoteDatabase db, final StringBuilder script) {
+  static void flush(final RemoteDatabase db, final StringBuilder script) {
     script.append("COMMIT;");
     db.command("sqlscript", script.toString()).close();
   }
 
   /** The RIDs of a type ordered by id, so position i holds the vertex of the i-th id. */
-  private static String[] loadRids(final RemoteDatabase db, final String type, final int expected) {
+  static String[] loadRids(final RemoteDatabase db, final String type, final int expected) {
     final String[] rids = new String[expected];
     int n = 0;
     int last = Integer.MIN_VALUE;

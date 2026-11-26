@@ -41,4 +41,10 @@ class ServerUnderTestSettingsTest {
 
     assertThat(settings.get("arcadedb.network.socketTimeout")).isEqualTo("5000");
   }
+
+  @Test
+  void workloadSettingsWinOverDefaults() {
+    assertThat(ServerUnderTest.settings(Map.of()).get("arcadedb.server.plugins")).isEqualTo("PrometheusMetricsPlugin");
+    assertThat(ServerUnderTest.settings(Map.of("arcadedb.server.plugins", "A")).get("arcadedb.server.plugins")).isEqualTo("A");
+  }
 }

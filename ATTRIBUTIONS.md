@@ -300,6 +300,14 @@ Shipped in the `arcadedb-studio` jar. Their licences are on the CLAUDE.md allow-
 licensed under the SIL Open Font License 1.1 (https://openfontlicense.org/) and the CSS under MIT. Full terms:
 https://fontawesome.com/license/free. Both are shipped unmodified.
 
+### Benchmark Harness (bench module, shaded into the bench jar)
+
+| Group ID | Artifact ID | Version | License | Homepage |
+|----------|-------------|---------|---------|----------|
+| org.neo4j.driver | neo4j-java-driver (Bolt client of the wire-protocol workloads) | `${neo4j-driver.version}` (root `pom.xml`) | Apache 2.0 | https://github.com/neo4j/neo4j-java-driver |
+| org.postgresql | postgresql (PostgreSQL JDBC driver of the wire-protocol workloads) | 42.7.14 | BSD 2-Clause | https://jdbc.postgresql.org/ |
+| org.neo4j.bolt, io.projectreactor, org.reactivestreams, io.netty, org.checkerframework | neo4j-bolt-connection* , reactor-core (Apache 2.0), reactive-streams (MIT-0), netty 4.2 incl. netty-tcnative-classes (Apache 2.0), checker-qual (MIT): transitive jars of neo4j-java-driver, shaded into the bench jar | versions follow neo4j-java-driver | Apache 2.0, MIT-0, MIT | https://github.com/neo4j/neo4j-java-driver |
+
 ### Transitive Dependencies Found by the #5651 License Audit
 
 Not declared directly in any module's `pom.xml`; pulled in transitively and missing from this
