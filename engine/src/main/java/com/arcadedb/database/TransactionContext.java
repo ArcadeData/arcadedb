@@ -798,14 +798,22 @@ public class TransactionContext implements Transaction {
    * The conflict is attached as a SUPPRESSED exception, not as the cause: the error mappings look through a
    * {@link TransactionException} to its cause and would find the retryable conflict again. A {@link DuplicatedKeyException}
    * is returned unchanged: no layer tells a client to retry it.
+   * <p>
+   * So is a {@link RefusedBeforePublishingException} whose commits the block made all after its watermark (issue #13437): the
+   * commits that moved the counter never left this node, which discards them, so a replay elsewhere applies nothing twice.
    *
-   * @param conflict the exception the block failed with
-   * @param block    what failed, for the message ("Transaction block", "COMMIT RETRY block", ...)
+   * @param conflict           the exception the block failed with
+   * @param block              what failed, for the message ("Transaction block", "COMMIT RETRY block", ...)
+   * @param txAtStart          the transaction context that was open when the block started, as given to {@link #isPartiallyCommitted}
+   * @param commitCountAtStart its commit count sampled at that moment
    *
    * @return the exception to raise instead of {@code conflict}
    */
-  public static ArcadeDBException notReplayable(final ArcadeDBException conflict, final String block) {
+  public static ArcadeDBException notReplayable(final ArcadeDBException conflict, final String block,
+      final TransactionContext txAtStart, final long commitCountAtStart) {
     if (!(conflict instanceof NeedRetryException))
+      return conflict;
+    if (conflict instanceof RefusedBeforePublishingException refused && refused.publishedNothingSince(txAtStart, commitCountAtStart))
       return conflict;
 
     final TransactionException failure = new TransactionException(
