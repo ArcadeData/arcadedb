@@ -506,8 +506,10 @@ public class CypherFunctionFactory {
       case "collect", "collect_list" -> distinct ? new CollectDistinctFunction() : new CollectFunction();
       case "min" -> distinct ? new DistinctAggregationWrapper(new CypherMinFunction()) : new CypherMinFunction();
       case "max" -> distinct ? new DistinctAggregationWrapper(new CypherMaxFunction()) : new CypherMaxFunction();
-      case "percentiledisc", "percentile_disc" -> new PercentileDiscFunction();
-      case "percentilecont", "percentile_cont" -> new PercentileContFunction();
+      case "percentiledisc", "percentile_disc" ->
+          distinct ? new DistinctAggregationWrapper(new PercentileDiscFunction()) : new PercentileDiscFunction();
+      case "percentilecont", "percentile_cont" ->
+          distinct ? new DistinctAggregationWrapper(new PercentileContFunction()) : new PercentileContFunction();
       // stdev/stdevp are SQL functions, not Cypher-specific
       // Temporal functions
       case "timestamp" -> new TimestampFunction();
