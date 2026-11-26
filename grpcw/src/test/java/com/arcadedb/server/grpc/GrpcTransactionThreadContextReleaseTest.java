@@ -27,9 +27,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
-import java.lang.reflect.Field;
 import java.lang.reflect.Method;
-import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -111,9 +109,10 @@ class GrpcTransactionThreadContextReleaseTest {
 
   /** Whether the static registry of {@link DatabaseContext} still holds the contexts of {@code thread}. */
   private static boolean isRegistered(final Thread thread) throws ReflectiveOperationException {
-    // the registry is private and keyed by thread id, and the contexts of another thread cannot be asked for through the API
-    final Field field = DatabaseContext.class.getDeclaredField("CONTEXTS");
-    field.setAccessible(true);
-    return ((Map<?, ?>) field.get(null)).containsKey(thread.threadId());
+    // the contexts of another thread cannot be asked for through the API: DatabaseContext keeps a hook for its own tests, which is
+    // asked rather than the registry behind it, so that the shape of the registry stays free to change
+    final Method registered = DatabaseContext.class.getDeclaredMethod("isThreadRegistered", long.class);
+    registered.setAccessible(true);
+    return (boolean) registered.invoke(null, thread.threadId());
   }
 }

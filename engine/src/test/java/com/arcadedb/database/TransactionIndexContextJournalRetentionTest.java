@@ -22,6 +22,9 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -76,5 +79,36 @@ class TransactionIndexContextJournalRetentionTest extends TestHelper {
     database.commit();
     assertThat(indexChanges.recordUndoCapacity()).as("slots kept after the commit")
         .isLessThanOrEqualTo(TransactionIndexContext.RECORD_UNDO_RETAINED);
+  }
+
+  /**
+   * A record saved outside a statement journals its index entries too, and nothing ends that journal but the transaction: a record
+   * whose list is indexed by item grows the journal past the bound, the holders are reused by the next record of the transaction, and
+   * the end of the transaction is the one place that gives them back. The count is checked before the commit as well, so that the
+   * test cannot pass because the journal never grew.
+   */
+  @Test
+  void aRecordSavedOutsideAStatementLeavesItsJournalToTheEndOfTheTransaction() {
+    database.command("sql", "CREATE DOCUMENT TYPE D").close();
+    database.command("sql", "CREATE PROPERTY D.tags LIST OF STRING").close();
+    database.command("sql", "CREATE INDEX ON D (tags BY ITEM) NOTUNIQUE").close();
+
+    final int items = 4 * TransactionIndexContext.RECORD_UNDO_RETAINED;
+    final List<String> tags = new ArrayList<>(items);
+    for (int i = 0; i < items; i++)
+      tags.add("tag" + i);
+
+    database.begin();
+    final TransactionIndexContext indexChanges = ((TransactionContext) ((DatabaseInternal) database).getTransaction()).getIndexChanges();
+    database.newDocument("D").set("tags", tags).save();
+
+    assertThat(indexChanges.recordUndoHolders()).as("holders the record grew the journal to, still there for the next record")
+        .isGreaterThan(TransactionIndexContext.RECORD_UNDO_RETAINED);
+    database.commit();
+    assertThat(indexChanges.recordUndoHolders()).as("holders kept after the commit")
+        .isLessThanOrEqualTo(TransactionIndexContext.RECORD_UNDO_RETAINED);
+    assertThat(indexChanges.recordUndoCapacity()).as("slots kept after the commit")
+        .isLessThanOrEqualTo(TransactionIndexContext.RECORD_UNDO_RETAINED);
+    assertThat(database.countType("D", true)).isEqualTo(1);
   }
 }
