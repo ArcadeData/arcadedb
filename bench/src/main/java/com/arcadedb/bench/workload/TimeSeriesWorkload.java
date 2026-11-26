@@ -165,6 +165,18 @@ public class TimeSeriesWorkload implements Workload {
   }
 
   /**
+   * Timestamp of point {@code inBatch} of batch {@code batch} in an in-dataset burst. Batch {@code b} goes to sensor
+   * {@code b % datasetSensors}, so the slots are numbered per sensor: the n-th batch a sensor receives takes its slots
+   * {@code n * BATCH ..}. A slot sits {@code 1 + rep % 999} ms after a dataset second, inside the dataset's hours, so the burst
+   * never overwrites a dataset point, an earlier repetition's point or another point of the same burst while a sensor receives at
+   * most {@code perSensor} points (see {@code TimeSeriesWorkloadTest}).
+   */
+  static long burstTimestamp(final int batch, final int inBatch, final int datasetSensors, final int perSensor, final int rep) {
+    final int slot = ((batch / datasetSensors) * BATCH + inBatch) % perSensor;
+    return BASE_TS + slot * STEP_MS + 1 + rep % (STEP_MS - 1);
+  }
+
+  /**
    * One burst of {@code points} points in batches of {@link #BATCH}. By default every batch goes to a sensor no earlier repetition
    * used; {@code inDataset} writes into the sensors of the loaded dataset instead, at timestamps inside its hours but between its
    * one-second points, so the continuous aggregate is maintained without gaining rows.
@@ -181,7 +193,7 @@ public class TimeSeriesWorkload implements Workload {
         final String sensor = inDataset ? "s-" + (batch % datasetSensors) : "ingest-" + prefix + "-" + rep + "-" + (batch % INGEST_SENSORS);
         body.setLength(0);
         for (int i = from; i < Math.min(from + BATCH, points); i++) {
-          final long ts = inDataset ? BASE_TS + (i % perSensor) * STEP_MS + 1 + rep % (STEP_MS - 1) : BASE_TS + i * STEP_MS;
+          final long ts = inDataset ? burstTimestamp(batch, i - from, datasetSensors, perSensor, rep) : BASE_TS + i * STEP_MS;
           if (sql)
             appendInsert(body, sensor, ts, i);
           else
