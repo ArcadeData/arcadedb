@@ -110,7 +110,7 @@ class BatchVertexUpdateGrantIT extends BaseGraphServerTest {
         basicAuth("root", DEFAULT_PASSWORD_FOR_TESTS));
     connection.setDoOutput(true);
     connection.setRequestProperty("Content-Type", "application/json");
-    connection.getOutputStream().write(payload.toString().getBytes());
+    connection.getOutputStream().write(payload.toString().getBytes(StandardCharsets.UTF_8));
     connection.connect();
     try {
       assertThat(connection.getResponseCode()).isEqualTo(201);
@@ -156,6 +156,6 @@ class BatchVertexUpdateGrantIT extends BaseGraphServerTest {
   }
 
   private String basicAuth(final String user, final String password) {
-    return "Basic " + Base64.getEncoder().encodeToString((user + ":" + password).getBytes());
+    return "Basic " + Base64.getEncoder().encodeToString((user + ":" + password).getBytes(StandardCharsets.UTF_8));
   }
 }
