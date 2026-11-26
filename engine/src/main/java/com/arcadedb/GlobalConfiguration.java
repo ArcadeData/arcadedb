@@ -209,7 +209,7 @@ public enum GlobalConfiguration {
       Class.class, LocalDate.class),
 
   SERIALIZER_FIXED_WIDTH_FLOAT_ARRAYS("arcadedb.serializer.fixedWidthFloatArrays", SCOPE.DATABASE,
-      "Write float and double arrays (vector embeddings) in their fixed-width form, 4 bytes per float and 8 per double, instead of the varint form, 5 bytes per float and 9-10 per double. A build before 26.11.1 cannot read the fixed-width form, so set it to false to keep the files readable by such a build, for a rollback. Read when the database opens; records already written keep their form until they are updated. A replicated database writes the fixed-width form only once every peer reads it",
+      "Write float and double arrays (vector embeddings) in their fixed-width form, 4 bytes per float and 8 per double, instead of the varint form, 5 bytes per float and 9-10 per double. A build before 26.11.1 cannot read the fixed-width form, so while this is on a database opened read-write has its dictionary labelled format version 2, which builds from 26.8.1 to 26.11.x refuse to open. Set it to false before the database is first opened by this build to keep the files openable by an older build, for a rollback; turning it off later does not remove the label. A replicated database writes the fixed-width form only once every peer reads it",
       Boolean.class, true),
 
   DATE_FORMAT("arcadedb.dateFormat", SCOPE.DATABASE, "Default date format using Java SimpleDateFormat syntax", String.class,
@@ -232,7 +232,9 @@ public enum GlobalConfiguration {
       A replicated commit of an HA cluster is made durable by the replication log, which a majority of the nodes flushes \
       before the commit completes: its WAL record is written on the node that originated it without a flush, whatever this \
       setting says, and the other nodes write none""",
-      Integer.class, 0),
+      // Allow-listed so every writer refuses another integer before storing it: one in a database's configuration made every
+      // write of that database fail, and the open and drop that read it as well (issue #12817)
+      Integer.class, 0, integerRangeAsStrings(0, 2)),
 
   FILE_SYNC("arcadedb.fileSync", SCOPE.JVM, """
       FOR TESTING ONLY. Set it to false to skip every fsync ArcadeDB issues: data and WAL files, the directory \
@@ -290,7 +292,7 @@ public enum GlobalConfiguration {
       Integer.class, 262_144),
 
   MATERIALIZED_VIEW_PER_RECORD_MAX_DELTA("arcadedb.materializedViewPerRecordMaxDelta", SCOPE.DATABASE,
-      "Maximum number of changed source records a REFRESH INCREMENTAL per-record materialized view re-evaluates in one pass; past it the pass rewrites the whole view instead. Default 10000",
+      "Maximum number of changed source records a REFRESH INCREMENTAL per-record materialized view re-evaluates in one pass; past it the pass rewrites the whole view instead. Also the cap on the source records one transaction changes, and on the groups one pass updates, for a grouped view maintained by delta; past it the view is rebuilt from its source. Default 10000",
       Integer.class, 10_000),
 
   EXTERNAL_PROPERTY_BUCKET_DEFAULT_PAGE_SIZE("arcadedb.externalPropertyBucketDefaultPageSize", SCOPE.DATABASE,
@@ -1080,12 +1082,20 @@ public enum GlobalConfiguration {
       matchers, and schema-level REGEXP property validation. java.util.regex backtracking does not poll interrupts or \
       deadlines, so a pathological pattern (catastrophic backtracking) keeps its worker thread busy regardless of \
       arcadedb.command.timeout; this dedicated bound protects against that even when arcadedb.command.timeout is disabled \
-      (0), which is the default. Every entry point reached through a command context - MATCHES, =~, PromQL's matchers \
-      and the text.regexReplace()/.normalize() functions - shares ONE deadline for the whole command: not one per row, \
-      not one per function, and not one per worker of a parallel type scan. Full-text search and REGEXP property \
+      (0), which is the default. The deadline is only looked at when the pattern reads a character, so a pattern that can \
+      backtrack WITHOUT reading any (anchors, empty alternatives or optional anchors in sequence, like \
+      \\A(?:\\A|\\A)(?:\\A|\\A)...\\z, or a counted loop of an empty group nested a few levels deep) is refused up front, \
+      before it runs, with the same timeout exception: when it can succeed in more than 1,024 different ways without a \
+      read, when one attempt makes more than about 65,000 steps without one (a repeated empty group, a look-behind with a \
+      long range), or, for an operation that scans its input (a search or a replace-all), when the steps one start \
+      position makes without a read times the length of the input exceed about 130 million. Every entry point reached \
+      through a command context - MATCHES, =~, PromQL's matchers and the text.regexReplace()/.normalize() functions - \
+      shares ONE deadline for the whole command: not one per row, not one per function, and not one per worker of a \
+      parallel type scan. Full-text search and REGEXP property \
       validation run outside a command context and share one deadline across an entire scan (not per item). The MongoDB \
-      wire protocol plugin applies a regex filter the same way: one budget per command, counting only the time spent \
-      inside the regular expressions. SQL LIKE/ILIKE match their pattern without a regular expression, so they never \
+      wire protocol plugin and Gremlin's TextP.regex()/notRegex() predicates apply a regex filter the same way: one budget \
+      per command or statement, counting only the time spent inside the regular expressions. SQL LIKE/ILIKE match \
+      their pattern without a regular expression, so they never \
       backtrack catastrophically, but a huge value against a long pattern can still cost the product of their lengths, \
       and this bound applies to them as well (per row, or shared across the items of a multi-value property). A large, \
       legitimately slow (non-catastrophic) operation can hit this bound too, so raise it for workloads that need more \
@@ -1134,9 +1144,10 @@ public enum GlobalConfiguration {
       Maximum number of elements (records/groups) allowed in a single query for memory-intensive operations (eg. ORDER BY, GROUP BY \
       and DISTINCT in heap, the result of a LET subquery or of one written inline in an expression (a projection, a function argument, \
       a SET value, a CREATE EDGE endpoint: its bytes are charged to the budget while the list is built, and given back when it is returned) and the rows of a user defined SQL function (against this cap only: no bytes are charged for \
-      the body of a function), the records a MATCH prefetches, the vertices a MATCH while:/maxDepth: walk holds along its current path and the \
+      the body of a function) and the elements of the arrays and objects a user defined JavaScript function answers, the records a MATCH prefetches, the vertices a MATCH while:/maxDepth: walk holds along its current path and the \
       values an aggregate that keeps them holds, like list(), set(), percentile() or the ts.* windows; in OpenCypher also the rows \
-      a Cartesian product or a hash join buffers, UNION, collect(), and the eager materialization ahead of a write). If exceeded, the query fails with a CommandExecutionException. Negative number means no limit. \
+      a Cartesian product or a hash join buffers, UNION, collect(), the eager materialization ahead of a write, and the rows the \
+      YIELD/WHERE clause of a SHOW command produces). If exceeded, the query fails with a CommandExecutionException. Negative number means no limit. \
       This setting is intended as a safety measure against excessive resource consumption from a single query (eg. prevent OutOfMemory). \
       When left at the default it auto-scales with the JVM max heap (roughly one element every 2KB of heap, never below 500000), so \
       large-cardinality analytical queries (eg. top-N-by-aggregate over millions of distinct keys) complete out of the box on servers \
@@ -1156,9 +1167,9 @@ public enum GlobalConfiguration {
   QUERY_MAX_HEAP_RAM("arcadedb.queryMaxHeapRAM", SCOPE.JVM, """
       Maximum heap (in MB) the in-memory buffers of all the queries running in the JVM may hold at once, across every \
       database: the rows an ORDER BY sorts, the keys a DISTINCT or a UNION remembers, the groups a GROUP BY keeps, the result \
-      of a LET subquery, the records a TRAVERSE has visited or a MATCH prefetches, the record addresses an UPDATE reads ahead \
+      of a LET subquery, the records a TRAVERSE has visited and the rows it keeps queued to expand, the records a MATCH prefetches, the record addresses an UPDATE reads ahead \
       of its writes, the values an aggregate like list() or percentile() holds, and in OpenCypher also the values collect() gathers, the rows a Cartesian product or a hash join buffers and the eager \
-      materialization ahead of a write, or the record addresses an index range reads ahead of a write to its key. Every \
+      materialization ahead of a write, the rows the YIELD/WHERE clause of a SHOW command produces, or the record addresses an index range reads ahead of a write to its key. Every \
       buffer reserves its estimated size from this budget as it grows and gives it \
       back when it is released, so many large queries running together cannot exhaust the heap even when each one stays \
       below arcadedb.queryMaxHeapElementsAllowedPerOp. A query whose buffers would take the reservations past the budget \
@@ -1339,8 +1350,8 @@ public enum GlobalConfiguration {
   CYPHER_ALGO_MAX_WORKING_MEMORY("arcadedb.cypher.algoMaxWorkingMemory", SCOPE.DATABASE,
       """
       Maximum heap, in bytes, that a single call to an OpenCypher algorithm procedure may reserve for the working \
-      set it builds beside the graph: the graph it loads when no Graph Analytical View covers it (one record per \
-      vertex and the RID index over them), the adjacency lists, weighted adjacency lists and degree buffers it \
+      set it builds beside the graph: the graph it loads when no Graph Analytical View covers it (the RID of every \
+      vertex, 16 bytes each), the adjacency lists, weighted adjacency lists and degree buffers it \
       materialises from the records or from a view, the edge arrays of algo.mst and algo.msa, the visited sets and \
       traversal state of the walks (algo.bfs, algo.dfs, the path searches), the neighbour bitsets of the clique, \
       triangle and truss algorithms, the random-walk buffers of algo.node2vec (walksPerNode x nodeCount walks of \
@@ -1491,6 +1502,20 @@ public enum GlobalConfiguration {
       database open. Lookups then behave exactly as they did before the feature existed.""",
       Float.class, 0.01f),
 
+  VECTOR_INDEX_MAX_DIMENSIONS("arcadedb.vectorIndex.maxDimensions", SCOPE.DATABASE,
+      """
+      Largest 'dimensions' an LSM_VECTOR index may be created with (issue #12822). The index keeps several buffers \
+      of 'dimensions' floats each (4 bytes per component, per buffer), so a value with no upper bound let one \
+      CREATE INDEX allocate gigabytes and run the whole server out of heap. The default, 16384 (64 KB per vector), \
+      sits well above the widest dense embeddings in common use (a few thousand components) and next to the \
+      16,000-component cap other vector stores apply. Checked only when the dimensions of a new index are declared, \
+      through SQL CREATE INDEX, Cypher CREATE VECTOR INDEX, the Java builders or an import, and when an index created \
+      with 'sizeOnFirstVector' is offered its first vector: an index persisted with a larger value keeps opening and \
+      working, and REBUILD INDEX, TRUNCATE TYPE and a bucket added to its type re-create it as it is. \
+      A larger value is refused as a client error naming this setting; raise it before creating the index if your \
+      vectors really are wider.""",
+      Integer.class, 16384),
+
   VECTOR_INDEX_LOCATION_CACHE_SIZE("arcadedb.vectorIndex.locationCacheSize", SCOPE.DATABASE,
       """
       DEPRECATED and ignored since issue #5568: the location index is always unlimited, and a positive value is \
@@ -1559,7 +1584,9 @@ public enum GlobalConfiguration {
   VECTOR_INDEX_SEARCH_CACHE_MAX_HEAP_PERCENT("arcadedb.vectorIndex.searchCacheMaxHeapPercent", SCOPE.DATABASE,
       """
       Upper bound, as a percentage of the JVM heap currently AVAILABLE rather than of the ceiling (issue #6503), \
-      on the RAM an automatically sized per-index search cache may use (see arcadedb.vectorIndex.searchCacheSize). \
+      on the RAM the automatically sized search caches of a database may use TOGETHER (see \
+      arcadedb.vectorIndex.searchCacheSize): a type has one vector index per bucket, and an index that finds the share \
+      taken by the others' caches gets no cache, so its searches read the vectors from the pages (issue #12391). \
       Ignored when the cache size is set explicitly. Values above 90 are clamped to 90: no cache is allowed to \
       plan on the whole heap.""",
       Integer.class, 25),
@@ -1572,15 +1599,20 @@ public enum GlobalConfiguration {
       second full copy of the corpus in RAM, and a 4.2M x 768-dimension load died of it at -Xmx16g (issue #7357). \
       The vector is already persisted before the entry is buffered, so entries past this cap keep only their id \
       and RID and the delta scan reads the payload back from the pages. \
-      RAM usage = deltaCacheSize * (dimensions * 4 + 64) bytes. \
-      0 (default) sizes it automatically from arcadedb.vectorIndex.deltaCacheMaxHeapPercent. -1 keeps every \
-      buffered payload on the heap, which is the pre-#7357 behaviour and is unbounded.""",
+      RAM usage = deltaCacheSize * (dimensions * 4 + 64) bytes PER INDEX: a type has one vector index per bucket, \
+      so an explicit size is multiplied by the number of buckets of every type with a vector index. \
+      0 (default) sizes it automatically from arcadedb.vectorIndex.deltaCacheMaxHeapPercent, which bounds all the \
+      vector indexes of the database together. -1 keeps every buffered payload on the heap, which is the pre-#7357 \
+      behaviour and is unbounded.""",
       Integer.class, 0),
 
   VECTOR_INDEX_DELTA_CACHE_MAX_HEAP_PERCENT("arcadedb.vectorIndex.deltaCacheMaxHeapPercent", SCOPE.DATABASE,
       """
-      Share of the JVM heap ceiling (percentage) the automatically sized delta payload cache may use (see \
-      arcadedb.vectorIndex.deltaCacheSize). Ignored when that size is set explicitly. Taken as this percent of \
+      Share of the JVM heap ceiling (percentage) the automatically sized delta payload caches of ALL the vector \
+      indexes of a database may use together (see arcadedb.vectorIndex.deltaCacheSize). A type has one vector index \
+      per bucket and they draw on the same share, so the bound does not grow with the number of buckets or of \
+      vector properties (issue #12379); an index that finds the share used up keeps no payload and reads its \
+      buffered vectors back from the pages. Ignored when that size is set explicitly. Taken as this percent of \
       -Xmx and then capped at 90% of the heap currently AVAILABLE, the same denominator the graph-build cache \
       uses, so a rebuild holding the old graph and an ingest filling the buffer cannot both plan on the same \
       free heap. Values above 90 are clamped to 90.""",
@@ -2293,8 +2325,10 @@ public enum GlobalConfiguration {
   SERVER_HTTP_QUERY_DEFAULT_LIMIT("arcadedb.server.httpQueryDefaultLimit", SCOPE.SERVER,
       """
       Default maximum number of rows the HTTP query/command endpoints serialize into a single response when \
-      the caller states no limit of its own. A request that carries a `limit` field, and a query that carries \
-      its own LIMIT clause, are both honored as written and are never capped by this value. When this default \
+      the caller states no limit of its own. A request that carries a `limit` field, and a SQL or openCypher query \
+      that carries its own LIMIT clause (the LIMIT of the final RETURN, or of every branch of a UNION), are both \
+      honored as written and are never capped by this value. Other languages expose no LIMIT of their own and are \
+      capped unless the request carries `limit`. When this default \
       does cut a result short the response reports `"truncated": true` next to `returned` and `limit`, and the \
       server logs a warning: the truncation is never silent (issue #5711). Set to -1 or 0 for unlimited \
       (WARNING: removes the protection against materializing an unbounded result set in memory). A value above \
@@ -2613,14 +2647,19 @@ public enum GlobalConfiguration {
   HA_APPLY_BACKLOG_MAX("arcadedb.ha.applyBacklogMax", SCOPE.SERVER,
       """
       Byte budget for the Raft entries a follower may hold received but not yet applied (e.g. '256MB'). Ratis keeps \
-      every such entry decoded on the follower's heap, whatever arcadedb.ha.logCacheSize says, since it only evicts \
+      every such entry on the follower's heap, whatever arcadedb.ha.logCacheSize says, since it only evicts \
       entries below the applied index. While the leader estimates that a follower is over the budget (applied index \
       reported by the follower, average entry size measured by the leader) it sends that follower heartbeats only, \
-      and resumes when the follower has caught up. It is a soft limit: the applied index reaches the leader with the \
+      and resumes when the follower has caught up. Every node resolves the budget from its own heap and setting and \
+      reports it to the leader, and the bound that applies to a follower is the smaller of the leader's budget and \
+      that follower's own, so a follower with a smaller heap than its leader is held to its own budget (issue \
+      #11508); a follower that reports none (an older version, or one where the setting is 0) is held to the \
+      leader's. It is a soft limit: the applied index reaches the leader with the \
       5 s capability poll, so a follower can overshoot the budget during a burst between two polls, and the size of \
       an entry is a running average, which understates a mix of a few huge entries among many small ones. Empty \
       (the default) means a quarter of the maximum JVM heap, but never less than 32MB (on a very small heap that \
-      floor can exceed a quarter of it). 0 disables the back-pressure (issue #11458).""",
+      floor can exceed a quarter of it). 0 disables the back-pressure this node applies as a leader, whatever its \
+      followers report (issue #11458).""",
       String.class, ""),
 
   HA_APPEND_BUFFER_SIZE("arcadedb.ha.appendBufferSize", SCOPE.SERVER,
@@ -3534,7 +3573,7 @@ public enum GlobalConfiguration {
 
   BOLT_WEBSOCKET_MAX_FRAME_SIZE("arcadedb.bolt.websocket.maxFrameSize", SCOPE.SERVER,
       "Maximum payload size in bytes accepted for a single BOLT WebSocket frame. Frames declaring a larger size are rejected before allocation, "
-          + "since the length is read off the wire before authentication. Default is 16MB",
+          + "since the length is read off the wire before authentication. The connection is closed after such a frame. Default is 16MB",
       Integer.class, 16 * 1024 * 1024),
 
   // The three *_SIZE/*_LENGTH settings below are defense in depth at different layers of the same BOLT ingest
@@ -3547,7 +3586,7 @@ public enum GlobalConfiguration {
       Maximum total size in bytes accepted for a single BOLT protocol message after chunk reassembly. BOLT frames \
       a message as a sequence of chunks terminated by a zero-length chunk; without a bound on the reassembled \
       total, a client that never sends the terminator grows the reassembly buffer unbounded, before the BOLT \
-      handshake or authentication. Default is 16MB""",
+      handshake or authentication. A larger message is refused and the connection is closed. Default is 16MB""",
       Integer.class, 16 * 1024 * 1024),
 
   BOLT_PACKSTREAM_MAX_VALUE_LENGTH("arcadedb.bolt.packstream.maxValueLength", SCOPE.SERVER, """
@@ -3614,7 +3653,9 @@ public enum GlobalConfiguration {
       "Path of the PEM private key served by the gRPC endpoint when arcadedb.grpc.tls.enabled is true", String.class, null),
 
   GRPC_MAX_MESSAGE_SIZE("arcadedb.grpc.maxMessageSize", SCOPE.SERVER,
-      "Maximum inbound gRPC message size, in megabytes (minimum 1). Default is 100", Integer.class, 100),
+      "Maximum gRPC message size, in megabytes (minimum 1): the largest message the server accepts, and the largest result it "
+          + "encodes into one response, streamed batch or materialized result (a larger one fails with RESOURCE_EXHAUSTED). "
+          + "Default is 100", Integer.class, 100),
 
   GRPC_MAX_METADATA_SIZE("arcadedb.grpc.maxMetadataSize", SCOPE.SERVER,
       "Maximum inbound gRPC metadata (headers) size, in kilobytes (minimum 1). Default is 16", Integer.class, 16),
@@ -3679,14 +3720,16 @@ public enum GlobalConfiguration {
   REDIS_MAX_MULTIBULK_LENGTH("arcadedb.redis.maxMultiBulkLength", SCOPE.SERVER, """
       Maximum number of elements accepted in a single RESP array by the Redis wire-protocol listener, matching \
       Redis' own hard limit on multibulk requests. Guards against a client-declared array length (e.g. \
-      *2000000000\\r\\n) starting a parse loop with billions of iterations. Default is 1048576.""",
+      *2000000000\\r\\n) starting a parse loop with billions of iterations. A connection that has not authenticated yet is \
+      held to 10 elements at most, the bound Redis applies, whatever this setting says. Default is 1048576.""",
       Integer.class, 1_048_576),
 
   REDIS_MAX_BULK_LENGTH("arcadedb.redis.maxBulkLength", SCOPE.SERVER, """
       Maximum length in bytes accepted for a single RESP bulk string ($) by the Redis wire-protocol listener, \
       matching Redis' own proto-max-bulk-len. Without a bound, a client-declared length (e.g. $2000000000\\r\\n) \
       can tie up a connection thread indefinitely by trickling bytes, or grow the parse buffer unbounded if the \
-      declared bytes are actually sent. Default is 536870912 (512MB).""",
+      declared bytes are actually sent. A connection that has not authenticated yet is held to 16384 bytes at most, the \
+      bound Redis applies, whatever this setting says. Default is 536870912 (512MB).""",
       Integer.class, 536_870_912),
 
   // MONGO

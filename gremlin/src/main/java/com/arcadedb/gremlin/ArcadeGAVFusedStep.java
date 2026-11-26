@@ -22,6 +22,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.utility.IntIntHashMap;
 import org.apache.tinkerpop.gremlin.process.traversal.Traversal;
 import org.apache.tinkerpop.gremlin.process.traversal.Traverser;
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.FlatMapStep;
@@ -75,12 +76,12 @@ class ArcadeGAVFusedStep extends FlatMapStep<org.apache.tinkerpop.gremlin.struct
     else
       rid = null;
 
-    if (rid != null) {
+    if (rid != null && ArcadeGAVVertexStep.viewAnswers(graph)) {
       final int startNodeId = provider.getNodeId(rid);
       if (startNodeId >= 0) {
         final List<org.apache.tinkerpop.gremlin.structure.Vertex> results = new ArrayList<>();
         // DFS traversal using int[] arrays — zero intermediate Vertex allocation
-        dfs(startNodeId, 0, results);
+        dfs(startNodeId, 0, results, new IntIntHashMap());
         return results.iterator();
       }
     }
@@ -91,8 +92,15 @@ class ArcadeGAVFusedStep extends FlatMapStep<org.apache.tinkerpop.gremlin.struct
 
   /**
    * Depth-first traversal through the CSR chain. Only materializes vertices at the final hop.
+   * <p>
+   * An intermediate vertex is not materialized, but it is still asked whether it exists (issue #11636): the view may be stale
+   * (a {@code gavUseWhenStale} view, or a commit whose change has not reached the overlay yet), and the unfused chain drops a
+   * vertex deleted since the build before it feeds the next hop, so walking through it would answer what the unfused chain does
+   * not. {@code liveness} remembers the answer per node of this walk (1 live, 0 gone), so a node reached by several paths is
+   * asked once.
    */
-  private void dfs(final int nodeId, final int hop, final List<org.apache.tinkerpop.gremlin.structure.Vertex> results) {
+  private void dfs(final int nodeId, final int hop, final List<org.apache.tinkerpop.gremlin.structure.Vertex> results,
+      final IntIntHashMap liveness) {
     final int[] neighbors = edgeLabelsPerHop[hop].length == 0
         ? provider.getNeighborIds(nodeId, directions[hop])
         : provider.getNeighborIds(nodeId, directions[hop], edgeLabelsPerHop[hop]);
@@ -112,8 +120,20 @@ class ArcadeGAVFusedStep extends FlatMapStep<org.apache.tinkerpop.gremlin.struct
     } else {
       // Intermediate hop: recurse with raw int IDs — no Vertex allocation
       for (final int neighborId : neighbors)
-        dfs(neighborId, hop + 1, results);
+        if (exists(neighborId, liveness))
+          dfs(neighborId, hop + 1, results, liveness);
     }
+  }
+
+  /** Whether the record of {@code nodeId} still exists, read from the bucket's slot table without loading it. */
+  private boolean exists(final int nodeId, final IntIntHashMap liveness) {
+    final int known = liveness.get(nodeId, -1);
+    if (known >= 0)
+      return known == 1;
+    final RID rid = provider.getRID(nodeId);
+    final boolean exists = rid != null && graph.getDatabase().existsRecord(rid);
+    liveness.put(nodeId, exists ? 1 : 0);
+    return exists;
   }
 
   /**

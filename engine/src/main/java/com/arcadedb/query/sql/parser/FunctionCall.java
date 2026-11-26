@@ -23,6 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.UnknownFunctionException;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.function.sql.graph.SQLFunctionMove;
@@ -48,6 +49,8 @@ public class FunctionCall extends SimpleNode {
   /** {@code count(DISTINCT x)}: the aggregate sees each distinct value of its arguments once (issue #8889) */
   public boolean          distinct = false;
   private   SQLFunction      cachedFunction;
+  /** Memo of {@link #isAggregateCall()}, null until first asked. */
+  private   Boolean          aggregateCall;
 
   public FunctionCall() {
   }
@@ -303,9 +306,9 @@ public class FunctionCall extends SimpleNode {
           }
         } else {
           for (final Expression param : params) {
-            if (param.isAggregate(context)) {
-              throw new CommandExecutionException("Cannot calculate an aggregate function of another aggregate function " + this);
-            }
+            if (param.isAggregate(context))
+              // the statement's error, answered like any other refusal of its text (issue #11850)
+              throw new CommandSemanticException("Cannot calculate an aggregate function of another aggregate function " + this);
             final Identifier nextAlias = aggregateProj.getNextAlias();
             final ProjectionItem paramItem = new ProjectionItem();
             paramItem.alias = nextAlias;
@@ -474,7 +477,28 @@ public class FunctionCall extends SimpleNode {
       if (!param.isFoldable())
         return false;
 
-    return true;
+    // a deterministic aggregate (count(1), sum(1)) is still an accumulator over the rows: evaluated once at plan time it would answer
+    // with the first row's state, not with a constant (issue #13059)
+    return !isAggregateCall();
+  }
+
+  /**
+   * Whether this call aggregates the rows it sees, as the function answers it for these arguments: {@code max(a)} does,
+   * {@code max(a, b)} does not. Memoized on the call site, which the statement cache shares across executions.
+   */
+  private boolean isAggregateCall() {
+    Boolean result = aggregateCall;
+    if (result == null) {
+      try {
+        final SQLFunction function = DefaultSQLFunctionFactory.getInstance().getFunctionInstance(name.getStringValue().toLowerCase(Locale.ENGLISH));
+        result = function != null && function.config(params.toArray()).aggregateResults();
+      } catch (final CommandExecutionException e) {
+        // not resolvable without a database: treated as an aggregate, the conservative answer for folding
+        result = Boolean.TRUE;
+      }
+      aggregateCall = result;
+    }
+    return result;
   }
 
   /**
@@ -535,6 +559,11 @@ public class FunctionCall extends SimpleNode {
   /** The function this call names as an {@link IndexableSQLFunction}, or null when it is not one. */
   public IndexableSQLFunction getIndexableFunction(final CommandContext context) {
     return getFunction(context) instanceof final IndexableSQLFunction function ? function : null;
+  }
+
+  /** The function this call invokes, configured with its parameters. */
+  public SQLFunction getSQLFunction(final CommandContext context) {
+    return getFunction(context);
   }
 
   private SQLFunction getFunction(final CommandContext context) {

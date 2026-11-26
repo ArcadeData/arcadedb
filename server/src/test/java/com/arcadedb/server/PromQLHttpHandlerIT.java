@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.Label;
@@ -471,6 +472,73 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
   }
 
   @Test
+  void instantQueryOfARangeSelectorAnswersTheMatrixOfTheWindowSamples() throws Exception {
+    testEachServer(serverIndex -> {
+      // issue #11982: the evaluator answers a range vector, which the formatter had no branch for, so the endpoint answered
+      // {"status":"success","data":{}}. Prometheus answers the raw samples of the window as a matrix.
+      postPromWrite(serverIndex, new WriteRequest(List.of(
+          new TimeSeries(List.of(new Label("__name__", "prom_cnt_11982"), new Label("host", "a")),
+              List.of(new Sample(10.0, 1_700_000_000_000L), new Sample(40.0, 1_700_000_030_000L))),
+          new TimeSeries(List.of(new Label("__name__", "prom_cnt_11982"), new Label("host", "b")),
+              List.of(new Sample(5.0, 1_700_000_010_000L))))));
+
+      final JSONArray plain = matrixOf(
+          getPromQL(serverIndex, "query", "query=" + encode("prom_cnt_11982[1m]") + "&time=1700000040"));
+      assertThat(plain.length()).isEqualTo(2);
+      assertThat(valuesOfHost(plain, "a")).isEqualTo("1700000000=10 1700000030=40");
+      assertThat(valuesOfHost(plain, "b")).isEqualTo("1700000010=5");
+
+      // parenthesised: the same range vector
+      final JSONArray parenthesised = matrixOf(
+          getPromQL(serverIndex, "query", "query=" + encode("(prom_cnt_11982[1m])") + "&time=1700000040"));
+      assertThat(parenthesised.length()).isEqualTo(2);
+      assertThat(valuesOfHost(parenthesised, "a")).isEqualTo("1700000000=10 1700000030=40");
+      assertThat(valuesOfHost(parenthesised, "b")).isEqualTo("1700000010=5");
+
+      // matcher and offset: the window moves to (1700000000, 1700000030], left-open, and the samples keep their own timestamps
+      final JSONArray shifted = matrixOf(getPromQL(serverIndex, "query",
+          "query=" + encode("prom_cnt_11982{host=\"a\"}[30s] offset 10s") + "&time=1700000040"));
+      assertThat(shifted.length()).isEqualTo(1);
+      assertThat(valuesOfHost(shifted, "a")).isEqualTo("1700000030=40");
+
+      // a window holding no sample is an empty matrix, not an empty 'data'
+      final JSONArray empty = matrixOf(
+          getPromQL(serverIndex, "query", "query=" + encode("prom_cnt_11982[1m]") + "&time=1600000000"));
+      assertThat(empty.length()).isEqualTo(0);
+    });
+  }
+
+  private static JSONArray matrixOf(final JSONObject response) {
+    assertThat(response.getString("status")).isEqualTo("success");
+    final JSONObject data = response.getJSONObject("data");
+    assertThat(data.getString("resultType")).isEqualTo("matrix");
+    return data.getJSONArray("result");
+  }
+
+  /**
+   * The samples of the series of that host as {@code seconds=value} pairs; the series order is the scan's, so it is looked up.
+   */
+  private static String valuesOfHost(final JSONArray matrix, final String host) {
+    for (int i = 0; i < matrix.length(); i++) {
+      final JSONObject series = matrix.getJSONObject(i);
+      final JSONObject metric = series.getJSONObject("metric");
+      if (host.equals(metric.getString("host"))) {
+        assertThat(metric.getString("__name__")).isEqualTo("prom_cnt_11982");
+        final JSONArray values = series.getJSONArray("values");
+        final StringBuilder samples = new StringBuilder();
+        for (int v = 0; v < values.length(); v++) {
+          final JSONArray pair = values.getJSONArray(v);
+          if (v > 0)
+            samples.append(' ');
+          samples.append(pair.getLong(0)).append('=').append(pair.getString(1));
+        }
+        return samples.toString();
+      }
+    }
+    return null;
+  }
+
+  @Test
   void lookbackDeltaParameter() throws Exception {
     testEachServer(serverIndex -> {
       ingestTestData(serverIndex);
@@ -549,5 +617,56 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
 
   private String encode(final String value) {
     return URLEncoder.encode(value, StandardCharsets.UTF_8);
+  }
+
+  /**
+   * Issue #9386: {@code GET /prom/api/v1/series} must apply the label matchers of {@code match[]}, so it answers the
+   * same series {@code /query} answers for the same selector.
+   */
+  @Test
+  void seriesEndpointAppliesTheLabelMatchers() throws Exception {
+    testEachServer(serverIndex -> {
+      final Database db = getServerDatabase(serverIndex, getDatabaseName());
+      db.command("sql", "CREATE TIMESERIES TYPE m9386 TIMESTAMP ts TAGS (host STRING, zone STRING) FIELDS (value DOUBLE)");
+      db.transaction(() -> {
+        db.command("sql", "INSERT INTO m9386 SET ts = 1000, host = 'h1', zone = 'z1', value = 1.0");
+        db.command("sql", "INSERT INTO m9386 SET ts = 1000, host = 'h2', zone = 'z1', value = 2.0");
+        db.command("sql", "INSERT INTO m9386 SET ts = 1000, host = 'h3', zone = 'z2', value = 3.0");
+      });
+
+      assertThat(hosts(serverIndex, "m9386")).containsExactlyInAnyOrder("h1", "h2", "h3");
+      assertThat(hosts(serverIndex, "m9386{host=\"h2\"}")).containsExactly("h2");
+      assertThat(hosts(serverIndex, "m9386{host!=\"h2\"}")).containsExactlyInAnyOrder("h1", "h3");
+      assertThat(hosts(serverIndex, "m9386{host=~\"h[12]\"}")).containsExactlyInAnyOrder("h1", "h2");
+      assertThat(hosts(serverIndex, "m9386{host!~\"h[12]\"}")).containsExactly("h3");
+      assertThat(hosts(serverIndex, "m9386{zone=\"z2\"}")).containsExactly("h3");
+      assertThat(hosts(serverIndex, "m9386{zone=\"z1\",host=\"h1\"}")).containsExactly("h1");
+      assertThat(hosts(serverIndex, "m9386{host=\"nobody\"}")).isEmpty();
+      // a label the type does not declare is absent from every series
+      assertThat(hosts(serverIndex, "m9386{nolabel=\"x\"}")).isEmpty();
+      assertThat(hosts(serverIndex, "m9386{nolabel=\"\"}")).containsExactlyInAnyOrder("h1", "h2", "h3");
+      assertThat(hosts(serverIndex, "m9386{nolabel!=\"x\"}")).containsExactlyInAnyOrder("h1", "h2", "h3");
+    });
+  }
+
+  private List<String> hosts(final int serverIndex, final String selector) throws Exception {
+    final String url = getServerHttpUrl(serverIndex,
+        "/api/v1/ts/" + getDatabaseName() + "/prom/api/v1/series?match[]=" + URLEncoder.encode(selector, StandardCharsets.UTF_8));
+    final HttpURLConnection connection = (HttpURLConnection) new URI(url).toURL().openConnection();
+    connection.setRequestMethod("GET");
+    connection.setRequestProperty("Authorization",
+        "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+    assertThat(connection.getResponseCode()).isEqualTo(200);
+    final JSONObject response;
+    try (final InputStream is = connection.getInputStream()) {
+      final ByteArrayOutputStream baos = new ByteArrayOutputStream();
+      is.transferTo(baos);
+      response = new JSONObject(baos.toString(StandardCharsets.UTF_8));
+    }
+    final JSONArray data = response.getJSONArray("data");
+    final List<String> hosts = new ArrayList<>();
+    for (int i = 0; i < data.length(); i++)
+      hosts.add(data.getJSONObject(i).getString("host"));
+    return hosts;
   }
 }

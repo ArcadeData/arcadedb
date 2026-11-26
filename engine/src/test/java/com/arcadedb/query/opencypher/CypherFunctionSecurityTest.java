@@ -209,11 +209,9 @@ class CypherFunctionSecurityTest extends TestHelper {
 
   @Test
   void textLpadNegativeLength() {
+    // A negative length is one the string already reaches: unchanged, as in APOC (issue #12105), not an error
     final ResultSet rs = database.query("opencypher", "RETURN text.lpad('x', -100, ' ') AS result");
-    // Test that negative lengths are rejected
-    final IllegalArgumentException exception = assertThatExceptionOfType(IllegalArgumentException.class).isThrownBy(rs::hasNext).actual();
-    assertThat(exception.getMessage().contains("Invalid length") ||
-        exception.getMessage().contains("negative")).isTrue();
+    assertThat(rs.next().<String>getProperty("result")).isEqualTo("x");
   }
 
   @Test
@@ -236,12 +234,9 @@ class CypherFunctionSecurityTest extends TestHelper {
 
   @Test
   void textRpadNegativeLength() {
+    // A negative length is one the string already reaches: unchanged, as in APOC (issue #12105), not an error
     final ResultSet rs = database.query("opencypher", "RETURN text.rpad('x', -100, ' ') AS result");
-    // Test that negative lengths are rejected
-    final IllegalArgumentException exception = assertThatExceptionOfType(IllegalArgumentException.class)
-        .isThrownBy(rs::hasNext).actual();
-    assertThat(exception.getMessage().contains("Invalid length") ||
-        exception.getMessage().contains("negative")).isTrue();
+    assertThat(rs.next().<String>getProperty("result")).isEqualTo("x");
   }
 
   @Test
@@ -324,7 +319,7 @@ class CypherFunctionSecurityTest extends TestHelper {
 
   @Test
   void textFormatInvalidFormat() {
-    final ResultSet rs = database.query("opencypher", "RETURN text.format('%s %s', 'only one arg') AS result");
+    final ResultSet rs = database.query("opencypher", "RETURN text.format('%s %s', ['only one arg']) AS result");
     // Test that invalid format strings are handled gracefully
     final Exception exception = assertThatExceptionOfType(Exception.class).isThrownBy(rs::hasNext).actual();
     assertThat(exception.getMessage().contains("format") ||
@@ -334,7 +329,7 @@ class CypherFunctionSecurityTest extends TestHelper {
 
   @Test
   void textFormatIllegalFormatConversion() {
-    final ResultSet rs = database.query("opencypher", "RETURN text.format('%d', 'not a number') AS result");
+    final ResultSet rs = database.query("opencypher", "RETURN text.format('%d', ['not a number']) AS result");
     // Test that illegal format conversions are caught
     final Exception exception = assertThatExceptionOfType(Exception.class).isThrownBy(rs::hasNext).actual();
     assertThat(exception.getMessage().contains("format") ||
@@ -346,7 +341,7 @@ class CypherFunctionSecurityTest extends TestHelper {
   void textFormatValidUsage() {
     // Test that valid formatting works
     final ResultSet resultSet = database.query("opencypher",
-        "RETURN text.format('Hello %s, you are %d years old', 'Alice', 30) AS result");
+        "RETURN text.format('Hello %s, you are %d years old', ['Alice', 30]) AS result");
     assertThat(resultSet.hasNext()).isTrue();
     assertThat(resultSet.next().<String>getProperty("result")).isEqualTo("Hello Alice, you are 30 years old");
   }

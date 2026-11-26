@@ -64,6 +64,7 @@ import com.arcadedb.remote.RemoteTransactionExplicitLock;
 import com.arcadedb.remote.grpc.utils.ProtoUtils;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.Property;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.grpc.ArcadeDbAdminServiceGrpc;
@@ -129,10 +130,13 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -181,6 +185,14 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
    */
   private final    SessionPartialCommitInterceptor                   partialCommitInterceptor =
       new SessionPartialCommitInterceptor(this);
+  /**
+   * The packed array negotiation (issue #11714): asks for {@code float[]} / {@code double[]} results packed, and learns from
+   * the responses whether the server decodes packed requests, which an older one reads as nulls. Applied in
+   * {@link #rebuildStubs()} for the reason {@link #partialCommitInterceptor} is, but one per channel generation: what the
+   * server behind one channel announced says nothing about the server a reconnect reaches, so a new channel starts with
+   * lists, and a call of the replaced channel that answers late only informs the instance nothing reads any more.
+   */
+  private          PackedArraysNegotiationInterceptor                packedArrays;
 
   public RemoteGrpcDatabase(final RemoteGrpcServer remoteGrpcServer, final String server, final int grpcPort,
                             final int httpPort,
@@ -213,8 +225,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
    * single place a subclass customises stub construction.
    */
   private ArcadeDbServiceGrpc.ArcadeDbServiceBlockingV2Stub blockingStub() {
-    if (stubChannelGeneration != remoteGrpcServer.channelGeneration())
-      rebuildStubs();
+    followChannelGeneration();
     return blockingStub;
   }
 
@@ -230,9 +241,13 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
   /** @see #blockingStub() */
   private ArcadeDbServiceGrpc.ArcadeDbServiceStub asyncStub() {
+    followChannelGeneration();
+    return asyncStub;
+  }
+
+  private void followChannelGeneration() {
     if (stubChannelGeneration != remoteGrpcServer.channelGeneration())
       rebuildStubs();
-    return asyncStub;
   }
 
   /**
@@ -242,12 +257,25 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
    */
   private void rebuildStubs() {
     final long generation = remoteGrpcServer.channelGeneration();
+    // #11714: a new channel may reach another server, so the negotiation starts over with it
+    packedArrays = new PackedArraysNegotiationInterceptor();
     // #8134: the partial-commit interceptor is attached HERE rather than inside createBlockingStub() /
     // createAsyncStub(), which exist to be overridden - a subclass customising stub construction would
     // otherwise drop the guard and silently go back to replaying a block whose earlier half is durable.
-    blockingStub = createBlockingStub().withInterceptors(partialCommitInterceptor);
-    asyncStub = createAsyncStub().withInterceptors(partialCommitInterceptor);
+    blockingStub = createBlockingStub().withInterceptors(partialCommitInterceptor, packedArrays);
+    asyncStub = createAsyncStub().withInterceptors(partialCommitInterceptor, packedArrays);
     stubChannelGeneration = generation;
+  }
+
+  /**
+   * Whether this database sends a {@code float[]} / {@code double[]} packed: only once a response on the CURRENT channel
+   * announced that its server decodes the packed kinds (issue #11714), lists until then. Called while a request is being
+   * encoded, so it follows a channel change first, as {@link #blockingStub()} does when the request is sent: an answer the
+   * replaced channel gave must not decide the encoding of the first request on the new one.
+   */
+  boolean sendsPackedArrays() {
+    followChannelGeneration();
+    return packedArrays.serverDecodesPackedArrays();
   }
 
   /**
@@ -1174,15 +1202,16 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
             // Convert GrpcRecords to Results (not Records)
             final List<Result> convertedResults = new ArrayList<>(qr.getRecordsCount());
+            final Set<String> absentTypes = new HashSet<>();
             for (GrpcRecord gr : qr.getRecordsList()) {
-              Result result = grpcRecordToResult(gr);
+              Result result = grpcRecordToResult(gr, absentTypes);
               convertedResults.add(result);
             }
 
             // Create QueryBatch with Results instead of Records
             // FACETS queries: the facets ride on the terminal batch only, which is yielded even when it holds no records
             nextBatch = new QueryBatch(convertedResults, totalInBatch, qr.getRunningTotalEmitted(),
-                qr.getIsLastBatch(), qr.hasFacets() ? FacetProtocol.fromProto(qr.getFacets(), ProtoUtils::fromGrpcValue) : null);
+                qr.getIsLastBatch(), qr.hasFacets() ? FacetProtocol.fromProto(qr.getFacets(), RemoteGrpcDatabase.this::grpcValueToObject) : null);
 
             if (qr.getIsLastBatch()) {
               drained = true;
@@ -1384,7 +1413,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
   }
 
   public boolean updateRecord(String rid, Record dbRecord, long timeoutMs) {
-    GrpcRecord record = ProtoUtils.toProtoRecord(dbRecord);
+    GrpcRecord record = ProtoUtils.toProtoRecord(dbRecord, sendsPackedArrays());
     return updateRecordFull(rid, record, timeoutMs);
   }
 
@@ -2070,15 +2099,15 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
   // Domain Record (storage) -> GrpcRecord
   private GrpcRecord toProtoRecordFromDbRecord(Record rec) {
     // Use ProtoUtils for proper conversion
-    GrpcRecord out = ProtoUtils.toProtoRecord(rec);
+    GrpcRecord out = ProtoUtils.toProtoRecord(rec, sendsPackedArrays());
     if (LogManager.instance().isLoggable(this, Level.FINE))
       LogManager.instance().log(this, Level.FINE, "CLIENT toProtoRecordFromDbRecord: %s", summarize(out));
     return out;
   }
 
-  // Convert Java object -> GrpcValue (extend as needed)
-  private GrpcValue objectToGrpcValue(Object v) {
-    return ProtoUtils.toGrpcValue(v);
+  // Convert Java object -> GrpcValue, a float[] / double[] packed only for a server that announced it decodes it
+  GrpcValue objectToGrpcValue(final Object v) {
+    return ProtoUtils.toGrpcValue(v, sendsPackedArrays());
   }
 
   public DatabaseCredentials buildCredentials() {
@@ -2160,9 +2189,10 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
   private ResultSet createGrpcResultSet(ExecuteQueryResponse response) {
     InternalResultSet resultSet = new InternalResultSet();
+    final Set<String> absentTypes = new HashSet<>();
     for (QueryResult queryResult : response.getResultsList()) {
       for (GrpcRecord record : queryResult.getRecordsList()) {
-        resultSet.add(grpcRecordToResult(record));
+        resultSet.add(grpcRecordToResult(record, absentTypes));
       }
     }
     if (response.hasFacets())
@@ -2172,26 +2202,133 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
   private ResultSet createGrpcResultSet(ExecuteCommandResponse response) {
     InternalResultSet resultSet = new InternalResultSet();
+    final Set<String> absentTypes = new HashSet<>();
     for (GrpcRecord record : response.getRecordsList()) {
-      resultSet.add(grpcRecordToResult(record));
+      resultSet.add(grpcRecordToResult(record, absentTypes));
     }
     if (response.hasFacets())
       resultSet.setFacets(FacetProtocol.fromProto(response.getFacets(), this::grpcValueToObject));
     return resultSet;
   }
 
-  Result grpcRecordToResult(GrpcRecord grpcRecord) {
+  /**
+   * @param absentTypes the names of the types a record-shaped column of the rows of the same response named and the schema does not
+   *                    have: shared by the rows of one response (or one batch of a stream) so that each is looked up, and a miss
+   *                    reloads the schema from the server, once and not for every row
+   */
+  Result grpcRecordToResult(final GrpcRecord grpcRecord, final Set<String> absentTypes) {
 
-    Record record = grpcRecordToDBRecord(grpcRecord);
+    final Record record = grpcRecordToDBRecord(grpcRecord);
 
     if (record == null) {
 
-      Map<String, Object> properties = new HashMap<>();
-      grpcRecord.getPropertiesMap().forEach((k, v) -> properties.put(k, grpcValueToObject(v)));
+      // in the order the columns were projected, as the embedded API lists them
+      final Map<String, Object> properties = new LinkedHashMap<>();
+      grpcRecord.getPropertiesMap().forEach((k, v) -> properties.put(k, columnRecords(grpcValueToObject(v), absentTypes)));
       return new ResultInternal(properties);
     }
 
     return new ResultInternal(record);
+  }
+
+  /**
+   * The record a projection column holds, or the list of records, for a column the server sent as a record's map (its
+   * {@code @rid} and {@code @type}, and {@code @cat} in the default JSON encoding): Cypher {@code RETURN a, r, b}, SQL
+   * {@code @this}. They reached the caller as raw maps (issue #12196). Any other value is returned as is.
+   * <p>
+   * The shape is the only mark the wire gives a record column, so a map is a record when it is shaped like one ({@link #mapToRecord}):
+   * a map a query builds with a {@code @rid} and the name of a type of the schema as {@code @type} ({@code RETURN {`@rid`: ...}}) reads
+   * the same way. A stored MAP property cannot: a map with an {@code @type} entry is an embedded document when it is set.
+   * <p>
+   * Every record-shaped item of a list is converted, wherever it stands in it ({@code collect(n)}, {@code [null, n]}). A list with
+   * none is returned as it is, with no copy: the test is one type check per item, which the decoding of the item has paid many times.
+   */
+  private Object columnRecords(final Object value, final Set<String> absentTypes) {
+    if (value instanceof Map<?, ?> map) {
+      final Record record = mapToRecord(map, absentTypes);
+      return record != null ? record : value;
+    }
+    if (value instanceof List<?> list) {
+      List<Object> converted = null;
+      for (int i = 0; i < list.size(); i++)
+        if (list.get(i) instanceof Map<?, ?> item) {
+          final Record record = mapToRecord(item, absentTypes);
+          if (record != null) {
+            if (converted == null)
+              converted = new ArrayList<>(list);
+            converted.set(i, record);
+          }
+        }
+      return converted != null ? converted : value;
+    }
+    return value;
+  }
+
+  /**
+   * The record a map holds, or {@code null} when it is not one this driver can build, and the caller keeps the map. It is one
+   * when its {@code @rid} is a RID and its {@code @type} a type of the schema, and, for an edge, when it carries both endpoints: the
+   * MAP projection encoding sends a record's {@code @rid}, {@code @type} and properties only, which is not enough to build an
+   * edge. A map whose RIDs are out of range or whose {@code @props} is not text is no record either: the record classes would fail
+   * on it, and the whole query with them.
+   */
+  @SuppressWarnings("unchecked")
+  private Record mapToRecord(final Map<?, ?> map, final Set<String> absentTypes) {
+    // the cheap tests first: the schema answers a miss with a reload from the server, so it is asked only for a map shaped like a
+    // record, and once per response for a type it does not have
+    final Object rid = map.get(Property.RID_PROPERTY);
+    if (!isRid(rid) || !(map.get(Property.TYPE_PROPERTY) instanceof String typeName) || absentTypes.contains(typeName))
+      return null;
+
+    final Object propertyTypes = map.get(Property.PROPERTY_TYPES_PROPERTY);
+    if (propertyTypes != null && !(propertyTypes instanceof String))
+      return null;
+
+    if (!getSchema().existsType(typeName)) {
+      absentTypes.add(typeName);
+      return null;
+    }
+
+    final String cat = map.get(Property.CAT_PROPERTY) instanceof String c ? c : mapRecordType(typeName);
+    if (cat == null)
+      return null;
+
+    if ("e".equals(cat) && !(isRid(map.get(Property.OUT_PROPERTY)) && isRid(map.get(Property.IN_PROPERTY))))
+      return null;
+
+    // a copy in the order the server sent: the record classes read the RIDs as text, whichever form the decoder gave them, and list
+    // the properties in the order they come (issue #7140)
+    final Map<String, Object> attributes = new LinkedHashMap<>((Map<String, Object>) map);
+    attributes.put(Property.RID_PROPERTY, rid.toString());
+    for (final String side : new String[] { Property.OUT_PROPERTY, Property.IN_PROPERTY })
+      if (attributes.get(side) != null)
+        attributes.put(side, attributes.get(side).toString());
+
+    return switch (cat) {
+      case "d" -> new RemoteImmutableDocument(this, attributes);
+      case "v" -> new RemoteImmutableVertex(this, attributes);
+      case "e" -> new RemoteImmutableEdge(this, attributes);
+      default -> null;
+    };
+  }
+
+  /**
+   * Whether {@code value} is a RID the record classes can read. {@link RID#is(Object)} checks the shape only: a bucket id or a position
+   * out of range ({@code #2147483648:1}) passes it, and fails the record's constructor.
+   */
+  private static boolean isRid(final Object value) {
+    if (value instanceof RID)
+      return true;
+    if (!(value instanceof String text) || !RID.is(text))
+      return false;
+
+    final int colon = text.indexOf(':');
+    try {
+      Integer.parseInt(text, 1, colon, 10);
+      Long.parseLong(text, colon + 1, text.length(), 10);
+      return true;
+    } catch (final NumberFormatException e) {
+      return false;
+    }
   }
 
   private Record grpcRecordToDBRecord(final GrpcRecord grpcRecord) {
@@ -2260,8 +2397,9 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     return grpcParams;
   }
 
-  private Object grpcValueToObject(final GrpcValue grpcValue) {
-    Object out = ProtoUtils.fromGrpcValue(grpcValue);
+  /** A value of a response, its links bound to this database (issue #12603). */
+  Object grpcValueToObject(final GrpcValue grpcValue) {
+    Object out = ProtoUtils.fromGrpcValue(grpcValue, this);
     if (LogManager.instance().isLoggable(this, Level.FINE))
       LogManager.instance()
           .log(this, Level.FINE, "CLIENT decode grpcValueToObject: %s -> %s", summarize(grpcValue), summarize(out));
@@ -2357,6 +2495,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       case BYTES_VALUE -> "BYTES[" + v.getBytesValue().size() + "]";
       case TIMESTAMP_VALUE -> "TIMESTAMP";
       case LIST_VALUE -> "LIST[" + v.getListValue().getValuesCount() + "]";
+      case FLOAT_ARRAY_VALUE -> "FLOAT_ARRAY[" + v.getFloatArrayValue().getValuesCount() + "]";
+      case DOUBLE_ARRAY_VALUE -> "DOUBLE_ARRAY[" + v.getDoubleArrayValue().getValuesCount() + "]";
       case MAP_VALUE -> "MAP[" + v.getMapValue().getEntriesCount() + "]";
       case EMBEDDED_VALUE -> "EMBEDDED";
       case LINK_VALUE -> "LINK(" + v.getLinkValue().getRid() + ")";

@@ -52,7 +52,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * delta decoder would - it says it cannot decode one. That is a faithful stand-in for the case that matters,
  * because the leader's decision consults nothing else: not a version string, not a build number, only what the
  * peer said it can decode. The one case it does NOT reproduce is a peer with no capability route at all, which
- * answers 404; that arm is covered by {@code Issue7219PeerCapabilityRegistryTest} (a failed probe forgets the
+ * answers 404; that arm is covered by {@code PeerCapabilityRegistryTest.Registry} (a failed probe forgets the
  * peer, and a forgotten peer blocks the capability), because standing up a second, older jar is not something a
  * single-JVM test can do.
  * <p>

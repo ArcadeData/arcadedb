@@ -26,6 +26,7 @@ import com.arcadedb.index.columnar.ColumnarStats;
 import com.arcadedb.index.columnar.ColumnarTestData;
 import com.arcadedb.index.columnar.ColumnarTestHooks;
 import com.arcadedb.index.columnar.FacetOracle;
+import com.arcadedb.query.ResultRowCapScope;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -313,6 +314,30 @@ class ColumnarGroupByEligibilityTest extends TestHelper {
     } finally {
       database.getConfiguration().setValue(GlobalConfiguration.COLUMNAR_GROUP_BY_ACCELERATION, true);
     }
+  }
+
+  /**
+   * Regression test for issue #12016: the rows a caller reads at most (the cap of an HTTP response) were pushed down as a LIMIT of the
+   * statement, and a GROUP BY under a LIMIT and no ORDER BY is not answered from the columnar projection. The cap is no LIMIT of the
+   * statement: the plan, and the path it takes, are the ones of the caller that sets none.
+   */
+  @Test
+  @Timeout(120)
+  void theRowCapOfTheCallerDoesNotTakeTheColumnarPathAway() {
+    load(500);
+    final String sql = "SELECT brand, count(*) FROM Asset GROUP BY brand";
+    final long accelerated = stats().groupByAcceleratedCount();
+    int rows = 0;
+    try (final ResultRowCapScope ignored = ResultRowCapScope.open(3); final ResultSet rs = database.query("sql", sql)) {
+      while (rs.hasNext()) {
+        rs.next();
+        ++rows;
+      }
+      assertThat(rs.getExecutionPlan().get().prettyPrint(0, 2)).contains("AGGREGATE FROM COLUMNAR PROJECTION");
+    }
+    // THE COLUMNAR ANSWER IS EVERY GROUP: THE CAP IS WHAT THE CALLER READS OF THEM, NOT WHAT THE ENGINE ANSWERS
+    assertThat(rows).isEqualTo(20);
+    assertThat(stats().groupByAcceleratedCount()).isEqualTo(accelerated + 1);
   }
 
   /** A PROFILE prints the path the execution took and, for the normal path, the fallback chain that ran. */

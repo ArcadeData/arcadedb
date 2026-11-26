@@ -41,6 +41,7 @@ import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.database.async.OkCallback;
 import com.arcadedb.engine.BackupDirectoryResolver;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.LocalBucket;
@@ -249,6 +250,11 @@ public class ServerDatabase implements DatabaseInternal {
   @Override
   public void runOnceCompactionIsPublished(final int droppedFileId, final CallableNoReturn action) {
     current().runOnceCompactionIsPublished(droppedFileId, action);
+  }
+
+  @Override
+  public boolean keepLockedUntilCompactionIsPublished(final int fileId) {
+    return current().keepLockedUntilCompactionIsPublished(fileId);
   }
 
   @Override
@@ -547,6 +553,11 @@ public class ServerDatabase implements DatabaseInternal {
   @Override
   public Schema getSchema() {
     return current().getSchema();
+  }
+
+  @Override
+  public Dictionary getDictionary() {
+    return current().getDictionary();
   }
 
   @Override

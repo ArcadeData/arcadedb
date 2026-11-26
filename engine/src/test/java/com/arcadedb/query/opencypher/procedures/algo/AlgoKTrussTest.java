@@ -25,12 +25,16 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests for the algo.kTruss Cypher procedure.
@@ -140,5 +144,101 @@ class AlgoKTrussTest {
 
     assertThat(rs.hasNext()).isFalse();
     emptyDb.drop();
+  }
+
+  /**
+   * Issue #12303: {@code k} selects the k-truss. A call that passes it answers the vertices of the k-truss only (truss number at
+   * least k), a call that omits it (or passes {@code null}) answers every vertex with its truss number, as before.
+   * <p>
+   * The fixture has every truss number in it: a K4 {@code A B C D} (truss 4), a triangle {@code D E F} hanging off it (E and F truss
+   * 3, D keeps 4), a pendant {@code G} off F (truss 2) and an isolated {@code H} (truss 0). The edges are one per pair, in one
+   * direction, which is the shape the decomposition reads (the simple undirected graph).
+   */
+  @Nested
+  class Issue12303KSelectsTheKTruss {
+    private Database graph;
+
+    @BeforeEach
+    void setup() {
+      final DatabaseFactory factory = new DatabaseFactory("./target/databases/test-algo-ktruss-12303");
+      if (factory.exists())
+        factory.open().drop();
+      graph = factory.create();
+      graph.getSchema().createVertexType("Node");
+      graph.getSchema().createEdgeType("KNOWS");
+
+      graph.transaction(() -> {
+        final Map<String, MutableVertex> v = new TreeMap<>();
+        for (final String name : List.of("A", "B", "C", "D", "E", "F", "G", "H"))
+          v.put(name, graph.newVertex("Node").set("name", name).save());
+        for (final String pair : List.of("AB", "AC", "AD", "BC", "BD", "CD", "DE", "DF", "EF", "FG"))
+          v.get(pair.substring(0, 1)).newEdge("KNOWS", v.get(pair.substring(1, 2))).save();
+      });
+    }
+
+    @AfterEach
+    void teardown() {
+      if (graph != null)
+        graph.drop();
+    }
+
+    @Test
+    void withoutKEveryVertexIsListed() {
+      assertThat(trussByName("CALL algo.kTruss('KNOWS') YIELD nodeId, trussNumber RETURN nodeId, trussNumber")).isEqualTo(
+          Map.of("A", 4, "B", 4, "C", 4, "D", 4, "E", 3, "F", 3, "G", 2, "H", 0));
+    }
+
+    @Test
+    void anExplicitNullKIsAnOmittedOne() {
+      assertThat(trussByName("CALL algo.kTruss('KNOWS', null) YIELD nodeId, trussNumber RETURN nodeId, trussNumber")).hasSize(8);
+    }
+
+    @Test
+    void kSelectsTheVerticesOfTheKTruss() {
+      assertThat(trussByName("CALL algo.kTruss('KNOWS', 2) YIELD nodeId, trussNumber RETURN nodeId, trussNumber")).isEqualTo(
+          Map.of("A", 4, "B", 4, "C", 4, "D", 4, "E", 3, "F", 3, "G", 2));
+      assertThat(trussByName("CALL algo.kTruss('KNOWS', 3) YIELD nodeId, trussNumber RETURN nodeId, trussNumber")).isEqualTo(
+          Map.of("A", 4, "B", 4, "C", 4, "D", 4, "E", 3, "F", 3));
+      assertThat(trussByName("CALL algo.kTruss('KNOWS', 4) YIELD nodeId, trussNumber RETURN nodeId, trussNumber")).isEqualTo(
+          Map.of("A", 4, "B", 4, "C", 4, "D", 4));
+      assertThat(trussByName("CALL algo.kTruss('KNOWS', 5) YIELD nodeId, trussNumber RETURN nodeId, trussNumber")).isEmpty();
+      assertThat(trussByName("CALL algo.kTruss('KNOWS', 100) YIELD nodeId, trussNumber RETURN nodeId, trussNumber")).isEmpty();
+    }
+
+    @Test
+    void kIsReadFromAParameterAndWithEveryRelationshipType() {
+      assertThat(trussByName("CALL algo.kTruss(null, $k) YIELD nodeId, trussNumber RETURN nodeId, trussNumber", Map.of("k", 4)))
+          .isEqualTo(Map.of("A", 4, "B", 4, "C", 4, "D", 4));
+    }
+
+    @Test
+    void aKBelowTwoIsRefused() {
+      // Every edge is in the 2-truss, so a smaller k names no truss: refused, rather than read as "every vertex"
+      for (final int k : new int[] { 1, 0, -3 })
+        assertThatThrownBy(() -> trussByName("CALL algo.kTruss('KNOWS', " + k + ") YIELD nodeId RETURN nodeId"))
+            .hasStackTraceContaining("k must be at least 2");
+    }
+
+    @Test
+    void aKThatIsNotANumberIsRefused() {
+      assertThatThrownBy(() -> trussByName("CALL algo.kTruss('KNOWS', '4') YIELD nodeId RETURN nodeId"))
+          .hasStackTraceContaining("k must be a number");
+    }
+
+    private Map<String, Integer> trussByName(final String query) {
+      return trussByName(query, Map.of());
+    }
+
+    private Map<String, Integer> trussByName(final String query, final Map<String, Object> params) {
+      final Map<String, Integer> result = new TreeMap<>();
+      try (final ResultSet rs = graph.query("opencypher", query, params)) {
+        while (rs.hasNext()) {
+          final Result r = rs.next();
+          final String name = graph.lookupByRID(r.getProperty("nodeId"), true).asVertex().getString("name");
+          assertThat(result.put(name, ((Number) r.getProperty("trussNumber")).intValue())).as("vertex %s listed once", name).isNull();
+        }
+      }
+      return result;
+    }
   }
 }

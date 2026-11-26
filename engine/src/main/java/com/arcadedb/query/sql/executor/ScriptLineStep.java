@@ -20,7 +20,6 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.BreakStatement;
-import com.arcadedb.query.sql.parser.IfStatement;
 import com.arcadedb.query.sql.parser.ReturnStatement;
 import com.arcadedb.query.sql.parser.Statement;
 
@@ -71,31 +70,13 @@ public class ScriptLineStep extends AbstractExecutionStep {
       return executionPlan.statement instanceof ReturnStatement;
 
     } else if (plan instanceof IfExecutionPlan) {
+      // both branches: the one that runs is known only when the condition is evaluated, and the statements hold the answer
+      // whether or not the branch has been planned yet
       final IfStep step = (IfStep) plan.getSteps().getFirst();
-      if (step.positivePlan != null && step.positivePlan.containsReturn())
-        return true;
-      else if (step.positiveStatements != null) {
-        for (final Statement stm : step.positiveStatements) {
-          if (containsReturn(stm))
-            return true;
-        }
-      }
+      return Statement.anyContainsReturn(step.positiveStatements) || Statement.anyContainsReturn(step.negativeStatements);
     } else if (plan instanceof ForEachExecutionPlan executionPlan)
       return executionPlan.containsReturn();
 
-    return false;
-  }
-
-  private boolean containsReturn(final Statement stm) {
-    if (stm instanceof ReturnStatement)
-      return true;
-
-    if (stm instanceof IfStatement statement) {
-      for (final Statement o : statement.getStatements()) {
-        if (containsReturn(o))
-          return true;
-      }
-    }
     return false;
   }
 
@@ -146,8 +127,17 @@ public class ScriptLineStep extends AbstractExecutionStep {
       if (executionPlan.statement instanceof ReturnStatement)
         return new ReturnStep(executionPlan.statement, context);
     } else if (plan instanceof IfExecutionPlan executionPlan)
-      return executionPlan.executeUntilReturn();
-    else if (plan instanceof BreakStatement)
+      // the whole taken branch runs; a non-null answer is a RETURN or BREAK that ran in it, never its last statement unexecuted
+      return executionPlan.executeFull();
+    else if (plan instanceof ForEachExecutionPlan executionPlan) {
+      // A FOREACH or WHILE with a RETURN in its body: run the loop now. If it stopped on that RETURN this line is the script's
+      // answer, read back the way the loop's rows are read when it is the last line; otherwise the script goes on (#11892)
+      if (!executed) {
+        executionPlan.executeInternal();
+        executed = true;
+      }
+      return executionPlan.executedReturn() ? this : null;
+    } else if (plan instanceof BreakStatement)
       return new BreakStep(context);
 
     throw new NoSuchElementException();

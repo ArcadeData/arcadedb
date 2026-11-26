@@ -134,7 +134,7 @@ public class ImporterSettings {
    * take down every other vertex queued in the same uncommitted batch, not just the failing one.
    * <p>
    * Both CSV document and vertex imports also commit each row in its own transaction while this is enabled, rather
-   * than the single whole-file transaction (documents) / {@code commitEvery}-sized async batches (vertices) used in
+   * than the {@code commitEvery}-sized batches (synchronous commits for documents, async batches for vertices) used in
    * the default {@code abort} mode: a failure that only surfaces at index time (e.g. a duplicate key) already has a
    * bucket write by then, and only rolling back that one row's own transaction can undo it without also discarding
    * an unrelated, already-committed row. In short, "skip" trades import throughput - effectively a batch size of 1

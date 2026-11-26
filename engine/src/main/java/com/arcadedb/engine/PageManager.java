@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.exception.ConcurrentModificationException;
@@ -33,6 +34,7 @@ import com.arcadedb.exception.PageSnapshotException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.utility.CallableNoReturn;
+import com.arcadedb.utility.CoarseClock;
 import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 import com.arcadedb.utility.FileUtils;
@@ -115,6 +117,7 @@ public class PageManager extends LockContext {
   private final    AtomicLong                        totalConcurrentModificationExceptions = new AtomicLong();
   private final    AtomicLong                        totalEdgeAppendMerges                 = new AtomicLong();
   private final    AtomicLong                        totalTxPageSlotMerges                 = new AtomicLong();
+  private final    AtomicLong                        totalTxPageBuffersRecycled            = new AtomicLong();
   private final    AtomicLong                        totalEdgeListHeadMerges               = new AtomicLong();
   private final    AtomicLong                        totalMergesDeclinedByCoverage         = new AtomicLong();
   private final    AtomicLong                        totalChunkChainReadRevalidations      = new AtomicLong();
@@ -251,6 +254,9 @@ public class PageManager extends LockContext {
    */
   private static final long SNAPSHOT_BARRIER_MAX_MILLIS = 5_000;
 
+  /** One eviction pass per window while the read cache is over its RAM cap. Read from the coarse clock, see {@link #checkForPageDisposal()}. */
+  private static final long EVICTION_THROTTLE_MS = 100;
+
   /**
    * Fraction of the space still usable on the spill volume that the automatically sized shadow cap may claim
    * (#6125). Half, so a window can never be the reason a database runs out of disk: what remains still covers the
@@ -365,6 +371,12 @@ public class PageManager extends LockContext {
     public long concurrentModificationExceptions;
     public long edgeAppendMerges;
     public long txPageSlotMerges;
+    /**
+     * See {@link PageManager#getMutablePage(PageId, int, boolean, boolean, byte[])}: page copies written into the array of a dropped
+     * page image. Read by name by the tests that pin the recycling; not exported by the {@code Profiler} or the metrics binder, which
+     * name the counters they surface.
+     */
+    public long txPageBuffersRecycled;
     /** See {@link PageManager#incrementEdgeListHeadMerges()}: vertices written as the merge of two edge-list head moves. */
     public long edgeListHeadMerges;
     /** See {@link PageManager#incrementMergesDeclinedByCoverage()}: commit ATTEMPTS failed on a coverage decline, not pages. */
@@ -680,7 +692,13 @@ public class PageManager extends LockContext {
     final PageManagerFlushThread thread = flushThread;
     if (thread != null && !waitPagesPendingNowOfDatabaseAreFlushed(database, thread.isSuspended(database) ? 0L : maxWaitMillis))
       return false;
-    return database.getFileManager().syncFiles();
+    if (!database.getFileManager().syncFiles())
+      return false;
+    // #12025: an earlier instance of this path that closed without forcing its pages is answered for now: this instance
+    // opened after it, so its open ran the recovery, which leaves every file to be forced by the first sync
+    if (database instanceof LocalDatabase local)
+      DatabaseFactory.releasePagesLeftToRecoveryByEarlierInstances(local);
+    return true;
   }
 
   /**
@@ -1806,10 +1824,24 @@ public class PageManager extends LockContext {
 
   public MutablePage getMutablePage(final PageId pageId, final int pageSize, final boolean isNew, final boolean createIfNotExists)
       throws IOException {
+    return getMutablePage(pageId, pageSize, isNew, createIfNotExists, null);
+  }
+
+  /**
+   * As above, the copy written into {@code recycled} when it is an array of the page's length (see {@link CachedPage#useAsMutable(byte[])}).
+   * The caller must OWN {@code recycled}: nothing else may hold or read that array after the call, because the copy of the page is
+   * written into it. Counted in {@link PPageManagerStats#txPageBuffersRecycled} when it was used.
+   */
+  public MutablePage getMutablePage(final PageId pageId, final int pageSize, final boolean isNew, final boolean createIfNotExists,
+      final byte[] recycled) throws IOException {
     final CachedPage page = getCachedPage(pageId, pageSize, isNew, createIfNotExists);
-    if (page != null)
+    if (page != null) {
       // RETURN ALWAYS A VIEW OF THE PAGE. THIS PREVENT CONCURRENCY ON THE BUFFER POSITION
-      return page.useAsMutable();
+      final MutablePage mutable = page.useAsMutable(recycled);
+      if (recycled != null && mutable.getContent().array() == recycled)
+        totalTxPageBuffersRecycled.incrementAndGet();
+      return mutable;
+    }
     return null;
   }
 
@@ -1947,6 +1979,51 @@ public class PageManager extends LockContext {
           "Concurrent modification on page " + pageId + " in file '" + fileManager.getFile(pageId.getFileId()).getFileName()
               + "' (current v." + page.getVersion() + " <> database v." + mostRecentPageVersion
               + "). Please retry the operation (threadId=" + Thread.currentThread().threadId() + ")");
+    }
+  }
+
+  /**
+   * Waits, at most {@code timeoutMs}, until the replication layer holds no version of the page that this node has not applied
+   * yet (see {@link PageVersionReservations}), which is exactly what makes {@link #checkPageVersion} refuse the page with a
+   * {@link ConcurrentModificationException} while the local copy itself has not moved. Such a reservation lasts for the
+   * round trip of the entry that took it, so retrying the refused commit at once meets the same reservation every time
+   * (issue #12470); a caller that retries, or that cannot, calls this first.
+   * <p>
+   * Only a reservation ABOVE the local version counts, the same test the check applies: one at or below it is a leftover
+   * that fences nothing. Nothing is locked while waiting (the reservation lookup is a map read), so the wait can
+   * neither hold up nor be held up by the entry it waits for. Answers at once on a standalone database and on a replica,
+   * where no reservations are installed.
+   *
+   * @return {@code true} when the page holds no reservation ahead of the local copy, {@code false} when the wait gave up
+   * or was interrupted (the interrupt flag is set again): the caller goes on and meets the refusal itself
+   */
+  public boolean awaitReservedVersionApplied(final PageId pageId, final int pageSize, final long timeoutMs) throws IOException {
+    if (!(((DatabaseInternal) pageId.getDatabase()).getEmbedded() instanceof LocalDatabase localDatabase))
+      return true;
+
+    final long deadline = System.nanoTime() + timeoutMs * 1_000_000L;
+    long pauseMs = 1L;
+    while (true) {
+      // Read per round: an in-place restart of the replication layer installs its hook again, and an uninstalled one
+      // (null) leaves nothing to wait for
+      final PageVersionReservations reservations = localDatabase.getPageVersionReservations();
+      if (reservations == null)
+        return true;
+      final int reserved = reservations.reservedVersion(pageId);
+      if (reserved < 0 || reserved <= getMostRecentVersionOfPage(pageId, pageSize))
+        return true;
+
+      if (System.nanoTime() - deadline >= 0)
+        return false;
+
+      try {
+        Thread.sleep(pauseMs);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        return false;
+      }
+      // Backed off (1, 2, 4, 8, 10 ms): the entry normally lands within a few milliseconds, and a poll is two lookups
+      pauseMs = Math.min(pauseMs * 2, 10L);
     }
   }
 
@@ -2216,6 +2293,7 @@ public class PageManager extends LockContext {
     stats.concurrentModificationExceptions = totalConcurrentModificationExceptions.get();
     stats.edgeAppendMerges = totalEdgeAppendMerges.get();
     stats.txPageSlotMerges = totalTxPageSlotMerges.get();
+    stats.txPageBuffersRecycled = totalTxPageBuffersRecycled.get();
     stats.edgeListHeadMerges = totalEdgeListHeadMerges.get();
     stats.mergesDeclinedByCoverage = totalMergesDeclinedByCoverage.get();
     stats.chunkChainReadRevalidations = totalChunkChainReadRevalidations.get();
@@ -2498,6 +2576,11 @@ public class PageManager extends LockContext {
    * <p>
    * The callable must be short (it delays every commit and apply of the JVM while it runs), must not publish, and must not wait for
    * anything a publication holds: it can load pages, which takes neither the page-manager lock nor a publication.
+   * <p>
+   * The caller takes the database lock BEFORE it asks for the hold, never inside the callable: a commit holds the database read lock
+   * while it waits for the holds to be released, so a callable that takes that lock (a record load by RID) waits for a lock the fair
+   * lock refuses it once a schema change queued behind the commit, while the commit waits for this hold (#13112).
+   * {@code ConsistentKeyLookup.readAgainstOneCommit} does it for the readers of records.
    *
    * @return what {@code callable} returned, or {@code null} without running it when the publications did not end within
    * {@code maxWaitNanos}, or when the waiting thread is interrupted (its interrupt is kept)
@@ -2875,7 +2958,21 @@ public class PageManager extends LockContext {
       if (!isNewPage) {
         // ACQUIRE A LOCK ON THE I/O OPERATION TO AVOID PARTIAL READS/WRITES
         final CachedPage finalPage = page;
-        concurrentPageAccess(pageId, false, () -> file.read(finalPage));
+        try {
+          concurrentPageAccess(pageId, false, () -> file.read(finalPage));
+        } catch (final IllegalArgumentException | FileNotFoundException e) {
+          // Issue #12139: the two ways PaginatedComponentFile.read() reports "the file went away under me", the same pair the
+          // flush path absorbs. A DROP INDEX, a bucket drop or an index compaction - local, or applied from the leader - closes
+          // the file after this thread resolved it above and before it read the page: IllegalArgumentException when the
+          // channel is already null, FileNotFoundException when the close lands inside the read and the reopen refuses to
+          // re-create a file closed on purpose. Either reached the client as a non-database error although a retry succeeds.
+          // It is the race the commit's file lock check reports as "has been removed", and answers the same retryable way.
+          // isDropped() - raised BEFORE the close - keeps any other closed file (the database closing under the read) and an
+          // invalid page number on their own errors.
+          if (!file.isDropped() || pageId.getPageNumber() < 0)
+            throw e;
+          throw new ConcurrentModificationException("File with id '" + pageId.getFileId() + "' has been removed", e);
+        }
         // A page read for a bulk scan is its until another reader wants it (issue #11011)
         if (cache)
           page.setLoadedByBulkScan(BULK_SCAN.get());
@@ -2937,17 +3034,29 @@ public class PageManager extends LockContext {
   }
 
   private void checkForPageDisposal() {
-    final long now = System.currentTimeMillis();
-    if (now - lastCheckForRAM < 100)
+    // Runs on every page access, so no clock is read below the cap (#12971). Above it the coarse clock is enough for the 100 ms window
+    if (totalReadCacheRAM.get() < maxRAM)
       return;
 
+    if (CoarseClock.currentTimeMillis() - lastCheckForRAM < EVICTION_THROTTLE_MS)
+      return;
+
+    evictIfStillDue();
+  }
+
+  /**
+   * Runs the throttled eviction pass, unless one that ran while this thread waited for the monitor already did the job. Every
+   * thread that passes the throttle while a pass is running queues here, and the pass re-arms the throttle only when it ends:
+   * without this second look each of them ran a full sort of the cache of its own right after, one per thread and per window,
+   * freeing that many times what a window is meant to (measured with 8 reader threads over a 16 MB cap: 36-48 passes in the 5
+   * windows of the run).
+   */
+  private synchronized void evictIfStillDue() {
     final long totalRAM = totalReadCacheRAM.get();
-    if (totalRAM < maxRAM)
+    if (totalRAM < maxRAM || CoarseClock.currentTimeMillis() - lastCheckForRAM < EVICTION_THROTTLE_MS)
       return;
 
-    final long ramToFree = totalRAM * freePageRAM / 100;
-
-    evictOldestPages(ramToFree, totalRAM);
+    evictOldestPages(totalRAM * freePageRAM / 100, totalRAM);
   }
 
   /** A cached page with the eviction keys it had when an eviction run read them. */
@@ -3017,7 +3126,7 @@ public class PageManager extends LockContext {
       LogManager.instance().log(this, Level.WARNING, "Cannot free pages in RAM (current=%s > max=%s threadId=%d)", null,
           FileUtils.getSizeAsString(newTotalRAM), FileUtils.getSizeAsString(maxRAM), Thread.currentThread().threadId());
 
-    lastCheckForRAM = System.currentTimeMillis();
+    lastCheckForRAM = CoarseClock.currentTimeMillis();
   }
 
   // Reused per-thread slot for the RAM delta decided inside VERSION_MONOTONIC_MERGE: keeps the put hot
@@ -3039,6 +3148,15 @@ public class PageManager extends LockContext {
   };
 
   void putPageInReadCache(final CachedPage page) {
+    // #12244: a PageId compares its database by PATH, so a page cached for a CLOSED instance is a hit for the next
+    // instance opened on the same directory. The close purges the instance's pages, but a reader of it that loaded a
+    // page before that purge caches it only after (loadPage puts once the I/O lock is released). When the files under
+    // the path were replaced meanwhile (a Raft follower's snapshot install: close, swap, reopen), that image answered
+    // for the page instead of the newer file: the next replicated entry on it was refused with a WAL version gap.
+    final BasicDatabase database = page.getPageId().getDatabase();
+    if (!database.isOpen())
+      return;
+
     // #4925: version-monotonic put. A reader that started a disk read of version N before a committer
     // cached version N+1 must not overwrite the newer committed page with its stale image: the poisoned
     // cache would serve vN to every subsequent reader AND to the commit-time version probe, letting a later
@@ -3051,7 +3169,25 @@ public class PageManager extends LockContext {
     if (ramDelta[0] != 0)
       totalReadCacheRAM.addAndGet(ramDelta[0]);
 
+    // #12244: checked again AFTER the put. The close marks the instance closed (a volatile write) before it purges its
+    // pages, so either the purge sees this page, or this read sees the instance closed and takes the page back itself
+    if (!database.isOpen())
+      removeOwnPageFromCache(page);
+
     checkForPageDisposal();
+  }
+
+  /** Removes {@code page} from the read cache only if the cache still holds that very instance (#12244). */
+  private void removeOwnPageFromCache(final CachedPage page) {
+    final boolean[] removed = new boolean[1];
+    readCache.computeIfPresent(page.getPageId(), (id, cached) -> {
+      if (cached != page)
+        return cached;
+      removed[0] = true;
+      return null;
+    });
+    if (removed[0])
+      totalReadCacheRAM.addAndGet(-1L * page.getPhysicalSize());
   }
 
   /**

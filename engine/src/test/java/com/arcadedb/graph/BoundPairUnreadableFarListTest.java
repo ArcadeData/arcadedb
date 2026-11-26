@@ -126,6 +126,9 @@ class BoundPairUnreadableFarListTest extends TestHelper {
         assertThat(edges).as("%s", direction).hasSize(1);
         assertThat(edges.getFirst().getIn()).isEqualTo(ends[1]);
       }
+      // A LIST PART OF WHICH CANNOT BE READ IS NOT A SHORT ONE, AS A HEAD THAT CANNOT BE READ IS NOT (ISSUE #11715)
+      assertThat(engine.hasMoreEdgeEntriesThan((VertexInternal) ends[1].asVertex(), Vertex.DIRECTION.IN, FAR_DEGREE * 2))
+          .isTrue();
     });
   }
 

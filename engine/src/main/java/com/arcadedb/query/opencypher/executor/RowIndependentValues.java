@@ -27,6 +27,8 @@ import com.arcadedb.query.opencypher.ast.ListIndexExpression;
 import com.arcadedb.query.opencypher.ast.LiteralExpression;
 import com.arcadedb.query.opencypher.ast.ParameterExpression;
 import com.arcadedb.query.opencypher.ast.PathPattern;
+import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
+import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
 import com.arcadedb.query.opencypher.parser.CypherExpressionWalker;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
@@ -114,6 +116,12 @@ public final class RowIndependentValues {
    * graph at the moment it is evaluated. A value evaluated once for a seek and once more by a filter must be one.
    */
   public static boolean isDeterministic(final Expression expression) {
+    // The shapes nearly every predicate value is written with (a literal, $param, e.src_id): a leaf has nothing to walk, and this runs
+    // once per input row of UNWIND ... MATCH (a:T) WHERE a.id = e.src_id, so it must not allocate a visitor for them
+    if (expression instanceof LiteralExpression || expression instanceof ParameterExpression
+        || expression instanceof VariableExpression || expression instanceof PropertyAccessExpression)
+      return true;
+
     final boolean[] dependent = new boolean[1];
     CypherExpressionWalker.walk(expression, new CypherExpressionWalker.Visitor() {
       @Override

@@ -1,0 +1,235 @@
+/*
+ * Copyright 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+package com.arcadedb.server.ha.raft;
+
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.utility.FileUtils;
+import com.sun.net.httpserver.HttpServer;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+/**
+ * Regression tests for issue #7037: the snapshot self-heal checks usable space before it downloads. The leader
+ * advertises the uncompressed size of the archive in a response header; a follower whose volume cannot hold it
+ * refuses before reading the body instead of failing with {@code No space left on device} after the whole transfer.
+ *
+ */
+class SnapshotDownloadSpaceCheckTest {
+
+  private HttpServer httpServer;
+
+  private int        port;
+
+  @BeforeEach
+  void startServer() throws IOException {
+    httpServer = HttpServer.create(new InetSocketAddress(0), 0);
+    port = httpServer.getAddress().getPort();
+  }
+
+  @AfterEach
+  void stopServer() {
+    if (httpServer != null)
+      httpServer.stop(0);
+  }
+
+  // Regression for #7037: refuses when the volume cannot hold the inflated archive
+  @Test
+  void refusesWhenTheVolumeCannotHoldTheInflatedArchive(@TempDir final Path tempDir) {
+    assertThatThrownBy(() -> SnapshotInstaller.checkUsableSpace(tempDir, Long.MAX_VALUE, "big"))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("Insufficient space to install the snapshot of 'big'")
+        .hasMessageContaining(String.valueOf(Long.MAX_VALUE));
+  }
+
+  // Regression for #7037: accepts what fits and never refuses an unknown size
+  @Test
+  void acceptsWhatFitsAndNeverRefusesAnUnknownSize(@TempDir final Path tempDir) {
+    assertThatCode(() -> SnapshotInstaller.checkUsableSpace(tempDir, 1L, "small")).doesNotThrowAnyException();
+    assertThatCode(() -> SnapshotInstaller.checkUsableSpace(tempDir, 0L, "unknown")).doesNotThrowAnyException();
+    assertThatCode(() -> SnapshotInstaller.checkUsableSpace(tempDir, -1L, "unknown")).doesNotThrowAnyException();
+    // The staging directory does not exist yet when the check runs: the nearest existing ancestor is the volume.
+    assertThatCode(() -> SnapshotInstaller.checkUsableSpace(tempDir.resolve("db").resolve(".snapshot-new"), 1L, "db"))
+        .doesNotThrowAnyException();
+  }
+
+  // Regression for #7037: a volume reporting no total space is unknown not full
+  @Test
+  void aVolumeReportingNoTotalSpaceIsUnknownNotFull() {
+    // Issue #11487: a FUSE mount (LazyFS) answers 0 usable and 0 total for a 132 KB snapshot: not a full disk.
+    assertThatCode(() -> SnapshotInstaller.checkUsableSpace("/lazyfs", 0L, 0L, 132_085L, "jepsen")).doesNotThrowAnyException();
+    assertThatCode(() -> SnapshotInstaller.checkUsableSpace("/lazyfs", 0L, -1L, 132_085L, "jepsen")).doesNotThrowAnyException();
+    // A real volume that is full (total known, nothing usable) still refuses.
+    assertThatThrownBy(() -> SnapshotInstaller.checkUsableSpace("/data", 0L, 1L << 30, 132_085L, "jepsen"))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("Insufficient space to install the snapshot of 'jepsen'");
+  }
+
+  // Regression for #7037: raft storage with no reported total space is not read as full
+  @Test
+  void raftStorageWithNoReportedTotalSpaceIsNotReadAsFull() {
+    assertThat(RaftStorageFiles.hasRoomForSegments(0L, 0L, 64L << 20)).isTrue();
+    assertThat(RaftStorageFiles.hasRoomForSegments(0L, 1L << 30, 64L << 20)).isFalse();
+    assertThat(RaftStorageFiles.hasRoomForSegments(1L << 30, 1L << 30, 64L << 20)).isTrue();
+  }
+
+  // Regression for #7037: the volume is the nearest existing ancestor
+  @Test
+  void theVolumeIsTheNearestExistingAncestor(@TempDir final Path tempDir) {
+    assertThat(SnapshotInstaller.nearestExistingAncestor(tempDir.toFile())).isEqualTo(tempDir.toFile());
+    assertThat(SnapshotInstaller.nearestExistingAncestor(tempDir.resolve("db").resolve(".snapshot-new").toFile()))
+        .isEqualTo(tempDir.toFile());
+    // A relative path (arcadedb.ha.raftStorageDirectory=raft/storage-n1) must reach the working directory instead
+    // of running out of components and answering "unknown volume".
+    assertThat(SnapshotInstaller.nearestExistingAncestor(new File("issue7037-missing/raft-storage-n1")))
+        .isEqualTo(new File("").getAbsoluteFile());
+  }
+
+  // Regression for #7037: the reserve covers allocation overhead and saturates
+  @Test
+  void theReserveCoversAllocationOverheadAndSaturates() {
+    assertThat(SnapshotInstaller.withAllocationReserve(1L)).isEqualTo(1L + SnapshotInstaller.SPACE_RESERVE_MIN_BYTES);
+    final long oneGb = 1L << 30;
+    assertThat(SnapshotInstaller.withAllocationReserve(oneGb)).isEqualTo(oneGb + oneGb / 100L * SnapshotInstaller.SPACE_RESERVE_PERCENT);
+    assertThat(SnapshotInstaller.withAllocationReserve(Long.MAX_VALUE)).isEqualTo(Long.MAX_VALUE);
+  }
+
+  // Regression for #7037: header parsing treats absent or malformed as unknown
+  @Test
+  void headerParsingTreatsAbsentOrMalformedAsUnknown() {
+    assertThat(SnapshotInstaller.parseUncompressedBytes(null)).isEqualTo(-1L);
+    assertThat(SnapshotInstaller.parseUncompressedBytes("")).isEqualTo(-1L);
+    assertThat(SnapshotInstaller.parseUncompressedBytes("lots")).isEqualTo(-1L);
+    assertThat(SnapshotInstaller.parseUncompressedBytes(" 4096 ")).isEqualTo(4096L);
+  }
+
+  // Regression for #7037: download refuses before reading the body when the leader advertises more than fits
+  @Test
+  void downloadRefusesBeforeReadingTheBodyWhenTheLeaderAdvertisesMoreThanFits(@TempDir final Path tempDir) throws Exception {
+    final AtomicInteger calls = new AtomicInteger();
+    httpServer.createContext("/api/v1/ha/snapshot/testdb", exchange -> {
+      calls.incrementAndGet();
+      final byte[] zip = zipWith("data.dat", "hello");
+      exchange.getResponseHeaders().add(SnapshotManager.UNCOMPRESSED_BYTES_HEADER, String.valueOf(Long.MAX_VALUE));
+      exchange.sendResponseHeaders(200, zip.length);
+      exchange.getResponseBody().write(zip);
+      exchange.close();
+    });
+    httpServer.start();
+
+    final Path snapshotDir = tempDir.resolve(".snapshot-new");
+    Files.createDirectories(snapshotDir);
+
+    assertThatThrownBy(() -> SnapshotInstaller.downloadWithRetry("testdb", snapshotDir, "localhost:" + port, null, 0, 10))
+        .isInstanceOf(IOException.class)
+        .rootCause().hasMessageContaining("Insufficient space to install the snapshot of 'testdb'");
+    assertThat(calls.get()).isEqualTo(1);
+    assertThat(snapshotDir.resolve("data.dat")).as("nothing was extracted").doesNotExist();
+  }
+
+  // Regression for #7037: download proceeds when the advertised size fits
+  @Test
+  void downloadProceedsWhenTheAdvertisedSizeFits(@TempDir final Path tempDir) throws Exception {
+    httpServer.createContext("/api/v1/ha/snapshot/testdb", exchange -> {
+      final byte[] zip = zipWith("data.dat", "hello");
+      exchange.getResponseHeaders().add(SnapshotManager.UNCOMPRESSED_BYTES_HEADER, "5");
+      exchange.sendResponseHeaders(200, zip.length);
+      exchange.getResponseBody().write(zip);
+      exchange.close();
+    });
+    httpServer.start();
+
+    final Path snapshotDir = tempDir.resolve(".snapshot-new");
+    Files.createDirectories(snapshotDir);
+
+    SnapshotInstaller.downloadWithRetry("testdb", snapshotDir, "localhost:" + port, null, 0, 10);
+
+    assertThat(Files.readString(snapshotDir.resolve("data.dat"))).isEqualTo("hello");
+  }
+
+  // Regression for #7037: leader estimate covers every shipped file
+  @Test
+  void leaderEstimateCoversEveryShippedFile() throws Exception {
+    final String path = "./target/databases/issue7037-estimate";
+    FileUtils.deleteRecursively(new File(path));
+    final Database db = new DatabaseFactory(path).create();
+    try {
+      db.getSchema().createDocumentType("Doc");
+      db.transaction(() -> {
+        for (int i = 0; i < 100; i++)
+          db.newDocument("Doc").set("id", i).set("payload", "x".repeat(200)).save();
+      });
+
+      // Read inside the frozen window the ship uses (issue #8145): the commit only queues its pages for the async flush.
+      final DatabaseInternal dbInternal = (DatabaseInternal) db;
+      final long[] estimate = { -1L };
+      final long[] pageFiles = { -1L };
+      dbInternal.getPageManager().suspendFlushAndExecute(db, () -> {
+        // List.of(): no TimeSeries type, so the sealed set is empty (named, not listed off the filesystem: #7726).
+        estimate[0] = SnapshotHttpHandler.estimateUncompressedBytes(dbInternal, null, List.of());
+
+        // The archive ships the registered page files (not the WAL, which the install discards): that is the floor.
+        long total = 0L;
+        for (final ComponentFile file : dbInternal.getFileManager().getFiles())
+          if (file != null)
+            total += file.getOSFile().length();
+        pageFiles[0] = total;
+      });
+
+      // suspendFlushAndExecute swallows callback exceptions: these two make a swallowed failure read as one.
+      assertThat(pageFiles[0]).as("the page files were measured inside the window").isGreaterThan(0L);
+      assertThat(estimate[0]).as("the estimate was computed inside the window").isGreaterThan(0L);
+      assertThat(estimate[0]).as("the estimate covers every page file plus the schema and configuration")
+          .isGreaterThan(pageFiles[0]);
+    } finally {
+      db.drop();
+      FileUtils.deleteRecursively(new File(path));
+    }
+  }
+
+  private static byte[] zipWith(final String name, final String content) throws IOException {
+    final ByteArrayOutputStream baos = new ByteArrayOutputStream();
+    try (final ZipOutputStream zip = new ZipOutputStream(baos)) {
+      zip.putNextEntry(new ZipEntry(name));
+      zip.write(content.getBytes());
+      zip.closeEntry();
+    }
+    return baos.toByteArray();
+  }
+}

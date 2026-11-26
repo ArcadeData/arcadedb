@@ -88,4 +88,10 @@ public class SQLFunctionCount extends SQLAggregatedFunction {
   public Object getResult() {
     return total;
   }
+
+  /** Pure over its rows and arguments (issue #6190): a statement that holds the call keeps its execution plan. */
+  @Override
+  public boolean isDeterministic() {
+    return true;
+  }
 }

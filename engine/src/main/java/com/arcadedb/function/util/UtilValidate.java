@@ -20,12 +20,13 @@ package com.arcadedb.function.util;
 
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
+import com.arcadedb.utility.StringUtils;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.Arrays;
 import java.util.Collection;
-import java.util.IllegalFormatException;
+import java.util.Locale;
 
 /**
  * util.validate(predicate, message[, params]) - Throws an exception carrying {@code message} if the predicate is TRUE, as
@@ -106,10 +107,12 @@ public class UtilValidate extends AbstractUtilFunction {
       return text + " " + Arrays.toString(values);
 
     try {
-      return String.format(text, values);
-    } catch (final IllegalFormatException e) {
-      // A message the params do not fit ('%d' given a string, a placeholder too many): the query still aborts, and with
-      // the text it chose rather than with a complaint about the format
+      // Through the shared guard and not String.format directly: '%f' spells a decimal like 1E+999999999 out in plain
+      // digits, which is an OutOfMemoryError and not a long message (issue #12837)
+      return StringUtils.format("util.validate", Locale.getDefault(Locale.Category.FORMAT), text, values);
+    } catch (final IllegalArgumentException e) {
+      // A message the params do not fit ('%d' given a string, a placeholder too many, a decimal too large to spell
+      // out): the query still aborts, and with the text it chose rather than with a complaint about the format
       return text + " " + Arrays.toString(values);
     }
   }

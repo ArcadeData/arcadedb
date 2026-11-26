@@ -45,6 +45,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import java.util.function.Predicate;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
@@ -266,10 +267,7 @@ final class CompiledClasses {
     for (final byte[] bytes : classes.values()) {
       final ClassReader reader = new ClassReader(bytes);
       final String className = reader.getClassName();
-      final List<String> parents = new ArrayList<>(List.of(reader.getInterfaces()));
-      if (reader.getSuperName() != null)
-        parents.add(reader.getSuperName());
-      supertypes.put(className, parents);
+      supertypes.put(className, parentsOf(reader));
       reader.accept(new ClassVisitor(Opcodes.ASM9) {
         @Override
         public MethodVisitor visitMethod(final int access, final String methodName, final String descriptor, final String signature,
@@ -317,9 +315,122 @@ final class CompiledClasses {
     return reaching;
   }
 
-  /** Whether the method {@code nameAndDesc} named on {@code owner} resolves, up its super types, to one in {@code target}. */
-  private static boolean resolvesInto(final String owner, final String nameAndDesc, final Map<String, List<String>> supertypes,
-      final Set<String> declared, final Set<String> target) {
+  /**
+   * Every method of {@code classes} reachable from the methods of {@code roots}, as {@code owner.name descriptor}: the mirror
+   * of {@link #methodsReaching}, walked forward from the callers instead of back from the callee. A call is followed into
+   * the method the JVM resolves it to, up the super types of the owner it names, and - when it is dispatched (a virtual or
+   * interface call, or a method reference to one) - into the method each sub type of that owner runs, its own override or one
+   * it inherits, so a helper reached through its interface or abstract base is reached. A lambda's body is reached through
+   * the method reference of the method it is written in, and the methods of an anonymous or local class with its
+   * constructor, since it exists only to be called back by whoever it is handed to. The anonymous and local classes of a root
+   * are roots.
+   * <p>
+   * {@code enters} decides which classes the walk may step into: a call into a class it refuses is not followed, and neither
+   * is a dispatch from an owner it refuses, so the walk can stop at the boundary of what it describes (an importer stops at
+   * the database it writes to rather than descending into the engine). A class that only a refused owner would dispatch to,
+   * and that no reached method constructs, calls or hands round as a method reference, is therefore not reached.
+   */
+  static Set<String> methodsReachableFrom(final Map<String, byte[]> classes, final Set<String> roots, final Predicate<String> enters) {
+    final Map<String, List<String>> supertypes = new HashMap<>();
+    final Map<String, List<String>> directSubtypes = new HashMap<>();
+    final Map<String, List<String>> methodsOf = new HashMap<>();
+    final Set<String> declared = new HashSet<>();
+    final Map<String, List<Call>> calls = new HashMap<>();
+    for (final byte[] bytes : classes.values()) {
+      final ClassReader reader = new ClassReader(bytes);
+      final String className = reader.getClassName();
+      final List<String> parents = parentsOf(reader);
+      supertypes.put(className, parents);
+      for (final String parent : parents)
+        directSubtypes.computeIfAbsent(parent, k -> new ArrayList<>()).add(className);
+      final List<String> methods = methodsOf.computeIfAbsent(className, k -> new ArrayList<>());
+      reader.accept(new ClassVisitor(Opcodes.ASM9) {
+        @Override
+        public MethodVisitor visitMethod(final int access, final String methodName, final String descriptor, final String signature,
+            final String[] exceptions) {
+          final String method = className + "." + methodName + " " + descriptor;
+          declared.add(method);
+          methods.add(method);
+          final List<Call> made = calls.computeIfAbsent(method, k -> new ArrayList<>());
+          return new MethodVisitor(Opcodes.ASM9) {
+            @Override
+            public void visitMethodInsn(final int opcode, final String owner, final String name, final String desc,
+                final boolean isInterface) {
+              made.add(new Call(owner, name + " " + desc, opcode == Opcodes.INVOKEVIRTUAL || opcode == Opcodes.INVOKEINTERFACE));
+            }
+
+            @Override
+            public void visitInvokeDynamicInsn(final String name, final String desc, final Handle bootstrap,
+                final Object... bootstrapArguments) {
+              for (final Object argument : bootstrapArguments)
+                if (argument instanceof Handle handle)
+                  made.add(new Call(handle.getOwner(), handle.getName() + " " + handle.getDesc(),
+                      handle.getTag() == Opcodes.H_INVOKEVIRTUAL || handle.getTag() == Opcodes.H_INVOKEINTERFACE));
+            }
+          };
+        }
+      }, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
+    }
+
+    final Set<String> reached = new HashSet<>();
+    final Deque<String> pending = new ArrayDeque<>();
+    for (final Map.Entry<String, List<String>> type : methodsOf.entrySet())
+      if (roots.contains(type.getKey()) || roots.contains(outerClassOf(type.getKey())))
+        for (final String method : type.getValue())
+          if (reached.add(method))
+            pending.push(method);
+
+    final Map<String, Set<String>> subtypesMemo = new HashMap<>();
+    while (!pending.isEmpty())
+      for (final Call call : calls.getOrDefault(pending.pop(), List.of())) {
+        final String target = declarationOf(call.owner(), call.nameAndDesc(), supertypes, declared);
+        final List<String> found = new ArrayList<>();
+        if (target != null && enters.test(typeOf(target)))
+          found.add(target);
+        // NOT FROM A TYPE OUTSIDE THE CLASSES READ (Object, Runnable, AutoCloseable...): EVERY CLASS THAT IMPLEMENTS IT IS ITS SUB
+        // TYPE, SO ONE CALL OF IT IN AN IMPORTER WOULD PUT THEM ALL IN SCOPE
+        if (call.dispatched() && supertypes.containsKey(call.owner()) && enters.test(call.owner()))
+          for (final String subtype : subtypesOf(call.owner(), directSubtypes, subtypesMemo))
+            if (enters.test(subtype)) {
+              // THE METHOD THE SUB TYPE RUNS: ITS OWN OVERRIDE, OR THE ONE IT INHERITS FROM A CLASS THAT DOES NOT IMPLEMENT THE OWNER
+              final String implementation = declarationOf(subtype, call.nameAndDesc(), supertypes, declared);
+              if (implementation != null && enters.test(typeOf(implementation)))
+                found.add(implementation);
+            }
+        for (final String method : found) {
+          if (!reached.add(method))
+            continue;
+          pending.push(method);
+          final String type = typeOf(method);
+          if (method.startsWith(type + ".<init> ") && !outerClassOf(type).equals(type))
+            for (final String callback : methodsOf.getOrDefault(type, List.of()))
+              if (reached.add(callback))
+                pending.push(callback);
+        }
+      }
+    return reached;
+  }
+
+  /** A call a method makes: the owner it names, {@code name descriptor}, and whether the JVM dispatches it on the receiver. */
+  private record Call(String owner, String nameAndDesc, boolean dispatched) {
+  }
+
+  /**
+   * The method {@code nameAndDesc} named on {@code owner} resolves to, or {@code null} outside the classes read. As the JVM
+   * resolves it (JVMS 5.4.3.3): in {@code owner} and its super classes first, each level before the next, so a body the class
+   * inherits is found before an interface that declares the same method with none, and only then in its super interfaces.
+   */
+  private static String declarationOf(final String owner, final String nameAndDesc, final Map<String, List<String>> supertypes,
+      final Set<String> declared) {
+    // THE FIRST PARENT OF A CLASS IS ITS SUPER CLASS (parentsOf)
+    for (String current = owner; current != null; ) {
+      final String method = current + "." + nameAndDesc;
+      if (declared.contains(method))
+        return method;
+      final List<String> parents = supertypes.get(current);
+      current = parents == null || parents.isEmpty() ? null : parents.get(0);
+    }
+
     final Deque<String> pending = new ArrayDeque<>(List.of(owner));
     final Set<String> seen = new HashSet<>();
     while (!pending.isEmpty()) {
@@ -328,10 +439,48 @@ final class CompiledClasses {
         continue;
       final String method = current + "." + nameAndDesc;
       if (declared.contains(method))
-        return target.contains(method);
+        return method;
       pending.addAll(supertypes.getOrDefault(current, List.of()));
     }
-    return false;
+    return null;
+  }
+
+  /** The super class of the class {@code reader} reads, then the interfaces it implements: what {@link #declarationOf} walks up. */
+  private static List<String> parentsOf(final ClassReader reader) {
+    final List<String> parents = new ArrayList<>();
+    if (reader.getSuperName() != null)
+      parents.add(reader.getSuperName());
+    parents.addAll(List.of(reader.getInterfaces()));
+    return parents;
+  }
+
+  /** {@code a/C.m ()V} -> {@code a/C}. */
+  static String typeOf(final String method) {
+    return method.substring(0, method.indexOf('.'));
+  }
+
+  /** Every class or interface whose super types reach {@code type}, not {@code type} itself. */
+  private static Set<String> subtypesOf(final String type, final Map<String, List<String>> directSubtypes,
+      final Map<String, Set<String>> memo) {
+    final Set<String> known = memo.get(type);
+    if (known != null)
+      return known;
+    final Set<String> result = new HashSet<>();
+    final Deque<String> pending = new ArrayDeque<>(directSubtypes.getOrDefault(type, List.of()));
+    while (!pending.isEmpty()) {
+      final String current = pending.pop();
+      if (result.add(current))
+        pending.addAll(directSubtypes.getOrDefault(current, List.of()));
+    }
+    memo.put(type, result);
+    return result;
+  }
+
+  /** Whether the method {@code nameAndDesc} named on {@code owner} resolves, up its super types, to one in {@code target}. */
+  private static boolean resolvesInto(final String owner, final String nameAndDesc, final Map<String, List<String>> supertypes,
+      final Set<String> declared, final Set<String> target) {
+    final String method = declarationOf(owner, nameAndDesc, supertypes, declared);
+    return method != null && target.contains(method);
   }
 
   /** {@code type} and every class or interface of {@code classes} whose super types reach it. */
@@ -339,10 +488,7 @@ final class CompiledClasses {
     final Map<String, List<String>> supertypes = new HashMap<>();
     for (final byte[] bytes : classes.values()) {
       final ClassReader reader = new ClassReader(bytes);
-      final List<String> parents = new ArrayList<>(List.of(reader.getInterfaces()));
-      if (reader.getSuperName() != null)
-        parents.add(reader.getSuperName());
-      supertypes.put(reader.getClassName(), parents);
+      supertypes.put(reader.getClassName(), parentsOf(reader));
     }
 
     final Set<String> result = new HashSet<>();
