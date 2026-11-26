@@ -1218,6 +1218,16 @@ public class TransactionContext implements Transaction {
     return newRecords.size();
   }
 
+  /** How many new records the context holds room for: what it keeps between transactions is bounded (issue #13479). */
+  int getNewRecordsCapacity() {
+    return newRecords.capacity();
+  }
+
+  /** The savepoint object the statements of this context reuse, or null when none ran yet. */
+  StatementSavepoint getPooledStatement() {
+    return pooledStatement;
+  }
+
   int getInsertReservationCount() {
     return insertReservationCount;
   }

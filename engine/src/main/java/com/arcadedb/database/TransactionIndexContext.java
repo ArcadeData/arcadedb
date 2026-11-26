@@ -114,6 +114,9 @@ public class TransactionIndexContext {
   private       IdentityHashMap<IndexInternal, Object>                       cachedViews;
   private       long                                                         cachedViewVersion = -1L;
 
+  /** How many journal holders the context keeps for the next statement or record: the rest go when the journal is dropped (issue #13479). */
+  static final int MAX_RETAINED_UNDO_HOLDERS = 4096;
+
   /** The cached stand-in for "this transaction has written nothing to this index". See {@link #cacheIndexView}. */
   public static final Object NO_VIEW = new Object();
 
@@ -136,8 +139,12 @@ public class TransactionIndexContext {
    * The list is REUSED across records - only its size is reset - so an insert-heavy workload allocates the
    * holders once rather than once per record. Nothing is recorded while disarmed, which is every path but the one
    * that is about to have to undo.
+   * <p>
+   * The context is reused by every transaction of its thread for the life of the database, so what the journal keeps between
+   * statements is capped at {@link #MAX_RETAINED_UNDO_HOLDERS}: a statement that journalled one holder per key of a bulk write must
+   * not leave them all behind once it ends (issue #13479).
    */
-  private final List<RecordUndoEntry>                                        recordUndo       = new ArrayList<>();
+  private final ArrayList<RecordUndoEntry>                                   recordUndo       = new ArrayList<>();
   /** How many entries {@link #recordUndo} holds right now; -1 when nothing is journalled. */
   private       int                                                          recordUndoSize   = -1;
   /** Where the entries of the record being indexed right now begin: the ones before it belong to the statement (issue #10346). */
@@ -946,6 +953,9 @@ public class TransactionIndexContext {
 
   /** Stops journalling and drops what was journalled, unless a statement journals too: its entries stay. Idempotent. */
   public void disarmRecordUndo() {
+    // No trim here: this runs once per indexed record, and without a statement journal the list holds the entries of ONE record, so a
+    // record with more index keys than the cap would drop and re-allocate its holders on every write. The statement end, the abandon
+    // and the reset trim instead (issue #13479)
     if (statementJournal)
       recordUndoMark = recordUndoSize;
     else
@@ -1005,6 +1015,25 @@ public class TransactionIndexContext {
       for (int i = 0; i < recordUndoSize; i++)
         recordUndo.get(i).clear();
     recordUndoSize = -1;
+    trimRetainedUndoHolders();
+  }
+
+  /** How many journal holders the context keeps right now, used or spare. */
+  int getRetainedUndoHolders() {
+    return recordUndo.size();
+  }
+
+  /**
+   * Drops the holders past {@link #MAX_RETAINED_UNDO_HOLDERS}, and the backing array that held them, except the ones in use (issue
+   * #13479). Costs a size check when the journal stayed small, which is every statement but a bulk one.
+   */
+  private void trimRetainedUndoHolders() {
+    final int keep = Math.max(MAX_RETAINED_UNDO_HOLDERS, recordUndoSize);
+    final int size = recordUndo.size();
+    if (size <= keep)
+      return;
+    recordUndo.subList(keep, size).clear();
+    recordUndo.trimToSize();
   }
 
   private void undoJournalDownTo(final int mark) {
@@ -1074,6 +1103,10 @@ public class TransactionIndexContext {
     }
     statementJournal = false;
     statementJournalBroken = true;
+    trimRetainedUndoHolders();
+    // Removing the prefix leaves the list small but its backing array as long as the journal limit (100,000 slots by default), which
+    // the trim above does not see: the abandon happens once per oversized statement, so the array is always shrunk here
+    recordUndo.trimToSize();
   }
 
   public void reset() {
@@ -1093,6 +1126,7 @@ public class TransactionIndexContext {
     recordUndoSize = -1;
     statementJournal = false;
     statementJournalBroken = false;
+    trimRetainedUndoHolders();
   }
 
   /** Looks a lane up by its KEY, with the same caveat as {@link #getTotalEntriesByIndex}. */
