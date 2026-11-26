@@ -2712,8 +2712,12 @@ public class PageManager extends LockContext {
       } else {
         // SYNCHRONOUS FLUSH
         final PageManagerFlushThread thread = flushThread;
+        // A pending batch keeps the very ArrayList its caller passed (PagesToFlush), and the detach below removes pages
+        // from pending batches: a caller that queued a list asynchronously and passes the same instance here would
+        // see it change under this loop. Any other list type was copied by the batch, so it cannot be shared.
+        final List<MutablePage> pages = updatedPages instanceof ArrayList ? new ArrayList<>(updatedPages) : updatedPages;
         int i = 0;
-        for (final MutablePage page : updatedPages) {
+        for (final MutablePage page : pages) {
           // An older copy of this page can still be in the asynchronous pipeline: committed before the database
           // switched to synchronous flush, or by a commit that asked for async flush. Written after this page it would
           // revert it on disk (issue #13441), so it leaves the pipeline first and is never written.

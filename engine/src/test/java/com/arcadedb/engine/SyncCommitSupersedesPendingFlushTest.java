@@ -31,6 +31,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.io.File;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
@@ -199,6 +200,64 @@ class SyncCommitSupersedesPendingFlushTest {
         final ImmutablePage page = ((DatabaseInternal) db).getPageManager().getImmutablePage(reopened, pageSize, false, false);
         assertThat(page).as("the page must have reached the file").isNotNull();
         assertThat(page.readInt(markerOffset)).as("the page on disk must hold the content written").isEqualTo(13441);
+      }
+    } finally {
+      PageManager.setPageWriteFaultInjector(null);
+      blocker.drop();
+    }
+  }
+
+  /**
+   * A pending batch keeps the very ArrayList its caller passed. Passed again to a synchronous write, that list was
+   * changed under the write's loop by the detach, which removes the pages from the pending batches: the loop stopped
+   * after the first page, and the second one was never written synchronously.
+   */
+  @Test
+  @Timeout(value = 2, unit = TimeUnit.MINUTES)
+  void theSameListQueuedAsynchronouslyAndThenWrittenSynchronouslyWritesEveryPage() throws Exception {
+    final Database blocker = new DatabaseFactory(BLOCKER_PATH).create();
+    try {
+      final CountDownLatch held = new CountDownLatch(1);
+      final CountDownLatch release = new CountDownLatch(1);
+      final String blockerName = blocker.getName();
+      PageManager.setPageWriteFaultInjector(pageId -> {
+        if (isFlushThread() && blockerName.equals(pageId.getDatabase().getName())) {
+          held.countDown();
+          awaitQuietly(release, 30);
+        }
+      });
+
+      blocker.transaction(() -> blocker.getSchema().createDocumentType("Blocker"));
+      assertThat(held.await(30, TimeUnit.SECONDS)).as("the flush thread must be held on the blocker's batch").isTrue();
+
+      try (final DatabaseInternal db = (DatabaseInternal) new DatabaseFactory(DATABASE_PATH).create()) {
+        final PaginatedComponent bucket = (PaginatedComponent) db.getSchema().createDocumentType("Item").getBuckets(false)
+            .getFirst();
+        final int pageSize = bucket.getPageSize();
+        final PageManager pageManager = db.getPageManager();
+
+        final List<MutablePage> pages = new ArrayList<>();
+        for (int i = 0; i < 2; i++) {
+          final MutablePage page = new MutablePage(new PageId(db, bucket.getFileId(), bucket.getTotalPages() + i), pageSize);
+          page.writeInt(page.getMaxContentSize() - Integer.BYTES, 13441 + i);
+          pageManager.updatePageVersion(page, true);
+          pages.add(page);
+        }
+
+        // The pipeline changes the shared list: keep the pages apart to check them
+        final List<MutablePage> created = List.copyOf(pages);
+
+        // Queued behind the held batch of the blocker, then the same list is written synchronously
+        pageManager.writePages(pages, true);
+        pageManager.writePages(pages, false);
+
+        assertThat(created).hasSize(2);
+        for (final MutablePage page : created)
+          assertThat(pageManager.getFlushThread().pageIndex.get(page.getPageId()))
+              .as("page %s must have been written synchronously, not left pending", page.getPageId()).isNull();
+        release.countDown();
+      } finally {
+        release.countDown();
       }
     } finally {
       PageManager.setPageWriteFaultInjector(null);
