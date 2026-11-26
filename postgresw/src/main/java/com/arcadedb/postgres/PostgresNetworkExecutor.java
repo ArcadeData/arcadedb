@@ -286,6 +286,12 @@ public class PostgresNetworkExecutor extends Thread {
    */
   private boolean  skipUntilSync              = false;
   /**
+   * The Syncs received on this connection: each closes one exchange of extended-protocol messages. Tells a statement a client
+   * parsed and bound in the same exchange from one it prepared on its own (issue #11838), see
+   * {@link PostgresPortal#preparedWhileRunning}.
+   */
+  private long     syncs                      = 0;
+  /**
    * True while a simple-query message holding several statements is being run (issue #11483): its statements form one
    * implicit transaction block, as in PostgreSQL.
    */
@@ -587,6 +593,7 @@ public class PostgresNetworkExecutor extends Thread {
     if (DEBUG)
       LogManager.instance().log(this, Level.INFO, "PSQL: sync (thread=%s)", Thread.currentThread().threadId());
 
+    ++syncs;
     if (skipUntilSync || errorInTransaction) {
       // DISCARDED PREVIOUS MESSAGES TILL THIS POINT. The block the discarded messages belonged to goes with
       // them: PostgreSQL rolls back the WHOLE run of extended-protocol messages this Sync terminates when any
@@ -754,7 +761,7 @@ public class PostgresNetworkExecutor extends Thread {
               portal.fullResultSet = browseAndCacheBoundedResultSet(runPortalQuery(portal));
               portal.executed = true;
               if (!isRowlessWrite(portal.sqlStatement))
-                resolvePortalColumns(portal);
+                resolvePortalColumns(portal, true);
             }
           if (isRowlessWrite(portal.sqlStatement))
             // PostgreSQL describes a write with no RETURN as NoData, and Execute answers it with a bare tag (issue #11017)
@@ -839,11 +846,9 @@ public class PostgresNetworkExecutor extends Thread {
    * A client that describes a NAMED statement through a portal may keep that description for the statement and apply
    * it to every later Bind/Execute without describing again, which is what pgjdbc does from its prepareThreshold-th
    * execution on (issue #9009). The layout just announced is therefore recorded as the statement's own, so the later
-   * portals serialize their rows under it instead of under the columns of whichever rows they return.
-   * <p>
-   * A layout read off the rows (not a streamed portal, whose columns the schema named) types an undeclared property from
-   * the values this portal held, as the simple query protocol does (issue #11838): a later portal executed under it
-   * without a Describe of its own is checked against it first, see {@link #fitsDescribedLayout}.
+   * portals serialize their rows under it instead of under the columns of whichever rows they return. Only such a client's
+   * description promises a layout every record fits ({@link #mayKeepDescribedLayout}); a later portal of a statement whose
+   * client describes every portal is described again, from its own rows, and its Execute sends them under that answer.
    */
   private static void rememberDescribedLayout(final PostgresPortal portal) {
     final PostgresPortal statement = portal.statement;
@@ -853,7 +858,6 @@ public class PostgresNetworkExecutor extends Thread {
     // a copy: the portal keeps adjusting its own map, the statement's layout is a promise that must not move
     statement.columns = new LinkedHashMap<>(portal.columns);
     statement.columnsDescribed = true;
-    statement.columnsFromRows = !portal.streamed;
   }
 
   /**
@@ -949,60 +953,72 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   /**
+   * A projection ({@code SELECT u FROM T}) returns rows that are not elements, so {@code getColumns} cannot tell an
+   * undeclared property from a computed value by the row alone. The statement can: a projected plain property that the
+   * target type does not declare is held to the text layout like the same property of a whole record (issue #9009).
+   */
+  private static void stabilizeProjectedUndeclaredColumns(final Statement statement, final DocumentType targetType,
+      final Map<String, PostgresType> columns) {
+    if (targetType == null || columns == null || !(statement instanceof SelectStatement select) || select.getProjection() == null
+        || select.getProjection().getItems() == null)
+      return;
+
+    for (final ProjectionItem item : select.getProjection().getItems()) {
+      final Expression expression = item.getExpression();
+      if (item.isAll() || item.exclude || expression == null || !expression.isBaseIdentifier())
+        continue;
+      final String alias = item.getProjectionAliasAsString();
+      final PostgresType type = alias != null ? columns.get(alias) : null;
+      if (type != null && targetType.getPolymorphicPropertyIfExists(expression.getDefaultAlias().getStringValue()) == null)
+        columns.put(alias, PostgresType.stableTypeForUndeclared(type));
+    }
+  }
+
+  /**
    * Resolves the columns a materialized portal must be announced under, from the rows it actually produced.
    * A catalog answer keeps its own columns, which are fixed by the catalog table being emulated rather than
    * by whichever rows happened to match; a query that came back empty falls back to the schema, so a client
    * probing a shape with {@code WHERE 1=0} or {@code LIMIT 0} still gets a typed result set.
-   * <p>
-   * A portal of a named statement is typed the same way (issue #11838): a client that prepares a statement - libpq,
-   * and psycopg with it, from the 6th execution, pgjdbc from its prepareThreshold-th - must read the same types as the
-   * statement unprepared. Announcing an undeclared property as text there (issue #9009) turned {@code true} into
-   * {@code 't'} and {@code 42} into {@code '42'}; a client that keeps the layout for later portals is held to it by
-   * {@link #fitsDescribedLayout} instead.
+   *
+   * @param announced true when these columns are about to be sent to the client in a RowDescription (Describe 'P'). The
+   *                  undeclared properties are then held to the layout every record fits (issue #9009) when the client may
+   *                  keep that description for the statement's later portals: see {@link #mayKeepDescribedLayout}.
+   *                  Otherwise, and on an Execute, which announces nothing, the columns are typed from the rows themselves,
+   *                  as the unnamed statement's are (issue #11838).
    */
-  private void resolvePortalColumns(final PostgresPortal portal) {
+  /**
+   * True when the client may keep the description of this portal for every later portal of its statement, executed with no
+   * Describe of its own: pgjdbc from its prepareThreshold-th execution, Npgsql's auto-prepare. Both prepare a statement in the
+   * exchange that first runs it, Parse, Bind, Describe('P') and Execute before one Sync, and so does node-postgres for a named
+   * query, which describes every portal but cannot be told apart from them. A row type promised to them for an undeclared
+   * property must hold for the rows of every later execution, whatever its parameters, which only text does (issue #9009): a
+   * schemaless property can hold an int4 in one record and an int8, a float8, a bool or a list in the next, and a 0A000 there,
+   * which only pgjdbc outside a transaction block answers by preparing again, failed every other client (issue #11838).
+   * <p>
+   * A statement prepared on its own, Parse (and maybe Describe('S')) then Sync, is described portal by portal from the rows, as
+   * the unnamed statement is: its client - libpq's PQexecPrepared, psycopg, pgx's ExecPrepared - describes each portal it runs,
+   * and the clients that keep one description for it (pgx's statement cache, Npgsql's Prepare(), asyncpg) keep the answer to
+   * that Describe('S'), which names the columns from the schema, undeclared properties as text.
+   */
+  private static boolean mayKeepDescribedLayout(final PostgresPortal portal) {
+    return portal.statement != null && portal.statement.namedStatement && portal.statement.preparedWhileRunning;
+  }
+
+  private void resolvePortalColumns(final PostgresPortal portal, final boolean announced) {
     final List<Result> rows = portal.fullResultSet != null ? portal.fullResultSet : Collections.emptyList();
+    final boolean stableLayout = announced && mayKeepDescribedLayout(portal);
     if (!portal.catalogQuery || portal.columns == null)
-      portal.columns = getColumns(rows, resolveQueryTargetType(portal), resolveAliasToSourceProperty(portal));
+      portal.columns = getColumns(rows, resolveQueryTargetType(portal), resolveAliasToSourceProperty(portal), stableLayout);
     if (!portal.catalogQuery)
       applyDeclaredColumns(portal.sqlStatement, rows, portal.columns);
+    if (stableLayout && !portal.catalogQuery)
+      stabilizeProjectedUndeclaredColumns(portal.sqlStatement, resolveQueryTargetType(portal), portal.columns);
     if (portal.columns.isEmpty() && rows.isEmpty()) {
       final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(portal.query, portal.language,
           getParams(portal), portal.sqlStatement);
       if (schemaColumns != null)
         portal.columns = schemaColumns;
     }
-  }
-
-  /**
-   * True when every row of a portal executed without a Describe of its own fits the layout a {@code Describe('P')} of an
-   * earlier portal took from that portal's rows (issue #11838): each column these rows carry is in the layout under the
-   * type the rows alone would be announced with, or is null on every row. A column the layout lacks, or a value of
-   * another type (an int8 where int4 was described, a string where a bool was), would reach the client under a type
-   * that cannot carry it or that changes what it reads, and binary transfer, which pgjdbc negotiates off the layout,
-   * cannot carry it at all.
-   */
-  private boolean fitsDescribedLayout(final PostgresPortal portal) {
-    final List<Result> rows = portal.fullResultSet != null ? portal.fullResultSet : Collections.emptyList();
-    if (rows.isEmpty())
-      return true;
-    final Map<String, PostgresType> actual = getColumns(rows, resolveQueryTargetType(portal), resolveAliasToSourceProperty(portal));
-    applyDeclaredColumns(portal.sqlStatement, rows, actual);
-    for (final Map.Entry<String, PostgresType> column : actual.entrySet())
-      if (portal.columns.get(column.getKey()) != column.getValue() && !isNullOnEveryRow(rows, column.getKey()))
-        return false;
-    return true;
-  }
-
-  /**
-   * Refuses a portal whose rows do not fit the layout its statement was described with (issue #11838), as PostgreSQL
-   * refuses a cached plan whose result type changed: SQLSTATE 0A000, routine {@code RevalidateCachedQuery}. pgjdbc reads
-   * that routine as an error a new Parse heals, and outside a failed transaction block runs the statement again,
-   * described from its new rows.
-   */
-  private void refuseChangedResultType() {
-    setExtendedProtocolError();
-    writeError(ERROR_SEVERITY.ERROR, "cached plan must not change result type", "0A000", "RevalidateCachedQuery");
   }
 
   private void executeCommand() {
@@ -1134,18 +1150,13 @@ public class PostgresNetworkExecutor extends Thread {
               // with no Describe - pgjdbc once prepareThreshold promotes a statement - and reads a RowDescription it
               // did not ask for as the answer to a Describe it never sent, which desynchronizes the connection. The
               // columns are still resolved here, since the data rows are encoded from them. portal.columnsDescribed
-              // means a real Describe already told the client this exact shape/OIDs - and, for a schemaless
+              // means a real Describe('S') already told the client this exact shape/OIDs - and, for a schemaless
               // type, a client that negotiated binary transfer off that promise cannot have it silently swapped for a
-              // differently-typed one here (issue #6725): keep the promised columns. A layout a Describe('P') took from
-              // another portal's rows holds only rows of the same types, so rows that do not fit it are refused, as
-              // PostgreSQL refuses a plan whose result type changed, rather than sent under types that misread them (issue #11838).
+              // differently-typed one here (issue #6725): keep the promised columns.
               if (!portal.columnsDescribed) {
                 final long serStart = System.nanoTime();
-                resolvePortalColumns(portal);
+                resolvePortalColumns(portal, false);
                 profile.addSerializationNanos(System.nanoTime() - serStart);
-              } else if (portal.columnsFromRows && !fitsDescribedLayout(portal)) {
-                refuseChangedResultType();
-                return;
               }
             }
           } else {
@@ -3507,6 +3518,9 @@ public class PostgresNetworkExecutor extends Thread {
       // If the prepared statement is missing/closed, use a consume-only throwaway portal to drain parameters
       // off the wire and avoid channel framing corruption, without resurrecting any previously bound portal.
       final PostgresPortal preparedStatement = preparedStatements.get(sourcePreparedStatement);
+      if (preparedStatement != null && preparedStatement.parsedAtSync == syncs)
+        // run by the exchange that parsed it, even when an earlier failure has that exchange skip this Bind (issue #11838)
+        preparedStatement.preparedWhileRunning = true;
       final PostgresPortal portal = preparedStatement != null ? PostgresPortal.bindFrom(preparedStatement) : new PostgresPortal("", "sql");
 
       if (DEBUG)
@@ -4038,6 +4052,7 @@ public class PostgresNetworkExecutor extends Thread {
       }
 
       portal.namedStatement = !portalName.isEmpty();
+      portal.parsedAtSync = syncs;
       preparedStatements.put(portalName, portal);
 
       // ParseComplete
@@ -4895,14 +4910,6 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   private void writeError(final ERROR_SEVERITY severity, final String errorMessage, final String errorCode) {
-    writeError(severity, errorMessage, errorCode, null);
-  }
-
-  /**
-   * @param routine the ErrorResponse's routine field ('R'), or null to leave it out. A client may act on it: pgjdbc re-prepares
-   *                a statement refused by {@code RevalidateCachedQuery} (issue #11838).
-   */
-  private void writeError(final ERROR_SEVERITY severity, final String errorMessage, final String errorCode, final String routine) {
     try {
       final String sev = severity.toString();
 
@@ -4910,7 +4917,6 @@ public class PostgresNetworkExecutor extends Thread {
           1 + errorMessage.getBytes(StandardCharsets.UTF_8).length + 1 +//
           1 + sev.getBytes(StandardCharsets.UTF_8).length + 1 +//
           1 + errorCode.getBytes(StandardCharsets.UTF_8).length + 1 +//
-          (routine != null ? 1 + routine.getBytes(StandardCharsets.UTF_8).length + 1 : 0) +//
           1;
 
       channel.writeByte((byte) 'E');
@@ -4924,11 +4930,6 @@ public class PostgresNetworkExecutor extends Thread {
 
       channel.writeByte((byte) 'C');
       writeString(errorCode);
-
-      if (routine != null) {
-        channel.writeByte((byte) 'R');
-        writeString(routine);
-      }
 
       channel.writeByte((byte) 0);
       channel.flush();
@@ -5711,14 +5712,13 @@ public class PostgresNetworkExecutor extends Thread {
    * @param describing true for a {@code Describe('P')}, which announces the columns it answers with: only the schema can
    *                   name them then ({@link #declaredProjectionColumns}). An Execute announces nothing, and a portal of a
    *                   statement whose layout a Describe was promised for (issue #6725, #9009) has its rows encoded under
-   *                   that layout whichever rows they are, so the layout fixes them too - unless the layout was read off
-   *                   another portal's rows, which these rows must be checked against before any is sent (issue #11838).
+   *                   that layout whichever rows they are, so the layout fixes them too.
    */
   private Map<String, PostgresType> fixedColumnsOf(final PostgresPortal portal, final boolean describing) {
     if (portal.catalogQuery || portal.showName != null || portal.copyStatement != null || portal.promisedNoData()
         || !(portal.sqlStatement instanceof SelectStatement || portal.sqlStatement instanceof MatchStatement))
       return null;
-    if (!describing && portal.columnsDescribed && !portal.columnsFromRows && portal.columns != null && !portal.columns.isEmpty())
+    if (!describing && portal.columnsDescribed && portal.columns != null && !portal.columns.isEmpty())
       return portal.columns;
     return portal.sqlStatement instanceof SelectStatement select ? declaredProjectionColumns(select, resolveQueryTargetType(portal)) : null;
   }

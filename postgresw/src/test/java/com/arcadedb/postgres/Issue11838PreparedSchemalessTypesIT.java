@@ -26,21 +26,17 @@ import java.io.DataOutputStream;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.time.Duration;
 import java.time.LocalDateTime;
-import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.Properties;
 import java.util.UUID;
 
 import static com.arcadedb.postgres.PostgresWireMessages.WireMessage;
-import static com.arcadedb.postgres.PostgresWireMessages.errorFields;
 import static com.arcadedb.postgres.PostgresWireMessages.firstDataRowValue;
 import static com.arcadedb.postgres.PostgresWireMessages.messageTypesOf;
 import static com.arcadedb.postgres.PostgresWireMessages.readUntilReadyForQuery;
@@ -94,60 +90,83 @@ class Issue11838PreparedSchemalessTypesIT extends PostgresWireProtocolTestBase {
   }
 
   @Test
-  void aPortalExecutedUnderAnotherPortalsLayoutIsRefusedWhenItsRowsDoNotFit() throws Exception {
+  void aStatementPreparedWhileItRunsKeepsOneLayoutForRowsOfAnyType() throws Exception {
     createRecords();
     withConnection((out, in) -> {
+      // pgjdbc from its prepareThreshold-th execution, Npgsql's auto-prepare and node-postgres: the statement is parsed in the
+      // exchange that first runs it, and pgjdbc and Npgsql decode every later execution with the RowDescription of that first
+      // portal, so that description must hold for whatever rows a later portal returns
       sendParse(out, "S1", QUERY);
+      sendBind(out, "", "S1", "bool");
+      sendDescribe(out, 'P', "");
+      sendExecute(out, "");
       sendSync(out);
-      readUntilReadyForQuery(in);
-      // pgjdbc's first server-side execution: described through the portal, the layout kept for the statement
-      assertThat(columnTypeOid(describeAndExecute(out, in, "S1", "int"))).isEqualTo(PostgresType.INTEGER.code);
+      List<WireMessage> messages = readUntilReadyForQuery(in);
+      assertThat(messageTypesOf(messages)).containsExactly('1', '2', 'T', 'D', 'C', 'Z');
+      assertThat(columnTypeOid(messages)).isEqualTo(PostgresType.VARCHAR.code);
+      assertThat(firstDataRowValue(messages)).isEqualTo("t");
 
-      // a row of the same type is sent under the kept layout
-      List<WireMessage> messages = executeWithoutDescribe(out, in, "int");
+      // later executions without a Describe of their own, rows of other types included: never refused (a 0A000 here failed
+      // Npgsql, which does not prepare again), each value sent as the text the layout announced
+      for (int round = 0; round < 2; round++)
+        for (final String[] expected : new String[][] { { "int", "42" }, { "double", "2.5" }, { "bool", "t" } }) {
+          messages = executeWithoutDescribe(out, in, expected[0]);
+          assertThat(messageTypesOf(messages)).as(expected[0]).containsExactly('2', 'D', 'C', 'Z');
+          assertThat(firstDataRowValue(messages)).as(expected[0]).isEqualTo(expected[1]);
+        }
+      messages = executeWithoutDescribe(out, in, "list");
       assertThat(messageTypesOf(messages)).containsExactly('2', 'D', 'C', 'Z');
-      assertThat(firstDataRowValue(messages)).isEqualTo("42");
 
-      // a bool is not an int4: refused as PostgreSQL refuses a cached plan whose result type changed, which pgjdbc heals by
-      // preparing the statement again
-      messages = executeWithoutDescribe(out, in, "bool");
-      assertThat(messageTypesOf(messages)).containsExactly('2', 'E', 'Z');
-      final Map<Character, String> error = errorFields(messages.get(1));
-      assertThat(error.get('C')).isEqualTo("0A000");
-      assertThat(error.get('R')).isEqualTo("RevalidateCachedQuery");
-      assertThat(error.get('M')).isEqualTo("cached plan must not change result type");
-
-      // a portal described itself is answered from its own rows, whatever the statement kept
-      assertThat(columnTypeOid(describeAndExecute(out, in, "S1", "bool"))).isEqualTo(PostgresType.BOOLEAN.code);
+      // a later portal described all the same is answered with the same layout: such a statement keeps one for life
+      assertThat(columnTypeOid(describeAndExecute(out, in, "S1", "int"))).isEqualTo(PostgresType.VARCHAR.code);
     });
   }
 
   @Test
-  void jdbcKeepsTheTypesOnceItPreparesTheStatement() throws Exception {
+  void aStatementDescribedBeforeItRunsKeepsThatLayoutForRowsOfAnyType() throws Exception {
     createRecords();
-    try (final Connection connection = openJdbcConnection();
-        final PreparedStatement select = connection.prepareStatement("SELECT v FROM " + TYPE + " WHERE name = ?")) {
-      // the same value 8 times: executions 1-4 unnamed, the 5th described and prepared on the server, 6-8 reuse its layout
-      for (final String name : NAMES) {
-        final List<Object> values = new ArrayList<>();
-        for (int i = 0; i < 8; i++)
-          values.add(selectValue(select, name));
-        for (final Object value : values)
-          assertThat(value).as(name).isInstanceOf(values.getFirst().getClass()).isEqualTo(values.getFirst());
-      }
-      assertThat(selectValue(select, "bool")).isEqualTo(true);
-      assertThat(selectValue(select, "int")).isEqualTo(42);
-      assertThat(selectValue(select, "double")).isEqualTo(2.5);
-      assertThat(selectValue(select, "list")).isEqualTo(List.of(1, 2, 3));
+    withConnection((out, in) -> {
+      // pgx (QueryExecModeCacheStatement), Npgsql's Prepare() and asyncpg: Parse and Describe('S') once, then Bind and Execute
+      // with no Describe, every execution decoded with the statement's description. The parameter is unbound when it is
+      // described, so nothing tells which record, of which type, an execution will read: the description holds for all
+      sendParse(out, "S2", QUERY);
+      sendDescribe(out, 'S', "S2");
+      sendSync(out);
+      List<WireMessage> messages = readUntilReadyForQuery(in);
+      assertThat(messageTypesOf(messages)).containsExactly('1', 't', 'T', 'Z');
+      assertThat(columnTypeOid(messages)).isEqualTo(PostgresType.VARCHAR.code);
 
-      // a prepared statement whose rows change type from one execution to the next: each is read as its own type
-      for (int i = 0; i < 3; i++) {
-        assertThat(selectValue(select, "bool")).isEqualTo(true);
-        assertThat(selectValue(select, "int")).isEqualTo(42);
-        assertThat(selectValue(select, "double")).isEqualTo(2.5);
-        assertThat(selectValue(select, "list")).isEqualTo(List.of(1, 2, 3));
+      for (final String[] expected : new String[][] { { "bool", "t" }, { "int", "42" }, { "double", "2.5" }, { "bool", "t" } }) {
+        sendBind(out, "", "S2", expected[0]);
+        sendExecute(out, "");
+        sendSync(out);
+        messages = readUntilReadyForQuery(in);
+        assertThat(messageTypesOf(messages)).as(expected[0]).containsExactly('2', 'D', 'C', 'Z');
+        assertThat(firstDataRowValue(messages)).as(expected[0]).isEqualTo(expected[1]);
       }
-    }
+
+      // pgconn.ExecPrepared and libpq's PQexecPrepared describe every portal of it: each one is answered from its own rows
+      assertThat(columnTypeOid(describeAndExecute(out, in, "S2", "int"))).isEqualTo(PostgresType.INTEGER.code);
+      assertThat(columnTypeOid(describeAndExecute(out, in, "S2", "bool"))).isEqualTo(PostgresType.BOOLEAN.code);
+    });
+  }
+
+  @Test
+  void jdbcNeverFailsWhenAPreparedStatementsRowsChangeType() throws Exception {
+    createRecords();
+    for (final boolean autoCommit : new boolean[] { true, false })
+      try (final Connection connection = openJdbcConnection();
+          final PreparedStatement select = connection.prepareStatement("SELECT v FROM " + TYPE + " WHERE name = ?")) {
+        // inside a transaction block pgjdbc cannot prepare a statement again after a 0A000, which it heals only in autocommit
+        connection.setAutoCommit(autoCommit);
+        // executions 1-4 unnamed, the 5th prepared on the server and described, 6+ decoded with that description
+        for (int i = 0; i < 8; i++)
+          for (final String[] expected : new String[][] { { "bool", "t" }, { "int", "42" }, { "double", "2.5" } })
+            assertThat(selectString(select, expected[0])).as(expected[0] + " execution " + (i + 1) + " autocommit " + autoCommit)
+                .isEqualTo(expected[1]);
+        if (!autoCommit)
+          connection.commit();
+      }
   }
 
   @Test
@@ -197,12 +216,11 @@ class Issue11838PreparedSchemalessTypesIT extends PostgresWireProtocolTestBase {
     });
   }
 
-  private static Object selectValue(final PreparedStatement select, final String name) throws Exception {
+  private static String selectString(final PreparedStatement select, final String name) throws Exception {
     select.setString(1, name);
     try (final ResultSet resultSet = select.executeQuery()) {
       assertThat(resultSet.next()).isTrue();
-      final Object value = resultSet.getObject(1);
-      return value instanceof java.sql.Array array ? List.of((Object[]) array.getArray()) : value;
+      return resultSet.getString(1);
     }
   }
 

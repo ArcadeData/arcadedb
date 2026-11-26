@@ -27,9 +27,14 @@ package e2e_go
 //
 // pgx prepares on the server from the FIRST execution in its default mode
 // (QueryExecModeCacheStatement): Parse + Describe('S') once, then Bind + Execute,
-// with no Describe of the portal while the statement description has fields. Its
-// low-level pgconn.ExecPrepared, like libpq's PQexecPrepared, sends Bind +
-// Describe('P') + Execute on every execution. Both paths are covered below.
+// with no Describe of the portal while the statement description has fields, so
+// every execution is decoded with the statement's description. The parameter is
+// unbound when it is described, and v holds a bool in one record and an int, a
+// float or a list in the others: no type but text holds for every execution, so
+// the statement keeps that layout, as on main, and never fails. Its low-level
+// pgconn.ExecPrepared, like libpq's PQexecPrepared, sends Bind + Describe('P') +
+// Execute on every execution, and each portal is described from its own rows.
+// Both paths are covered below.
 
 import (
 	"encoding/hex"
@@ -60,6 +65,7 @@ const (
 	oidInt4Array = 1007
 	oidInt8Array = 1016
 	oidUUID      = 2950
+	oidVarchar   = 1043
 )
 
 var pg11838Names = []string{"bool", "int", "double", "list"}
@@ -191,10 +197,11 @@ func TestPostgres_Issue11838_PreparedSchemalessTypes(t *testing.T) {
 
 	// pgx's default: the statement is prepared on the server at its first execution and its
 	// description, from Describe('S'), is what every later execution's rows are decoded with
-	t.Run("CacheStatement", func(t *testing.T) {
+	t.Run("CacheStatementKeepsOneLayout", func(t *testing.T) {
 		conn := connectPg(t, config, pgx.QueryExecModeCacheStatement)
-		for _, name := range pg11838Names {
-			for execution := 1; execution <= pg11838Rounds; execution++ {
+		text := map[string]string{"bool": "t", "int": "42", "double": "2.5", "list": "{1,2,3}"}
+		for execution := 1; execution <= pg11838Rounds; execution++ {
+			for _, name := range pg11838Names {
 				rows, err := conn.Query(ctx, pg11838Query, name)
 				if err != nil {
 					t.Fatalf("%s execution %d: %v", name, execution, err)
@@ -216,8 +223,8 @@ func TestPostgres_Issue11838_PreparedSchemalessTypes(t *testing.T) {
 				if count != 1 {
 					t.Fatalf("%s execution %d: %d rows", name, execution, count)
 				}
-				if !checkNative(t, name, execution, oid, values[0]) {
-					break
+				if oid != oidVarchar || values[0] != text[name] {
+					t.Fatalf("%s execution %d: got %#v (%T) under OID %d, want %q under varchar", name, execution, values[0], values[0], oid, text[name])
 				}
 			}
 		}

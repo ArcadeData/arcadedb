@@ -29,10 +29,13 @@ namespace ArcadeDB.E2ETests;
 /// as "2.5" and [1, 2, 3] as {"1", "2", "3"}, where the same statement unprepared returned typed values. A uuid parameter
 /// (OID 2950) could not be bound at all.
 /// <para>
-/// Npgsql prepares on the server only when asked: explicitly through <c>Prepare()</c>, or by auto-preparation once a
-/// statement has been used <c>Auto Prepare Min Usages</c> times (5 by default: the 5th execution is the first prepared one). Either way it
-/// sends Parse + Describe('S') once and then Bind + Execute, decoding every later execution's rows with the statement's
-/// description.
+/// Npgsql prepares on the server only when asked: explicitly through <c>Prepare()</c> (Parse + Describe('S')), or by
+/// auto-preparation once a statement has been used <c>Auto Prepare Min Usages</c> times (Parse + Bind + Describe('P') +
+/// Execute at the 5th execution). Either way it then sends Bind + Execute only, decoding every later execution's rows with
+/// the description it got when it prepared, and it does not prepare again after a 0A000. The statement below reads a
+/// schemaless property that holds a bool, an int, a float or a list depending on the record, so no type but text holds for
+/// every execution: a prepared statement keeps that layout, as on main, and never fails. Unprepared executions are
+/// described from their own rows and return native values.
 /// </para>
 /// </summary>
 [Collection("ArcadeDB")]
@@ -101,17 +104,33 @@ public class PostgresPreparedTypesE2ETests
         }
     }
 
-    private static async Task ReadAndAssertAsync(NpgsqlCommand select, string name, int execution)
+    // what a column described as text carries for each value: the text the unprepared statement's value prints as
+    private static readonly Dictionary<string, string> Text = new()
+    {
+        ["bool"] = "t", ["int"] = "42", ["double"] = "2.5", ["list"] = "{1,2,3}",
+    };
+
+    private static void AssertText(string name, int execution, NpgsqlDataReader reader)
+    {
+        var value = reader.GetValue(0);
+        var where = $"{name} execution {execution}: column {reader.GetDataTypeName(0)}, value {value} ({value.GetType().Name})";
+        Assert.True(reader.GetDataTypeName(0) == "character varying" && value is string text && text == Text[name], where);
+    }
+
+    private static async Task ReadAndAssertAsync(NpgsqlCommand select, string name, int execution, bool prepared)
     {
         select.Parameters[0].Value = name;
         await using var reader = await select.ExecuteReaderAsync();
         Assert.True(await reader.ReadAsync(), $"{name} execution {execution}: no row");
-        AssertNative(name, execution, reader);
+        if (prepared)
+            AssertText(name, execution, reader);
+        else
+            AssertNative(name, execution, reader);
         Assert.False(await reader.ReadAsync(), $"{name} execution {execution}: more than one row");
     }
 
     [Fact]
-    public async Task ExplicitlyPreparedStatementKeepsNativeTypes()
+    public async Task ExplicitlyPreparedStatementKeepsOneLayout()
     {
         await SeedAsync();
         await using var conn = await _fixture.DataSource.OpenConnectionAsync();
@@ -123,24 +142,26 @@ public class PostgresPreparedTypesE2ETests
         // one server-prepared statement serving rows of a different type on each execution
         for (var execution = 1; execution <= Rounds; execution++)
             foreach (var name in Names)
-                await ReadAndAssertAsync(select, name, execution);
+                await ReadAndAssertAsync(select, name, execution, prepared: true);
     }
 
     [Fact]
-    public async Task AutoPreparedStatementKeepsNativeTypesPastTheThreshold()
+    public async Task AutoPreparedStatementNeverFailsPastTheThreshold()
     {
         await SeedAsync();
         var builder = new NpgsqlConnectionStringBuilder(_fixture.ConnectionString) { MaxAutoPrepare = 10, AutoPrepareMinUsages = 5 };
         await using var dataSource = NpgsqlDataSource.Create(builder.ConnectionString);
         await using var conn = await dataSource.OpenConnectionAsync();
 
+        // executions 1-4 of the first value unprepared, from the 5th on auto-prepared on the server: the statement is prepared
+        // for the connection, so the values after the first one only ever run prepared, under the layout of the bool rows
+        var executions = 0;
         foreach (var name in Names)
         {
             await using var select = new NpgsqlCommand(Query, conn);
             select.Parameters.Add(new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Text });
-            // executions 1-4 unprepared, 5-8 auto-prepared on the server
             for (var execution = 1; execution <= Rounds; execution++)
-                await ReadAndAssertAsync(select, name, execution);
+                await ReadAndAssertAsync(select, name, execution, prepared: ++executions >= 5);
         }
     }
 
