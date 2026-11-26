@@ -533,12 +533,18 @@ public class MembershipSecuritySeeder implements AutoCloseable {
     }
     try {
       final List<String> failed = seed.seed(retryBudgetMs.getAsLong());
+      // What the outcome owes or pays is settled BEFORE the future is completed too (issue #13447): a caller that
+      // sees the seed done must also see whether it is still owed. The peers are read first and outside this
+      // monitor, because that reads the capability registry.
+      final boolean committed = failed.isEmpty();
+      final List<String> withholding = committed ? List.of() : peersWithholdingSecurityEntries();
+      final boolean wasOwed = committed && settleOwedSeed();
+      final Owed owed = committed ? null : oweSeed(reason);
       // Recorded BEFORE the future is completed: a caller that sees the outstanding seed done must also see
       // the result it is allowed to reuse, or it installs a second seed for work that just finished.
       recordCompletion(result);
       result.complete(List.copyOf(failed));
-      if (failed.isEmpty()) {
-        final boolean wasOwed = settleOwedSeed();
+      if (committed) {
         // "Committed", not "the peer now holds them": what the submit waits for is a Raft commit, which a
         // quorum satisfies. The joining peer applies the entries when it catches up, and nothing here observes
         // that - claiming otherwise in a log line an operator reads would be claiming more than was checked.
@@ -546,9 +552,6 @@ public class MembershipSecuritySeeder implements AutoCloseable {
             "Cluster security documents committed; the seed was run for %s%s", reason,
             wasOwed ? ". That also pays the seed that could not commit earlier (issue #13447)" : "");
       } else {
-        // Read before the seed is recorded as owed and outside this monitor: it reads the capability registry.
-        final List<String> withholding = peersWithholdingSecurityEntries();
-        final Owed owed = oweSeed(reason);
         // SEVERE when the seed becomes owed and when it is given up on; a WARNING in between, where the node that
         // asked is retrying and each of its attempts fails here for the reason the first line already gave.
         LogManager.instance().log(this, owed == Owed.STILL ? Level.WARNING : Level.SEVERE,
@@ -700,10 +703,25 @@ public class MembershipSecuritySeeder implements AutoCloseable {
     }
 
     final int rerun;
+    final boolean spent;
     synchronized (this) {
       if (!reason.equals(owedSeedReason) || closed)
         return false;
-      rerun = ++owedSeedReruns;
+      // Checked here as well as in oweSeed: a re-run that THROWS reports no documents, so it never reaches oweSeed
+      // and would otherwise be started again on every capability round.
+      spent = owedSeedReruns >= OWED_SEED_RERUNS;
+      if (spent) {
+        owedSeedReason = null;
+        owedSeedReruns = 0;
+        rerun = 0;
+      } else
+        rerun = ++owedSeedReruns;
+    }
+    if (spent) {
+      LogManager.instance().log(this, Level.SEVERE,
+          "The security seed for %s could not be run to the end in %d re-runs and is not run again. %s", reason,
+          OWED_SEED_RERUNS, remedyOf(false));
+      return false;
     }
     LogManager.instance().log(this, Level.INFO,
         "Every peer advertises the security entry capabilities: running again the security seed for %s, which "

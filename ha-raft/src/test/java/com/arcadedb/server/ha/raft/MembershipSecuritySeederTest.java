@@ -855,6 +855,25 @@ class MembershipSecuritySeederTest {
     assertThat(seeder.owedSeedReasonForTest()).as("dropped once the re-runs are spent").isNull();
   }
 
+  // Regression for #13447: the re-runs of an owed seed are bounded when they throw
+  /** A re-run that throws reports no documents, so it must be counted where it is started, not where it fails. */
+  @Test
+  void theReRunsOfAnOwedSeedAreBoundedWhenTheyThrow() {
+    final RecordingSeed seed = new RecordingSeed();
+    final MembershipSecuritySeeder seeder = seeder(seed, new AtomicBoolean(true), new Withholding());
+    seed.failures = List.of("groups");
+    seeder.seedNowAndReport("a catch-up", 1_000L, false);
+
+    seed.blowUp = new IllegalStateException("this node has no security store to seed the joining peer from");
+    int reruns = 0;
+    while (seeder.rerunOwedSeedIfDue())
+      assertThat(++reruns).as("the re-runs must end").isLessThanOrEqualTo(MembershipSecuritySeeder.OWED_SEED_RERUNS);
+
+    assertThat(reruns).isEqualTo(MembershipSecuritySeeder.OWED_SEED_RERUNS);
+    assertThat(seed.calls()).isEqualTo(1 + MembershipSecuritySeeder.OWED_SEED_RERUNS);
+    assertThat(seeder.owedSeedReasonForTest()).as("dropped once the re-runs are spent").isNull();
+  }
+
   // Regression for #13447: a node that no longer leads drops the seed it owed
   /**
    * A seed publishes the leader's documents. A node that lost the leadership must not publish its own later, when it
