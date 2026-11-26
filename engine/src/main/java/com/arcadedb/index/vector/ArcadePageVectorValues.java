@@ -364,7 +364,7 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
         if (forScoring) {
           final VectorFloat<?> scored = readQuantizedForScoring(offsetAndFlag);
           if (scored != null) {
-            cache(vectorId, scored);
+            cache(vectorId, scored, true);
             return scored;
           }
         }
