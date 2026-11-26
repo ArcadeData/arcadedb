@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -137,6 +138,33 @@ class CypherLabelWriteUniqueConstraintIssue13477Test extends TestHelper {
     assertRefusedAsDuplicate("MATCH (b:Other {name:'b'}) CREATE (b)-[:LINK {key:'out'}]->(b)");
   }
 
+  /**
+   * The rewrite now deletes the original before it saves the copy, so a copy refused by a UNIQUE index of the NEW label fails
+   * after the delete. The refused statement must still leave nothing behind: the original vertex and its edge are rolled
+   * back into place, under the old label, in an auto-commit statement and in an explicit transaction alike.
+   */
+  @Test
+  void labelWriteRefusedByAUniqueIndexOfTheNewLabelLeavesTheOriginalInPlace() {
+    database.command("opencypher", "CREATE CONSTRAINT IF NOT EXISTS FOR (n:Container) REQUIRE n.code IS UNIQUE");
+    database.command("opencypher", "CREATE (:Container {code:'taken'})");
+    database.command("opencypher", "CREATE (:Item {id:'item-0', v:0, code:'taken'})-[:LINK {key:'out'}]->(:Other {name:'b'})");
+
+    assertRefusedAsDuplicate("MATCH (i:Item {id:'item-0'}) SET i:Container");
+    assertOriginalStillInPlace();
+
+    assertRefusedAsDuplicate(() -> database.transaction(
+        () -> database.command("opencypher", "MATCH (i:Item {id:'item-0'}) SET i.v = 1, i:Container")));
+    assertOriginalStillInPlace();
+  }
+
+  private void assertOriginalStillInPlace() {
+    assertThat(count("MATCH (i:Item {id:'item-0', v:0})-[:LINK {key:'out'}]->(:Other {name:'b'}) RETURN count(i) AS c"))
+        .isEqualTo(1L);
+    assertThat(count("MATCH (i:Item) RETURN count(i) AS c")).isEqualTo(1L);
+    assertThat(count("MATCH (c:Container) RETURN count(c) AS c")).isEqualTo(1L);
+    assertThat(count("MATCH ()-[r:LINK]->() RETURN count(r) AS c")).isEqualTo(1L);
+  }
+
   private void assertItemsAreContainers(final Map<String, Long> expected) {
     final List<String> rows = new ArrayList<>();
     try (final ResultSet rs = database.query("opencypher", "MATCH (i:Item) RETURN i.id AS id, i.v AS v, labels(i) AS labels")) {
@@ -159,7 +187,11 @@ class CypherLabelWriteUniqueConstraintIssue13477Test extends TestHelper {
   }
 
   private void assertRefusedAsDuplicate(final String statement) {
-    assertThatThrownBy(() -> database.command("opencypher", statement)).satisfies(e -> {
+    assertRefusedAsDuplicate(() -> database.command("opencypher", statement));
+  }
+
+  private void assertRefusedAsDuplicate(final ThrowingCallable write) {
+    assertThatThrownBy(write).satisfies(e -> {
       Throwable cause = e;
       while (cause != null && !(cause instanceof DuplicatedKeyException))
         cause = cause.getCause();
