@@ -443,6 +443,40 @@ class BenchMainTest {
     }
   }
 
+  @Test
+  void aWorkloadWithNoCaseAtTheScaleStartsNoServer() throws Exception {
+    // "empty" measures nothing at XS: no container is started and stopped for it, and it records nothing
+    final List<Workload> registry = List.of(new Fake("alpha", List.of("a1")), new Workload() {
+      @Override
+      public String name() {
+        return "empty";
+      }
+
+      @Override
+      public List<String> cases() {
+        return List.of("e1");
+      }
+
+      @Override
+      public List<String> cases(final Scale scale) {
+        return List.of();
+      }
+
+      @Override
+      public void prepare(final WorkloadContext ctx, final String caseName) {
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) {
+        return new Measurement(List.of());
+      }
+    }, new Fake("beta", List.of("b1")));
+    final DyingServers servers = new DyingServers();
+    assertThat(runAll(registry, servers, tmp)).isZero();
+    assertThat(servers.starts).isEqualTo(2);
+    assertThat(onlyRunFile(tmp).results()).extracting(CaseResult::caseName).containsExactly("a1", "b1");
+  }
+
   /** Counts server starts and answers each liveness check from a script, one entry per call (null = alive). */
   private static final class DyingServers implements BenchMain.ServerFactory {
     final List<String>  reasons;

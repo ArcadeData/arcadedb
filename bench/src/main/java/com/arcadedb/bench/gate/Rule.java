@@ -34,10 +34,16 @@ final class Rule {
   private Rule() {
   }
 
+  /**
+   * The smallest absolute move of a metric of this unit that can be news. Infinite for the informational units {@code flag} (a
+   * 0/1 state such as the ramp's {@code ceiling_reached}) and {@code steps} (how many steps a ramp ran, which grows with the
+   * knee): they are recorded and plotted, never judged.
+   */
   static double absoluteFloor(final String unit) {
     if (unit == null)
       return 0;
     return switch (unit) {
+      case "flag", "steps" -> Double.POSITIVE_INFINITY;
       case "ms" -> MS_FLOOR;
       case "s" -> S_FLOOR;
       case "bytes" -> BYTE_FLOOR;
