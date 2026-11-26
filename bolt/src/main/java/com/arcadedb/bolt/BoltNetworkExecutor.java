@@ -824,11 +824,23 @@ public class BoltNetworkExecutor extends Thread {
    * whatever the client left open has to go regardless of how many streams there were.
    */
   private void closeAllStreams(final String phase) {
-    for (final BoltQueryStream stream : openStreams.values())
-      stream.close(this, phase);
+    // Every stream is closed, whatever one of them raises: the first Error is held and thrown once none is left open
+    Error pending = null;
+    for (final BoltQueryStream stream : openStreams.values()) {
+      try {
+        stream.close(this, phase);
+      } catch (final Error e) {
+        if (pending == null)
+          pending = e;
+        else
+          pending.addSuppressed(e);
+      }
+    }
     openStreams.clear();
     currentStream = null;
     nextQid = 0;
+    if (pending != null)
+      throw pending;
   }
 
   /**
@@ -2663,26 +2675,31 @@ public class BoltNetworkExecutor extends Thread {
    * Cleanup resources when connection closes.
    */
   private void cleanup() {
-    closeAllStreams("connection close");
-    rollbackExplicitTransaction();
-
-    // Database is managed by the server - just release our reference
-    // DO NOT close the shared database instance
-    database = null;
-
     try {
-      socket.close();
-    } catch (final Exception e) {
-      // Ignore
-    }
+      try {
+        closeAllStreams("connection close");
+      } finally {
+        rollbackExplicitTransaction();
+      }
+    } finally {
+      // Database is managed by the server - just release our reference
+      // DO NOT close the shared database instance
+      database = null;
 
-    // Notify listener that this connection is closed
-    if (listener != null) {
-      listener.removeConnection(this);
-    }
+      try {
+        socket.close();
+      } catch (final Exception e) {
+        // Ignore
+      }
 
-    if (debug) {
-      LogManager.instance().log(this, Level.FINE, "BOLT connection closed");
+      // Notify listener that this connection is closed
+      if (listener != null) {
+        listener.removeConnection(this);
+      }
+
+      if (debug) {
+        LogManager.instance().log(this, Level.FINE, "BOLT connection closed");
+      }
     }
   }
 
