@@ -35,6 +35,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNoException;
@@ -742,5 +743,190 @@ class MembershipSecuritySeederTest {
 
       assertThat(catchUp.getCoalescedRequests()).isEqualTo(2);
     }
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // Issue #13447: a seed that could not commit is owed, and run again once the gate lets it through
+  // -------------------------------------------------------------------------------------------
+
+  /** The peers the capability gate is refusing for, as the test moves them. */
+  private static final class Withholding implements Supplier<List<String>> {
+    volatile List<String> peers = List.of();
+
+    @Override
+    public List<String> get() {
+      return peers;
+    }
+  }
+
+  private MembershipSecuritySeeder seeder(final RecordingSeed seed, final AtomicBoolean leader,
+      final Withholding withholding) {
+    return new MembershipSecuritySeeder(leader::get, () -> BUDGET_MS, seed, withholding, SAME_THREAD);
+  }
+
+  // Regression for #13447: a seed the capability gate refused is run again once the peer advertises
+  /**
+   * The reported case. A rolling restart: {@code arcadedb-1} rejoins and asks for a seed while {@code arcadedb-0} is
+   * still booting, so the capability gate refuses the group and API-token entries and the seed's retry budget runs out.
+   * {@code arcadedb-0} advertises its capabilities 25 s later, and nothing ran the seed again: the node kept its stale
+   * groups and tokens for two days. The seed is now owed, and run again at the capability round that finds no peer
+   * withholding.
+   */
+  @Test
+  void aSeedTheCapabilityGateRefusedIsRunAgainOnceThePeerAdvertises() {
+    final RecordingSeed seed = new RecordingSeed();
+    final Withholding withholding = new Withholding();
+    final MembershipSecuritySeeder seeder = seeder(seed, new AtomicBoolean(true), withholding);
+
+    withholding.peers = List.of("arcadedb-0");
+    seed.failures = List.of("groups", "API tokens");
+    assertThat(seeder.seedNowAndReport("arcadedb-1 rejoining the cluster as an existing member", 1_000L, false))
+        .containsExactly("groups", "API tokens");
+    assertThat(seed.calls()).isEqualTo(1);
+    assertThat(seeder.owedSeedReasonForTest()).isEqualTo("arcadedb-1 rejoining the cluster as an existing member");
+
+    assertThat(seeder.rerunOwedSeedIfDue()).as("arcadedb-0 is still booting: the gate would refuse again").isFalse();
+    assertThat(seed.calls()).as("no seed is spent probing a peer that is still down").isEqualTo(1);
+    assertThat(seeder.owedSeedReasonForTest()).as("and it stays owed").isNotNull();
+
+    withholding.peers = List.of();
+    seed.failures = List.of();
+    assertThat(seeder.rerunOwedSeedIfDue()).as("every peer advertises: the owed seed is run again").isTrue();
+    assertThat(seed.calls()).isEqualTo(2);
+    assertThat(seeder.lastRunReasonForTest()).as("under the reason of the seed it pays")
+        .isEqualTo("arcadedb-1 rejoining the cluster as an existing member");
+    assertThat(seeder.owedSeedReasonForTest()).as("it committed, so nothing is owed").isNull();
+
+    assertThat(seeder.rerunOwedSeedIfDue()).as("a paid seed is not run a third time").isFalse();
+    assertThat(seed.calls()).isEqualTo(2);
+  }
+
+  // Regression for #13447: a seed that committed owes nothing
+  @Test
+  void aSeedThatCommittedOwesNothing() {
+    final RecordingSeed seed = new RecordingSeed();
+    final MembershipSecuritySeeder seeder = seeder(seed, new AtomicBoolean(true), new Withholding());
+
+    assertThat(seeder.seedNowAndReport("an admission", 1_000L, false)).isEmpty();
+
+    assertThat(seeder.owedSeedReasonForTest()).isNull();
+    assertThat(seeder.rerunOwedSeedIfDue()).isFalse();
+    assertThat(seed.calls()).isEqualTo(1);
+  }
+
+  // Regression for #13447: any seed that commits pays the one that was owed
+  /** A seed carries the documents as they are when it runs, so the next one that commits covers the one that failed. */
+  @Test
+  void anySeedThatCommitsPaysTheOneThatWasOwed() {
+    final RecordingSeed seed = new RecordingSeed();
+    final MembershipSecuritySeeder seeder = seeder(seed, new AtomicBoolean(true), new Withholding());
+
+    seed.failures = List.of("groups");
+    seeder.seedNowAndReport("a catch-up", 1_000L, false);
+    assertThat(seeder.owedSeedReasonForTest()).isEqualTo("a catch-up");
+
+    seed.failures = List.of();
+    seeder.seedNowAndReport("the retry of that catch-up", 1_000L, false);
+
+    assertThat(seeder.owedSeedReasonForTest()).isNull();
+    assertThat(seeder.rerunOwedSeedIfDue()).isFalse();
+    assertThat(seed.calls()).isEqualTo(2);
+  }
+
+  // Regression for #13447: the re-runs of an owed seed are bounded
+  /**
+   * A re-run starts only when no peer withholds a capability, so one that fails again failed for another reason. It is
+   * tried {@link MembershipSecuritySeeder#OWED_SEED_RERUNS} times and then left to an operator, rather than run on every
+   * capability round of a cluster that cannot commit.
+   */
+  @Test
+  void theReRunsOfAnOwedSeedAreBounded() {
+    final RecordingSeed seed = new RecordingSeed();
+    final MembershipSecuritySeeder seeder = seeder(seed, new AtomicBoolean(true), new Withholding());
+    seed.failures = List.of("users", "groups", "API tokens");
+
+    seeder.seedNowAndReport("a catch-up", 1_000L, false);
+    int reruns = 0;
+    while (seeder.rerunOwedSeedIfDue())
+      assertThat(++reruns).as("the re-runs must end").isLessThanOrEqualTo(MembershipSecuritySeeder.OWED_SEED_RERUNS);
+
+    assertThat(reruns).isEqualTo(MembershipSecuritySeeder.OWED_SEED_RERUNS);
+    assertThat(seed.calls()).isEqualTo(1 + MembershipSecuritySeeder.OWED_SEED_RERUNS);
+    assertThat(seeder.owedSeedReasonForTest()).as("dropped once the re-runs are spent").isNull();
+  }
+
+  // Regression for #13447: a node that no longer leads drops the seed it owed
+  /**
+   * A seed publishes the leader's documents. A node that lost the leadership must not publish its own later, when it
+   * may lead again: the node the seed was for asks the new leader itself.
+   */
+  @Test
+  void aNodeThatNoLongerLeadsDropsTheSeedItOwed() {
+    final RecordingSeed seed = new RecordingSeed();
+    final AtomicBoolean leader = new AtomicBoolean(true);
+    final MembershipSecuritySeeder seeder = seeder(seed, leader, new Withholding());
+    seed.failures = List.of("groups");
+    seeder.seedNowAndReport("a catch-up", 1_000L, false);
+
+    leader.set(false);
+    assertThat(seeder.rerunOwedSeedIfDue()).isFalse();
+    assertThat(seeder.owedSeedReasonForTest()).isNull();
+
+    leader.set(true);
+    assertThat(seeder.rerunOwedSeedIfDue()).as("regaining the leadership does not bring it back").isFalse();
+    assertThat(seed.calls()).isEqualTo(1);
+  }
+
+  // Regression for #13447: an owed seed is not run again while one is outstanding
+  @Test
+  void anOwedSeedIsNotRunAgainWhileOneIsOutstanding() throws Exception {
+    final CountDownLatch secondStarted = new CountDownLatch(1);
+    final CountDownLatch release = new CountDownLatch(1);
+    final AtomicInteger calls = new AtomicInteger();
+    final MembershipSecuritySeeder.SecuritySeed seed = budget -> {
+      if (calls.incrementAndGet() == 1)
+        return List.of("groups");
+      secondStarted.countDown();
+      try {
+        release.await(TIMEOUT_MS, TimeUnit.MILLISECONDS);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+      return List.of();
+    };
+    final MembershipSecuritySeeder seeder = new MembershipSecuritySeeder(() -> true, () -> 1_000L, seed);
+    try {
+      assertThat(seeder.seedNowAndReport("a catch-up", TIMEOUT_MS, false)).containsExactly("groups");
+
+      final CompletableFuture<List<String>> outstanding = seeder.scheduleForTest("the catch-up asking again");
+      assertThat(secondStarted.await(TIMEOUT_MS, TimeUnit.MILLISECONDS)).isTrue();
+      assertThat(seeder.rerunOwedSeedIfDue()).as("the seed in flight decides whether anything is still owed").isFalse();
+
+      release.countDown();
+      assertThat(outstanding.get(TIMEOUT_MS, TimeUnit.MILLISECONDS)).isEmpty();
+      assertThat(seeder.owedSeedReasonForTest()).isNull();
+      assertThat(calls.get()).isEqualTo(2);
+    } finally {
+      release.countDown();
+      seeder.close();
+    }
+  }
+
+  // Regression for #13447: the failure names the peer the gate waited for, and promises only what happens
+  /**
+   * The line used to blame "the peer that just joined" and say the refusal "clears itself once the peer answers". The
+   * peer was another one, restarting, and nothing ran the seed again.
+   */
+  @Test
+  void theFailureNamesThePeerTheGateWaitedForAndPromisesOnlyWhatHappens() {
+    assertThat(MembershipSecuritySeeder.causeOf(List.of("arcadedb-0")))
+        .contains("[arcadedb-0]").contains("issue #7511").contains("need not be the node this seed was for")
+        .doesNotContain("just joined").doesNotContain("clears itself");
+    assertThat(MembershipSecuritySeeder.causeOf(List.of()))
+        .contains("no quorum").contains("arcadedb.ha.securitySeedRetryTimeout").doesNotContain("Peer(s)");
+
+    assertThat(MembershipSecuritySeeder.remedyOf(true)).contains("runs the seed again").contains("any other member");
+    assertThat(MembershipSecuritySeeder.remedyOf(false)).contains("stops here").contains("any other member")
+        .doesNotContain("runs the seed again");
   }
 }
