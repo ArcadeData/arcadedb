@@ -483,6 +483,45 @@ public class FunctionCall extends SimpleNode {
   }
 
   /**
+   * Whether this is a call to a built-in, not an aggregate, whose every argument is a literal or a parameter: the shape a condition
+   * may evaluate once per execution, when the function says so for the values of that execution
+   * ({@link #isConstantForArguments(CommandContext)}, issue #13523). Decided from the shape and the built-in registry alone, as
+   * {@link #isFoldable()} is, so a node asks it once.
+   */
+  boolean isCallOverConstants() {
+    if (distinct || isGraphFunction())
+      return false;
+
+    for (final Expression param : params)
+      if (param == null || !param.isLiteral(true))
+        return false;
+
+    try {
+      if (DefaultSQLFunctionFactory.getInstance().getFunctionInstance(name.getStringValue().toLowerCase(Locale.ENGLISH)) == null)
+        return false;
+    } catch (final CommandExecutionException e) {
+      return false;
+    }
+    return !isAggregateCall();
+  }
+
+  /**
+   * Whether this call, with the values its arguments have in the execution {@code context} runs, answers the same value for every
+   * record of that execution ({@link SQLFunction#isConstantForArguments(Object[])}). Meant for a call
+   * {@link #isCallOverConstants() over constants}: it evaluates the arguments without a record.
+   */
+  boolean isConstantForArguments(final CommandContext context) {
+    final SQLFunction function = ((SQLQueryEngine) context.getDatabase().getQueryEngine("sql")).getFunction(name.getStringValue());
+    if (function == null)
+      return false;
+
+    final Object[] arguments = new Object[params.size()];
+    for (int i = 0; i < arguments.length; i++)
+      arguments[i] = params.get(i).execute((Result) null, context);
+    return function.isConstantForArguments(arguments);
+  }
+
+  /**
    * Whether this call aggregates the rows it sees, as the function answers it for these arguments: {@code max(a)} does,
    * {@code max(a, b)} does not. Memoized on the call site, which the statement cache shares across executions.
    */
