@@ -3446,7 +3446,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // Ends a terminated load: the batch is dropped like after any other failure - what it flushed stays committed and is
     // finished into whole edges by abandon() (issue #13163), the trailers say how much - and the entry goes. Idempotent:
     // whatever runs it next finds no batch left, and the synchronized observer drops a second terminal call. Runs on a
-    // thread of the call's own (a chunk, the close or the error callback), never under a running chunk's binding, so the
+    // thread of the call's own (a chunk, the half-close, the close, cancel or error callback), never under a running chunk's binding, so the
     // commits of abandon() are not refused as part of the terminated statement
     final Runnable endTerminated = () -> {
       errorSent[0] = true;
@@ -3460,9 +3460,16 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       }
     };
 
+    // A load terminated between two chunks only had its call closed by the terminating thread (see entry.open below): the
+    // batch is dropped by whichever callback of the call comes next, and the close handler is only one of them. The status
+    // of a call the client has already half-closed may never reach it, and then the transport reports a cancellation
+    // and no close; a batch left behind there would keep the database's single-batch slot and its relaxed settings until
+    // the restart (the #5666 class of leak)
     call.setOnCancelHandler(() -> {
       cancelled.set(true);
       out.markTerminated();
+      if (entry.isTerminated())
+        endTerminated.run();
     });
     setOnCloseHandler(call, () -> {
       if (entry.isTerminated())
@@ -3635,6 +3642,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       @Override
       public void onCompleted() {
         if (errorSent[0]) {
+          // Terminated between two chunks: the terminating thread closed the call and left the batch to the call's own
+          // thread, and this half-close may be the last callback that reaches it (no close is reported for a status the
+          // transport could not deliver). After a failed chunk there is no batch left and this drops nothing
+          if (entry.isTerminated())
+            endTerminated.run();
           entry.close();
           return;
         }

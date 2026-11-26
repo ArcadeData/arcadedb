@@ -21,6 +21,7 @@ package com.arcadedb.server.grpc;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.QueryTerminatedException;
+import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -36,6 +37,7 @@ import io.grpc.Metadata;
 import io.grpc.MethodDescriptor;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
+import io.grpc.stub.ServerCallStreamObserver;
 import io.grpc.stub.StreamObserver;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -45,6 +47,7 @@ import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiConsumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -301,9 +304,103 @@ public class GrpcStreamingLoadRunningQueryIT extends BaseGrpcServerTest {
     awaitNotListed("GraphBatchLoad");
   }
 
+  /**
+   * Issue #13163: a termination between two chunks only closes the call, and the batch is dropped by the call's next
+   * callback. When the client has already half-closed and the status never reaches it, the transport reports no close: the
+   * half-close is the last callback of the call, and it must drop the batch, or the database keeps its single-batch slot
+   * taken and the edges the load flushed stay unreachable.
+   */
+  @Test
+  void aLoadTerminatedBetweenChunksIsDroppedByTheHalfCloseWhenNoCloseIsReported() throws Exception {
+    assertTheTerminatedLoadIsDroppedBy("HalfClosed13163", (request, call) -> request.onCompleted());
+  }
+
+  /** The same when the call is reported cancelled instead: the status could not be delivered, and nothing else follows. */
+  @Test
+  void aLoadTerminatedBetweenChunksIsDroppedByTheCancellationWhenNoCloseIsReported() throws Exception {
+    assertTheTerminatedLoadIsDroppedBy("Cancelled13163", (request, call) -> call.cancelHandler.run());
+  }
+
+  private void assertTheTerminatedLoadIsDroppedBy(final String suffix,
+      final BiConsumer<StreamObserver<GraphBatchChunk>, CallWithoutCloseHandler> lastCallback) throws Exception {
+    final String node = "Node" + suffix;
+    final String link = "Link" + suffix;
+    final Database db = getServer(0).getDatabaseForOperator(getDatabaseName());
+    db.command("sql", "CREATE VERTEX TYPE " + node + " IF NOT EXISTS");
+    db.command("sql", "CREATE EDGE TYPE " + link + " IF NOT EXISTS");
+
+    // Driven directly, on this thread: the callbacks of the call are the test's to choose, and no close is ever reported
+    final ArcadeDbGrpcService service = new ArcadeDbGrpcService(getDatabaseName(), getServer(0));
+    try {
+      final CallWithoutCloseHandler call = new CallWithoutCloseHandler();
+      final StreamObserver<GraphBatchChunk> request = service.graphBatchLoad(call);
+      final GraphBatchChunk.Builder chunk = GraphBatchChunk.newBuilder().setDatabase(getDatabaseName()).setCredentials(credentials())
+          .setOptions(GraphBatchOptions.newBuilder().setBatchSize(2));
+      for (int i = 0; i < 4; i++)
+        chunk.addRecords(vertex(node, "e" + i));
+      // The buffer of two is full at the second edge: both are written, the third stays buffered while the load waits
+      chunk.addRecords(edge(link, "e0", "e1")).addRecords(edge(link, "e1", "e2")).addRecords(edge(link, "e2", "e3"));
+      request.onNext(chunk.build());
+      assertThat(call.error.get()).as("the chunk was accepted").isNull();
+      assertThat(count(link)).isEqualTo(2);
+
+      final RunningQuery entry = findListed("GraphBatchLoad");
+      assertThat(entry).as("the load is listed").isNotNull();
+      entry.terminate("root");
+      assertThat(call.error.get()).as("the termination closed the call").isNotNull();
+
+      lastCallback.accept(request, call);
+
+      // The batch was given back: the database takes the next one
+      try (final GraphBatch next = db.batch().build()) {
+        assertThat(next).isNotNull();
+      }
+      assertThat(entry.awaitEnd(30_000)).isTrue();
+
+      assertThat(count(link)).as("the buffered edge was not written").isEqualTo(2);
+      db.transaction(() -> {
+        assertThat(degree(db, node, link, "e0", Vertex.DIRECTION.OUT)).as("e0 -> e1 reachable from e0").isEqualTo(1);
+        assertThat(degree(db, node, link, "e1", Vertex.DIRECTION.IN)).as("e0 -> e1 reachable from e1").isEqualTo(1);
+        assertThat(degree(db, node, link, "e1", Vertex.DIRECTION.OUT)).as("e1 -> e2 reachable from e1").isEqualTo(1);
+        assertThat(degree(db, node, link, "e2", Vertex.DIRECTION.IN)).as("e1 -> e2 reachable from e2").isEqualTo(1);
+        assertThat(degree(db, node, link, "e2", Vertex.DIRECTION.OUT)).as("the buffered e2 -> e3 was dropped").isZero();
+      });
+    } finally {
+      service.close();
+    }
+  }
+
+  /**
+   * The server side of a call that takes no close handler, as the abstract observer does by default, and whose other
+   * callbacks are run by the test: the cancel handler is kept for it.
+   */
+  private static final class CallWithoutCloseHandler extends ServerCallStreamObserver<GraphBatchResult> {
+    final AtomicReference<Throwable> error         = new AtomicReference<>();
+    Runnable                         cancelHandler = () -> {
+    };
+
+    @Override public void onNext(final GraphBatchResult value) { }
+    @Override public void onError(final Throwable t) { error.compareAndSet(null, t); }
+    @Override public void onCompleted() { }
+
+    @Override public boolean isCancelled() { return false; }
+    @Override public void setOnCancelHandler(final Runnable onCancelHandler) { cancelHandler = onCancelHandler; }
+    @Override public void setCompression(final String compression) { }
+    @Override public boolean isReady() { return true; }
+    @Override public void setOnReadyHandler(final Runnable onReadyHandler) { }
+    @Override public void request(final int count) { }
+    @Override public void setMessageCompression(final boolean enable) { }
+    @Override public void disableAutoInboundFlowControl() { }
+  }
+
   private static long degree(final Database db, final String name, final Vertex.DIRECTION direction) {
-    try (final ResultSet rs = db.query("sql", "SELECT FROM Node13163 WHERE name = ?", name)) {
-      return rs.next().getVertex().orElseThrow().countEdges(direction, "Link13163");
+    return degree(db, "Node13163", "Link13163", name, direction);
+  }
+
+  private static long degree(final Database db, final String node, final String link, final String name,
+      final Vertex.DIRECTION direction) {
+    try (final ResultSet rs = db.query("sql", "SELECT FROM " + node + " WHERE name = ?", name)) {
+      return rs.next().getVertex().orElseThrow().countEdges(direction, link);
     }
   }
 
