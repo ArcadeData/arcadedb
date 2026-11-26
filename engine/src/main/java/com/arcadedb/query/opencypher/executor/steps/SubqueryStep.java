@@ -502,6 +502,10 @@ public class SubqueryStep extends AbstractExecutionStep {
           if (!prevResults.hasNext())
             finished = true;
           return;
+        } finally {
+          // The batch either committed or was taken back: its notes can no longer be restored
+          if (labelReplacements != null)
+            LabelReplacements.of(context).release(labelReplacements);
         }
         final Map<String, Object> committedStatus = statusVariable != null ? status(true, true, transactionId, null) : null;
 

@@ -118,17 +118,22 @@ public final class LabelReplacements {
   private       boolean          positionsReleased;
   // HOW MANY VERTICES {@link #replace} REWROTE: A CHANGE DETECTOR, SO A CALLER RE-WALKS ITS ROW ONLY WHEN SOMETHING MOVED
   private       long             replacements;
-  // WHAT EVERY PUT ON THE FOUR MAPS ABOVE REPLACED, IN ORDER, SO A SNAPSHOT IS A POSITION HERE AND RESTORING IT UNDOES THE TAIL
+  // WHAT EVERY PUT ON THE FOUR MAPS ABOVE REPLACED, IN ORDER, SO A SNAPSHOT IS A POSITION HERE AND RESTORING IT UNDOES THE TAIL.
+  // KEPT ONLY WHILE A SNAPSHOT IS LIVE AND EMPTIED WHEN THE LAST ONE IS RELEASED: A STATEMENT THAT TAKES NONE (A PLAIN SET OR
+  // REMOVE OF A LABEL) JOURNALS NOTHING, AND A MERGE HOLDS THE ENTRIES OF ITS CURRENT ROW ONLY
   private final List<Undo> journal = new ArrayList<>();
+  // HOW MANY SNAPSHOTS copy() HANDED OUT THAT release() HAS NOT TAKEN BACK YET
+  private       int        liveSnapshots;
 
   private record Undo(Map<Object, Object> map, Object key, Object previous) {
   }
 
-  /** Puts {@code key} in one of the replacement maps and journals the value it replaced, for {@link #restore}. */
+  /** Puts {@code key} in one of the replacement maps and, while a snapshot is live, journals the value it replaced for {@link #restore}. */
   @SuppressWarnings("unchecked")
   private <K, V> V put(final Map<K, V> map, final K key, final V value) {
     final V previous = map.put(key, value);
-    journal.add(new Undo((Map<Object, Object>) map, key, previous));
+    if (liveSnapshots > 0)
+      journal.add(new Undo((Map<Object, Object>) map, key, previous));
     return previous;
   }
 
@@ -331,16 +336,24 @@ public final class LabelReplacements {
    * in {@link #vertices}/{@link #edges} in the same call. A transaction rollback undoes the writes but
    * leaves an untouched Java map still pointing at a vertex that no longer exists, which {@link #resolve}
    * would then hand back to the retried attempt as if it were live.
+   * <p>
+   * Every snapshot must be handed back with {@link #release} once it can no longer be restored (in a {@code finally}), and
+   * snapshots nest like a stack: one is restored or released only while every snapshot taken after it has been released.
    */
   public Snapshot copy() {
+    ++liveSnapshots;
     return new Snapshot(journal.size());
   }
 
   /**
    * Restores the replacement state to the given snapshot, discarding any entries recorded since it was
-   * taken - the counterpart of {@code QueryStatistics.restore(snapshot)}.
+   * taken - the counterpart of {@code QueryStatistics.restore(snapshot)}. The snapshot stays live, so it can be restored again
+   * by the next attempt.
    */
+  @SuppressWarnings("PMD.CompareObjectsWithEquals") // which of the four maps the entry was put in
   public void restore(final Snapshot snapshot) {
+    if (snapshot.released)
+      throw new IllegalStateException("Label replacement snapshot restored after it was released");
     // Undo, newest first, what was recorded since the snapshot: the rolled-back attempt deleted nothing in the end, so the
     // positions it held are given back, and an entry it overwrote gets its old value back
     for (int i = journal.size() - 1; i >= snapshot.mark; --i) {
@@ -350,11 +363,27 @@ public final class LabelReplacements {
       else {
         undo.map.remove(undo.key);
         // The replacements of the rolled-back attempt never existed: their RIDs may be handed to unrelated records later
-        final Object map = undo.map;
-        if (database != null && !positionsReleased && (map == vertices || map == edges))
+        if (database != null && !positionsReleased && (undo.map == (Object) vertices || undo.map == (Object) edges))
           releasePosition((RID) undo.key);
       }
     }
+  }
+
+  /**
+   * Hands back a snapshot {@link #copy()} returned, which can no longer be restored: once none is live, the journal is emptied
+   * and the puts stop being journaled. Releasing the same snapshot twice is a no-op.
+   */
+  public void release(final Snapshot snapshot) {
+    if (snapshot.released)
+      return;
+    snapshot.released = true;
+    if (--liveSnapshots == 0)
+      journal.clear();
+  }
+
+  /** How many undo entries the journal holds: for tests, which check it is emptied once no snapshot is live. */
+  int journalSize() {
+    return journal.size();
   }
 
   /**
@@ -362,7 +391,8 @@ public final class LabelReplacements {
    * input row of a MERGE, and a copy of a map that holds one entry per node relabelled so far made the statement O(n^2) (issue #13476).
    */
   public static final class Snapshot {
-    private final int mark;
+    private final int     mark;
+    private       boolean released;
 
     private Snapshot(final int mark) {
       this.mark = mark;

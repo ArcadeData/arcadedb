@@ -329,60 +329,65 @@ public class MergeStep extends AbstractExecutionStep {
     final LabelReplacements.Snapshot labelReplacementsSnapshot = labelReplacements.copy();
     final AtomicReference<List<Result>> resultsRef = new AtomicReference<>();
 
-    database.transaction(() -> {
-      // database.transaction retries this block on MVCC/duplicate-key conflict; reset the counters
-      // to the pre-attempt snapshot so a retried attempt does not double-count matches/creations,
-      // mirroring CreateStep.createPatterns().
-      stats.restore(statsSnapshot);
-      // A failed attempt's ON CREATE/ON MATCH SET n:Label (applySetClause's LABELS branch) can call
-      // labelReplacements.replace(), which both writes records and remembers the move. The transaction
-      // rollback undoes the writes; without this, the stale mapping would still point the retried
-      // attempt at a vertex whose creation was just rolled back.
-      labelReplacements.restore(labelReplacementsSnapshot);
+    // Released once the row is done, whatever the outcome: the map journals what it records only while a snapshot is live
+    try {
+      database.transaction(() -> {
+        // database.transaction retries this block on MVCC/duplicate-key conflict; reset the counters
+        // to the pre-attempt snapshot so a retried attempt does not double-count matches/creations,
+        // mirroring CreateStep.createPatterns().
+        stats.restore(statsSnapshot);
+        // A failed attempt's ON CREATE/ON MATCH SET n:Label (applySetClause's LABELS branch) can call
+        // labelReplacements.replace(), which both writes records and remembers the move. The transaction
+        // rollback undoes the writes; without this, the stale mapping would still point the retried
+        // attempt at a vertex whose creation was just rolled back.
+        labelReplacements.restore(labelReplacementsSnapshot);
 
-      // Create base result and copy input properties if present
-      final ResultInternal baseResult = new ResultInternal();
-      if (inputResult != null) {
-        for (final String prop : inputResult.getPropertyNames()) {
-          baseResult.setProperty(prop, inputResult.getProperty(prop));
+        // Create base result and copy input properties if present
+        final ResultInternal baseResult = new ResultInternal();
+        if (inputResult != null) {
+          for (final String prop : inputResult.getPropertyNames()) {
+            baseResult.setProperty(prop, inputResult.getProperty(prop));
+          }
         }
-      }
-      // The walk and the creation recognize a bound endpoint by its Vertex: one bound to a bare RID becomes its vertex
-      if (boundEndpoints != null)
-        for (int i = 0; i < boundEndpoints.length; i++)
-          if (boundEndpoints[i] != null)
-            baseResult.setProperty(pathPattern.getNode(i).getVariable(), boundEndpoints[i]);
+        // The walk and the creation recognize a bound endpoint by its Vertex: one bound to a bare RID becomes its vertex
+        if (boundEndpoints != null)
+          for (int i = 0; i < boundEndpoints.length; i++)
+            if (boundEndpoints[i] != null)
+              baseResult.setProperty(pathPattern.getNode(i).getVariable(), boundEndpoints[i]);
 
-      final List<Result> results;
-      if (pathPattern.isSingleNode())
-        results = mergeSingleNodeAll(pathPattern, baseResult);
-      else
-        results = mergePathAll(pathPattern, baseResult);
+        final List<Result> results;
+        if (pathPattern.isSingleNode())
+          results = mergeSingleNodeAll(pathPattern, baseResult);
+        else
+          results = mergePathAll(pathPattern, baseResult);
 
-      // Apply ON CREATE SET or ON MATCH SET to each result
-      for (final Result r : results) {
-        final boolean wasCreated = Boolean.TRUE.equals(r.getProperty(WAS_CREATED));
-        final boolean createSetFolded = Boolean.TRUE.equals(r.getProperty(CREATE_SET_FOLDED));
-        // Remove internal flags
-        if (r instanceof ResultInternal) {
-          ((ResultInternal) r).removeProperty(WAS_CREATED);
-          ((ResultInternal) r).removeProperty(CREATE_SET_FOLDED);
+        // Apply ON CREATE SET or ON MATCH SET to each result
+        for (final Result r : results) {
+          final boolean wasCreated = Boolean.TRUE.equals(r.getProperty(WAS_CREATED));
+          final boolean createSetFolded = Boolean.TRUE.equals(r.getProperty(CREATE_SET_FOLDED));
+          // Remove internal flags
+          if (r instanceof ResultInternal) {
+            ((ResultInternal) r).removeProperty(WAS_CREATED);
+            ((ResultInternal) r).removeProperty(CREATE_SET_FOLDED);
+          }
+          // A node whose ON CREATE SET was folded into its first save (issue #8735) already carries it
+          // Repeated ON CREATE / ON MATCH SET clauses are separate SETs, each reading the writes of the previous (#11691)
+          if (wasCreated && !createSetFolded && mergeClause.hasOnCreateSet())
+            applySetClauses(mergeClause.getOnCreateActions(), (ResultInternal) r, labelReplacements);
+          else if (!wasCreated && mergeClause.hasOnMatchSet())
+            applySetClauses(mergeClause.getOnMatchActions(), (ResultInternal) r, labelReplacements);
+          // The SET this step absorbed, for a row whose node was not created with it (issue #8735)
+          if (absorbedSet != null && !createSetFolded)
+            // A fresh map per row, as applySetClause does: the folded shape never reads the node, so nothing has to be read
+            // back through an earlier write, and a step-wide map would retain a document per matched node
+            absorbedSetApplier.apply(absorbedSet, r, new HashMap<>(), labelReplacements);
         }
-        // A node whose ON CREATE SET was folded into its first save (issue #8735) already carries it
-        // Repeated ON CREATE / ON MATCH SET clauses are separate SETs, each reading the writes of the previous (#11691)
-        if (wasCreated && !createSetFolded && mergeClause.hasOnCreateSet())
-          applySetClauses(mergeClause.getOnCreateActions(), (ResultInternal) r, labelReplacements);
-        else if (!wasCreated && mergeClause.hasOnMatchSet())
-          applySetClauses(mergeClause.getOnMatchActions(), (ResultInternal) r, labelReplacements);
-        // The SET this step absorbed, for a row whose node was not created with it (issue #8735)
-        if (absorbedSet != null && !createSetFolded)
-          // A fresh map per row, as applySetClause does: the folded shape never reads the node, so nothing has to be read
-          // back through an earlier write, and a step-wide map would retain a document per matched node
-          absorbedSetApplier.apply(absorbedSet, r, new HashMap<>(), labelReplacements);
-      }
 
-      resultsRef.set(results);
-    }, true);
+        resultsRef.set(results);
+      }, true);
+    } finally {
+      labelReplacements.release(labelReplacementsSnapshot);
+    }
 
     return resultsRef.get();
   }
