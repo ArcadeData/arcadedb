@@ -166,6 +166,18 @@ class InformationSchemaTest extends TestHelper {
   }
 
   @Test
+  void columnsOfADiamondHierarchyListASharedPropertyOnce() {
+    database.command("sql", "CREATE DOCUMENT TYPE DiamondTop");
+    database.command("sql", "CREATE PROPERTY DiamondTop.title STRING");
+    database.command("sql", "CREATE DOCUMENT TYPE DiamondA EXTENDS DiamondTop");
+    database.command("sql", "CREATE DOCUMENT TYPE DiamondB EXTENDS DiamondTop");
+    database.command("sql", "CREATE DOCUMENT TYPE DiamondBottom EXTENDS DiamondA, DiamondB");
+
+    assertThat(column("SELECT column_name FROM information_schema.columns WHERE table_name = 'DiamondBottom'", "column_name"))
+        .containsExactly("title");
+  }
+
+  @Test
   void columnsReportTheFiguresOfTheirType() {
     createPersonTypes();
 

@@ -196,7 +196,7 @@ public class FetchFromInformationSchemaStep extends AbstractFetchFromSchemaListS
    */
   private static List<Property> columnsOf(final DocumentType type) {
     final Map<String, Property> byName = new HashMap<>();
-    collectProperties(type, byName);
+    collectProperties(type, byName, new HashSet<>());
     final List<Property> columns = new ArrayList<>(byName.size());
     for (final Property property : byName.values())
       if (!property.isHidden())
@@ -205,11 +205,14 @@ public class FetchFromInformationSchemaStep extends AbstractFetchFromSchemaListS
     return columns;
   }
 
-  private static void collectProperties(final DocumentType type, final Map<String, Property> byName) {
+  /** Each super type once: a type reached by several paths (a diamond) would otherwise be walked once for each path. */
+  private static void collectProperties(final DocumentType type, final Map<String, Property> byName, final Set<DocumentType> visited) {
+    if (!visited.add(type))
+      return;
     for (final Property property : type.getProperties())
       byName.putIfAbsent(property.getName(), property);
     for (final DocumentType superType : type.getSuperTypes())
-      collectProperties(superType, byName);
+      collectProperties(superType, byName, visited);
   }
 
   @Override
