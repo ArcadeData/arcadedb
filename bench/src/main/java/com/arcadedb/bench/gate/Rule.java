@@ -23,9 +23,13 @@ final class Rule {
 
   static final double MIN_BAND = 0.10;
 
-  private static final double MS_FLOOR   = 1.0;
-  private static final double S_FLOOR    = 0.5;
-  private static final double BYTE_FLOOR = 1048576;
+  private static final double MS_FLOOR       = 1.0;
+  private static final double S_FLOOR        = 0.5;
+  private static final double BYTE_FLOOR     = 1048576;
+  /** An issue ratio (unit {@code factor}) must move by a whole factor to be news: a ratio near 1 wobbles night to night. */
+  private static final double FACTOR_FLOOR   = 1.0;
+  /** An issue exponent (unit {@code exponent}) must move by a quarter to be news: a fit over three sizes wobbles too. */
+  private static final double EXPONENT_FLOOR = 0.25;
 
   private Rule() {
   }
@@ -37,6 +41,8 @@ final class Rule {
       case "ms" -> MS_FLOOR;
       case "s" -> S_FLOOR;
       case "bytes" -> BYTE_FLOOR;
+      case "factor" -> FACTOR_FLOOR;
+      case "exponent" -> EXPONENT_FLOOR;
       default -> 0;
     };
   }
