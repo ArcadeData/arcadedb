@@ -203,7 +203,7 @@ public final class BenchRunner {
     int deaths = 0;
     // why the remaining cases are not run; null while the workload goes on
     String stopped = null;
-    for (final String caseName : w.cases()) {
+    for (final String caseName : w.cases(ctx.scale())) {
       if (caseFilter != null && !caseFilter.test(caseName))
         continue;
       boolean restarted = false;

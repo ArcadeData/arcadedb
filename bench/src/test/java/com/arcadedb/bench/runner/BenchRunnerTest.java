@@ -91,6 +91,31 @@ class BenchRunnerTest {
   }
 
   @Test
+  void runsTheCasesOfTheContextScale() {
+    final Fake w = new Fake() {
+      @Override
+      public List<String> cases() {
+        return List.of("a", "b");
+      }
+
+      @Override
+      public List<String> cases(final Scale scale) {
+        return scale == Scale.S ? List.of("b") : cases();
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) {
+        return m(1);
+      }
+    };
+    final BenchRunner runner = new BenchRunner(1, 0, Duration.ofSeconds(10));
+    assertThat(runner.run(w, new WorkloadContext(null, Scale.S, 1L, new JSONObject()), null, l -> {
+    })).extracting(CaseResult::caseName).containsExactly("b");
+    assertThat(runner.run(w, CTX, null, l -> {
+    })).extracting(CaseResult::caseName).containsExactly("a", "b");
+  }
+
+  @Test
   void onCaseSeesEveryCaseInOrder() {
     final Fake w = new Fake() {
       @Override

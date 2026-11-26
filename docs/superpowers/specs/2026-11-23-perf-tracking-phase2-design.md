@@ -128,6 +128,10 @@ project builds on the previous one.
   repetition, a latency case runs at least 1,000 operations per repetition. Phase 1 S sizes that break the rule are raised
   (first suspects: vector build 20k, full-text build 50k); a unit test per workload asserts its S size against the rule's
   inputs where it can, and a first dispatched S run checks the rest.
+  Measured on the S nightlies of 2026-11-24..26: vector build S 20k -> 80k (1.0 s on the JVM), kNN queries S 200 -> 1,000,
+  facet queries per repetition S 200 -> 1,000, tx-insert rows S 200k -> 500k (1,000 batches of 500); full-text build (15 s)
+  already passes. The bulk import is **left out at S** (a workload may answer its cases per scale): 2M rows import in 4.5 s
+  on the JVM at M, so S would need more rows than M, and its S repetitions spread 27%. M measures it every Saturday.
 
 ### 3. Workloads
 
