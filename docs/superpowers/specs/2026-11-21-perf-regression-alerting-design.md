@@ -3,6 +3,19 @@
 Issue: #12434. Parent: #12427. Inputs: `docs/superpowers/specs/2026-11-21-perf-tracking-phase2-3-inputs.md`. Phase 1:
 `docs/superpowers/specs/2026-11-17-continuous-performance-tracking-design.md`.
 
+## Changed by phase 2 (2026-11-23)
+
+Phase 2 project 1 (#13209) changed two rules of this design; the sections below are kept as first written.
+
+- **Run identity carries the scale for nightly runs.** With S on weeknights and M on Saturdays, a Friday S run and a
+  Saturday M run of the same commit would have shared one event and one "already reported" mark. The nightly run key is
+  `nightly:<ref>:<scale>`; release keys stay `release:<tag>` (M and L of one release are one run). A marker written before
+  the change (no scale) reads as scale M, so open issues keep matching their run. LDBC lines stay in the M event; the title
+  of a non-M event ends with ` (scale S)`.
+- **A point is valid only when its case is `ok` and the host was quiet.** A case marked `hostNotQuiet` (the wall clock ran
+  over 1 s ahead of the monotonic clock) is never judged and never a baseline; a line is judged on its newest quiet point.
+  A `failed` or `timeout` status from a non-quiet case is not judged either.
+
 ## Intent
 
 The nightly and release runs record every measurement, but a regression is noticed only if someone happens to open the

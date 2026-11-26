@@ -7,6 +7,20 @@ This note collects what the next two phases should start from: what phase 1 taug
 external load-test harness for ArcadeDB does that the `bench` module does not. It is an input, not a design: phase 3 still
 needs its own design and phase 2 its plan.
 
+## Status as of 2026-11-26
+
+The note below is kept as written on 2026-11-21, since the phase 2 design cites it as an input. What has changed since:
+
+| Point in this note | Settled by |
+|---|---|
+| The nightly is at its 3-hour budget, phase 2 workloads cannot be added | The phase 2 schedule: S every weeknight (240 min), M every Saturday (720 min, with LDBC and the soak), L on demand and for releases (`docs/superpowers/specs/2026-11-23-perf-tracking-phase2-design.md`, section 1) |
+| The bench does not restart a server that died | #13209: an alive check before each case, a dead server is restarted and the case says why; a second death stops the workload |
+| Measurement additions (alive check, stall watchdog, histograms, class histogram, clock check) | All shipped in #13209 |
+| Phase 3 needs its own design; its open questions (alert channel, acknowledgement, where the gate runs) | `docs/superpowers/specs/2026-11-21-perf-regression-alerting-design.md`, implemented in #13078 |
+| Rule 1: a run is invalid when the host was not quiet | #13209: a case during which the host slept is marked `hostNotQuiet` and is neither judged nor a baseline |
+| #12481 (`RID` and `PageId` hash codes) | Merged |
+| Workload candidates #1 to #10 | Planned as phase 2 projects 2 to 6 in the phase 2 design (section 3) |
+
 ## What phase 1 taught us
 
 - **The case cap binds at L.** A case runs warmup + reps times inside one 30-minute cap. At L, 7 builds of a 1M-vector
