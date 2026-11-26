@@ -165,6 +165,33 @@ class RampWorkloadTest {
   }
 
   @Test
+  void aStepBlockedByAnEarlierUnfinishedRequestFailsTheCaseWithTheRampsMetrics() {
+    // coarse 931/s passes, 1,164/s breaks with an unfinished request, and the first bisection step cannot start because that
+    // request still holds its client: the case fails, but with the knee so far and the unfinished break, not with a bare
+    // exception that loses every number
+    final List<Double> rates = new ArrayList<>();
+    final DoubleFunction<OpenLoop.StepResult> step = rate -> {
+      rates.add(rate);
+      if (rate > 1_100)
+        return new OpenLoop.StepResult(rate, 11_640, 0, 0, 0, 5.0, 1.0, 1);
+      if (rate > 1_000)
+        throw new OpenLoop.ClientsStillHeldException(1);
+      return new OpenLoop.StepResult(rate, 10_000, 0, 0, 0, rate / 100, 1.0);
+    };
+    final CaseFailedWithMetrics e = catchThrowableOfType(CaseFailedWithMetrics.class,
+        () -> RampWorkload.ramp(step, 100, 1.25, 40, 3));
+    assertThat(e).isNotNull();
+    assertThat(e.getMessage()).contains("1 requests of an earlier step");
+    final Map<String, Metric> metrics = byName(e.metrics());
+    final double knee = metrics.get("knee_per_s").median();
+    assertThat(knee).isGreaterThan(900).isLessThan(1_000);
+    assertThat(metrics.get("knee_p99_ms").median()).isEqualTo(knee / 100);
+    assertThat(metrics.get("steps").median()).as("the blocked step never ran").isEqualTo(rates.size() - 1);
+    assertThat(metrics.get("break_unfinished").median()).isEqualTo(1);
+    assertThat(metrics.get("ceiling_reached").median()).isZero();
+  }
+
+  @Test
   void breakFlagsMapEachReasonOfAStep() {
     // ratePerS, arrivals, errors, dropped, lateStarts, p99Ms, p50Ms, unfinished
     assertThat(RampWorkload.breakFlags(null)).containsExactly(0, 0, 0, 0);

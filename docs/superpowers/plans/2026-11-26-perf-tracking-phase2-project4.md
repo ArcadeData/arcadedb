@@ -113,4 +113,4 @@ Global Constraints; `teardown` closes the clients.
 - [ ] From the 2026-11-27 weeknight S run (first with every phase 2 workload): if its job time + 2 x the measured ramp time
   stays under **225 min**, keep `ramp` at S; otherwise leave it out at S with `cases(Scale)` (it then runs every Saturday at
   M) and say so in the spec and the PR.
-- [ ] After merge, dispatch `ramp` at S and M on the merge commit; numbers in the PR. Merge stays with the user.
+- [ ] After merge, dispatch `ramp` at M on the merge commit (it does not run at S); numbers in the PR. Merge stays with the user.

@@ -259,11 +259,24 @@ public class RampWorkload implements Workload {
   private static Measurement ramp(final DoubleFunction<OpenLoop.StepResult> step, final double start, final double factor,
       final int maxCoarse, final int bisections, final double lateLimit) throws CaseFailedWithMetrics {
     final OpenLoop.StepResult[] last = new OpenLoop.StepResult[2];
-    final RampSearch.Knee knee = RampSearch.search(rate -> {
-      final OpenLoop.StepResult r = step.apply(rate);
-      last[r.broke() ? 1 : 0] = r;
-      return r;
-    }, start, factor, maxCoarse, bisections);
+    final int[] steps = new int[1];
+    final RampSearch.Knee knee;
+    try {
+      knee = RampSearch.search(rate -> {
+        final OpenLoop.StepResult r = step.apply(rate);
+        steps[0]++;
+        last[r.broke() ? 1 : 0] = r;
+        return r;
+      }, start, factor, maxCoarse, bisections);
+    } catch (final OpenLoop.ClientsStillHeldException e) {
+      // an unfinished request of an earlier step still holds its client: the ramp cannot go on, but the steps it ran still
+      // say where the knee is, so the case fails with their metrics rather than with none
+      final OpenLoop.StepResult passed = last[0];
+      final RampSearch.Knee partial = new RampSearch.Knee(passed == null ? 0 : passed.ratePerS(),
+          passed == null ? 0 : passed.p99Ms(), steps[0], false, last[1] == null ? e.getMessage() : last[1].why());
+      throw new CaseFailedWithMetrics(String.format(Locale.ROOT, "the ramp stopped after %d steps (knee so far %.0f/s): %s",
+          steps[0], partial.ratePerS(), e.getMessage()), metrics(partial, last[0], last[1], lateLimit));
+    }
     final OpenLoop.StepResult broke = last[1];
     LOGGER.info("Ramp: knee {}/s, p99 {} ms, {} steps, {}", String.format(Locale.ROOT, "%.0f", knee.ratePerS()),
         String.format(Locale.ROOT, "%.2f", knee.p99Ms()), knee.steps(), knee.ceilingReached() || broke == null ? "ceiling reached" :
@@ -297,7 +310,25 @@ public class RampWorkload implements Workload {
 
   private static Measurement publish(final RampSearch.Knee knee, final OpenLoop.StepResult kneeStep,
       final OpenLoop.StepResult breakStep, final double lateLimit) throws CaseFailedWithMetrics {
-    final boolean clientLimited = kneeStep != null && kneeStep.lateStarts() > kneeStep.arrivals() * lateLimit;
+    final List<Metric> metrics = metrics(knee, kneeStep, breakStep, lateLimit);
+    if (knee.ratePerS() == 0)
+      throw new CaseFailedWithMetrics(
+          String.format(Locale.ROOT, "the first step (%.0f/s) already broke: %s", START_PER_S, knee.breakReason()), metrics);
+    if (clientLimited(kneeStep, lateLimit))
+      throw new CaseFailedWithMetrics(String.format(Locale.ROOT,
+          "client limited: %d of %d arrivals of the knee step (%.0f/s) started more than 1 ms late (over %.0f%%), the knee is the "
+              + "client's, not the server's", kneeStep.lateStarts(), kneeStep.arrivals(), knee.ratePerS(), lateLimit * 100),
+          metrics);
+    return new Measurement(metrics);
+  }
+
+  private static boolean clientLimited(final OpenLoop.StepResult kneeStep, final double lateLimit) {
+    return kneeStep != null && kneeStep.lateStarts() > kneeStep.arrivals() * lateLimit;
+  }
+
+  private static List<Metric> metrics(final RampSearch.Knee knee, final OpenLoop.StepResult kneeStep,
+      final OpenLoop.StepResult breakStep, final double lateLimit) {
+    final boolean clientLimited = clientLimited(kneeStep, lateLimit);
     final int[] broke = breakFlags(breakStep);
     final List<Metric> metrics = new ArrayList<>(9);
     metrics.add(Metrics.rate("knee_per_s", "ops/s", knee.ratePerS()));
@@ -309,15 +340,7 @@ public class RampWorkload implements Workload {
     metrics.add(flag("break_p99", broke[1]));
     metrics.add(flag("break_errors", broke[2]));
     metrics.add(flag("break_unfinished", broke[3]));
-    if (knee.ratePerS() == 0)
-      throw new CaseFailedWithMetrics(
-          String.format(Locale.ROOT, "the first step (%.0f/s) already broke: %s", START_PER_S, knee.breakReason()), metrics);
-    if (clientLimited)
-      throw new CaseFailedWithMetrics(String.format(Locale.ROOT,
-          "client limited: %d of %d arrivals of the knee step (%.0f/s) started more than 1 ms late (over %.0f%%), the knee is the "
-              + "client's, not the server's", kneeStep.lateStarts(), kneeStep.arrivals(), knee.ratePerS(), lateLimit * 100),
-          metrics);
-    return new Measurement(metrics);
+    return metrics;
   }
 
   /** An informational 0/1 metric: 1 is the state a reader should look at, and the gate never judges the unit. */

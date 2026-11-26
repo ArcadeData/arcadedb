@@ -45,7 +45,7 @@ import java.util.function.IntConsumer;
  *   spent behind a late scheduler or a queued executor is part of it.</li>
  *   <li>An arrival that finds no free client is a drop, never queued silently.</li>
  *   <li>Warm traffic runs at the step's rate before the counted window and is not counted.</li>
- *   <li>A request (warm or counted) still running 30 s after the step's last arrival is reported as {@code unfinished} and
+ *   <li>A request (warm or counted) still running 30 s after the step's last arrival was due is reported as {@code unfinished} and
  *   breaks the step. It keeps its client, so the next step first waits (up to another 30 s) for every earlier request to give
  *   its client back: a step never starts with fewer clients and never records drops that belong to an earlier step.</li>
  * </ul>
@@ -178,7 +178,7 @@ public final class OpenLoop {
   }
 
   /**
-   * Waits for any request an earlier step left running (up to 30 s, then {@link IllegalStateException}), runs {@code warm} of
+   * Waits for any request an earlier step left running (up to 30 s, then {@link ClientsStillHeldException}), runs {@code warm} of
    * uncounted traffic and then {@code length} of counted traffic at {@code ratePerS}, waits for the requests in flight (up to
    * 30 s, the ones still running are reported as {@code unfinished}) and returns the counted window's result. Throws
    * {@link CancellationException} when the calling thread is interrupted.
@@ -193,8 +193,7 @@ public final class OpenLoop {
 
     awaitIdle(clock.nanos() + DRAIN_TIMEOUT);
     if (outstanding.get() > 0)
-      throw new IllegalStateException(
-          outstanding.get() + " requests of an earlier step still hold their clients after " + DRAIN_TIMEOUT_SECONDS + " s");
+      throw new ClientsStillHeldException(outstanding.get());
 
     final Step step = new Step((int) countedArrivals);
     final double nanosPerArrival = NANOS_PER_SECOND / ratePerS;
@@ -232,7 +231,10 @@ public final class OpenLoop {
       }
     }
 
-    final long drainDeadline = clock.nanos() + DRAIN_TIMEOUT;
+    // from when the last arrival was due, not from when a late scheduler finished dispatching: scheduler lateness must not
+    // give a slow request more time to drain
+    final long lastDue = total == 0 ? start : start + (long) ((total - 1) * nanosPerArrival);
+    final long drainDeadline = lastDue + DRAIN_TIMEOUT;
     while (step.inFlight.get() > 0 && clock.nanos() < drainDeadline) {
       if (Thread.currentThread().isInterrupted())
         throw new CancellationException("open-loop step interrupted while draining");
@@ -308,6 +310,16 @@ public final class OpenLoop {
       }
     }
     return -1;
+  }
+
+  /**
+   * Thrown when a step cannot start because requests of an earlier step still hold their clients 30 s after it ended: the
+   * ramp cannot go on, but the steps it ran are still worth reporting.
+   */
+  public static final class ClientsStillHeldException extends IllegalStateException {
+    public ClientsStillHeldException(final int held) {
+      super(held + " requests of an earlier step still hold their clients after " + DRAIN_TIMEOUT_SECONDS + " s");
+    }
   }
 
   private static final class Step {

@@ -241,6 +241,41 @@ class OpenLoopTest {
     assertThat(hung.broke()).isTrue();
   }
 
+  /**
+   * The drain allowance runs from when the step's last arrival was due, not from when a late scheduler finished dispatching:
+   * the scheduler loses 15 s submitting the first arrival, which hangs until 40 s. Counted from the end of dispatch (15 s)
+   * the deadline would be 45 s and the hung request would drain; counted from the last arrival's due time (1 s) it is 31 s.
+   */
+  @Test
+  void schedulerLatenessDoesNotExtendTheDrainAllowance() {
+    final FakeClock clock = new FakeClock();
+    final Executor delayed = clock.delayingExecutor(n -> n == 0 ? 40_000 * MS : 5 * MS);
+    final AtomicBoolean first = new AtomicBoolean(true);
+    final OpenLoop loop = new OpenLoop(clock, 4, client -> {
+    }, task -> {
+      delayed.execute(task);
+      if (first.getAndSet(false))
+        clock.advance(15_000 * MS);
+    });
+
+    final StepResult result = loop.runStep(1, Duration.ZERO, Duration.ofSeconds(2));
+    assertThat(result.arrivals()).isEqualTo(2);
+    assertThat(result.unfinished()).as("still running at 31 s, 30 s after the last arrival was due").isEqualTo(1);
+    assertThat(result.broke()).isTrue();
+    assertThat(clock.nanos()).isLessThan(40_000 * MS);
+  }
+
+  @Test
+  void aClientStillHeldWhenTheNextStepStartsIsReportedByItsOwnType() {
+    final FakeClock clock = new FakeClock();
+    final OpenLoop loop = new OpenLoop(clock, 4, client -> {
+    }, clock.delayingExecutor(n -> n == 0 ? 100_000 * MS : 5 * MS));
+
+    assertThat(loop.runStep(100, Duration.ZERO, Duration.ofSeconds(1)).unfinished()).isEqualTo(1);
+    assertThatThrownBy(() -> loop.runStep(100, Duration.ZERO, Duration.ofSeconds(1)))
+        .isInstanceOf(OpenLoop.ClientsStillHeldException.class).hasMessageContaining("1 requests of an earlier step");
+  }
+
   @Test
   void aRejectedSubmissionIsADropAndFreesItsClient() {
     final FakeClock clock = new FakeClock();
