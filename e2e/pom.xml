@@ -30,6 +30,8 @@
     </parent>
 
     <properties>
+        <!-- Nothing here is published to Maven Central, so no SBOM is built for it. -->
+        <cyclonedx.skip>true</cyclonedx.skip>
         <postgresql.version>42.7.14</postgresql.version>
         <logback-classic.version>1.6.7</logback-classic.version>
         <allowIncompleteProjects>true</allowIncompleteProjects>

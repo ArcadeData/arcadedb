@@ -1,0 +1,150 @@
+# Completes a GitHub release: the JVM distributions, their SBOMs (CycloneDX and SPDX), the JVM image SBOMs, the VEX
+# document, and a SHA256SUMS over every asset of the release, signed with cosign (keyless) and gpg. Then verifies the
+# whole chain the way a consumer would (.github/scripts/verify-release.sh) and fails if any link is broken.
+#
+# Three workflows write to a release: mvn-release.yml (whose files arrive here as its `release-dist` and
+# `release-image-sbom` artifacts, because it runs before the release exists), native-image.yml and publish-contract.yml
+# (both on `release: published`). SHA256SUMS must be written after the last of them, or it misses assets and the
+# signature covers an incomplete set. Both trigger this workflow when they complete; release-assets.sh checks that
+# BOTH finished successfully for the tag and otherwise exits 0 with a notice, so only the second one signs.
+#
+# Tag: `workflow_run.head_branch`. For a run started by a `release` event GitHub sets head_branch to the release's tag
+# (there is no branch), which is also what `gh run list --branch` filters on in the upstream check.
+#
+# The JVM files come from the mvn-release.yml run of the release: the latest one on main titled `release <tag>` whose
+# `attest` job succeeded and which has a `release-image-sbom` artifact. Its overall result does not matter, so a
+# release whose `tag` job failed after the images were signed (a next-version merge conflict) still completes. On a
+# fork the rehearsal title `release <tag> (rehearsal)` counts too; in ArcadeData/arcadedb it never does.
+#
+# Recovery:
+#   - a failed run: dispatch with `tag` from main. Idempotent: files already on the release with the right SHA-256
+#     are left alone, derived files and SHA256SUMS* are replaced. `mvn_release_run_id` names the mvn-release run when
+#     the search cannot find it.
+#   - an upstream (native-image.yml, publish-contract.yml) that failed leaves a warning naming it and no SHA256SUMS:
+#     fix and re-run that workflow; its successful completion triggers this one.
+#   - "differs from the CI-built file": the release carries a JVM file that is not the one mvn-release.yml built and
+#     attested. Find out why before deleting the asset by hand and dispatching again; never overwrite it blindly.
+#   - native-image.yml dispatched with attach_to_release re-runs this workflow by itself (`refresh-release-assets`).
+#   - publish-contract.yml dispatched by hand (`tag`) replaces the contract files but does NOT re-run this workflow
+#     (its run is not a `release` event): dispatch release-assets.yml for the same tag afterwards, or SHA256SUMS no
+#     longer matches the contract files and verification fails.
+#
+# Requires the repository variable RELEASE_GPG_FINGERPRINT (fingerprint of the MAVEN_GPG_PRIVATE_KEY signing key):
+# verify-release.sh accepts a gpg signature only from that key, and only that key is exported for it.
+#
+# Signer identity: the cosign signature of SHA256SUMS carries this workflow's identity on refs/heads/main. A
+# `workflow_run` run always runs from the default branch; a dispatch from any other ref is refused before signing.
+name: release-assets
+run-name: release-assets ${{ inputs.tag || github.event.workflow_run.head_branch }}
+
+on:
+  workflow_run:
+    workflows: ["Native Image", "publish-contract"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to complete and verify (e.g. 26.12.1)"
+        required: true
+      # Normally the run is found by its title. Name it when the search picks the wrong one or none (more than 200
+      # mvn-release runs since the release). It is checked exactly like a found run: mvn-release.yml, dispatched on
+      # main, titled `release <tag>`, with a successful `attest` job and a `release-image-sbom` artifact.
+      mvn_release_run_id:
+        description: "Optional: database id of the mvn-release.yml run of this release (default: found by its title)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+# One run per tag at a time: two runs signing at once would race on the --clobber uploads of SHA256SUMS and its
+# signatures and could leave a signature over the other run's checksums. GitHub keeps at most ONE pending run per
+# group (a newer pending run replaces the older one), and in-progress runs are never cancelled. Dropping a pending run
+# is harmless: every run recomputes everything from the release as it is then, so the run that does go ahead covers
+# whatever the dropped one would have.
+concurrency:
+  group: release-assets-${{ inputs.tag || github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
+jobs:
+  # Holds `id-token: write` and the release signing key, so it runs nothing but the two scripts of this repository's
+  # default branch and pinned tools: no Maven, no build, no code from the release's tag. The scripts are checked out
+  # without credentials; gh authenticates through GH_TOKEN in the steps that need it.
+  release-assets:
+    # A workflow_run for a run in another repository (a fork) must never reach the signing key.
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.event == 'release' &&
+      github.event.workflow_run.head_repository.full_name == github.repository) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      id-token: write
+      actions: read
+      attestations: read
+    env:
+      TAG: ${{ inputs.tag || github.event.workflow_run.head_branch }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      DOCKER_NAMESPACE: ${{ vars.DOCKER_NAMESPACE || 'arcadedata' }}
+      RELEASE_GPG_FINGERPRINT: ${{ vars.RELEASE_GPG_FINGERPRINT }}
+    steps:
+      # The signature would carry the branch's ref, which verify-release.sh and every consumer reject: a release
+      # signed from a branch is a release whose checksums nobody can verify.
+      - name: Refuse to sign off main
+        if: ${{ github.ref != 'refs/heads/main' }}
+        run: |
+          echo "::error::release-assets must run from main (signer identity); dispatch it from main with the tag as input" >&2
+          exit 1
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@881c63bd87e38389154debd8331404ce7ca8a3ab # v4.1.4
+
+      - name: Install syft
+        id: syft
+        uses: anchore/sbom-action/download-syft@dfcb83b97731532d72be422cbc51ee64adb6fd56 # v0.24.4
+
+      # The same key that signs the Maven Central artifacts, so a consumer verifies SHA256SUMS.asc with the key they
+      # already trust for the jars. Only the key named by RELEASE_GPG_FINGERPRINT is exported for verify-release.sh,
+      # which checks against it in a throwaway keyring and also pins the fingerprint of the signature. Checked here
+      # too, so a missing variable fails before anything is uploaded rather than after signing.
+      - name: Import the release signing key
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${RELEASE_GPG_FINGERPRINT// /}" ]]; then
+            echo "::error::set the repository variable RELEASE_GPG_FINGERPRINT to the release signing key fingerprint" >&2
+            exit 1
+          fi
+          if [[ -z "${GPG_PRIVATE_KEY}" ]]; then
+            echo "::error::secret MAVEN_GPG_PRIVATE_KEY is empty; SHA256SUMS cannot be gpg-signed" >&2
+            exit 1
+          fi
+          printf '%s\n' "${GPG_PRIVATE_KEY}" | gpg --batch --import
+          gpg --batch --armor --export "${RELEASE_GPG_FINGERPRINT// /}" > "${RUNNER_TEMP}/release-signing-key.asc"
+          if [[ ! -s "${RUNNER_TEMP}/release-signing-key.asc" ]]; then
+            echo "::error::MAVEN_GPG_PRIVATE_KEY holds no key with the fingerprint RELEASE_GPG_FINGERPRINT" >&2
+            exit 1
+          fi
+
+      # GITHUB_EVENT_NAME (set by the runner) selects the upstream check: on `workflow_run` only.
+      - name: Upload, checksum and sign the release assets
+        id: assets
+        env:
+          GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+          SYFT: ${{ steps.syft.outputs.cmd }}
+          MVN_RELEASE_RUN_ID: ${{ inputs.mvn_release_run_id }}
+        run: .github/scripts/release-assets.sh "${TAG}" "${RUNNER_TEMP}/release-assets"
+
+      # Skipped when release-assets.sh exited early because the other upstream has not finished: the release is not
+      # complete yet, and the run that completes it verifies it.
+      - name: Verify the release
+        if: ${{ steps.assets.outputs.completed == 'true' }}
+        env:
+          GPG_PUBLIC_KEY_FILE: ${{ runner.temp }}/release-signing-key.asc
+        run: .github/scripts/verify-release.sh "${TAG}"

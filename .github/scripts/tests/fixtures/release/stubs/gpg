@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+#
+# Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+# SPDX-License-Identifier: Apache-2.0
+#
+# Stub `gpg` for test-ci-scripts.sh. Logs each call to $STUB_DIR/calls.log. `--detach-sign --output <o>` writes <o>;
+# `--verify` fails when $STUB_DIR/fail-gpg exists, and otherwise prints a VALIDSIG status line (as with
+# `--status-fd 1`) for the key in $STUB_DIR/gpg-signer (default STUB_GPG_FPR below, with the primary key
+# fingerprint STUB_GPG_PRIMARY); everything else (e.g. `--import`) succeeds.
+
+set -euo pipefail
+
+: "${STUB_DIR:?STUB_DIR must be set}"
+echo "gpg $*" >>"$STUB_DIR/calls.log"
+
+STUB_GPG_FPR="0123456789ABCDEF0123456789ABCDEF01234567"
+STUB_GPG_PRIMARY="89ABCDEF0123456789ABCDEF0123456789ABCDEF"
+
+prev=""
+for a in "$@"; do
+    if [[ $a == --verify ]]; then
+        if [[ -f "$STUB_DIR/fail-gpg" ]]; then
+            echo "gpg: BAD signature" >&2
+            exit 1
+        fi
+        signer="$STUB_GPG_FPR"
+        [[ -f "$STUB_DIR/gpg-signer" ]] && signer="$(cat "$STUB_DIR/gpg-signer")"
+        echo "[GNUPG:] GOODSIG ${signer: -16} Stub <stub@example.invalid>"
+        echo "[GNUPG:] VALIDSIG $signer 2026-11-26 1795000000 0 4 0 1 10 00 $STUB_GPG_PRIMARY"
+    fi
+    [[ $prev == --output ]] && echo "-----BEGIN PGP SIGNATURE-----" >"$a"
+    prev="$a"
+done

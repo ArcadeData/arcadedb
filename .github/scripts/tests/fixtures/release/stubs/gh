@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+#
+# Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+# SPDX-License-Identifier: Apache-2.0
+#
+# Stub `gh` for test-ci-scripts.sh: release-assets.sh and verify-release.sh against a release and workflow runs
+# laid out on disk under $STUB_DIR, never against GitHub.
+#
+#   $STUB_DIR/release/                      the assets currently on the release (absent: the release does not exist)
+#   $STUB_DIR/runs/<workflow file>.json     what `gh run list --workflow <workflow file>` prints (absent: [])
+#   $STUB_DIR/artifacts/<run id>/<name>/    what `gh run download <run id> --name <name>` restores
+#   $STUB_DIR/runs/<run id>-artifacts.json  what `gh api repos/<o>/<r>/actions/runs/<run id>/artifacts` prints
+#                                           (absent: HTTP 404)
+#   $STUB_DIR/runs/<run id>-jobs.json       what `gh api repos/<o>/<r>/actions/runs/<run id>/jobs` prints (absent: 404)
+#   $STUB_DIR/runs/<run id>-run.json        what `gh api repos/<o>/<r>/actions/runs/<run id>` prints (absent: 404)
+#                                           A query string (`?per_page=100`) on any of the three is ignored.
+#   $STUB_DIR/fail-attestation              ERE; `gh attestation verify <file>` fails when the file name matches
+#   $STUB_DIR/calls.log                     one line per call: `gh <args>`; uploads also log `upload <asset>`
+
+set -euo pipefail
+
+: "${STUB_DIR:?STUB_DIR must be set}"
+echo "gh $*" >>"$STUB_DIR/calls.log"
+
+# Value of `--flag value` in "$@", or empty.
+flag() {
+    local name="$1"
+    shift
+    while [[ $# -gt 0 ]]; do
+        if [[ $1 == "$name" ]]; then
+            echo "${2:-}"
+            return
+        fi
+        shift
+    done
+}
+
+release="$STUB_DIR/release"
+
+case "$1 $2" in
+"run list")
+    workflow="$(flag --workflow "$@")"
+    if [[ -f "$STUB_DIR/runs/$workflow.json" ]]; then cat "$STUB_DIR/runs/$workflow.json"; else echo '[]'; fi
+    ;;
+"run download")
+    src="$STUB_DIR/artifacts/$3/$(flag --name "$@")"
+    if [[ ! -d $src ]]; then
+        echo "no valid artifacts found to download" >&2
+        exit 1
+    fi
+    dest="$(flag --dir "$@")"
+    mkdir -p "$dest"
+    cp -R "$src/." "$dest/"
+    ;;
+"release view")
+    if [[ ! -d $release ]]; then
+        echo "release not found" >&2
+        exit 1
+    fi
+    find "$release" -maxdepth 1 -type f -exec basename {} \; | LC_ALL=C sort | jq -R . | jq -s '{assets: map({name: .})}'
+    ;;
+"release download")
+    [[ -d $release ]] || { echo "release not found" >&2; exit 1; }
+    pattern="$(flag --pattern "$@")"
+    dest="$(flag --dir "$@")"
+    mkdir -p "$dest"
+    if [[ -n $pattern ]]; then
+        [[ -f "$release/$pattern" ]] || { echo "no assets match the file pattern" >&2; exit 1; }
+        cp "$release/$pattern" "$dest/"
+    else
+        cp -R "$release/." "$dest/"
+    fi
+    ;;
+"release upload")
+    [[ -d $release ]] || { echo "release not found" >&2; exit 1; }
+    shift 3
+    clobber=0
+    files=()
+    for a in "$@"; do
+        if [[ $a == --clobber ]]; then clobber=1; else files+=("$a"); fi
+    done
+    for f in "${files[@]}"; do
+        name="$(basename "$f")"
+        if [[ -f "$release/$name" && $clobber -eq 0 ]]; then
+            echo "asset under the same name already exists: [$name]" >&2
+            exit 1
+        fi
+    done
+    for f in "${files[@]}"; do
+        cp "$f" "$release/"
+        echo "upload $(basename "$f")" >>"$STUB_DIR/calls.log"
+    done
+    ;;
+"api "*)
+    endpoint="${2%%\?*}"
+    file=""
+    if [[ $endpoint =~ ^repos/[^/]+/[^/]+/actions/runs/([0-9]+)/(artifacts|jobs)$ ]]; then
+        file="$STUB_DIR/runs/${BASH_REMATCH[1]}-${BASH_REMATCH[2]}.json"
+    elif [[ $endpoint =~ ^repos/[^/]+/[^/]+/actions/runs/([0-9]+)$ ]]; then
+        file="$STUB_DIR/runs/${BASH_REMATCH[1]}-run.json"
+    fi
+    if [[ -n $file && -f $file ]]; then
+        cat "$file"
+    else
+        echo "gh: Not Found (HTTP 404)" >&2
+        exit 1
+    fi
+    ;;
+"attestation verify")
+    if [[ -f "$STUB_DIR/fail-attestation" ]] && basename "$3" | grep -Eqf "$STUB_DIR/fail-attestation"; then
+        echo "no matching attestations found" >&2
+        exit 1
+    fi
+    ;;
+*)
+    echo "stub gh: unsupported command: $*" >&2
+    exit 64
+    ;;
+esac
