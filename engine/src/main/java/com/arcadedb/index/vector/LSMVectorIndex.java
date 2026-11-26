@@ -9815,17 +9815,27 @@ public class LSMVectorIndex implements Index, IndexInternal {
     final int availableVectors = Math.min(ordinalToVectorId.length, vectorIndex().size());
     final int cap = Math.max(rows, (int) (availableVectors * maxSelectivity));
 
-    final Set<RID> share = new HashSet<>();
+    // COUNTED FIRST: A LIST WHOSE EVERY MEMBER IS IN THIS BUCKET (A TYPE WITH ONE BUCKET, THE COMMON CASE) IS USED AS IT IS, AND A COPY
+    // OF IT BUILT ON THE WAY AND THEN DISCARDED COST A HASH NODE PER RID PER SEARCH
     int examined = 0;
+    int inBucket = 0;
     for (final RID rid : allowedRIDs) {
       guard.checkPeriodically(++examined);
-      if (rid.getBucketId() == bucketId) {
-        if (share.size() == cap)
-          return allowedRIDs;
-        share.add(rid);
-      }
+      if (rid.getBucketId() == bucketId && ++inBucket > cap)
+        return allowedRIDs;
     }
-    return share.size() == allowedRIDs.size() ? allowedRIDs : share;
+    if (inBucket == allowedRIDs.size())
+      return allowedRIDs;
+    if (inBucket == 0)
+      return Collections.emptySet();
+
+    final Set<RID> share = new HashSet<>((int) (inBucket / 0.75f) + 1);
+    for (final RID rid : allowedRIDs) {
+      guard.checkPeriodically(++examined);
+      if (rid.getBucketId() == bucketId)
+        share.add(rid);
+    }
+    return share;
   }
 
   /**
