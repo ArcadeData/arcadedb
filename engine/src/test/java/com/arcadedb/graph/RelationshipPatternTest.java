@@ -49,6 +49,15 @@ class RelationshipPatternTest extends TestHelper {
   }
 
   @Test
+  void aTrailingLessThanMarksIncomingAsALeadingOneDoes() {
+    // issue #12674: APOC reads 'KNOWS<' as '<KNOWS'
+    assertThat(RelationshipPattern.parse("test", "KNOWS<|<LIKES|<FOLLOWS<|<").entries())
+        .containsExactly(new Entry("KNOWS", IN), new Entry("LIKES", IN), new Entry("FOLLOWS", IN), new Entry(null, IN));
+    assertThatThrownBy(() -> RelationshipPattern.parse("test", "KNOWS<>")).isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("carries both direction markers");
+  }
+
+  @Test
   void aListIsTheAlternativesItHolds() {
     assertThat(RelationshipPattern.parse("test", List.of("ROAD>", "<RAIL")).entries())
         .containsExactly(new Entry("ROAD", OUT), new Entry("RAIL", IN));

@@ -1298,7 +1298,9 @@ class TypeTest extends TestHelper {
     assertThat(result[0]).isInstanceOf(BigDecimal.class);
 
     result = Type.castComparableNumber((short) 1, (byte) 2);
-    assertThat(result[0]).isInstanceOf(Byte.class);
+    // the byte widens to the short, as the short widens to the wider types above (issue #12681)
+    assertThat(result[0]).isInstanceOf(Short.class);
+    assertThat(result[1]).isInstanceOf(Short.class);
 
     // issue #7669: Short had no right-hand BigInteger arm
     result = Type.castComparableNumber((short) 1, new BigInteger("2"));

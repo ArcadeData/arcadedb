@@ -1,3 +1,21 @@
+# Release in two jobs, so nothing leaves the building before the jars are on Maven Central.
+#
+# Before the split, one `mvn deploy -Pdocker` pushed the Docker images from the `deploy` phase of `package`, while
+# central-publishing-maven-plugin uploads its bundle only at the end of the reactor. A Central failure then left a
+# Docker image (and its `latest` tag) for a release whose jars did not exist.
+#
+#   central         deploys to Maven Central and waits until Sonatype reports the deployment PUBLISHED. No Docker,
+#                   nothing pushed to git.
+#   docker-and-tag  runs only once `central` succeeded: builds the same release version again with `-Pdocker` and
+#                   pushes the images, then commits and tags the release and commits the next development version.
+#
+# Recovery:
+#   - `central` failed: nothing was published anywhere. Fix and dispatch again. If it failed while waiting for
+#     PUBLISHED (timeout, FAILED status, Portal errors), check the Central Portal first: the deployment may still
+#     publish, and a new dispatch with the same version is then rejected as a duplicate.
+#   - `docker-and-tag` failed: use "Re-run failed jobs" on this run. Never dispatch again, Central would reject the
+#     duplicate version. If the tag was already pushed, a re-run pushes the images again and then fails when pushing
+#     the tag; finish the remaining steps by hand.
 name: release-to-maven-central
 on:
   workflow_dispatch:
@@ -9,18 +27,71 @@ on:
         description: "Next development version (e.g. 30.1.1-SNAPSHOT)"
         required: true
 
+env:
+  RELEASE_VERSION: ${{ github.event.inputs.releaseversion }}
+  NEXT_VERSION: ${{ github.event.inputs.nextversion }}
+  MAVEN_OPTS: "--add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.text=ALL-UNNAMED --add-opens=java.desktop/java.awt.font=ALL-UNNAMED"
+
 jobs:
-  publish:
+  central:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      packages: write
+      contents: read
       attestations: write
       id-token: write
     steps:
-      - run: echo "Will start a Maven Central upload with version ${{ github.event.inputs.releaseversion }}"
+      - run: echo "Will start a Maven Central upload with version ${RELEASE_VERSION}"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: "temurin"
+          java-version: 21
+          cache: "maven"
+          server-id: central
+          server-username: MAVEN_USERNAME
+          server-password: MAVEN_PASSWORD
+          gpg-private-key: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
+          gpg-passphrase: MAVEN_GPG_PASSPHRASE
+
+      - name: Set release version
+        run: .github/scripts/set-release-version.sh "${RELEASE_VERSION}"
+
+      # -Dmaven.repository.credentialScope=id (#10023): Maven 3.10 lets a repository transfer use the
+      # credentials of server 'central' only against Maven Central's own origin, which is what broke the
+      # snapshot deploy in mvn-deploy.yml. A release bundle goes through the Central Portal API instead,
+      # which reads the server entry directly, but any transfer to a Sonatype URL under that id would
+      # fail with the same 401 - and this workflow only runs on a release, where that costs the release.
+      # ./mvnw, not the runner's mvn: the runner image moved to Maven 3.10.0 underneath this workflow,
+      # and central-publishing-maven-plugin 0.11.0 then put maven-metadata-local.xml and
+      # _remote.repositories into the bundle, so the Central Portal rejected the whole 26.10.2
+      # deployment (fixed in plugin 0.12.0). The wrapper pins the Maven that actually publishes, so a
+      # Maven upgrade arrives as a reviewable wrapper bump, not silently with a runner image.
+      #
+      # -DwaitUntil=published is the gate `docker-and-tag` relies on: without it the plugin returns once the bundle
+      # is VALIDATED, before it is published. It is set here and not in pom.xml so the snapshot deploy does not wait.
+      # -DwaitMaxTime=3600 (default 1800 s) keeps a slow Portal from failing a deployment that will still publish.
+      # No -Pdocker: the images are built and pushed by `docker-and-tag`.
+      - name: Publish package
+        run: ./mvnw -Pdeploy,deploy-central -DwaitUntil=published -DwaitMaxTime=3600 --batch-mode --errors --fail-at-end --show-version --file pom.xml -DskipTests=true -pl !e2e -Dmaven.repository.credentialScope=id deploy
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MAVEN_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          MAVEN_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+
+  docker-and-tag:
+    needs: central
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # Full history: the next-version push merges whatever reached main meanwhile, which needs the merge base.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - name: Login to Docker Hub
         uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
@@ -35,90 +106,54 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Set up JDK 21
-        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
         with:
           distribution: "temurin"
           java-version: 21
           cache: "maven"
-          server-id: central
-          server-username: MAVEN_USERNAME
-          server-password: MAVEN_PASSWORD
-          gpg-private-key: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
-          gpg-passphrase: MAVEN_GPG_PASSPHRASE
 
-      - name: Set projects Maven version to GitHub Action GUI set version
-        run: ./mvnw versions:set "-DnewVersion=${{ github.event.inputs.releaseversion }}" --no-transfer-progress
+      - name: Set release version
+        run: .github/scripts/set-release-version.sh "${RELEASE_VERSION}"
 
-      - name: Update studio package.json version
-        run: |
-          cd studio
-          jq --arg version "${{ github.event.inputs.releaseversion }}" '.version = $version' package.json > package.json.tmp
-          mv package.json.tmp package.json
-
-      # server.json is the manifest the MCP registry publishes this server from. It is not a Maven artifact, so
-      # versions:set never reaches it and it silently drifted six releases behind HEAD (#6838). Rewrite it here, and
-      # only here: it names the last RELEASE, so the next-development step below deliberately leaves it alone rather
-      # than pinning a -SNAPSHOT container tag that was never pushed.
-      - name: Update server.json MCP registry manifest version
-        run: |
-          jq --arg version "${{ github.event.inputs.releaseversion }}" \
-            '.version = $version | .packages |= map(.identifier |= sub(":[^:]+$"; ":" + $version))' \
-            server.json > server.json.tmp
-          mv server.json.tmp server.json
-          cat server.json
-
-      # -Dmaven.repository.credentialScope=id (#10023): Maven 3.10 lets a repository transfer use the
-      # credentials of server 'central' only against Maven Central's own origin, which is what broke the
-      # snapshot deploy in mvn-deploy.yml. A release bundle goes through the Central Portal API instead,
-      # which reads the server entry directly, but any transfer to a Sonatype URL under that id would
-      # fail with the same 401 - and this workflow only runs on a release, where that costs the release.
-      # ./mvnw, not the runner's mvn: the runner image moved to Maven 3.10.0 underneath this workflow,
-      # and central-publishing-maven-plugin 0.11.0 then put maven-metadata-local.xml and
-      # _remote.repositories into the bundle, so the Central Portal rejected the whole 26.10.2
-      # deployment (fixed in plugin 0.12.0). The wrapper pins the Maven that actually publishes, so a
-      # Maven upgrade arrives as a reviewable wrapper bump, not silently with a runner image.
-      - name: Publish package
-        run: |
-          export MAVEN_OPTS="--add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.text=ALL-UNNAMED --add-opens=java.desktop/java.awt.font=ALL-UNNAMED"
-          ./mvnw -Pdeploy,deploy-central -Pdocker  --batch-mode  --errors --fail-at-end --show-version  --file pom.xml -DskipTests=true -pl !e2e -Dmaven.repository.credentialScope=id deploy
+      # Builds `package` and the modules it needs from this tree (-am), so nothing is resolved from Maven Central,
+      # where PUBLISHED does not yet mean downloadable. The `docker` profile builds the images in `package` and pushes
+      # them in `deploy`. -DskipPublishing=true: central-publishing-maven-plugin is part of the default build and
+      # would otherwise try to upload the release to Central a second time.
+      - name: Build and push Docker images
+        run: ./mvnw -Pdocker -DskipPublishing=true --batch-mode --errors --show-version -DskipTests=true -pl package -am deploy
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          MAVEN_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
-          MAVEN_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
           DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
           DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
-          MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
 
       - name: Tag and commit release version
-        if: success()
         run: |
           git config user.email "actions@github.com"
           git config user.name "GitHub Actions"
-          git commit -am "Set release version to ${{ github.event.inputs.releaseversion }}"
-          git tag ${{ github.event.inputs.releaseversion }}
-          git push origin ${{ github.event.inputs.releaseversion }}
+          git commit -am "Set release version to ${RELEASE_VERSION}"
+          git tag "${RELEASE_VERSION}"
+          git push origin "${RELEASE_VERSION}"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set next development version
-        if: success()
-        run: ./mvnw versions:set "-DnewVersion=${{ github.event.inputs.nextversion }}" --no-transfer-progress
+        run: ./mvnw versions:set "-DnewVersion=${NEXT_VERSION}" --no-transfer-progress
 
       - name: Update studio package.json to next development version
-        if: success()
         run: |
           cd studio
-          jq --arg version "${{ github.event.inputs.nextversion }}" '.version = $version' package.json > package.json.tmp
-          jq --arg version "${{ github.event.inputs.nextversion }}" '.version = $version' package-lock.json > package-lock.json.tmp
+          jq --arg version "${NEXT_VERSION}" '.version = $version' package.json > package.json.tmp
+          jq --arg version "${NEXT_VERSION}" '.version = $version | .packages[""].version = $version' package-lock.json > package-lock.json.tmp
           mv package.json.tmp package.json
           mv package-lock.json.tmp package-lock.json
 
       - name: Commit next development version
-        if: success()
         run: |
           git config user.email "actions@github.com"
           git config user.name "GitHub Actions"
-          git commit -am "Set next development version to ${{ github.event.inputs.nextversion }}"
+          git commit -am "Set next development version to ${NEXT_VERSION}"
+          # PRs merged to main while this run waited on Central would reject a plain push. Merge rather than rebase:
+          # a rebase would rewrite the release commit and leave the tag unreachable from main.
+          git pull --no-rebase --no-edit origin main
           git push origin main
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

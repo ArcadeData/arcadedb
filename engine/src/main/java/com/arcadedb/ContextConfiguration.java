@@ -92,6 +92,14 @@ public class ContextConfiguration implements Serializable {
    * this map is what a server hands to its plugins, and a value nothing can read has no business being in it.
    */
   public void fromJSON(final String input) {
+    fromJSON(input, "server configuration file");
+  }
+
+  /**
+   * Same as {@link #fromJSON(String)}, naming {@code source} as where a refused or unknown setting came from: a database's
+   * {@code configuration.json} is read through here too, and the warning has to point the operator at that file (issue #12817).
+   */
+  public void fromJSON(final String input, final String source) {
     if (input == null)
       return;
 
@@ -101,7 +109,7 @@ public class ContextConfiguration implements Serializable {
     for (final String k : cfg.keySet()) {
       final GlobalConfiguration cfgEntry = GlobalConfiguration.findByKey(GlobalConfiguration.PREFIX + k);
       if (cfgEntry != null) {
-        final Object coerced = cfgEntry.coerceFromConfigurationSource(cfg.get(k), "server configuration file");
+        final Object coerced = cfgEntry.coerceFromConfigurationSource(cfg.get(k), source);
         if (coerced == null)
           // EITHER REFUSED (ALREADY REPORTED) OR A JSON null. LEAVE THE SETTING ON ITS DEFAULT RATHER THAN GUESS
           // WHAT WAS MEANT - AND NOTE THE MAP IS A ConcurrentHashMap, SO STORING null WOULD THROW ANYWAY.
@@ -126,8 +134,7 @@ public class ContextConfiguration implements Serializable {
         // A key that resolves to no setting is dropped, and used to be dropped in silence, which makes a typo in
         // the key name the same silent no-op the case variant above was. Say so once: the file is operator-authored
         // and the line is wrong however it got there (issue #7297).
-        LogManager.instance().log(this, Level.WARNING,
-            "Unknown setting '%s' in the server configuration file: ignored", GlobalConfiguration.PREFIX + k);
+        LogManager.instance().log(this, Level.WARNING, "Unknown setting '%s' in the %s: ignored", GlobalConfiguration.PREFIX + k, source);
     }
   }
 

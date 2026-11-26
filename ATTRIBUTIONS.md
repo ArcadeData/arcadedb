@@ -208,7 +208,7 @@ The following table lists runtime dependencies bundled with ArcadeDB distributio
 |----------|-------------|---------|---------|----------|
 | org.apache.commons | commons-compress | 1.28.0 | Apache 2.0 | https://commons.apache.org/proper/commons-compress/ |
 | org.apache.commons | commons-lang3 | 3.18.0 | Apache 2.0 | https://commons.apache.org/proper/commons-lang/ |
-| commons-codec | commons-codec | 1.19.0 | Apache 2.0 | https://commons.apache.org/proper/commons-codec/ |
+| commons-codec | commons-codec | 1.23.0 | Apache 2.0 | https://commons.apache.org/proper/commons-codec/ |
 | commons-io | commons-io | 2.20.0 | Apache 2.0 | https://commons.apache.org/proper/commons-io/ |
 
 ### Apache HttpComponents
@@ -299,6 +299,14 @@ Shipped in the `arcadedb-studio` jar. Their licences are on the CLAUDE.md allow-
 (https://fontawesome.com), licensed under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). The webfonts are
 licensed under the SIL Open Font License 1.1 (https://openfontlicense.org/) and the CSS under MIT. Full terms:
 https://fontawesome.com/license/free. Both are shipped unmodified.
+
+### Benchmark Harness (bench module, shaded into the bench jar)
+
+| Group ID | Artifact ID | Version | License | Homepage |
+|----------|-------------|---------|---------|----------|
+| org.neo4j.driver | neo4j-java-driver (Bolt client of the wire-protocol workloads) | `${neo4j-driver.version}` (root `pom.xml`) | Apache 2.0 | https://github.com/neo4j/neo4j-java-driver |
+| org.postgresql | postgresql (PostgreSQL JDBC driver of the wire-protocol workloads) | 42.7.14 | BSD 2-Clause | https://jdbc.postgresql.org/ |
+| org.neo4j.bolt, io.projectreactor, org.reactivestreams, io.netty, org.checkerframework | neo4j-bolt-connection* , reactor-core (Apache 2.0), reactive-streams (MIT-0), netty 4.2 incl. netty-tcnative-classes (Apache 2.0), checker-qual (MIT): transitive jars of neo4j-java-driver, shaded into the bench jar | versions follow neo4j-java-driver | Apache 2.0, MIT-0, MIT | https://github.com/neo4j/neo4j-java-driver |
 
 ### Transitive Dependencies Found by the #5651 License Audit
 

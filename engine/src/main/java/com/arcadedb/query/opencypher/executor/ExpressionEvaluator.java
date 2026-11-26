@@ -38,7 +38,7 @@ import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.VariableOverlayResult;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -239,12 +239,10 @@ public class ExpressionEvaluator {
       return expression.evaluate(result, context); // fallback for arrays
 
     final List<Object> resultList = new ArrayList<>();
+    // One row per evaluation, rebound per element, as ListComprehensionExpression does (issue #12723)
+    final VariableOverlayResult iterResult = new VariableOverlayResult(result, expression.getVariable());
     for (final Object item : iterable) {
-      final ResultInternal iterResult = new ResultInternal();
-      if (result != null)
-        for (final String prop : result.getPropertyNames())
-          iterResult.setProperty(prop, result.getProperty(prop));
-      iterResult.setProperty(expression.getVariable(), item);
+      iterResult.bind(item);
 
       if (expression.getWhereExpression() != null) {
         final Object filterValue = evaluate(expression.getWhereExpression(), iterResult, context);

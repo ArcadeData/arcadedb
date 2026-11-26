@@ -25,13 +25,13 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Property;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Iterator;
-import java.util.LinkedHashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 import java.util.StringJoiner;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
@@ -83,6 +83,10 @@ import java.util.logging.Level;
  * that state that do not involve this class at all - {@code ALTER PROPERTY ... MANDATORY TRUE} on a populated type,
  * and the {@code RESTORE} of #6127 - which is why it lives in the checker rather than here.
  * <p>
+ * A statement that commits partway - {@code CALL { ... } IN TRANSACTIONS}, which commits what the statement wrote before the
+ * CALL and then each batch on its own - has a check at each of those commits as well ({@link #checkBeforeCommit}, issue #13221):
+ * a record committed incomplete could not be taken back by the check at the end, whose delete the failed statement rolls back.
+ * <p>
  * Scopes nest: only the outermost {@link #open} returns a scope, so a nested plan (a {@code CALL} subquery, a
  * {@code FOREACH} body, a UNION branch) contributes its provisional records to the enclosing statement's scope and
  * never checks or closes it. That nesting is thread-bound, being keyed on {@link DatabaseContext}: it holds because
@@ -127,11 +131,25 @@ public class DeferredExistenceChecks {
    */
   private final List<MutableDocument> unresolved = new ArrayList<>();
 
-  /** Provisional records by RID, in creation order so the failure reports them in the order they were written. */
-  private final Set<RID> pending = new LinkedHashSet<>();
+  /**
+   * The transaction level ({@link #depth}) each entry of {@link #unresolved} was registered at, by position. Invariant: the two are
+   * kept in lockstep, position {@code i} of this array belongs to entry {@code i} of {@link #unresolved} for every
+   * {@code i < unresolved.size()} (what lies beyond is garbage). Every write of {@link #unresolved} - {@link #register} appending,
+   * {@link #resolve} and {@link #rolledBack} compacting in place - moves the level with its entry, and {@link #close()} clearing the
+   * list leaves nothing to match.
+   */
+  private int[] unresolvedLevels = new int[4];
 
   /**
-   * The size {@link #pending} has to reach before the next {@link #sweep()}. It starts at {@link #SWEEP_THRESHOLD}
+   * Provisional records by RID, in creation order so the failure reports them in the order they were written, each with the
+   * transaction level ({@link #depth}) it was created at. A commit point inside the statement checks, and a rollback forgets, only
+   * the records of the levels it ends (issue #13221): a nested {@code CALL { ... } IN TRANSACTIONS} commits its batches in a
+   * transaction nested in the enclosing batch's, which cannot read what the enclosing batch wrote.
+   */
+  private final Map<RID, Integer> pending = new LinkedHashMap<>();
+
+  /**
+   * The size {@link #pending} has to reach before the next {@link #sweep(int)}. It starts at {@link #SWEEP_THRESHOLD}
    * and is set to twice whatever survives a sweep, so a statement whose records never complete - the "forgot the
    * SET" mistake, where a sweep frees nothing - sweeps at 1000, 2000, 4000 rows rather than on every registration
    * past the first thousand. Without the doubling that case costs a full re-read of the pending set per row, which
@@ -316,7 +334,7 @@ public class DeferredExistenceChecks {
       if (scope.patternCreateDepth == 0)
         return false;
 
-      scope.register(document);
+      scope.register(document, depth(context));
       return true;
     }
 
@@ -552,14 +570,23 @@ public class DeferredExistenceChecks {
    * every offending property is raised.
    */
   public void check() {
+    checkFrom(0);
+  }
+
+  /**
+   * {@link #check()} restricted to the records created at transaction level {@code fromLevel} or deeper: the others stay pending,
+   * for the commit point of their own transaction or the end of the statement.
+   */
+  private void checkFrom(final int fromLevel) {
     // Unlike discard(), takeIncomplete() is not wrapped here, and deliberately: this runs on the success path,
     // where there is no earlier exception for a failure to displace, and a database that cannot even re-read the
     // records it just wrote should say so rather than have it logged and swallowed. If it does throw, the caller's
     // catch hands it to discard() - the guarded one - and close() clears this scope in its finally either way.
     final StringJoiner violations = new StringJoiner("; ");
-    final List<RID> incomplete = takeIncomplete(violations);
+    final List<RID> incomplete = takeIncomplete(violations, fromLevel);
     if (incomplete.isEmpty()) {
-      disarm();
+      if (isEmpty())
+        disarm();
       return;
     }
 
@@ -572,7 +599,8 @@ public class DeferredExistenceChecks {
       LogManager.instance().log(this, Level.WARNING,
           "Could not take back the incomplete records of a statement that failed its existence constraints", e);
     } finally {
-      disarm();
+      if (isEmpty())
+        disarm();
     }
 
     // What the message claims is what actually happened. Taking the records back is best effort - a delete can
@@ -597,6 +625,109 @@ public class DeferredExistenceChecks {
   }
 
   /**
+   * Enforces the deferred existence constraints at a commit point INSIDE the statement, called right before that commit
+   * (issue #13221). {@code CALL { ... } IN TRANSACTIONS} commits what the statement wrote before the CALL, then each batch on its
+   * own: a provisional record still pending at one of those commits would be committed incomplete, and {@link #check()} at the end
+   * of the statement could no longer take it back, its delete being rolled back with the failed statement. So every record the
+   * transaction about to commit created - the ones written since its previous commit point, as each commit point takes them out of
+   * the set - must be complete now, as Neo4j validates existence constraints when an inner transaction commits. A record an
+   * enclosing transaction created (a nested {@code CALL { ... } IN TRANSACTIONS}) is not judged here: this transaction cannot read it,
+   * and it stays pending for the commit point of its own transaction.
+   * <p>
+   * A record still incomplete is deleted in the transaction about to commit and a {@link ValidationException} is raised, exactly as
+   * {@link #check()} does: the caller then rolls that transaction back (the statement fails, or under ON ERROR CONTINUE/BREAK only
+   * the batch is undone), so nothing of the record is committed. Either way the writes of the transaction are done with as far as
+   * this scope is concerned: the journal of what was written beside the provisional records is dropped.
+   * <p>
+   * A no-op when no scope is open on this thread (the statement runs no deferral) or nothing is pending.
+   */
+  public static void checkBeforeCommit(final DatabaseInternal database) {
+    // A scope holding anything is armed (register arms it), and a disarmed one holds no journal or tally either: the usual batch,
+    // which left no record provisional, pays one volatile read
+    if (!anyScopeArmed())
+      return;
+
+    final DatabaseContext.DatabaseContextTL context = contextOf(database);
+    final DeferredExistenceChecks scope = context != null ? context.getDeferredExistenceChecks() : null;
+    if (scope == null || !scope.active)
+      return;
+
+    try {
+      if (!scope.isEmpty())
+        // Only the records of the transaction about to commit: one an enclosing transaction created is not visible from this one,
+        // and is checked when its own transaction commits (a nested CALL { ... } IN TRANSACTIONS)
+        scope.checkFrom(depth(context));
+    } finally {
+      scope.endOfTransaction();
+    }
+  }
+
+  /**
+   * Forgets the provisional records of the transactions just rolled back inside the statement (a batch of
+   * {@code CALL { ... } IN TRANSACTIONS} under ON ERROR CONTINUE or BREAK, or every level under ON ERROR FAIL, issue #13221): nothing
+   * of them is left to check, and a RID the rollback freed can be taken by a record of a later batch. The records of the
+   * transactions still open below are kept, for their own commit point or the end of the statement.
+   */
+  public static void rolledBack(final DatabaseInternal database) {
+    // Nothing to forget in a scope that holds nothing: see checkBeforeCommit
+    if (!anyScopeArmed())
+      return;
+
+    final DatabaseContext.DatabaseContextTL context = contextOf(database);
+    final DeferredExistenceChecks scope = context != null ? context.getDeferredExistenceChecks() : null;
+    if (scope == null || !scope.active)
+      return;
+
+    final int surviving = depth(context);
+    int kept = 0;
+    for (int i = 0; i < scope.unresolved.size(); ++i)
+      if (scope.unresolvedLevels[i] <= surviving) {
+        scope.unresolved.set(kept, scope.unresolved.get(i));
+        scope.unresolvedLevels[kept++] = scope.unresolvedLevels[i];
+      }
+    while (scope.unresolved.size() > kept)
+      scope.unresolved.removeLast();
+
+    for (final Iterator<Map.Entry<RID, Integer>> it = scope.pending.entrySet().iterator(); it.hasNext(); ) {
+      final Map.Entry<RID, Integer> entry = it.next();
+      if (entry.getValue() > surviving) {
+        scope.forgetTally(entry.getKey());
+        it.remove();
+      }
+    }
+    scope.endOfTransaction();
+  }
+
+  /**
+   * What a commit point or a rollback inside the statement leaves of this scope. With nothing pending any more, nothing of the
+   * writes before it: no tally, no journal. With records of an enclosing transaction still pending, the journal is given up
+   * ({@link #journalOverflowed}): it mixes the writes of the transaction that ended with those of the one still open, so a later
+   * take-back could give back a write that stands, and giving back nothing only keeps a commit refused.
+   */
+  private void endOfTransaction() {
+    journal = null;
+    if (isEmpty()) {
+      deferredUpdates = null;
+      journalOverflowed = false;
+      lightEdgeConnected = false;
+      disarm();
+    } else
+      journalOverflowed = true;
+  }
+
+  /**
+   * How many transactions are open on this thread, up to the innermost active one: the level a record created now belongs to, and
+   * the level a commit about to run ends. An inactive context left on top of the stack is not counted.
+   */
+  private static int depth(final DatabaseContext.DatabaseContextTL context) {
+    final List<TransactionContext> transactions = context.transactions;
+    for (int i = transactions.size() - 1; i > -1; --i)
+      if (transactions.get(i).isActive())
+        return i + 1;
+    return 0;
+  }
+
+  /**
    * Takes back the provisional records of a statement that failed for some other reason, quietly: the exception
    * already on its way out is the one the caller has to see, and it is more informative than a second one saying
    * the record the failed statement never finished writing is indeed unfinished. Called on the failure path so the
@@ -610,7 +741,7 @@ public class DeferredExistenceChecks {
     // pending record back, and the delete joins the current transaction. Letting one of those escape would replace
     // the real cause with an unrelated one - the exact opposite of what this method is for.
     try {
-      deleteProvisionalRecords(takeIncomplete(new StringJoiner("; ")));
+      deleteProvisionalRecords(takeIncomplete(new StringJoiner("; "), 0));
     } catch (final RuntimeException | Error e) {
       LogManager.instance().log(this, Level.WARNING,
           "Could not take back the incomplete records of a statement that failed for another reason", e);
@@ -621,16 +752,24 @@ public class DeferredExistenceChecks {
   }
 
   /**
-   * Empties the pending set, returning the records still not satisfying their existence constraints and describing
-   * each of them into {@code violations}.
+   * Takes out of the pending set the records created at transaction level {@code fromLevel} or deeper (0: all of them), returning
+   * those still not satisfying their existence constraints and describing each of them into {@code violations}.
    */
-  private List<RID> takeIncomplete(final StringJoiner violations) {
+  private List<RID> takeIncomplete(final StringJoiner violations, final int fromLevel) {
     resolve();
     if (pending.isEmpty())
       return List.of();
 
     final List<RID> incomplete = new ArrayList<>();
-    for (final RID rid : pending) {
+    for (final Iterator<Map.Entry<RID, Integer>> it = pending.entrySet().iterator(); it.hasNext(); ) {
+      final Map.Entry<RID, Integer> entry = it.next();
+      if (entry.getValue() < fromLevel)
+        // Created by an enclosing transaction, which this one cannot read: checked at its own commit point
+        continue;
+
+      final RID rid = entry.getKey();
+      it.remove();
+
       final Document record;
       try {
         record = (Document) database.lookupByRID(rid, true);
@@ -651,7 +790,6 @@ public class DeferredExistenceChecks {
     }
 
     // Still armed: the deletion that follows is journaled like the writes that came before it (retractJournaledWrites)
-    pending.clear();
     return incomplete;
   }
 
@@ -743,7 +881,7 @@ public class DeferredExistenceChecks {
     }
   }
 
-  private void register(final MutableDocument document) {
+  private void register(final MutableDocument document, final int level) {
     // One document, one registration: validate() walks the properties, so a record missing two mandatory ones
     // defers twice in a row for the same instance.
     if (!unresolved.isEmpty() && unresolved.getLast() == document)
@@ -751,9 +889,12 @@ public class DeferredExistenceChecks {
 
     resolve();
     if (pending.size() >= sweepAt) {
-      sweep();
+      sweep(level);
       sweepAt = Math.max(SWEEP_THRESHOLD, pending.size() * 2);
     }
+    if (unresolved.size() == unresolvedLevels.length)
+      unresolvedLevels = Arrays.copyOf(unresolvedLevels, unresolvedLevels.length * 2);
+    unresolvedLevels[unresolved.size()] = level;
     unresolved.add(document);
 
     if (!armed) {
@@ -771,7 +912,7 @@ public class DeferredExistenceChecks {
 
   private boolean isPending(final RID rid) {
     resolve();
-    return pending.contains(rid);
+    return pending.containsKey(rid);
   }
 
   /**
@@ -783,13 +924,19 @@ public class DeferredExistenceChecks {
     if (unresolved.isEmpty())
       return;
 
-    for (final Iterator<MutableDocument> it = unresolved.iterator(); it.hasNext(); ) {
-      final RID rid = it.next().getIdentity();
-      if (rid != null) {
-        pending.add(rid);
-        it.remove();
+    int kept = 0;
+    for (int i = 0; i < unresolved.size(); ++i) {
+      final MutableDocument document = unresolved.get(i);
+      final RID rid = document.getIdentity();
+      if (rid != null)
+        pending.put(rid, unresolvedLevels[i]);
+      else {
+        unresolved.set(kept, document);
+        unresolvedLevels[kept++] = unresolvedLevels[i];
       }
     }
+    while (unresolved.size() > kept)
+      unresolved.removeLast();
   }
 
   /** A record that leaves {@link #pending} without being taken back keeps no tally of updates, so a RID reused later starts from none. */
@@ -798,10 +945,16 @@ public class DeferredExistenceChecks {
       deferredUpdates.remove(rid);
   }
 
-  /** Drops from {@link #pending} every record the statement has completed since it was registered. */
-  private void sweep() {
-    for (final Iterator<RID> it = pending.iterator(); it.hasNext(); ) {
-      final RID rid = it.next();
+  /**
+   * Drops from {@link #pending} every record the statement has completed since it was registered, among those created at transaction
+   * level {@code fromLevel} or deeper: a record of an enclosing transaction cannot be read from this one, and would be dropped unchecked.
+   */
+  private void sweep(final int fromLevel) {
+    for (final Iterator<Map.Entry<RID, Integer>> it = pending.entrySet().iterator(); it.hasNext(); ) {
+      final Map.Entry<RID, Integer> entry = it.next();
+      if (entry.getValue() < fromLevel)
+        continue;
+      final RID rid = entry.getKey();
       try {
         if (firstUnmetExistenceConstraint((Document) database.lookupByRID(rid, true)) == null) {
           it.remove();

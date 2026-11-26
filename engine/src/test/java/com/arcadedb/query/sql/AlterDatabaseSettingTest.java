@@ -20,6 +20,9 @@ package com.arcadedb.query.sql;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseContext;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.exception.CommandExecutionException;
@@ -34,6 +37,7 @@ import org.junit.jupiter.api.Test;
 import java.io.File;
 import java.io.IOException;
 import java.util.Date;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -440,6 +444,158 @@ class AlterDatabaseSettingTest {
 
     private static String nested(final int depth, final String innermost) {
       return "(".repeat(depth) + innermost + ")".repeat(depth);
+    }
+  }
+
+  /**
+   * Regression for #12817: {@code arcadedb.txWalFlush} is an integer that only means something as 0, 1 or 2, and ALTER DATABASE stored
+   * any integer into {@code configuration.json}. Every write then failed with "Invalid TX_WAL_FLUSH setting", ALTER could not put it
+   * back (an NPE), and the database could not be opened or dropped any more.
+   */
+  @Nested
+  class WalFlushRange extends TestHelper {
+
+    @Test
+    void alterDatabaseRefusesAValueOutsideTheThreeFlushModes() {
+      database.getSchema().createDocumentType("D");
+      final int before = database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_WAL_FLUSH);
+
+      for (final String value : new String[] { "-1", "3" })
+        assertThatThrownBy(() -> database.command("sql", "ALTER DATABASE `arcadedb.txWalFlush` " + value))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("arcadedb.txWalFlush")
+            .hasMessageContaining("Allowed values are");
+
+      assertThat(database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_WAL_FLUSH)).isEqualTo(before);
+      assertThat(database.getConfiguration().hasValue(GlobalConfiguration.TX_WAL_FLUSH.getKey())).isFalse();
+      // the refused statement is not the one that breaks the next write
+      database.transaction(() -> database.newDocument("D").set("x", 1).save());
+      assertThat(database.countType("D", true)).isEqualTo(1);
+    }
+
+    @Test
+    void alterDatabaseStillStoresEachFlushMode() {
+      for (int mode = 0; mode <= 2; mode++) {
+        try (final ResultSet result = database.command("sql", "ALTER DATABASE `arcadedb.txWalFlush` " + mode)) {
+          assertThat(result.next().<Object>getProperty("newValue")).isEqualTo(mode);
+        }
+        assertThat(database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_WAL_FLUSH)).isEqualTo(mode);
+      }
+    }
+
+    @Test
+    void aDatabaseWhoseConfigurationHoldsAnInvalidFlushModeStillOpensWritesAndDrops() throws IOException {
+      final File directory = new File(getDatabasePath() + "-12817");
+      FileUtils.deleteRecursively(directory);
+      final DatabaseFactory brickFactory = new DatabaseFactory(directory.getPath());
+      try {
+        try (final Database created = brickFactory.create()) {
+          created.getSchema().createDocumentType("D");
+        }
+        // what ALTER DATABASE wrote before the fix, and what an older server leaves behind
+        final File configurationFile = new File(directory, LocalDatabase.CONFIGURATION_FILE_NAME);
+        final String invalid = "{\"configuration\":{\"txWalFlush\":-1}}";
+        FileUtils.writeFile(configurationFile, invalid);
+
+        final Database reopened = brickFactory.open();
+        try {
+          assertThat(reopened.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_WAL_FLUSH))
+              .isEqualTo(GlobalConfiguration.TX_WAL_FLUSH.getValueAsInteger());
+          reopened.transaction(() -> reopened.newDocument("D").set("x", 1).save());
+          assertThat(reopened.countType("D", true)).isEqualTo(1);
+
+          try (final ResultSet result = reopened.command("sql", "ALTER DATABASE `arcadedb.txWalFlush` 1")) {
+            assertThat(result.next().<Object>getProperty("newValue")).isEqualTo(1);
+          }
+        } finally {
+          if (reopened.isOpen())
+            reopened.close();
+        }
+
+        // drop opens the database first, so a configuration that broke the open blocked the drop too
+        FileUtils.writeFile(configurationFile, invalid);
+        brickFactory.open().drop();
+        assertThat(directory).doesNotExist();
+      } finally {
+        brickFactory.close();
+        FileUtils.deleteRecursively(directory);
+      }
+    }
+
+    @Test
+    void anInvalidFlushModeSetThroughTheApiFallsBackToTheDefaultInsteadOfFailingEveryWrite() throws InterruptedException {
+      database.getSchema().createDocumentType("D");
+      // ContextConfiguration.setValue stores what it is handed: the read side is the backstop
+      database.getConfiguration().setValue(GlobalConfiguration.TX_WAL_FLUSH, -1);
+
+      // a thread that has no transaction context on this database yet builds one from the configuration
+      final AtomicReference<Throwable> failure = new AtomicReference<>();
+      final Thread writer = new Thread(() -> {
+        try {
+          database.transaction(() -> database.newDocument("D").set("x", 1).save());
+        } catch (final Throwable t) {
+          failure.set(t);
+        }
+      });
+      writer.start();
+      writer.join();
+
+      assertThat(failure.get()).isNull();
+      assertThat(database.countType("D", true)).isEqualTo(1);
+
+      try (final ResultSet result = database.command("sql", "ALTER DATABASE `arcadedb.txWalFlush` 0")) {
+        assertThat(result.next().<Object>getProperty("newValue")).isEqualTo(0);
+      }
+    }
+
+    /**
+     * The NullPointerException ALTER DATABASE answered with once the setting was broken: the failed construction of the thread's
+     * transaction context left an empty context registered, whose missing transaction every later statement on that thread read.
+     */
+    @Test
+    void aTransactionContextThatCannotBeBuiltLeavesTheThreadUsableOnceTheSettingIsFixed() throws InterruptedException {
+      database.getSchema().createDocumentType("D");
+      // not a number at all, so not even the fallback can read it
+      database.getConfiguration().setValue(GlobalConfiguration.TX_WAL_FLUSH, "abc");
+
+      final AtomicReference<Throwable> first = new AtomicReference<>();
+      final AtomicReference<Throwable> second = new AtomicReference<>();
+      final Thread writer = new Thread(() -> {
+        try {
+          database.transaction(() -> database.newDocument("D").set("x", 1).save());
+        } catch (final Throwable t) {
+          first.set(t);
+        }
+        database.getConfiguration().setValue(GlobalConfiguration.TX_WAL_FLUSH, 0);
+        try {
+          database.transaction(() -> database.newDocument("D").set("x", 2).save());
+        } catch (final Throwable t) {
+          second.set(t);
+        }
+      });
+      writer.start();
+      writer.join();
+
+      assertThat(first.get()).isInstanceOf(NumberFormatException.class);
+      assertThat(second.get()).isNull();
+      assertThat(database.countType("D", true)).isEqualTo(1);
+    }
+
+    /**
+     * The same failure on a thread that already had a context on this database: its transactions are rolled back before the new
+     * one is built, and the context is kept because it carries the current user. The next begin() read its missing transaction.
+     */
+    @Test
+    void aContextThatLostItsTransactionsGetsANewOneAtTheNextBegin() {
+      database.getSchema().createDocumentType("D");
+      database.getConfiguration().setValue(GlobalConfiguration.TX_WAL_FLUSH, "abc");
+
+      assertThatThrownBy(() -> DatabaseContext.INSTANCE.init((DatabaseInternal) database)).isInstanceOf(NumberFormatException.class);
+      assertThat(DatabaseContext.INSTANCE.getContext(database.getDatabasePath()).getLastTransaction()).isNull();
+
+      database.getConfiguration().setValue(GlobalConfiguration.TX_WAL_FLUSH, 0);
+      database.transaction(() -> database.newDocument("D").set("x", 1).save());
+      assertThat(database.countType("D", true)).isEqualTo(1);
     }
   }
 }
