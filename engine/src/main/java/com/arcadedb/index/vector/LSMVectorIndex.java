@@ -5300,6 +5300,85 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * Certifies the graph a replicated compaction has just shipped to this node, when the compaction created this index's
+   * graph file (issue #13484). Called by the replication layer of a follower right after it applied the entry of a
+   * compaction, and before it applies any later entry.
+   * <p>
+   * A compaction rebuilds the graph on the leader and ships its pages with the new data file, but the manifest and the
+   * ordinal map that say which records the graph was built over are plain files next to it, which nothing replicates.
+   * Without them a follower could reuse those pages only while nothing was deleted (the walk of
+   * {@link #loadPersistedGraphOrDecidePrefix()} re-derives the map from the live set): the first deletion that arrived
+   * before its first search sent every compacted piece to a rebuild from scratch, on every follower, which the leader
+   * never pays.
+   * <p>
+   * Here, and only here, the map is known exactly rather than guessed. The compaction rewrote the data file with the live
+   * vectors renumbered densely from 0 (issue #5870) and built the graph over those ids, ascending, minus any its
+   * validation refused; and the entry applied just before this call is the whole content of the new data file. So when
+   * the location index holds no tombstone, its live ids are exactly {@code [0, N)} and the graph has {@code N} nodes,
+   * the build refused nothing and ordinal {@code i} is vector id {@code i}. Any other shape (a refused vector, a write
+   * already on top of the rewrite after a replay, a manifest already present, PRODUCT quantization, whose codes are not
+   * shipped either) leaves the index as it was, to the ordinary load path. The ordinals the leader's build left
+   * unreachable are not shipped either, and are found again here with the same walk the build runs.
+   *
+   * @param addedFileIds the ids of the files the applied entry created
+   *
+   * @return whether the shipped graph is now certified
+   */
+  public boolean certifyGraphShippedByReplicatedCompaction(final Set<Integer> addedFileIds) {
+    final LSMVectorIndexGraphFile gf = graphFile;
+    if (gf == null || addedFileIds == null || !addedFileIds.contains(gf.getFileId()) || !gf.hasPersistedGraph())
+      return false;
+    if (metadata.quantizationType == VectorQuantizationType.PRODUCT)
+      return false;
+    final LSMVectorIndexGraphManifest manifest = gf.getManifest();
+    if (manifest.exists())
+      return false;
+
+    // Never waited for: this runs on the replication apply thread, and a search that already holds the lock is resolving the
+    // graph of this instance itself, possibly with a build that takes minutes
+    if (!graphBuildLock.tryLock())
+      return false;
+    try {
+      if (graphIndex != null)
+        // Something already resolved the graph of this instance: nothing left to certify for it
+        return false;
+
+      final VectorLocationIndex locations = vectorIndex();
+      if (locations.getDeletedCount() > 0)
+        return false;
+      final int[] liveIds = locations.getAllVectorIds().filter(locations::isLive).sorted().toArray();
+      // Dense [0, N): the renumbered content of the rewrite and nothing else
+      if (liveIds.length == 0 || liveIds[0] != 0 || liveIds[liveIds.length - 1] != liveIds.length - 1)
+        return false;
+
+      final int[] unreachableOrdinals;
+      try (final OnDiskGraphIndex shipped = gf.loadGraph()) {
+        if (shipped == null || shipped.size() != liveIds.length) {
+          LogManager.instance().log(this, Level.INFO,
+              "The graph a replicated compaction shipped for index %s holds %d nodes against %d live vectors: it is not "
+                  + "certified, and the index rebuilds its graph on first use", indexName, shipped != null ? shipped.size() : 0,
+              liveIds.length);
+          return false;
+        }
+        unreachableOrdinals = findUnreachableOrdinals(shipped);
+      }
+
+      manifest.write(liveIds, locations::getRid, true, unreachableOrdinals, 0L);
+      LogManager.instance().log(this, Level.INFO,
+          "Certified the graph a replicated compaction shipped for index %s: %d nodes over the vector ids [0, %d) (issue "
+              + "#13484)", indexName, liveIds.length, liveIds.length);
+      return true;
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Could not certify the graph a replicated compaction shipped for index %s, it is rebuilt on first use: %s", indexName,
+          e.toString());
+      return false;
+    } finally {
+      graphBuildLock.unlock();
+    }
+  }
+
+  /**
    * How long one commit of a bulk graph persist waits for its file locks (issue #7361).
    * <p>
    * {@link GlobalConfiguration#COMMIT_LOCK_TIMEOUT} is sized for an interactive transaction, where giving up fast

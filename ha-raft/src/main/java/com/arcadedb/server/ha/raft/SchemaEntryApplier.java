@@ -28,6 +28,10 @@ import com.arcadedb.engine.timeseries.TimeSeriesSealedInstallLock;
 import com.arcadedb.engine.timeseries.TimeSeriesSealedStore;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.WALVersionGapException;
+import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexInternal;
+import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.ContinuousAggregateImpl;
 import com.arcadedb.schema.FullSchemaLoadReason;
@@ -324,6 +328,12 @@ final class SchemaEntryApplier {
         if (refusal != null)
           loadSchemaInFull(schema, decoded, entryIndex, refusal, retiring);
 
+        // A vector compaction shipped its graph without the manifest and the ordinal map that certify it (plain files next to
+        // it). This is the one moment the follower can certify it exactly, before a later entry writes on top of the rewrite
+        // (issue #13484): otherwise the first deletion sends every compacted piece to a rebuild from scratch on this node
+        if (!isEmptyMap(decoded.filesToAdd()))
+          certifyGraphsShippedByCompaction(schema, decoded.filesToAdd().keySet());
+
         // The reload read the index and dictionary files again, on the apply thread (issue #11518): a copy that turns up
         // damaged here is quarantined before the next entry is applied to it, as the startup scan does for one found at open
         sm.quarantine.quarantineIfLocalCopyDamaged(decoded.databaseName(), db);
@@ -370,6 +380,26 @@ final class SchemaEntryApplier {
             + "was re-instantiated on the apply thread in %d ms",
         entryIndex, decoded.databaseName(), refusal.reason().getDescription(), refusal, sizeOf(decoded.filesToAdd()),
         sizeOf(decoded.filesToRemove()), sizeOf(decoded.filesToRename()), TimeUnit.NANOSECONDS.toMillis(elapsedNanos));
+  }
+
+  /**
+   * Asks every vector index whose graph file the applied entry created to certify the graph that came with it (issue #13484). An
+   * index whose graph file is not among them answers at once, so the cost is one look per vector index for an entry that adds
+   * files. A failure here only costs the index a rebuild on first use, as before, and never fails the apply.
+   */
+  private void certifyGraphsShippedByCompaction(final LocalSchema schema, final Set<Integer> addedFileIds) {
+    try {
+      for (final Index index : schema.getIndexes())
+        if (index instanceof LSMVectorIndex vectorIndex)
+          vectorIndex.certifyGraphShippedByReplicatedCompaction(addedFileIds);
+        else if (index instanceof TypeIndex typeIndex)
+          for (final IndexInternal bucketIndex : typeIndex.getIndexesOnBuckets())
+            if (bucketIndex instanceof LSMVectorIndex vectorIndex)
+              vectorIndex.certifyGraphShippedByReplicatedCompaction(addedFileIds);
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(sm, Level.WARNING, "Could not certify the vector graphs a replicated compaction shipped: %s",
+          e.toString());
+    }
   }
 
   private static int sizeOf(final Map<?, ?> map) {
