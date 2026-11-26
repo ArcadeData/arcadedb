@@ -1,0 +1,11 @@
+name: x
+on: [ workflow_dispatch ]
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build
+        run: |
+          docker buildx build \
+            --platform linux/amd64 \
+            --push -t a/b:1 .

@@ -19,9 +19,9 @@
 #
 # Applies the release version to every file that carries it. Run from the repository root.
 #
-# mvn-release.yml runs this in BOTH of its jobs: `central` deploys the tree it produces, and `docker-and-tag`
-# rebuilds the same tree to commit and tag it. Keeping the edits in one place is what guarantees the tag points at
-# exactly the sources that went to Maven Central.
+# mvn-release.yml runs this in every job that builds or commits the release: `preflight` scans the tree it produces,
+# `central` deploys it, `docker` builds the image from it, and `tag` commits and tags it. Keeping the edits in one
+# place is what guarantees the tag points at exactly the sources that went to Maven Central.
 #
 # server.json is the manifest the MCP registry publishes this server from. It is not a Maven artifact, so
 # versions:set never reaches it and it silently drifted six releases behind HEAD (#6838). It names the last

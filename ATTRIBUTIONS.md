@@ -373,6 +373,8 @@ These dependencies are used only during the build process:
 | org.antlr | antlr4-maven-plugin | 4.13.2 | BSD 3-Clause | https://www.antlr.org/ |
 | io.grpc | protoc-gen-grpc-java | 1.79.0 | Apache 2.0 | https://grpc.io/ |
 | com.github.os72 | protoc-jar-maven-plugin | 3.x | Apache 2.0 | https://github.com/os72/protoc-jar-maven-plugin |
+| org.cyclonedx | cyclonedx-maven-plugin | 2.9.3 | Apache 2.0 | https://github.com/CycloneDX/cyclonedx-maven-plugin |
+| org.codehaus.mojo | exec-maven-plugin (studio and package, run the SBOM scripts under -Pdeploy) | 3.6.4 | Apache 2.0 | https://www.mojohaus.org/exec-maven-plugin/ |
 
 ---
 
