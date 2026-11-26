@@ -84,4 +84,126 @@ class CypherSetExistsPatternIssue13466Test extends TestHelper {
         .isInstanceOf(CommandParsingException.class)
         .hasMessageContaining("Pattern expressions are not allowed in SET values");
   }
+
+  @Test
+  void setOfADynamicPropertyStoresTheBooleanOfAnExistsPattern() {
+    createGraph();
+
+    database.transaction(() -> database.command("opencypher", "MATCH (u:U) SET u['has'] = exists((u)-[:R]->(:L))").close());
+
+    assertThat(flagsById()).containsExactly(true, false);
+  }
+
+  @Test
+  void aParenthesizedPatternIsStillTheWholeArgumentOfExists() {
+    createGraph();
+
+    database.transaction(() -> database.command("opencypher", "MATCH (u:U) SET u.has = exists(((u)-[:R]->(:L)))").close());
+
+    assertThat(flagsById()).containsExactly(true, false);
+  }
+
+  @Test
+  void anExistsPatternInsideALargerSetValueIsEvaluatedPerRow() {
+    createGraph();
+
+    database.transaction(() -> database.command("opencypher",
+        "MATCH (u:U) SET u.has = CASE WHEN exists((u)-[:R]->(:L)) THEN 'y' ELSE 'n' END").close());
+
+    assertThat(flagsById()).containsExactly("y", "n");
+  }
+
+  /**
+   * exists() tests the pattern only when the pattern is its whole argument. A pattern that is a part of the argument used to be
+   * picked out of it and tested alone, the list or the function around it silently dropped.
+   */
+  @Test
+  void aPatternThatIsOnlyAPartOfTheExistsArgumentIsRefused() {
+    createGraph();
+
+    for (final String value : new String[] { "exists([(u)-[:R]->(:L)])", "exists(coalesce((u)-[:R]->(:L)))",
+        "exists((u)-[:R]->(:L) = true)" }) {
+      assertThatThrownBy(() -> database.command("opencypher", "MATCH (u:U) SET u.has = " + value).close())
+          .as(value)
+          .isInstanceOf(CommandParsingException.class)
+          .hasMessageContaining("Pattern expressions are not allowed in SET values");
+      assertThatThrownBy(() -> database.command("opencypher", "MATCH (u:U) SET u['has'] = " + value).close())
+          .as(value)
+          .isInstanceOf(CommandParsingException.class)
+          .hasMessageContaining("Pattern expressions are not allowed in SET values");
+      assertThatThrownBy(() -> database.query("opencypher", "MATCH (u:U) RETURN " + value + " AS has").close())
+          .as(value)
+          .isInstanceOf(CommandParsingException.class)
+          .hasMessageContaining("Pattern expressions are not allowed in RETURN projections");
+    }
+  }
+
+  @Test
+  void returnRefusesABarePatternBehindAnExistsPattern() {
+    createGraph();
+
+    assertThatThrownBy(
+        () -> database.query("opencypher", "MATCH (u:U) RETURN exists((u)-[:R]->(:L)) AS a, [(u)-[:R]->(:L)] AS b").close())
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("Pattern expressions are not allowed in RETURN projections");
+    assertThatThrownBy(
+        () -> database.query("opencypher", "MATCH (u:U) RETURN [exists((u)-[:R]->(:L)), (u)-[:R]->(:L)] AS a").close())
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("Pattern expressions are not allowed in RETURN projections");
+  }
+
+  @Test
+  void withAndLetProjectTheBooleanOfAnExistsPattern() {
+    createGraph();
+
+    database.transaction(
+        () -> database.command("opencypher", "MATCH (u:U) WITH u, exists((u)-[:R]->(:L)) AS has SET u.has = has").close());
+    assertThat(flagsById()).containsExactly(true, false);
+
+    database.transaction(
+        () -> database.command("opencypher", "MATCH (u:U) LET has = NOT exists((u)-[:R]->(:L)) SET u.has = has").close());
+    assertThat(flagsById()).containsExactly(false, true);
+  }
+
+  @Test
+  void withAndLetStillRefuseABarePattern() {
+    createGraph();
+
+    assertThatThrownBy(() -> database.command("opencypher", "MATCH (u:U) WITH u, (u)-[:R]->(:L) AS has SET u.has = 1").close())
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("Pattern expressions are not allowed in WITH projections");
+    assertThatThrownBy(
+        () -> database.command("opencypher", "MATCH (u:U) WITH u, exists([(u)-[:R]->(:L)]) AS has SET u.has = has").close())
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("Pattern expressions are not allowed in WITH projections");
+    assertThatThrownBy(() -> database.command("opencypher", "MATCH (u:U) LET has = (u)-[:R]->(:L) SET u.has = 1").close())
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("Pattern expressions are not allowed in LET");
+  }
+
+  /**
+   * In a WHERE the pattern of a CASE WHEN condition is a boolean, and exists() around the CASE tests the value of the CASE:
+   * null (no branch taken) for the node without the relationship. Lowering the call to the pattern alone gave the same rows
+   * here only by accident, so the THEN value is chosen to tell the two apart: the pattern matches node 1, the CASE is null
+   * for it.
+   */
+  @Test
+  void existsAroundACaseTestsTheValueOfTheCaseNotThePatternOfItsCondition() {
+    createGraph();
+
+    database.transaction(() -> database.command("opencypher",
+        "MATCH (u:U) WHERE exists(CASE WHEN (u)-[:R]->(:L) THEN null ELSE 1 END) SET u.has = true").close());
+
+    assertThat(flagsById()).containsExactly(null, true);
+  }
+
+  @Test
+  void anExistsSubqueryWithAPatternPredicateIsNotABarePattern() {
+    createGraph();
+
+    database.transaction(() -> database.command("opencypher",
+        "MATCH (u:U) SET u.has = EXISTS { MATCH (u)-[:R]->(x) WHERE (x)<-[:R]-() }").close());
+
+    assertThat(flagsById()).containsExactly(true, false);
+  }
 }

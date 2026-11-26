@@ -233,7 +233,8 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
   public List<WithClause> visitLetClause(final Cypher25Parser.LetClauseContext ctx) {
     final List<WithClause> clauses = new ArrayList<>(ctx.letItem().size());
     for (final Cypher25Parser.LetItemContext item : ctx.letItem()) {
-      if (booleans.findPatternExpressionRecursive(item.expression()) != null)
+      // A bare pattern is refused; the argument of a function-style exists(pattern) is a boolean check (issue #13466)
+      if (BooleanExpressionBuilder.findBarePatternExpression(item.expression()) != null)
         throw new CommandParsingException("UnexpectedSyntax: Pattern expressions are not allowed in LET");
       final Expression expression = expressionBuilder.parseExpression(item.expression());
       final String variable = stripBackticks(item.variable().getText());
@@ -518,7 +519,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       if (itemCtx instanceof Cypher25Parser.SetPropContext propCtx) {
         // Bare pattern expressions (e.g., (n)-[:REL]->()) are not allowed in SET values; one inside a
         // function-style exists(pattern) is a boolean check and is (issue #13466)
-        if (booleans.findBarePatternExpression(propCtx.expression()) != null)
+        if (BooleanExpressionBuilder.findBarePatternExpression(propCtx.expression()) != null)
           throw new CommandParsingException("UnexpectedSyntax: Pattern expressions are not allowed in SET values");
         final Cypher25Parser.PropertyExpressionContext propExprCtx = propCtx.propertyExpression();
         final Expression valueExpr = expressionBuilder.parseExpression(propCtx.expression());
@@ -551,7 +552,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         }
       } else if (itemCtx instanceof Cypher25Parser.SetDynamicPropContext dynCtx) {
         // SET n[keyExpr] = value — dynamic property assignment (issue #5141)
-        if (booleans.findBarePatternExpression(dynCtx.expression()) != null)
+        if (BooleanExpressionBuilder.findBarePatternExpression(dynCtx.expression()) != null)
           throw new CommandParsingException("UnexpectedSyntax: Pattern expressions are not allowed in SET values");
         final Cypher25Parser.DynamicPropertyExpressionContext dynPropExpr = dynCtx.dynamicPropertyExpression();
         final Expression keyExpr = expressionBuilder.parseExpression(dynPropExpr.dynamicProperty().expression());
@@ -858,8 +859,9 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       items.add(ReturnClause.ReturnItem.star());
     // Always process explicit return items (handles both "WITH expr" and "WITH *, expr AS alias")
     for (final Cypher25Parser.ReturnItemContext itemCtx : body.returnItems().returnItem()) {
-      // Pattern expressions (e.g., (n)-[]->()) are not allowed in WITH projections
-      if (booleans.findPatternExpressionRecursive(itemCtx.expression()) != null)
+      // Bare pattern expressions (e.g., (n)-[]->()) are not allowed in WITH projections; the argument of a
+      // function-style exists(pattern) is a boolean check, as in RETURN (issues #4993, #13466)
+      if (BooleanExpressionBuilder.findBarePatternExpression(itemCtx.expression()) != null)
         throw new CommandParsingException("UnexpectedSyntax: Pattern expressions are not allowed in WITH projections");
       final Expression expr = expressionBuilder.parseExpression(itemCtx.expression());
       final String alias = itemCtx.variable() != null ? stripBackticks(itemCtx.variable().getText()) : null;
@@ -1001,8 +1003,8 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       // Bare pattern expressions (e.g., (n)-[]->()) are not allowed in RETURN projections.
       // A pattern nested inside a function-style exists(pattern) predicate is allowed: it evaluates
       // to a boolean, not a projected path (issue #4993).
-      final Cypher25Parser.PatternExpressionContext patternInReturn = booleans.findPatternExpressionRecursive(itemCtx.expression());
-      if (patternInReturn != null && !booleans.isArgumentOfExistsFunction(patternInReturn))
+      // Every pattern of the item is checked, not only the first one (issue #13466).
+      if (BooleanExpressionBuilder.findBarePatternExpression(itemCtx.expression()) != null)
         throw new CommandParsingException("UnexpectedSyntax: Pattern expressions are not allowed in RETURN projections");
       final Expression expr = expressionBuilder.parseExpression(itemCtx.expression());
       final String alias = itemCtx.variable() != null ? stripBackticks(itemCtx.variable().getText()) : null;
