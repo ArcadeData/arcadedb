@@ -900,6 +900,9 @@ final class CypherStepBuilder {
         if (plan.isFollowedByCountOnlyReturn(clausesInOrder, entryIndex)) {
           callStep.setCountOnlyOptimization(true);
         }
+        // A void call passes its input rows on when another clause follows it, and answers no row when it ends the query, as
+        // in Neo4j (issue #13537)
+        callStep.setVoidCallKeepsRows(entryIndex + 1 < clausesInOrder.size() || statement.getReturnClause() != null);
         currentStep = callStep;
         eagerness.observeClause(entry, false, boundVariables);
         // A CALL binds the names it yields the way UNWIND binds its variable: they belong to the scope a
