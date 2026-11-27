@@ -19,6 +19,7 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
@@ -168,7 +169,8 @@ class SuperTypeStoredRecordsTest extends TestHelper {
 
   /**
    * A property of the same name and ANOTHER declared type does not shadow the inherited one: the write path holds a record to both,
-   * so a record that fails the inherited one has to refuse the link, or every later write to it fails.
+   * so a record that fails the inherited one has to refuse the link, or every later write to it fails. Since #12732 the link is
+   * refused before any record is read, for the two declarations themselves: one name cannot have two types in a hierarchy.
    */
   @Test
   void aSameNamePropertyOfAnotherTypeDoesNotShadowTheInheritedOne() {
@@ -179,7 +181,7 @@ class SuperTypeStoredRecordsTest extends TestHelper {
     database.transaction(() -> database.command("sql", "INSERT INTO T SET p = '5'"));
 
     assertThatThrownBy(() -> database.command("sql", "ALTER TYPE T SUPERTYPE +S"))
-        .isInstanceOf(ValidationException.class)
+        .isInstanceOf(SchemaException.class)
         .hasMessageContaining("Cannot make type 'T' a sub type of 'S'");
     assertThat(database.getSchema().getType("T").getSuperTypes()).isEmpty();
     assertThatCode(() -> database.transaction(() -> database.command("sql", "UPDATE T SET other = 2"))).doesNotThrowAnyException();

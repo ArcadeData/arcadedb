@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.ProtocolContext;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.timeseries.TimeSeriesWalkCoarsenedException;
 import com.arcadedb.exception.*;
 import com.arcadedb.index.fulltext.FullTextQueryParseException;
@@ -237,9 +238,20 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   // name, the same unbounded heap growth #5025 fixed for the path tag (issue #6805).
   private static final String     UNKNOWN_DB_TAG     = "unknown";
   // Constant db tag substituted once the timer cache is full, so a database name churn (create/drop in a
-  // loop) cannot grow the cache without bound either. The overflow tuple space is itself finite: method,
-  // path template and status are all small enumerations.
+  // loop) cannot grow the cache without bound either. The overflow tuple space is itself finite: the method is
+  // one of the STANDARD_METHOD_TAGS or OTHER_METHOD_TAG, the path is a route template or UNMATCHED_PATH_TAG, and
+  // the status is one the handlers answer with.
   private static final String     OVERFLOW_DB_TAG    = "other";
+  // Constant method tag used for any request method outside STANDARD_METHOD_TAGS, so the tag takes a bounded set of
+  // values like the path and db tags do.
+  private static final String     OTHER_METHOD_TAG   = "OTHER";
+  // The HTTP methods the "method" tag keeps as they are. The method token is case sensitive.
+  private static final Set<String> STANDARD_METHOD_TAGS = Set.of("GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS",
+      "TRACE", "CONNECT");
+  // Maximum number of distinct values the "method" tag of arcadedb.http.requests can take: the standard methods
+  // plus OTHER_METHOD_TAG. ArcadeDBServer.startMetrics() installs the matching MeterFilter from this constant, so
+  // the registry-side bound and the normalisation above are one number rather than two independently-chosen ones.
+  public static final  int        MAX_METHOD_TAG_VALUES = STANDARD_METHOD_TAGS.size() + 1;
   // Maximum number of distinct DATABASE NAMES allowed in the "db" tag of arcadedb.http.requests.
   // ArcadeDBServer.startMetrics() installs the matching MeterFilter from this constant, so the registry-side
   // bound and the cache-side bound below are one number rather than two independently-chosen ones. Far above
@@ -262,8 +274,9 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   // Cache of resolved arcadedb.http.requests timers keyed by the bounded tag tuple
   // (method|path|status|db). Avoids rebuilding the Timer.Builder/Tags/Meter.Id and doing a registry
   // hash lookup on every request. The key space is bounded because every tag is low-cardinality: the
-  // path is collapsed to a route template or the constant "unmatched", method and status are small
-  // enumerations, and db is either an existing database name or the constant "unknown".
+  // path is collapsed to a route template or the constant "unmatched", the method to a standard one or the
+  // constant "OTHER", the status is one the handlers answer with, and db is either an existing database
+  // name or the constant "unknown".
   private static final ConcurrentHashMap<String, Timer> HTTP_REQUEST_TIMERS = new ConcurrentHashMap<>();
   // Tracks the database whose DatabaseContext this request bound the authenticated principal onto in
   // checkAuthorizationOnDatabase, so handleRequest's finally can clear the binding on THIS pooled worker
@@ -641,7 +654,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
               ctx.put(OBSERVATION_REQUEST_PATH, exchange.getRequestPath());
               return ctx;
             }, httpServer.getServer().getObservationRegistry())
-        .lowCardinalityKeyValue("method", exchange.getRequestMethod().toString())
+        .lowCardinalityKeyValue("method", methodTag(exchange.getRequestMethod().toString()))
         .lowCardinalityKeyValue("path", pathTemplate(exchange))
         .lowCardinalityKeyValue("db", databaseTag(exchange));
     observation.start();
@@ -1893,16 +1906,31 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   }
 
   /**
+   * Returns the bounded {@code method} tag for a request: the method itself when it is one of the standard HTTP
+   * methods, {@link #OTHER_METHOD_TAG} for any other token. Idempotent. Package-private for direct unit testing.
+   */
+  static String methodTag(final String method) {
+    return STANDARD_METHOD_TAGS.contains(method) ? method : OTHER_METHOD_TAG;
+  }
+
+  // @VisibleForTesting
+  static int httpRequestTimerCacheSize() {
+    return HTTP_REQUEST_TIMERS.size();
+  }
+
+  /**
    * Resolves (and caches) the {@code arcadedb.http.requests} RED timer for the given bounded tag tuple.
    * Building the timer once per distinct {@code method|path|status|db} tuple and reusing it removes the
    * per-request {@code Timer.Builder}/{@code Tags}/{@code Meter.Id} allocation and registry hash lookup
-   * on the hot path. The cache stays bounded because every tag is low-cardinality (issue #5025), and a
+   * on the hot path. The cache stays bounded because every tag is low-cardinality (issue #5025): the method
+   * is normalised here by {@link #methodTag(String)}, so a caller can hand over the raw request method, and a
    * hard {@link #MAX_HTTP_REQUEST_TIMERS} ceiling backs that up: a registry {@code MeterFilter} can deny
    * the meter but cannot stop {@code computeIfAbsent} from retaining the key, so past the ceiling the
    * {@code db} half of the tuple collapses onto {@link #OVERFLOW_DB_TAG} (issue #6805).
    * Package-private for direct unit testing.
    */
-  static Timer httpRequestTimer(final String method, final String path, final String status, final String db) {
+  static Timer httpRequestTimer(final String requestMethod, final String path, final String status, final String db) {
+    final String method = methodTag(requestMethod);
     final String key = method + '|' + path + '|' + status + '|' + db;
     final Timer cached = HTTP_REQUEST_TIMERS.get(key);
     if (cached != null)
@@ -2395,13 +2423,42 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   }
 
   /**
+   * Rolls back whatever is still open on {@code current} (this thread's context for {@code database} when null) and removes the
+   * context from the thread.
+   */
+  protected static void cleanTL(final DatabaseInternal database, DatabaseContext.DatabaseContextTL current) {
+    if (current == null)
+      current = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
+
+    if (current != null) {
+      TransactionContext tx;
+      while ((tx = current.popIfNotLastTransaction()) != null) {
+        if (tx.isActive())
+          tx.rollback();
+        else
+          break;
+      }
+
+      DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
+    }
+  }
+
+  /**
    * Binds the authenticated principal onto this thread's {@link DatabaseContext} for {@code database}, so the engine's
-   * per-type ACL layer enforces, and marks it for {@link #handleRequest}'s finally to clear. A no-op for a null user.
+   * per-type ACL layer enforces, and marks it for {@link #handleRequest}'s finally to clear. A transaction found open on the thread
+   * is rolled back first. A no-op for a null user.
    */
   protected void bindPrincipal(final ServerSecurityUser user, final DatabaseInternal database) {
     if (user == null)
       return;
     DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
+    if (context != null && context.hasActiveTransaction()) {
+      // A transaction still open on a pooled worker thread belongs to no request in flight: this request must neither run in it nor
+      // commit it, so it is rolled back and the thread starts from a clean context
+      LogManager.instance().log(this, Level.WARNING, "Found a pending transaction from a previous operation. Rolling it back...");
+      cleanTL(database, context);
+      context = null;
+    }
     if (context == null)
       context = DatabaseContext.INSTANCE.init(database);
     context.setCurrentUser(user.getDatabaseUser(database));

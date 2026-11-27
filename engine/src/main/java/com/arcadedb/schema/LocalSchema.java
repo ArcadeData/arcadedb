@@ -648,6 +648,17 @@ public class LocalSchema implements Schema {
    */
   public void load(final ComponentFile.MODE mode, final boolean initialize, final boolean deferTimeSeriesEngines)
       throws IOException {
+    load(mode, initialize, deferTimeSeriesEngines, Collections.emptySet());
+  }
+
+  /**
+   * @param retiringFileIds files the new generation must not have, that the previous one still reads from until the barrier
+   *                        replaces it: those of a replicated compaction an HA replica retires only once this load has
+   *                        published (issue #12358). Left out of the components this load builds, as if already deleted
+   */
+  public void load(final ComponentFile.MODE mode, final boolean initialize, final boolean deferTimeSeriesEngines,
+      final Set<Integer> retiringFileIds) throws IOException {
+    Objects.requireNonNull(retiringFileIds, "retiringFileIds");
     // Claim the staging window FIRST. beginStagedPublication() refuses a load that overlaps another, and a refusal
     // has to leave the schema exactly as it found it.
     // stageFileIds=true: the previous generation keeps its file-id slots until the barrier, which is what keeps the
@@ -716,7 +727,7 @@ public class LocalSchema implements Schema {
         throw new ConfigurationException("Dictionary file not found in database directory");
 
       for (final ComponentFile file : filesToOpen) {
-        if (file != null && !Dictionary.DICT_EXT.equals(file.getFileExtension())) {
+        if (file != null && !Dictionary.DICT_EXT.equals(file.getFileExtension()) && !retiringFileIds.contains(file.getFileId())) {
           final Component pf = componentFactory.createComponent(file, mode);
 
           if (pf != null)
@@ -7700,15 +7711,36 @@ public class LocalSchema implements Schema {
   }
 
   /**
-   * Refuses to hand {@code bucket} to the type {@code typeName} when another type owns it. The one place the verdict and its
-   * wording live: {@code addBucket} gives it after the fact, and {@link TypeBuilder} asks for it before it registers a type,
-   * so a refusal leaves no half-built type behind (issue #10317).
+   * The type that keeps the bucket {@code bucketId} for its own use, in the published graph: the paired bucket of its EXTERNAL
+   * values, an edge-list bucket of one of its vertex buckets, a bucket of its super-node stripe pool. A bucket a type owns is
+   * the one the type's own list answers with, so it is found here as well. {@code null} while a load is assembling the graph:
+   * the load restores what was saved, and the maps it builds are not the ones a statement reads.
+   */
+  LocalDocumentType getBucketInvolvedBy(final int bucketId) {
+    if (isStagingPublication())
+      return null;
+    if (bucketTypeMapsStale)
+      rebuildBucketTypeMap();
+    return published.bucketId2InvolvedTypeMap().get(bucketId);
+  }
+
+  /**
+   * Refuses to hand {@code bucket} to the type {@code typeName} when another type owns it, or keeps it for its own use. The one
+   * place the verdict and its wording live: {@code addBucket} gives it after the fact, and {@link TypeBuilder} asks for it before
+   * it registers a type, so a refusal leaves no half-built type behind (issue #10317).
    */
   void checkBucketIsFree(final String typeName, final Bucket bucket) {
     final LocalDocumentType owner = getBucketOwner(bucket.getFileId());
     if (owner != null)
       throw new SchemaException("Cannot add the bucket '" + bucket.getName() + "' to the type '" + typeName
           + "', because the bucket is already associated to the type '" + owner.getName() + "'");
+
+    // An internal bucket of a type answers to that type for the per-file permissions only while no type owns it: taking it as
+    // a bucket of its own would hand it to the new type
+    final LocalDocumentType user = getBucketInvolvedBy(bucket.getFileId());
+    if (user != null)
+      throw new SchemaException("Cannot add the bucket '" + bucket.getName() + "' to the type '" + typeName
+          + "', because the bucket is an internal bucket of the type '" + user.getName() + "'");
   }
 
   /** What the published bucket maps hold that a full rebuild would not, or null when they agree (checked under -ea). */

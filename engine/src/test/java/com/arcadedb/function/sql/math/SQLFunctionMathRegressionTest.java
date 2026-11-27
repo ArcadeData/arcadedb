@@ -20,6 +20,7 @@ package com.arcadedb.function.sql.math;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.ArithmeticErrorException;
+import com.arcadedb.function.agg.CypherAvgFunction;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
@@ -30,6 +31,7 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.MathContext;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Random;
 
@@ -465,9 +467,31 @@ class SQLFunctionMathRegressionTest {
           });
         final Number expected = reference(values);
         final Number actual = unboxed(values);
-        assertThat(actual).as("sum of %s", values).isEqualTo(expected);
-        assertThat(actual.getClass()).as("type of the sum of %s", values).isEqualTo(expected.getClass());
+        assertSameTotal(actual, expected, values, "sum");
       }
+    }
+
+    /**
+     * The class of the total is always the boxed fold's. Its value is too when no input is floating-point; with a floating-point
+     * input the total is the exact sum correctly rounded (#12696) where the boxed fold rounds at every addition, so the two agree
+     * within the fold's rounding error, which is bounded by the sum of the magnitudes.
+     */
+    private static void assertSameTotal(final Number actual, final Number expected, final List<Number> values, final String what) {
+      assertThat(actual.getClass()).as("type of the %s of %s", what, values).isEqualTo(expected.getClass());
+      boolean floating = false;
+      boolean anyFloat = false;
+      double magnitude = 0;
+      for (final Number v : values) {
+        floating |= v instanceof Double || v instanceof Float;
+        anyFloat |= v instanceof Float;
+        magnitude += Math.abs(v.doubleValue());
+      }
+      if (!floating || !Double.isFinite(expected.doubleValue()) || !Double.isFinite(actual.doubleValue())) {
+        assertThat(actual).as("%s of %s", what, values).isEqualTo(expected);
+        return;
+      }
+      final double tolerance = magnitude * (anyFloat ? 1e-5 : 1e-13);
+      assertThat(actual.doubleValue()).as("%s of %s", what, values).isCloseTo(expected.doubleValue(), within(tolerance));
     }
 
     /** The total through the primitive adders, each input by its own class; any other class through {@link NumericSum#add}. */
@@ -524,10 +548,10 @@ class SQLFunctionMathRegressionTest {
       final Number expected = reference(values);
       final Number boxed = unboxed(values);
       final Number actual = primitive(values);
-      assertThat(actual).as("primitive sum of %s", values).isEqualTo(expected);
-      assertThat(actual.getClass()).as("type of the primitive sum of %s", values).isEqualTo(expected.getClass());
-      assertThat(boxed).as("boxed sum of %s", values).isEqualTo(expected);
-      assertThat(boxed.getClass()).as("type of the boxed sum of %s", values).isEqualTo(expected.getClass());
+      assertSameTotal(actual, expected, values, "primitive sum");
+      assertSameTotal(boxed, expected, values, "boxed sum");
+      // THE PRIMITIVE ADDERS AND add() TAKE THE SAME TRANSITIONS: THE SAME TOTAL, BIT FOR BIT
+      assertThat(actual).as("primitive against boxed sum of %s", values).isEqualTo(boxed);
     }
 
     /**
@@ -640,6 +664,256 @@ class SQLFunctionMathRegressionTest {
           assertThat(r.<Object>getProperty("ad")).isNull();
         }
       });
+    }
+  }
+
+  /**
+   * Regression for #12696: a floating-point {@code sum()} / {@code avg()} total does not depend on the order of its values.
+   * <p>
+   * The parallel scan aggregates the units each worker happens to take into one partial and merges the partials, so which values
+   * were added together, and in which order, depended on thread timing: a running {@code double} total answered a different value
+   * on almost every run of the same query. {@link NumericSum} now keeps the exact sum and rounds it once, so every split of the
+   * values in partials, merged in any order, answers the same value: the exact sum correctly rounded.
+   *
+   * @author lvca (l.garulli@arcadedata.com)
+   */
+  @Nested
+  class ExactFloatingSum {
+
+    private static double exact(final List<Double> values) {
+      BigDecimal sum = BigDecimal.ZERO;
+      for (final double v : values)
+        sum = sum.add(new BigDecimal(v));
+      return sum.doubleValue();
+    }
+
+    private static Number sequential(final List<? extends Number> values) {
+      final NumericSum sum = new NumericSum();
+      for (final Number v : values)
+        sum.add(v);
+      return sum.get();
+    }
+
+    /** The values cut in random partials, each summed on its own, merged in a random order. */
+    private static Number split(final List<? extends Number> values, final Random random) {
+      final List<NumericSum> partials = new ArrayList<>();
+      final int count = 1 + random.nextInt(8);
+      for (int i = 0; i < count; i++)
+        partials.add(new NumericSum());
+      for (final Number v : values)
+        partials.get(random.nextInt(count)).add(v);
+      Collections.shuffle(partials, random);
+      final NumericSum total = new NumericSum();
+      for (final NumericSum partial : partials)
+        total.merge(partial);
+      return total.get();
+    }
+
+    @Test
+    void theTotalIsTheExactSumCorrectlyRounded() {
+      assertThat(sequential(List.of(0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1))).isEqualTo(1.0);
+      // THE CLASSIC math.fsum CASES: CANCELLATION, AND A TIE THE PARTIALS BELOW IT DECIDE
+      assertThat(sequential(List.of(1e100, 1.0, -1e100, 1e-100, 1e50, -1.0, -1e50))).isEqualTo(1e-100);
+      assertThat(sequential(List.of(1e-16, 1.0, 1e16))).isEqualTo(10000000000000002.0);
+      assertThat(sequential(List.of(1e300, 0.5, -1e300, 0.25))).isEqualTo(0.75);
+
+      final Random random = new Random(12696);
+      for (int round = 0; round < 2_000; round++) {
+        final List<Double> values = new ArrayList<>();
+        final int n = 1 + random.nextInt(40);
+        for (int i = 0; i < n; i++)
+          values.add(switch (round % 5 == 4 ? 3 + random.nextInt(2) : random.nextInt(3)) {
+            case 0 -> Math.round(random.nextDouble() * 10_000) / 100.0;
+            case 1 -> (random.nextDouble() - 0.5) * Math.pow(10, random.nextInt(40) - 20);
+            case 2 -> random.nextBoolean() ? 1e20 : -1e20;
+            // THE WHOLE EXPONENT RANGE, AND THE SUBNORMALS
+            case 3 -> Math.scalb(random.nextDouble() - 0.5, random.nextInt(2_000) - 1_000);
+            default -> Double.MIN_VALUE * (random.nextInt(1 << 20) - (1 << 19));
+          });
+        assertThat(sequential(values)).as("sum of %s", values).isEqualTo(exact(values));
+      }
+    }
+
+    @Test
+    void manyValuesAcrossCarryPropagationsStayExact() {
+      // MORE VALUES THAN ONE CARRY PROPAGATION IS DEFERRED FOR, OF BOTH SIGNS AND A WIDE RANGE OF MAGNITUDES
+      final Random random = new Random(21);
+      final NumericSum sum = new NumericSum();
+      final NumericSum firstHalf = new NumericSum();
+      final NumericSum secondHalf = new NumericSum();
+      BigDecimal exact = BigDecimal.ZERO;
+      final int count = 1_500_000;
+      for (int i = 0; i < count; i++) {
+        final double v = Math.scalb(random.nextDouble() - 0.3, random.nextInt(120) - 60);
+        sum.addDouble(v);
+        (i < count / 3 ? firstHalf : secondHalf).addDouble(v);
+        exact = exact.add(new BigDecimal(v));
+      }
+      assertThat(sum.get()).isEqualTo(exact.doubleValue());
+      secondHalf.merge(firstHalf);
+      assertThat(secondHalf.get()).isEqualTo(exact.doubleValue());
+    }
+
+    @Test
+    void extremeTotalsRoundCorrectly() {
+      assertThat(sequential(List.of(Double.MAX_VALUE, Double.MAX_VALUE))).isEqualTo(Double.POSITIVE_INFINITY);
+      assertThat(sequential(List.of(-Double.MAX_VALUE, -Double.MAX_VALUE))).isEqualTo(Double.NEGATIVE_INFINITY);
+      // HALF AN ULP OF Double.MAX_VALUE ABOVE IT ROUNDS TO EVEN, WHICH IS INFINITY; LESS STAYS
+      assertThat(sequential(List.of(Double.MAX_VALUE, Math.ulp(Double.MAX_VALUE) / 2))).isEqualTo(Double.POSITIVE_INFINITY);
+      assertThat(sequential(List.of(Double.MAX_VALUE, Math.ulp(Double.MAX_VALUE) / 4))).isEqualTo(Double.MAX_VALUE);
+      assertThat(sequential(List.of(Double.MIN_VALUE, Double.MIN_VALUE, -Double.MIN_VALUE))).isEqualTo(Double.MIN_VALUE);
+      assertThat(sequential(List.of(Double.MIN_NORMAL, -Double.MIN_VALUE))).isEqualTo(Double.MIN_NORMAL - Double.MIN_VALUE);
+      // TIES TO EVEN: 2^53 + 1 IS HALF WAY BETWEEN 2^53 AND 2^53 + 2
+      assertThat(sequential(List.of(0x1p53, 1.0))).isEqualTo(0x1p53);
+      assertThat(sequential(List.of(0x1p53, 1.0, Double.MIN_VALUE))).isEqualTo(0x1p53 + 2);
+      assertThat(sequential(List.of(-0x1p53, -1.0, -Double.MIN_VALUE))).isEqualTo(-0x1p53 - 2);
+      assertThat(sequential(List.of(Long.MIN_VALUE, 0.5))).isEqualTo((double) Long.MIN_VALUE);
+      assertThat(sequential(List.of(0.5, Long.MIN_VALUE, Long.MAX_VALUE))).isEqualTo(-0.5);
+    }
+
+    @Test
+    void mergingPartialsInAnyOrderGivesTheSequentialTotal() {
+      final Random random = new Random(1);
+      for (int round = 0; round < 2_000; round++) {
+        final List<Number> values = new ArrayList<>();
+        final int n = 1 + random.nextInt(60);
+        final int only = round % 4;
+        for (int i = 0; i < n; i++)
+          // FLOATS AND DOUBLES ARE NOT MIXED: A Float TOTAL MEETING A Double WIDENS AS A WHOLE (Type.increment), A TYPE ORDER
+          values.add(switch (only == 3 ? (random.nextBoolean() ? 0 : 2) : only) {
+            case 0 -> Math.round(random.nextDouble() * 10_000) / 100.0;
+            case 1 -> random.nextFloat() * 1e4f - 5e3f;
+            default -> (random.nextDouble() - 0.5) * Math.pow(10, random.nextInt(600) - 300);
+          });
+        final Number expected = sequential(values);
+        for (int attempt = 0; attempt < 5; attempt++)
+          assertThat(split(values, random)).as("sum of %s", values).isEqualTo(expected);
+      }
+    }
+
+    @Test
+    void integralTotalsMeetingDoublesAreAddedExactly() {
+      // A long TOTAL BEYOND 2^53 IS ADDED EXACTLY, IN WHICHEVER PARTIAL IT ENDS UP (NO PARTIAL CAN OVERFLOW A long HERE: A long
+      // OVERFLOW WIDENS TO A BigDecimal, WHICH MEETS A double BY ITS DECIMAL FORM, AS Type.increment() DOES)
+      final List<Number> values = List.of(0.5, Long.MAX_VALUE - 10, -(Long.MAX_VALUE - 10), 3, 0.25);
+      assertThat(sequential(values)).isEqualTo(3.75);
+      final Random random = new Random(7);
+      for (int attempt = 0; attempt < 200; attempt++)
+        assertThat(split(values, random)).isEqualTo(3.75);
+    }
+
+    @Test
+    void infinitiesNanAndZerosDoNotDependOnTheOrder() {
+      assertThat(sequential(List.of(1.0, Double.POSITIVE_INFINITY, -5.0))).isEqualTo(Double.POSITIVE_INFINITY);
+      assertThat(sequential(List.of(Double.POSITIVE_INFINITY, 1.0, Double.NEGATIVE_INFINITY))).isEqualTo(Double.NaN);
+      assertThat(sequential(List.of(1.0, Double.NaN))).isEqualTo(Double.NaN);
+      assertThat(sequential(List.of(-0.0, -0.0))).isEqualTo(-0.0);
+      assertThat(sequential(List.of(-0.0, 0.0))).isEqualTo(0.0);
+      assertThat(sequential(List.of(1.0, -1.0))).isEqualTo(0.0);
+      assertThat(sequential(List.of(1.0, -1.0, -0.0))).isEqualTo(0.0);
+
+      final Random random = new Random(3);
+      for (final List<Double> values : List.of(List.of(-0.0, -0.0, -0.0), List.of(-0.0, 0.0, -0.0), List.of(2.0, Double.NEGATIVE_INFINITY, 1.0),
+          List.of(Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, 1.0), List.of(Double.NaN, 1.0, 2.0)))
+        for (int attempt = 0; attempt < 50; attempt++)
+          assertThat(split(values, random)).as("sum of %s", values).isEqualTo(sequential(values));
+    }
+
+    @Test
+    void anIntermediateOverflowIsNotTheTotal() {
+      // 1e308 + 1e308 OVERFLOWS A double, BUT THE EXACT TOTAL IS BACK IN RANGE
+      assertThat(sequential(List.of(1e308, 1e308, -1e308))).isEqualTo(1e308);
+      assertThat(sequential(List.of(1e308, 1e308, 0.5))).isEqualTo(Double.POSITIVE_INFINITY);
+      final List<Double> values = List.of(1e308, 1e308, -1e308, 1.5, -1e308, Double.MAX_VALUE, -Double.MAX_VALUE);
+      final double expected = exact(values);
+      assertThat(sequential(values)).isEqualTo(expected);
+      final Random random = new Random(5);
+      for (int attempt = 0; attempt < 200; attempt++)
+        assertThat(split(values, random)).as("sum of %s", values).isEqualTo(expected);
+    }
+
+    @Test
+    void aFloatTotalIsRoundedOnceFromTheExactSum() {
+      // JUST ABOVE THE MIDPOINT BETWEEN 1f AND ITS SUCCESSOR: ROUNDED TO A double FIRST IT WOULD BE THE MIDPOINT, THEN 1f
+      assertThat(sequential(List.of(1f, 0x1p-24f, 0x1p-54f))).isEqualTo(Math.nextUp(1f));
+      assertThat(sequential(List.of(1f, 0x1p-24f))).isEqualTo(1f);
+      assertThat(sequential(List.of(-1f, -0x1p-24f, -0x1p-54f))).isEqualTo(-Math.nextUp(1f));
+      assertThat(sequential(List.of(Float.MAX_VALUE, Float.MAX_VALUE))).isEqualTo(Float.POSITIVE_INFINITY);
+      assertThat(sequential(List.of(Float.MIN_VALUE, Float.MIN_VALUE, -Float.MIN_VALUE))).isEqualTo(Float.MIN_VALUE);
+      assertThat(sequential(List.of(-0.0f, -0.0f))).isEqualTo(-0.0f);
+
+      final Random random = new Random(24);
+      for (int round = 0; round < 2_000; round++) {
+        final List<Float> values = new ArrayList<>();
+        BigDecimal exact = BigDecimal.ZERO;
+        final int n = 1 + random.nextInt(30);
+        for (int i = 0; i < n; i++) {
+          final float v = round % 2 == 0 ? Math.scalb(random.nextFloat() - 0.5f, random.nextInt(280) - 150) : random.nextInt(1_000_000) / 100f;
+          values.add(v);
+          exact = exact.add(new BigDecimal(v));
+        }
+        assertThat(sequential(values)).as("sum of %s", values).isEqualTo(exact.floatValue());
+        assertThat(split(values, random)).as("split sum of %s", values).isEqualTo(exact.floatValue());
+      }
+    }
+
+    @Test
+    void theMeanOfFiniteValuesIsFiniteWhenTheirSumIsNot() {
+      final List<List<? extends Number>> inputs = List.of(List.of(Double.MAX_VALUE, Double.MAX_VALUE),
+          List.of(Double.MAX_VALUE, 0x1p969, 0x1p969), List.of(-Double.MAX_VALUE, -Double.MAX_VALUE, -Double.MAX_VALUE),
+          List.of(Float.MAX_VALUE, Float.MAX_VALUE));
+      final double[] expected = { Double.MAX_VALUE, new BigDecimal(Double.MAX_VALUE).add(new BigDecimal(0x1p970))
+          .divide(BigDecimal.valueOf(3), MathContext.DECIMAL128).doubleValue(), -Double.MAX_VALUE, Float.MAX_VALUE };
+      for (int i = 0; i < inputs.size(); i++) {
+        final SQLFunctionAverage avg = new SQLFunctionAverage();
+        final CypherAvgFunction cypherAvg = new CypherAvgFunction();
+        for (final Number value : inputs.get(i)) {
+          avg.aggregate(null, new Object[] { value }, null);
+          cypherAvg.execute(new Object[] { value }, null);
+        }
+        assertThat(avg.getResult()).as("avg of %s", inputs.get(i)).isEqualTo(expected[i]);
+        assertThat(cypherAvg.getAggregatedResult()).as("Cypher avg of %s", inputs.get(i)).isEqualTo(expected[i]);
+      }
+      // AN INFINITE VALUE STILL MAKES AN INFINITE MEAN
+      final SQLFunctionAverage infinite = new SQLFunctionAverage();
+      infinite.aggregate(null, new Object[] { Double.MAX_VALUE }, null);
+      infinite.aggregate(null, new Object[] { Double.POSITIVE_INFINITY }, null);
+      assertThat(infinite.getResult()).isEqualTo(Double.POSITIVE_INFINITY);
+    }
+
+    @Test
+    void sqlAndCypherFunctionsMergeTheirPartialsExactly() {
+      final List<Double> values = new ArrayList<>();
+      final Random random = new Random(11);
+      for (int i = 0; i < 5_000; i++)
+        values.add(Math.round(random.nextDouble() * 10_000) / 100.0);
+      final double expected = exact(values);
+
+      for (int attempt = 0; attempt < 20; attempt++) {
+        final int partials = 2 + random.nextInt(6);
+        final SQLFunctionSum[] sums = new SQLFunctionSum[partials];
+        final SQLFunctionAverage[] avgs = new SQLFunctionAverage[partials];
+        final CypherAvgFunction[] cypherAvgs = new CypherAvgFunction[partials];
+        for (int p = 0; p < partials; p++) {
+          sums[p] = new SQLFunctionSum();
+          avgs[p] = new SQLFunctionAverage();
+          cypherAvgs[p] = new CypherAvgFunction();
+        }
+        for (final double value : values) {
+          final int p = random.nextInt(partials);
+          sums[p].aggregate(null, new Object[] { value }, null);
+          avgs[p].aggregate(null, new Object[] { value }, null);
+          cypherAvgs[p].execute(new Object[] { value }, null);
+        }
+        for (int p = 1; p < partials; p++) {
+          sums[0].mergePartial(sums[p]);
+          avgs[0].mergePartial(avgs[p]);
+          cypherAvgs[0].mergePartial(cypherAvgs[p]);
+        }
+        assertThat(sums[0].getResult()).isEqualTo(expected);
+        assertThat(avgs[0].getResult()).isEqualTo(expected / values.size());
+        assertThat(cypherAvgs[0].getAggregatedResult()).isEqualTo(expected / values.size());
+      }
     }
   }
 

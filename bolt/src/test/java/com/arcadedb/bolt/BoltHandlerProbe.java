@@ -278,7 +278,7 @@ final class BoltHandlerProbe {
 
   private static Database throwingDatabase(final RuntimeException failure) {
     final InvocationHandler handler = (proxy, method, args) -> switch (method.getName()) {
-      case "begin", "commit", "rollback" -> throw failure;
+      case "begin", "commit", "rollback", "rollbackAllNested" -> throw failure;
       case "isOpen" -> true;
       case "getName" -> "probe";
       // No database context is ever registered under this path, so the handler binds no user to one

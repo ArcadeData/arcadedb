@@ -139,12 +139,17 @@ public class RetryStep extends AbstractExecutionStep {
         // work. The deadline, not the conflict, is what ended the block, and saying so is the whole
         // point: the conflict alone would leave a COMMIT RETRY 10 that made one attempt unexplained.
         rollbackQuietly(ctx);
+        // Neither as the retryable conflict it is, nor with it as the cause, which the error classification finds along the chain
+        // (#13251)
         if (commandDeadlineReached(ctx))
           throw new TimeoutException(
               "COMMIT RETRY gave up after " + (attempt + 1) + " of " + retries + " attempts: the command exceeded the "
-                  + ctx.getCommandDeadlineDescription(), ex);
+                  + ctx.getCommandDeadlineDescription(),
+              partiallyCommitted(txAtStart, commitCountAtStart, attempt, ex) ?
+                  TransactionContext.notReplayable(ex, "COMMIT RETRY block", txAtStart, commitCountAtStart) :
+                  ex);
         if (partiallyCommitted(txAtStart, commitCountAtStart, attempt, ex))
-          throw ex;
+          throw TransactionContext.notReplayable(ex, "COMMIT RETRY block", txAtStart, commitCountAtStart);
         // A refusal this node repeats until something outside it changes (a follower naming the leader) is not a conflict
         // that clears on its own: every remaining attempt would fail the same way, and an ELSE body would run on a block
         // that never had a chance (issue #9995). A duplicated key gets one retry, for a commit that raced the attempt (an

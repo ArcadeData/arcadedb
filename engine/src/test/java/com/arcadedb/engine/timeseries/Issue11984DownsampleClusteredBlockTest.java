@@ -28,14 +28,12 @@ import org.junit.jupiter.api.Timeout;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Proxy;
-import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.awaitility.Awaitility.await;
 
 /**
  * Regression test for issue #11984: a downsampling tier skipped every raw sealed block whose AVERAGE sample spacing was at least the
@@ -199,9 +197,9 @@ class Issue11984DownsampleClusteredBlockTest extends TestHelper {
 
   /**
    * What a restart costs the first pass of a tier is a read of the old history to prove its blocks irreducible, and that read must not
-   * run inside the rewrite window of the shard ({@link TimeSeriesShard#runSealedRewrite}): that window holds the compaction WRITE lock,
-   * so no append and no query of the shard goes by for as long as the history takes to read. A query holds the compaction read lock
-   * here, which parks the rewrite of the pass at the write lock, and by the time it is parked the blocks have to be proved already.
+   * run under the compaction WRITE lock of the shard, or no append and no query of the shard goes by for as long as the history takes
+   * to read. A query holds the compaction read lock here for the whole pass: the pass proves the block and, having nothing to fold,
+   * finishes without ever asking for the write lock (issue #12610 took the whole selection and fold out of it).
    */
   @Test
   @Timeout(120)
@@ -239,11 +237,13 @@ class Issue11984DownsampleClusteredBlockTest extends TestHelper {
       compactionLock.readLock().lock();
       try {
         pass.start();
-        // the pass is parked at the write lock of the shard: the one point of its rewrite window that a reader holds back
-        await().atMost(Duration.ofSeconds(60)).until(compactionLock::hasQueuedThreads);
+        // a hang detector, not a latency bound: a pass that needed the write lock of the shard would wait here for the reader
+        pass.join(60_000);
+        assertThat(pass.isAlive()).as("the pass finished while a reader held the compaction read lock of the shard").isFalse();
+        assertThat(compactionLock.hasQueuedThreads()).isFalse();
 
         assertThat(shard.getSealedStore().snapshotBlockDirectory(Long.MIN_VALUE, Long.MAX_VALUE).blocks())
-            .as("the blocks were proved before the pass asked for the write lock of the shard")
+            .as("the block was proved without the write lock of the shard")
             .extracting(block -> block.isIrreducibleOn(grid)).containsExactly(true);
       } finally {
         compactionLock.readLock().unlock();
@@ -256,7 +256,10 @@ class Issue11984DownsampleClusteredBlockTest extends TestHelper {
     }
   }
 
-  /** Counts the sealed files the engine hands to the replication; the database answers everything else as it did. */
+  /**
+   * Counts the sealed files the engine hands to the replication; the database says it is replicated, since only a replicated one
+   * is handed any, and answers everything else as it did.
+   */
   private static AtomicInteger countShippedSealedFiles(final LocalDatabase local, final DatabaseInternal wrapped) {
     final AtomicInteger shipped = new AtomicInteger();
     local.setWrappedDatabaseInstance((DatabaseInternal) Proxy.newProxyInstance(DatabaseInternal.class.getClassLoader(),
@@ -265,6 +268,8 @@ class Issue11984DownsampleClusteredBlockTest extends TestHelper {
             shipped.incrementAndGet();
             return null;
           }
+          if ("isReplicated".equals(method.getName()))
+            return true;
           try {
             return method.invoke(wrapped, args);
           } catch (final InvocationTargetException e) {

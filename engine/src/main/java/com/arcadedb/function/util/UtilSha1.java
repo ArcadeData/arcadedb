@@ -21,7 +21,7 @@ package com.arcadedb.function.util;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
- * util.sha1(value) - Compute SHA-1 hash.
+ * util.sha1(values) - Compute the SHA-1 hash of the concatenated string forms of the values (see {@link #computeHash}).
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -43,7 +43,7 @@ public class UtilSha1 extends AbstractUtilFunction {
 
   @Override
   public String getDescription() {
-    return "Compute SHA-1 hash of the given value";
+    return "Compute SHA-1 hash of the concatenated string forms of the given values";
   }
 
   @Override
