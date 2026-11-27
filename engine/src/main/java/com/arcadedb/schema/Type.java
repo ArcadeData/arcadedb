@@ -2323,6 +2323,9 @@ public enum Type {
     // Double.equals separates the two zeros; IEEE 754 and openCypher do not (issue #8920)
     if (pair[0] instanceof Double a && pair[1] instanceof Double b && a == 0.0d && b == 0.0d)
       return true;
+    // the same for a FLOAT met by a BYTE, a SHORT or another FLOAT: Float.equals separates the two zeros as well
+    if (pair[0] instanceof Float a && pair[1] instanceof Float b && a == 0.0f && b == 0.0f)
+      return true;
 
     if (left instanceof Float f)
       return narrowsTo(f, right);
