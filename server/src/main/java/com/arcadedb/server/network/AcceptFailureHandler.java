@@ -34,6 +34,10 @@ import java.util.logging.Level;
  * goes on accepting and dropping connections at the bounded rate above, and serves again by itself once the condition
  * clears.
  * <p>
+ * A failure of the listening socket itself, when it is asked for the next connection, is not tied to one connection: it comes
+ * back at once on every call for as long as its cause lasts. {@link #handleAcceptFailure} gives it the same bounded rate,
+ * whatever its type.
+ * <p>
  * One instance per listener, used by its accept thread only.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -59,24 +63,45 @@ public final class AcceptFailureHandler {
    * @param message what the loop was doing, in the words the listener already uses for an exception
    */
   public void handle(final Object source, final String message, final Throwable failure) {
+    if (failure instanceof Error) {
+      reportAndPause(source, message, failure);
+      return;
+    }
+
     try {
-      if (failure instanceof Error)
-        logError(source, message, failure);
-      else
-        LogManager.instance().log(source, Level.WARNING, message, failure);
+      LogManager.instance().log(source, Level.WARNING, message, failure);
+    } catch (final Throwable e) {
+      // IGNORE IT: THE LOOP MUST GO ON
+    }
+  }
+
+  /**
+   * Reports {@code failure}, which the listening socket itself raised when asked for the next connection, and pauses before
+   * the next call. Such a failure is not tied to one connection: it comes back at once on every call for as long as its cause
+   * lasts, so whatever its type it is paused and logged at a bounded rate, as an {@link Error} is. Never throws: a failure to
+   * report must not end the loop either.
+   *
+   * @param message what the loop was doing, in the words the listener already uses for an exception
+   */
+  public void handleAcceptFailure(final Object source, final String message, final Throwable failure) {
+    reportAndPause(source, message, failure);
+  }
+
+  private void reportAndPause(final Object source, final String message, final Throwable failure) {
+    try {
+      logRepeatedFailure(source, message, failure);
     } catch (final Throwable e) {
       // IGNORE IT: THE LOOP MUST GO ON
     }
 
-    if (failure instanceof Error)
-      try {
-        Thread.sleep(PAUSE_MS);
-      } catch (final InterruptedException e) {
-        Thread.currentThread().interrupt();
-      }
+    try {
+      Thread.sleep(PAUSE_MS);
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
   }
 
-  private void logError(final Object source, final String message, final Throwable failure) {
+  private void logRepeatedFailure(final Object source, final String message, final Throwable failure) {
     final long now = System.currentTimeMillis();
     if (lastLogTime != 0 && now - lastLogTime < LOG_INTERVAL_MS) {
       ++heldBack;
@@ -89,7 +114,7 @@ public final class AcceptFailureHandler {
     heldBack = 0;
   }
 
-  /** How many errors were not logged since the last one that was. */
+  /** How many failures were not logged since the last one that was. */
   long getHeldBack() {
     return heldBack;
   }

@@ -66,7 +66,16 @@ public class RedisNetworkListener extends Thread {
     try {
       while (active) {
         try {
-          final Socket socket = serverSocket.accept();
+          final Socket socket;
+          try {
+            socket = serverSocket.accept();
+          } catch (final Throwable e) {
+            // The socket itself failed, which it keeps doing at once on every call for as long as the cause lasts: retried at
+            // a bounded rate rather than in a hot loop
+            if (active)
+              failureHandler.handleAcceptFailure(this, "Error accepting client connections", e);
+            continue;
+          }
 
           // One thread and one file descriptor are committed here, before the client has proved anything: past
           // the cap the socket is closed straight away rather than being given either (issue #6412).
