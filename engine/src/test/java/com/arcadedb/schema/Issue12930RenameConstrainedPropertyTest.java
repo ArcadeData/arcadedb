@@ -39,6 +39,7 @@ class Issue12930RenameConstrainedPropertyTest extends TestHelper {
     database.command("sql", "CREATE DOCUMENT TYPE R");
     database.command("sql", "CREATE PROPERTY R.old INTEGER (mandatory true)");
     database.transaction(() -> database.command("sql", "INSERT INTO R SET old = 1"));
+    assertThat(dictionaryIdOf("new")).as("no record and no property holds the new name yet").isNegative();
 
     assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY R.old NAME new")).isInstanceOf(ValidationException.class)
         .hasMessageContaining("Cannot rename property 'R.old' to 'new': record #").hasMessageContaining("violates it")
@@ -46,6 +47,9 @@ class Issue12930RenameConstrainedPropertyTest extends TestHelper {
 
     assertSchemaUnchanged("old", "new");
     assertThat(database.getSchema().getType("R").getProperty("old").isMandatory()).isTrue();
+    // registering a name commits a page change of its own, which on a Raft leader quarantined it (#12958, #13092): a refused
+    // rename must leave none behind
+    assertThat(dictionaryIdOf("new")).as("the refused rename registered nothing in the dictionary").isNegative();
     // the records can still be updated, which the accepted rename made impossible
     database.transaction(() -> database.command("sql", "UPDATE R SET z = 1"));
     assertNoViolation();
@@ -60,6 +64,41 @@ class Issue12930RenameConstrainedPropertyTest extends TestHelper {
     assertThatThrownBy(() -> database.getSchema().getType("R").getProperty("old").rename("new"))
         .isInstanceOf(ValidationException.class).hasMessageContaining("Cannot rename property 'R.old' to 'new'");
     assertSchemaUnchanged("old", "new");
+    assertThat(dictionaryIdOf("new")).isNegative();
+  }
+
+  @Test
+  void aSubTypeRecordThatInheritsTheConstrainedPropertyRefusesTheRename() {
+    // the scan is polymorphic: the only record lives in the sub type, which inherits the MANDATORY property from the super type
+    database.command("sql", "CREATE DOCUMENT TYPE S");
+    database.command("sql", "CREATE PROPERTY S.old INTEGER (mandatory true)");
+    database.command("sql", "CREATE DOCUMENT TYPE R EXTENDS S");
+    database.transaction(() -> database.command("sql", "INSERT INTO R SET old = 1"));
+
+    assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY S.old NAME new")).isInstanceOf(ValidationException.class)
+        .hasMessageContaining("Cannot rename property 'S.old' to 'new': record #").hasMessageContaining("is mandatory");
+
+    final DocumentType superType = database.getSchema().getType("S");
+    assertThat(superType.existsProperty("old")).isTrue();
+    assertThat(superType.existsProperty("new")).isFalse();
+    assertThat(database.getSchema().getType("R").existsPolymorphicProperty("old")).isTrue();
+    assertThat(dictionaryIdOf("new")).isNegative();
+    database.transaction(() -> database.command("sql", "UPDATE R SET z = 1"));
+    assertNoViolation();
+  }
+
+  @Test
+  void aSubTypeRecordThatHoldsTheValueUnderTheNewNameLetsTheRenameThrough() {
+    database.command("sql", "CREATE DOCUMENT TYPE S");
+    database.command("sql", "CREATE PROPERTY S.old INTEGER (mandatory true, max 10)");
+    database.command("sql", "CREATE DOCUMENT TYPE R EXTENDS S");
+    database.transaction(() -> database.command("sql", "INSERT INTO R SET old = 1, new = 1"));
+
+    database.command("sql", "ALTER PROPERTY S.old NAME new");
+
+    assertThat(database.getSchema().getType("S").existsProperty("new")).isTrue();
+    assertThat(database.getSchema().getType("R").getPolymorphicProperty("new").isMandatory()).isTrue();
+    assertNoViolation();
   }
 
   @Test
@@ -150,6 +189,10 @@ class Issue12930RenameConstrainedPropertyTest extends TestHelper {
     final DocumentType type = database.getSchema().getType("R");
     assertThat(type.existsProperty(present)).isTrue();
     assertThat(type.existsProperty(absent)).isFalse();
+  }
+
+  private int dictionaryIdOf(final String name) {
+    return database.getSchema().getDictionary().getIdByName(name, false);
   }
 
   private void assertNoViolation() {

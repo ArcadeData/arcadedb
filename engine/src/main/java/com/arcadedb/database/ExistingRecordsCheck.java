@@ -131,7 +131,9 @@ public final class ExistingRecordsCheck {
    * schema and leaves every value under the old name (#7589), so a MANDATORY property of a type with records, or a constraint a
    * value already stored under the new name breaks, would leave records violating it, each of them refused at its next update.
    *
-   * @param renamed the property as it would be after the rename, carrying the new name and every constraint of the old one
+   * @param renamed the property as it would be after the rename, carrying the new name and every constraint of the old one. Asked
+   *                before the rename changes anything, so it must be a copy that did not register the new name in the dictionary
+   *                (a commit of its own that a refusal would leave behind, issues #12958, #13092)
    */
   public static void requireRename(final Database db, final DocumentType type, final String oldName, final Property renamed) {
     requireDeclaration(db, type, renamed, "Cannot rename property '" + type.getName() + "." + oldName + "' to '" + renamed.getName() + "'",

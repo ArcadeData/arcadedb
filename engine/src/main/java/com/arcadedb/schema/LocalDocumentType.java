@@ -1957,7 +1957,10 @@ public class LocalDocumentType implements DocumentType {
    * property by the old name, and propagating the rename into every index type/file naming scheme is out of scope
    * here - drop the index, rename, then recreate it on the new name. Also refused when the property is a declared
    * TIMESERIES column, for the same reason {@link #dropProperty} refuses one: the write path resolves those by
-   * the fixed name in {@code LocalTimeSeriesType.tsColumns}, which this method does not touch.
+   * the fixed name in {@code LocalTimeSeriesType.tsColumns}, which this method does not touch. And refused when a
+   * record of the type, polymorphically, would violate the constraints that move to the new name while its values
+   * stay under the old one (issue #12930): a MANDATORY property of a type with records, or a NOTNULL, MIN, MAX,
+   * REGEXP or declared type that a value already stored under the new name breaks.
    * <p>
    * Every check above, and the mutation itself, runs inside the single {@link #recordFileChanges} callback below:
    * validating outside it and mutating inside would let two concurrent renames both validate against the
@@ -2002,12 +2005,14 @@ public class LocalDocumentType implements DocumentType {
             + "' because it is used by index '" + indexOnProperty.getName()
             + "'. Drop the index first, rename the property, then recreate the index on the new name");
 
+      // The values stay under the old name (#7589) while the constraints move to the new one: refused when that would leave a stored
+      // record violating them, as declaring the same constraints over those records is (issue #12930). Asked of a copy whose name is
+      // NOT registered in the dictionary, so a refusal here leaves nothing behind
+      ExistingRecordsCheck.requireRename(schema.getDatabase(), this, propertyName, property.unregisteredCopyWithName(newPropertyName));
+
       // Every refusal is asked above: the copy registers the new name in the dictionary, a commit of its own that a refusal after it
       // would leave behind, and on a Raft leader that page change quarantined the leader (issues #12958, #13092). Nothing below refuses
       final LocalProperty renamed = property.copyWithName(newPropertyName);
-      // The values stay under the old name (#7589) while the constraints move to the new one: refused when that would leave a stored
-      // record violating them, as declaring the same constraints over those records is (issue #12930). Asked before anything changes
-      ExistingRecordsCheck.requireRename(schema.getDatabase(), this, propertyName, renamed);
 
       properties.remove(propertyName);
       properties.put(newPropertyName, renamed);
