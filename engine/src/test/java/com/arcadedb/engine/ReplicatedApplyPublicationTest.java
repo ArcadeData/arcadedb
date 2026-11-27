@@ -31,9 +31,6 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.util.Collections;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -387,26 +384,25 @@ class ReplicatedApplyPublicationTest {
     void aReaderSeesTheSequenceOddWhileAnEntryIsBeingApplied() throws Exception {
       final DatabaseInternal db = (DatabaseInternal) database;
       final PageManager pageManager = db.getPageManager();
+      final WALFile.WALTransaction entry = entryAdvancingTheBucketPage();
       final AtomicLong sampledByAReader = new AtomicLong(-1);
-      // The apply asks for the record deltas of its buckets after its pages reached the read cache and before it closes its
-      // publication, so a reader started from there samples the sequence in the middle of an apply on every run. A reader
-      // looping beside the applies and hoping to land in one of those windows is a race for a CPU, and loses it on a loaded
-      // machine. The map is empty, so nothing else of the apply changes.
-      final Map<Integer, Integer> deltas = new HashMap<>() {
-        @Override
-        public Set<Map.Entry<Integer, Integer>> entrySet() {
-          final Thread reader = new Thread(() -> sampledByAReader.set(pageManager.getPublicationSequence()), "publication-reader");
-          reader.start();
-          try {
-            reader.join();
-          } catch (final InterruptedException e) {
-            Thread.currentThread().interrupt();
-          }
-          return super.entrySet();
+      // The seam runs with the publication of the apply open, once the first page of the entry is in the read cache, so a reader
+      // started from there samples the sequence in the middle of an apply on every run. A reader looping beside the applies and
+      // hoping to land in one of those windows is a race for a CPU, and loses it on a loaded machine (#12900).
+      TransactionManager.applyChangesHookForTesting = () -> {
+        final Thread reader = new Thread(() -> sampledByAReader.set(pageManager.getPublicationSequence()), "publication-reader");
+        reader.start();
+        try {
+          reader.join();
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
         }
       };
-
-      assertThat(db.getTransactionManager().applyChanges(entryAdvancingTheBucketPage(), deltas, null, false)).isTrue();
+      try {
+        assertThat(db.getTransactionManager().applyChanges(entry, Collections.emptyMap(), null, false)).isTrue();
+      } finally {
+        TransactionManager.applyChangesHookForTesting = null;
+      }
 
       assertThat(sampledByAReader.get()).as("the apply must have reached the point where the reader samples").isNotNegative();
       assertThat(sampledByAReader.get() & 1).as("a reader sampling during the apply sees the sequence odd").isOne();
