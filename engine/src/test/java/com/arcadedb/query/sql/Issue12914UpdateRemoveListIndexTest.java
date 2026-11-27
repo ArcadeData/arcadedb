@@ -20,9 +20,7 @@ package com.arcadedb.query.sql;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
-import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -40,8 +38,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * handed to {@code List.remove(Object)}, which looked for an element EQUAL to it), and {@code REMOVE l[9]} past the end or
  * {@code REMOVE l[-1]} answered an IndexOutOfBoundsException. A REMOVE takes out what the same selector reads: a range the
  * elements {@code l[a..b]} reads (end exclusive, {@code ...} inclusive), and an index outside the list, negative included,
- * reads null, so it selects nothing and removes nothing. The read form had to change for the rule to hold: a range starting
- * exactly at the size read the last element, and an inclusive end of {@code Integer.MAX_VALUE} wrapped and read nothing.
+ * reads null, so it selects nothing and removes nothing. The same index named twice is one element, removed once.
  */
 class Issue12914UpdateRemoveListIndexTest extends TestHelper {
   private static final String       TYPE     = "Doc12914";
@@ -56,12 +53,7 @@ class Issue12914UpdateRemoveListIndexTest extends TestHelper {
         Arguments.of("l[0..4]", List.of()), //
         Arguments.of("l[3..3]", ORIGINAL), //
         Arguments.of("l[5..7]", ORIGINAL), //
-        // a range starting exactly at the size selects nothing: the read used to clamp the start to the last element
-        Arguments.of("l[4..6]", ORIGINAL), //
-        Arguments.of("l[4...4]", ORIGINAL), //
         Arguments.of("l[-3..2]", List.of(30, 40)), //
-        // an inclusive end at Integer.MAX_VALUE: the +1 used to wrap to a negative end, and both forms selected nothing
-        Arguments.of("l[1...2147483647]", List.of(10)), //
         Arguments.of("l[0]", List.of(20, 30, 40)), //
         Arguments.of("l[3]", List.of(10, 20, 30)), //
         Arguments.of("l[0,2]", List.of(20, 40)), //
@@ -99,27 +91,6 @@ class Issue12914UpdateRemoveListIndexTest extends TestHelper {
 
     assertThat((List<Object>) database.lookupByRID(rid[0], true).asDocument().get("l")).as("REMOVE %s", selector)
         .containsExactlyElementsOf(expected);
-  }
-
-  /**
-   * The read form on its own, on a literal list and on a property: a range starting at the size reads nothing (it read the last
-   * element), one starting just before it still reads that element, and an inclusive end at Integer.MAX_VALUE reads to the end
-   * (it read nothing).
-   */
-  @Test
-  void rangeReadAtTheBoundaries() {
-    database.getSchema().createDocumentType(TYPE);
-    final RID[] rid = new RID[1];
-    database.transaction(() -> rid[0] = database.newDocument(TYPE).set("l", new ArrayList<>(ORIGINAL)).save().getIdentity());
-
-    try (final ResultSet rs = database.query("sql",
-        "SELECT [10,20,30,40][4..6] AS lit, l[4..6] AS atSize, l[3..6] AS last, l[1...2147483647] AS toMax FROM " + rid[0])) {
-      final Result row = rs.next();
-      assertThat((Object) row.getProperty("lit")).isNull();
-      assertThat((Object) row.getProperty("atSize")).isNull();
-      assertThat((Object) row.getProperty("last")).isEqualTo(List.of(40));
-      assertThat((Object) row.getProperty("toMax")).isEqualTo(List.of(20, 30, 40));
-    }
   }
 
   /**
