@@ -144,6 +144,9 @@ public enum Type {
   public static final  String              DATE_FORMAT_MILLIS  = "yyyy-MM-dd HH:mm:ss.SSS";
   private static final BigDecimal LONG_MAX_DECIMAL = BigDecimal.valueOf(Long.MAX_VALUE);
   private static final BigDecimal LONG_MIN_DECIMAL = BigDecimal.valueOf(Long.MIN_VALUE);
+  // THE FIRST DECIMALS OUT OF THE LONG RANGE: THE FRACTION IS DISCARDED, SO 9223372036854775807.5 IS Long.MAX_VALUE AND 2^63 IS THE FIRST VALUE BEYOND IT
+  private static final BigDecimal LONG_BEYOND_MAX_DECIMAL = LONG_MAX_DECIMAL.add(BigDecimal.ONE);
+  private static final BigDecimal LONG_BEYOND_MIN_DECIMAL = LONG_MIN_DECIMAL.subtract(BigDecimal.ONE);
   private static final BigInteger LONG_MAX_INTEGER = BigInteger.valueOf(Long.MAX_VALUE);
   private static final BigInteger LONG_MIN_INTEGER = BigInteger.valueOf(Long.MIN_VALUE);
   // Don't change the order, the type discover get broken if you change the order.
@@ -1649,7 +1652,7 @@ public enum Type {
       return value.longValue();
 
     final boolean outOfRange = switch (value) {
-      case BigDecimal bigDecimal -> bigDecimal.compareTo(LONG_MAX_DECIMAL) > 0 || bigDecimal.compareTo(LONG_MIN_DECIMAL) < 0;
+      case BigDecimal bigDecimal -> bigDecimal.compareTo(LONG_BEYOND_MAX_DECIMAL) >= 0 || bigDecimal.compareTo(LONG_BEYOND_MIN_DECIMAL) <= 0;
       case BigInteger bigInteger -> bigInteger.compareTo(LONG_MAX_INTEGER) > 0 || bigInteger.compareTo(LONG_MIN_INTEGER) < 0;
       // 2^63 is the first double above the range, and -2^63 is exactly Long.MIN_VALUE
       case Double doubleValue -> doubleValue >= 0x1p63 || doubleValue < -0x1p63;
@@ -1726,7 +1729,7 @@ public enum Type {
     // A BIG NUMBER BEYOND THE 64-BIT RANGE IS OUT OF EVERY INTEGRAL RANGE, LONG'S INCLUDED: CLAMPING IT TO Long.MAX_VALUE
     // PASSED THE LONG CHECK BELOW AND STORED EVERY SUCH ELEMENT AS THE SAME NUMBER (issue #10756)
     final boolean beyondLong = switch (value) {
-      case BigDecimal bigDecimal -> bigDecimal.compareTo(LONG_MAX_DECIMAL) > 0 || bigDecimal.compareTo(LONG_MIN_DECIMAL) < 0;
+      case BigDecimal bigDecimal -> bigDecimal.compareTo(LONG_BEYOND_MAX_DECIMAL) >= 0 || bigDecimal.compareTo(LONG_BEYOND_MIN_DECIMAL) <= 0;
       case BigInteger bigInteger -> bigInteger.compareTo(LONG_MAX_INTEGER) > 0 || bigInteger.compareTo(LONG_MIN_INTEGER) < 0;
       // longValue() SATURATES THESE TWO; 2^63 IS THE FIRST DOUBLE ABOVE THE RANGE, -2^63 IS EXACTLY Long.MIN_VALUE
       case Double doubleValue -> doubleValue >= 0x1p63 || doubleValue < -0x1p63;
