@@ -723,7 +723,7 @@ final class MongoFilter {
   private static Document matchQuery(final Document query, final RegexBudget budget, final boolean libraryMatch) {
     final Document prepared = normalizeQuery(query, budget);
     if (libraryMatch)
-      requireBoundedRegexes(prepared);
+      requireBoundedRegexes(prepared, null);
     return prepared;
   }
 
@@ -732,17 +732,22 @@ final class MongoFilter {
    * any such document as a pattern, whatever its other keys and wherever it sits, and only the expressions {@link #normalizeQuery}
    * turned into a {@link BoundedRegex} are bounded by the time budget. That leaves the shapes MongoDB itself does not take as a
    * pattern: a {@code $regex} after a plain key, as an item of {@code $in}, {@code $nin} or {@code $all}, or in the operand of
-   * {@code $not} and {@code $elemMatch}.
+   * {@code $not} and {@code $elemMatch}. The operand of {@code $expr} is an expression, which is evaluated and never searched, and
+   * whose {@code $literal} can hold any document: it is left alone.
+   *
+   * @param under the name the value is held under, to say where the refused condition is, or {@code null} at the top of the query
    */
-  private static void requireBoundedRegexes(final Object value) {
+  private static void requireBoundedRegexes(final Object value, final String under) {
     if (value instanceof Document document) {
       if (document.containsKey("$regex"))
-        throw new IllegalArgumentException("$regex is not supported in this position");
-      for (final Object item : document.values())
-        requireBoundedRegexes(item);
+        throw new IllegalArgumentException(
+            under == null ? "$regex is not supported in this position" : "$regex is not supported in this position, under '" + under + "'");
+      for (final Map.Entry<String, Object> entry : document.entrySet())
+        if (!"$expr".equals(entry.getKey()))
+          requireBoundedRegexes(entry.getValue(), entry.getKey());
     } else if (value instanceof List<?> list)
       for (final Object item : list)
-        requireBoundedRegexes(item);
+        requireBoundedRegexes(item, under);
   }
 
   static boolean isOperatorDocument(final Document document) {

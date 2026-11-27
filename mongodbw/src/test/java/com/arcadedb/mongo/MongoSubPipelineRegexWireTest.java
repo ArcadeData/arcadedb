@@ -155,9 +155,10 @@ class MongoSubPipelineRegexWireTest extends BaseMongoServerTest {
       assertThat(run(c, facet(shape)).getFirst().getList("f", Document.class)).as(shape.toString()).extracting(d -> d.get("_id"))
           .contains(2);
 
-    // a sub-pipeline of a lookup takes the same shapes
-    assertThat(run(c, lookup(of("s", Pattern.compile("^al"))))).hasSize(2);
-    assertThat(run(c, lookup(of("s", of("$regex", "^al", "$ne", "b"))))).hasSize(2);
+    // the sub-pipeline of a lookup takes the same shapes: the stage is accepted (this plugin joins no document from a sub-pipeline,
+    // so every outer document is answered, with an empty array)
+    for (final Document shape : List.of(of("s", Pattern.compile("^al")), of("s", of("$regex", "^al", "$ne", "b"))))
+      assertThat(run(c, lookup(shape))).as(shape.toString()).extracting(d -> d.get("_id")).containsExactlyInAnyOrder(1, 2);
   }
 
   /**

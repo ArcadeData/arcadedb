@@ -177,6 +177,28 @@ class MongoPipelineRegexPlacementTest {
   }
 
   @Test
+  void theRefusalSaysWhereTheConditionIs() {
+    assertThatThrownBy(() -> bound(facet(match(doc("n", 1, "s", doc("x", 1, "$regex", "a")))))).isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("under 's'");
+    assertThatThrownBy(() -> bound(facet(match(doc("s", doc("$in", List.of(doc("$regex", "a")))))))).isInstanceOf(
+        IllegalArgumentException.class).hasMessageContaining("under '$in'");
+  }
+
+  /** An expression is evaluated, never searched: its {@code $literal} can hold a document with a {@code $regex} key. */
+  @Test
+  void anExpressionOfASubPipelineMayHoldADocumentWithAKeyNamedLikeTheOperator() {
+    final Document expression = doc("$expr", doc("$eq", List.of(doc("$literal", doc("x", 1, "$regex", "a")), "$s")));
+    assertThatCode(() -> MongoFilter.boundPipeline(List.of(facet(match(expression))), MongoFilter.RegexBudget.ofAggregation(null)))
+        .doesNotThrowAnyException();
+    assertThatCode(() -> MongoFilter.boundPipeline(List.of(lookup(match(expression))), MongoFilter.RegexBudget.ofAggregation(null)))
+        .doesNotThrowAnyException();
+
+    // next to a condition that is refused, the expression changes nothing
+    assertThatThrownBy(() -> MongoFilter.boundPipeline(List.of(facet(match(expression.append("s", doc("x", 1, "$regex", "a"))))),
+        MongoFilter.RegexBudget.ofAggregation(null))).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("$regex");
+  }
+
+  @Test
   void aBoundedRegularExpressionOfASubPipelineMatchesLikeTheLibraryDoes() {
     final List<Document> pipeline = bound(new Document("$changeStream", new Document()),
         match(doc("s", doc("$regex", "^A", "$options", "i"), "n", doc("$in", List.of(1, 2)))),
