@@ -57,6 +57,12 @@ public class SuffixIdentifier extends SimpleNode {
    */
   private static final Object ABSENT = new Object();
 
+  /**
+   * Key of the {@link CommandContext#getCachedValue(String) cached value} a caller sets to have a record attribute evaluated
+   * with no record refused instead of answered null. Set by the evaluation of a property default value (issue #6134).
+   */
+  public static final String RECORD_ATTRIBUTE_NEEDS_RECORD = "SuffixIdentifier.recordAttributeNeedsRecord";
+
   public SuffixIdentifier() {
   }
 
@@ -177,7 +183,15 @@ public class SuffixIdentifier extends SimpleNode {
     }
     // No record, no attribute: null, as a property of no record is. The planner evaluates the arguments of an indexable function
     // before any record is read, and `@type` dereferenced the missing record there (issue #12795)
-    if (recordAttribute != null && currentRecord != null) {
+    if (recordAttribute != null && currentRecord == null) {
+      // The one caller that must not read "no record" as null: the default value of a property, which is evaluated with no record
+      // for every record created, so the null would be stored on each of them without a word (issue #6134)
+      if (context != null && context.getCachedValue(RECORD_ATTRIBUTE_NEEDS_RECORD) != null)
+        throw new CommandExecutionException(
+            "The record attribute '" + recordAttribute.name + "' cannot be resolved because there is no current record");
+      return null;
+    }
+    if (recordAttribute != null) {
       if (RID_PROPERTY.equalsIgnoreCase(recordAttribute.name))
         return currentRecord.getIdentity();
       else if (THIS_PROPERTY.equalsIgnoreCase(recordAttribute.name))
