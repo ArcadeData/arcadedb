@@ -140,9 +140,10 @@ class OpenCypherListFunctionsComprehensiveTest extends TestHelper {
 
   @Test
   void collFlattenNull() {
+    // A null list flattens to the empty list, as APOC's apoc.coll.flatten does (issue #12108)
     ResultSet result = database.command("opencypher", "RETURN coll.flatten(null) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    Assertions.assertThat(result.next().getProperty("result") == null).isTrue();
+    Assertions.assertThat(result.next().<List<Object>>getProperty("result")).isEmpty();
 
     result = database.command("opencypher", "RETURN coll.flatten(['a'], null) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();

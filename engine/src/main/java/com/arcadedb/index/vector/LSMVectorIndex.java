@@ -39,6 +39,7 @@ import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.Component;
 import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PageManager;
@@ -46,6 +47,7 @@ import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.DatabaseIsReadOnlyException;
 import com.arcadedb.exception.DatabaseOperationException;
@@ -135,6 +137,7 @@ import java.util.TimerTask;
 import java.util.WeakHashMap;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.ForkJoinTask;
@@ -577,6 +580,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private volatile Runnable afterPagesParsedForTest;
   // Run by a storeVectorsInGraph build between publishing the on-heap graph and swapping in the on-disk one (issue #12380)
   private volatile Runnable beforeOnDiskGraphSwapForTest;
+  // Run by the load of a persisted graph between its "nothing was deleted" check and the walk that derives the ordinal map, so a
+  // test can commit a re-embed in between (issue #13343)
+  private volatile Runnable beforeOrdinalWalkForTest;
+  // Run by the same load right after that walk, before the publish, so a test can undo what it did before the walk (issue #13343)
+  private volatile Runnable afterOrdinalWalkForTest;
 
   /**
    * The most records {@link #removedDuringRebuild} holds. A rebuild that outlives more removals than this stops recording them and
@@ -603,6 +611,29 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * heap. Not derivable from the buffer size, which counts entries whose payload was declined too.
    */
   private final AtomicInteger deltaResidentPayloads = new AtomicInteger();
+
+  /**
+   * The replicated entries being applied on this node that carry pages of this index (issue #13369): from before the first page
+   * of the entry is written until the last one is published, see {@link #hasReplicatedApplyInFlight()}.
+   */
+  private final AtomicInteger replicatedAppliesInFlight = new AtomicInteger();
+
+  /**
+   * The records whose vector a commit replay put in this index and whose transaction has not concluded yet (issue #13323), with
+   * how many such replays put one: the vector is in the index, the record pages are published only once the replay concludes. A
+   * RID is added before its vector becomes visible ({@link VectorIndexReplayUndo#recordPut}) and removed after the pages are
+   * published, or after a rollback took the vector back ({@link #putsConcluded}). Per record, not per index: a search hands every
+   * other row on without reading it, however many commits are in flight (issue #10973). Empty whenever no commit is in flight, so
+   * a search asks an empty map. A replay tracks at most {@link VectorIndexReplayUndo#MAX_TRACKED_PUTS} records here, see
+   * {@link #bulkPutsInFlight}.
+   */
+  private final ConcurrentHashMap<RID, Integer> putsInFlight = new ConcurrentHashMap<>();
+
+  /**
+   * The replays in flight that put more records than they track one by one (a bulk load): while one is, every record of the index
+   * counts as put by a commit in flight, so the map above stays bounded whatever the size of a transaction (issue #13323).
+   */
+  private final AtomicInteger bulkPutsInFlight = new AtomicInteger();
 
   /**
    * The ids a replicated page mentions, collected by {@link #applyReplicatedPageUpdate(MutablePage, boolean)} to judge
@@ -885,6 +916,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
       throw new IllegalStateException("Cannot compact vector index '" + indexName + "': cannot lock file " + oldFileId);
 
     int newFileId = -1;
+    // Whether an HA compaction took over the commit lock of the new file, to keep it until the entry creating the file is accepted
+    boolean newFileLockKept = false;
     LSMVectorIndexMutable previousMutable = null;
     LSMVectorIndexCompacted previousCompacted = null;
 
@@ -1003,6 +1036,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
         currentInsertPageNum = newPages.size() - 1;
         currentMutablePages.set(1);
 
+        // Issue #13336: the new data file stays locked until the cluster knows it (an HA compaction publishes it later), so a commit
+        // that resolves this index from now on cannot ship its entries into it ahead of the entry creating it: the followers skipped
+        // such a page (the file did not exist there yet), created the file one version behind and refused the next commit on it as
+        // a WAL version gap. Same as the LSM tree split (issue #12236).
+        // Unlike the split, the publication comes after the whole graph build here, so the hold spans it. That costs no new stall:
+        // a leader commit already waits at the recording-session gate for the whole session (up to the HA quorum timeout), and the
+        // only commits this lock adds a wait to are those on this index that passed the gate before the session opened or gave up
+        // on it. One that still finds the lock held after COMMIT_LOCK_TIMEOUT fails with a retryable LockTimeoutException, where
+        // before it shipped its pages ahead of the file and sent every follower into a resync.
+        if (database.getWrappedDatabaseInstance().keepLockedUntilCompactionIsPublished(newFileId))
+          newFileLockKept = true;
+
         // Re-point the location index at the new file in the SAME critical section that swapped it (issue #5568).
         // The entries above already carry their new offsets; leaving the swap to the caller would open a window in
         // which the index answers offsets into a file that no longer exists - a search landing there reads another
@@ -1050,7 +1095,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       return true;
     } finally {
-      if (newFileId > -1)
+      if (newFileId > -1 && !newFileLockKept)
         database.getTransactionManager().unlockFile(newFileId, Thread.currentThread());
       if (locked == LockManager.LOCK_STATUS.YES)
         database.getTransactionManager().unlockFile(oldFileId, Thread.currentThread());
@@ -2356,7 +2401,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // arity. The recording cannot answer that question, so replacing the walk with it wholesale would trade a
     // check this index has always made for a faster reopen. Deletions are the case where the walk's answer is
     // WRONG rather than merely slower, and that is the case taken here.
-    if (vectorIndex().getDeletedCount() > 0) {
+    //
+    // ISSUE #13343: the generation is read BEFORE the deleted count, and both before the walk below, which runs without the
+    // index lock. Compared again under the publish lock, it is what proves that no id left the live set while the walk
+    // derived the ordinal map - which the deleted count alone cannot, since a replay that tombstones an id and is undone
+    // brings it back to zero.
+    final VectorLocationIndex locationsBeforeWalk = vectorIndex();
+    final long removalGenerationBeforeWalk = locationsBeforeWalk.getRemovalGeneration();
+    if (locationsBeforeWalk.getDeletedCount() > 0) {
       final PersistedGraphCheck viaOrdinalMap = reusePersistedGraphDespiteDeletions(gf, false);
       if (viaOrdinalMap != null)
         return viaOrdinalMap;
@@ -2381,6 +2433,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
     final PersistedGraphCheck viaOrdinalMap = reusePersistedGraphDespiteDeletions(gf, true);
     if (viaOrdinalMap != null)
       return viaOrdinalMap;
+
+    final Runnable beforeOrdinalWalk = beforeOrdinalWalkForTest;
+    if (beforeOrdinalWalk != null)
+      beforeOrdinalWalk.run();
 
     try {
       final var loadedGraph = gf.loadGraph();
@@ -2433,6 +2489,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
           }
         }
       }).sorted().toArray();
+
+      final Runnable afterOrdinalWalk = afterOrdinalWalkForTest;
+      if (afterOrdinalWalk != null)
+        afterOrdinalWalk.run();
 
       final int graphSize = loadedGraph != null ? loadedGraph.size() : 0;
       LogManager.instance().log(this, Level.INFO,
@@ -2566,6 +2626,25 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final int queuedUnreachable;
       lock.writeLock().lock();
       try {
+        // ISSUE #13343: the walk above ran without this lock, and the only guard against a tombstone sliding the ordinals down - the
+        // deleted count read at the top of this method - was read before it. A re-embed (a tombstone for the old id and a new id, so
+        // the count does not move) that landed in between leaves an array that lost that id and gained the new one at its end: the
+        // length of the graph, with every ordinal after the removed id paired with the id of the next record. Asked again here,
+        // where no writer can move it. A location index replaced meanwhile (a compaction, issue #5568) is another generation of ids
+        // altogether. A graph with a manifest is judged by the fingerprint above, which covers the ids of the walked array, so a
+        // shifted array cannot pass it. A graph without one has nothing else to stand on: it is rebuilt when any id left the live
+        // set or came back into it since the deleted count was read. The removal generation, not the deleted count, because a
+        // replicated re-embed whose transaction aborted after the walk is undone by forgetting the new id and lifting the old
+        // tombstone, which brings the count back to zero on the same instance while the walked array still holds the shift.
+        final boolean renumbered = validationLocations != vectorIndex();
+        final boolean removedDuringWalk = !renumbered && persistedManifest == null && (validationLocations != locationsBeforeWalk
+            || validationLocations.getRemovalGeneration() != removalGenerationBeforeWalk);
+        if (renumbered || removedDuringWalk) {
+          LogManager.instance().log(this, Level.INFO,
+              "Persisted graph is not usable for index %s: %s while its ordinal map was being derived - rebuilding from scratch "
+                  + "(issue #13343)", indexName, renumbered ? "the vector ids were renumbered" : "a vector left the live set");
+          return PersistedGraphCheck.UNUSABLE;
+        }
         // In the same lock as the graph, so no search walks the new graph through codes built for another one, and the
         // codes that were built for it are bound to its map in the same step (issue #10786)
         if (pqMismatch != null)
@@ -9736,17 +9815,27 @@ public class LSMVectorIndex implements Index, IndexInternal {
     final int availableVectors = Math.min(ordinalToVectorId.length, vectorIndex().size());
     final int cap = Math.max(rows, (int) (availableVectors * maxSelectivity));
 
-    final Set<RID> share = new HashSet<>();
+    // COUNTED FIRST: A LIST WHOSE EVERY MEMBER IS IN THIS BUCKET (A TYPE WITH ONE BUCKET, THE COMMON CASE) IS USED AS IT IS, AND A COPY
+    // OF IT BUILT ON THE WAY AND THEN DISCARDED COST A HASH NODE PER RID PER SEARCH
     int examined = 0;
+    int inBucket = 0;
     for (final RID rid : allowedRIDs) {
       guard.checkPeriodically(++examined);
-      if (rid.getBucketId() == bucketId) {
-        if (share.size() == cap)
-          return allowedRIDs;
-        share.add(rid);
-      }
+      if (rid.getBucketId() == bucketId && ++inBucket > cap)
+        return allowedRIDs;
     }
-    return share.size() == allowedRIDs.size() ? allowedRIDs : share;
+    if (inBucket == allowedRIDs.size())
+      return allowedRIDs;
+    if (inBucket == 0)
+      return Collections.emptySet();
+
+    final Set<RID> share = new HashSet<>((int) (inBucket / 0.75f) + 1);
+    for (final RID rid : allowedRIDs) {
+      guard.checkPeriodically(++examined);
+      if (rid.getBucketId() == bucketId)
+        share.add(rid);
+    }
+    return share;
   }
 
   /**
@@ -10139,23 +10228,96 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * build reads through the database while it holds {@code graphBuildLock}, so a search waiting for that lock under the
    * database read lock would deadlock with it behind a queued schema change.
    *
-   * @param failure what a failure of the search is reported as
+   * @param failure    what a failure of the search is reported as
+   * @param fromMemory the graph the search could answer from memory when it started, see {@link #graphAnsweringFromMemory()}
    */
-  private <T> T underSearchLocks(final String failure, final Callable<T> search) {
-    return getDatabase().executeInReadLock(() -> {
+  private <T> T underSearchLocks(final String failure, final ImmutableGraphIndex fromMemory, final Callable<T> search) {
+    failIfFileRetired(fromMemory);
+    final T answered = getDatabase().executeInReadLock(() -> {
       lock.readLock().lock();
       try {
         return search.call();
-      } catch (final QueryTerminatedException | TimeoutException | CommandExecutionException e) {
-        // The guard stopped the search (issue #9896): the statement's own answer, not a failure of the index
+      } catch (final QueryTerminatedException | TimeoutException | CommandExecutionException | NeedRetryException e) {
+        // The guard stopped the search (issue #9896), or the engine reported a conflict its caller retries, such as a page of a file
+        // dropped under the read (issue #12139): the statement's own answer, not a failure of the index. Wrapped, it would reach the
+        // client as an IndexException, which no retry loop retries
         throw e;
       } catch (final Exception e) {
+        // Whatever a search reads from a file a schema change has just retired fails in a way that says nothing about the index:
+        // the caller retries, as for the check before it (issue #13296)
+        final int fileId = getFileId();
+        if (isFileRetired(fileId))
+          throw retiredBySchemaChange(fileId, e);
         LogManager.instance().log(this, Level.SEVERE, failure, e);
         throw new IndexException(failure, e);
       } finally {
         lock.readLock().unlock();
       }
     });
+    // Also afterwards: a search that had to load or build the graph, or the locations, from a file retired while it ran has what it
+    // could read of it, which is nothing
+    failIfFileRetired(fromMemory);
+    return answered;
+  }
+
+  /**
+   * The graph a search started now can answer from memory: the locations are resident and complete and a graph is resident, so
+   * nothing it needs is read from a file; null when it has to load or build one of them.
+   * <p>
+   * Never for a BINARY index: its scorer reads the code of every candidate the code cache does not hold from the pages, with no
+   * record to fall back on, and drops a candidate it cannot read. The cache can be absent (disabled, or refused by the heap
+   * budget) or miss (an id evicted, a lost race on a slot), so a warm BINARY search over a retired file answered short.
+   */
+  private ImmutableGraphIndex graphAnsweringFromMemory() {
+    return locationsMaterialized && locationLoadIncomplete == null && metadata.quantizationType != VectorQuantizationType.BINARY ?
+        graphIndex :
+        null;
+  }
+
+  /**
+   * Refuses a search that reads the data file of its index, which a schema change has retired (issue #13296). A Raft follower applies
+   * a replicated {@code COMPACT INDEX} by deleting the superseded files (the data file and the graph file of each sub-index) and only
+   * then reloading the schema, which publishes the new index objects, so a search that resolved the previous generation in between
+   * reads files that are gone. Those index objects were made by the previous entry of the same statement, so they are cold: the
+   * location load logs the failure and carries on with no entries, or, with the locations loaded, the graph, whose persisted file is
+   * gone too, is rebuilt from the pages of the data file, which cannot be read, and the search answered normally without the rows of
+   * that sub-index. An exhaustive search lacked whole buckets for the 1 to 2 seconds the apply takes. The
+   * caller retries, as for any other conflict with a schema change.
+   * <p>
+   * Only a search that reads the files is refused. One that started with the locations resident and complete and the graph resident
+   * answers from memory, and reads the vectors it scores from the records when a page is not there, so its answer is complete and
+   * refusing it would turn a correct answer into an error. It is refused all the same when the graph it used is not the one it
+   * started with (a rebuild replaced it, and a rebuild reads the files), and when the location load failed. A graph that is not
+   * resident is not "warm": with its persisted graph and its data file gone it is rebuilt from nothing.
+   * <p>
+   * The leader's own compaction is not affected: it swaps {@code mutable}, and so {@link #getFileId()}, before it drops the old file,
+   * which {@link #isFileRetired(int)} takes into account.
+   *
+   * @param fromMemory the graph the search could answer from memory when it started, or null if it could not
+   */
+  private void failIfFileRetired(final ImmutableGraphIndex fromMemory) {
+    if (fromMemory != null && fromMemory == graphIndex && locationsMaterialized && locationLoadIncomplete == null)
+      return;
+    final int fileId = getFileId();
+    if (isFileRetired(fileId))
+      throw retiredBySchemaChange(fileId, null);
+  }
+
+  /**
+   * Whether the file {@code seenFileId}, which this index owned when the caller read {@link #getFileId()}, is gone and is still the
+   * one it owns. Two reads cannot be atomic, so the id is read again once the file is found missing: a compaction swaps {@code mutable}
+   * and only then drops the file it replaced (that is what a leader does to a healthy index), so an id that is no longer the index's
+   * is a swap and not a retirement. The drop the first read observes follows the swap, and the file manager's map orders the two, so
+   * the second read sees the new id.
+   */
+  boolean isFileRetired(final int seenFileId) {
+    return !getDatabase().getFileManager().existsFile(seenFileId) && seenFileId == getFileId();
+  }
+
+  private ConcurrentModificationException retiredBySchemaChange(final int fileId, final Throwable cause) {
+    final String message =
+        "Vector index '" + indexName + "' was retired by a schema change (its file " + fileId + " is gone): retry the search";
+    return cause == null ? new ConcurrentModificationException(message) : new ConcurrentModificationException(message, cause);
   }
 
   private List<Pair<RID, Float>> searchNeighbors(final float[] queryVector, final int requestedK, final int efSearch,
@@ -10165,6 +10327,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
     metrics.incrementSearchOperations();
 
     try {
+      // What this search can answer from memory, before it loads or builds anything (issue #13296)
+      final ImmutableGraphIndex fromMemory = graphAnsweringFromMemory();
+      failIfFileRetired(fromMemory);
       if (queryVector == null)
         throw new IllegalArgumentException("Query vector cannot be null");
       if (requestedK < 0)
@@ -10228,7 +10393,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       if (allowedRIDs != null && allowedRIDs.isEmpty() && !allowList.isEmpty())
         return Collections.emptyList();
 
-      return underSearchLocks("Error performing vector search", () -> {
+      return underSearchLocks("Error performing vector search", fromMemory, () -> {
         if (graphIndex == null || vectorIndex().size() == 0) {
           // No graph yet — still return delta-only results if available, and the calling transaction's own
           // uncommitted rows are such results too (issue #7378): an empty index written to inside one transaction
@@ -10729,6 +10894,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       checkCosineQueryVector(queryVector);
 
+      // What this search can answer from memory, before it loads or builds anything (issue #13296)
+      final ImmutableGraphIndex fromMemory = graphAnsweringFromMemory();
+
       // A statement already terminated, or already past its deadline, gets no search at all (issue #9896)
       guard.check();
       ensureGraphAvailable(guard);
@@ -10760,7 +10928,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           guard);
       if (allowedRIDs != null && allowedRIDs.isEmpty() && !allowList.isEmpty())
         return Collections.emptyList();
-      return underSearchLocks("Error performing grouped vector search", () -> {
+      return underSearchLocks("Error performing grouped vector search", fromMemory, () -> {
         final VectorFloat<?> queryVectorFloat = vts.createFloatVector(queryVector);
 
         // Volatile read pinned for the whole query, taken under the read lock because writers mutate this list in
@@ -11493,11 +11661,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (rerankOversample < 0)
       throw new IllegalArgumentException("rerankOversample must be >= 0, got " + rerankOversample);
     final boolean rerank = rerankOversample > 0;
+    // What this search can answer from memory, before it loads anything (issue #13296): the PQ check below materialises the
+    // locations, from a retired file too
+    final ImmutableGraphIndex fromMemory = graphAnsweringFromMemory();
     // Check if PQ is available. Through isPQSearchAvailable(), not the two fields directly: the codebooks are
     // loaded with the locations and both are deferred to first use (issue #6722), so reading the fields here -
     // ahead of the ensureGraphAvailable() below that would have materialised them - would see null on the first
     // approximate search after a reopen and silently downgrade it to an exact one.
     if (!isPQSearchAvailable()) {
+      // The exact search takes its own snapshot after the locations were loaded just above
+      failIfFileRetired(fromMemory);
       // Fall back to exact search
       LogManager.instance().log(this, Level.FINE,
           "PQ not available for index %s, falling back to exact search", indexName);
@@ -11558,7 +11731,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       if (allowedRIDs != null && allowedRIDs.isEmpty() && !allowList.isEmpty())
         return Collections.emptyList();
 
-      final List<Pair<RID, Float>> answered = underSearchLocks("Error performing PQ approximate search", () -> {
+      final List<Pair<RID, Float>> answered = underSearchLocks("Error performing PQ approximate search", fromMemory, () -> {
         if (graphIndex == null || vectorIndex().size() == 0) {
           // No graph yet - still return delta-only results if available.
           //
@@ -11795,6 +11968,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // thread bounds it (issue #9896)
     final WorkGuard guard = WorkGuard.forCommandDeadline(null);
 
+    // What this search can answer from memory, taken before the graph is loaded or built below (issue #13296): the search this
+    // delegates to takes its own only after that, when a graph built from retired files would already look resident
+    final ImmutableGraphIndex fromMemory = graphAnsweringFromMemory();
+    failIfFileRetired(fromMemory);
+
     // Ensure graph is available (lazy-load from disk if needed)
     ensureGraphAvailable(guard);
 
@@ -11815,6 +11993,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
         for (final Pair<RID, Float> p : scoredResults)
           resultRIDs.add(p.getFirst());
       }
+      // A graph loaded or built from a file retired while this ran holds what could be read of it
+      failIfFileRetired(fromMemory);
 
       return new IndexCursor() {
         private int position = 0;
@@ -11870,6 +12050,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
           return this;
         }
       };
+    } catch (final NeedRetryException e) {
+      // A conflict the caller retries (a retired file, issue #13296), not a failure of the index: wrapped, no retry loop retries it
+      throw e;
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error performing vector search", e);
       throw new IndexException("Error performing vector search", e);
@@ -11916,6 +12099,96 @@ public class LSMVectorIndex implements Index, IndexInternal {
     } finally {
       lock.readLock().unlock();
     }
+  }
+
+  /**
+   * Whether a replicated entry that carries pages of this index is being applied on this node (issue #13369): the entry's pages reach
+   * the read cache one by one and the index learns of each vector page as it is applied, so a vector it answers can be of a record
+   * whose page the entry has not written yet (an insert), or already removed (a delete). Only reading the record tells that from a
+   * record that is there, so a caller that hands a search result on without reading its record (issue #10973) reads it while this
+   * holds. An entry that concluded published all its pages first.
+   */
+  public boolean hasReplicatedApplyInFlight() {
+    return replicatedAppliesInFlight.get() > 0;
+  }
+
+  /**
+   * Marks the start of the apply of a replicated entry that carries pages of this index, before its first page is written. Every
+   * call must be paired with one {@link #replicatedApplyConcluded()} in a finally: a mark left open keeps
+   * {@link #hasReplicatedApplyInFlight()} true for the life of the process.
+   */
+  public void replicatedApplyStarted() {
+    replicatedAppliesInFlight.incrementAndGet();
+  }
+
+  /**
+   * Ends the mark of {@link #replicatedApplyStarted()}, once the last page of the entry is published or the apply failed. Called from
+   * the finally that pairs it with the start.
+   */
+  public void replicatedApplyConcluded() {
+    replicatedAppliesInFlight.decrementAndGet();
+  }
+
+  /**
+   * Whether a commit that has not concluded yet put the vector of {@code rid} in this index (issue #13323): the vector is answered
+   * by a search, the record page is published only once that commit concludes, so the record may not be readable yet. A caller
+   * that hands a search result on without reading its record (issue #10973) reads this one now, and drops it when the read finds
+   * nothing. Ask it before {@link #hasLiveVector}: a "no" here means the commit has concluded, with its pages published or its
+   * vector taken back, so a vector that is still live is of a record that can be read.
+   */
+  public boolean isPutByCommitInFlight(final RID rid) {
+    return bulkPutsInFlight.get() > 0 || putsInFlight.containsKey(rid);
+  }
+
+  /**
+   * Whether a read of the record {@code rid}, about to be made by the calling thread, reads the state of the record a vector id
+   * of it stands for, so that what it reads may be kept in the index-scoped search cache under that id (issue #13396). Asked
+   * BEFORE the read, by a caller that has just seen the id live. Two reads do not:
+   * <ul>
+   * <li>one of a record whose vector a commit that has not concluded put: the id is live from the commit's first phase, the
+   * record page is published in its second, so the read can find the version before. Concluded, its pages are published (or its
+   * vector taken back, the id with it), and a read that starts after that finds the version the id stands for, or a later one
+   * whose commit has already tombstoned the id;</li>
+   * <li>one through a transaction that holds the record's page or a copy of the record: the page a transaction wrote, or pinned
+   * under {@code REPEATABLE_READ}, is its own image, which hides what other transactions commit there afterwards (issue #12644),
+   * so a search inside a transaction that wrote a record of its own next to the record reads the record as it was then.</li>
+   * </ul>
+   * The read still answers the search that makes it: only the cache, shared by every later search, is denied it.
+   */
+  boolean readsCommittedStateOf(final RID rid) {
+    if (isPutByCommitInFlight(rid))
+      return false;
+    final DatabaseInternal database = getDatabase();
+    final TransactionContext transaction = database.getTransactionIfExists();
+    if (transaction == null || !transaction.isActive())
+      return true;
+    if (transaction.holdsRecordCopy(rid))
+      return false;
+    if (!(database.getSchema().getBucketByIdIfExists(rid.getBucketId()) instanceof LocalBucket bucket))
+      return false;
+    return transaction.getPinnedPage(new PageId(database, bucket.getFileId(), (int) (rid.getPosition() / bucket.getMaxRecordsInPage())))
+        == null;
+  }
+
+  /** Marks {@code rid} as put by a commit in flight, before its vector becomes visible. See {@link #isPutByCommitInFlight}. */
+  void putInFlight(final RID rid) {
+    putsInFlight.merge(rid, 1, Integer::sum);
+  }
+
+  /** Marks every record as put by a commit in flight, for a replay that puts more records than it tracks. */
+  void bulkPutInFlight() {
+    bulkPutsInFlight.incrementAndGet();
+  }
+
+  /**
+   * Ends the in-flight marks of one journal, once: the first {@code count} RIDs of {@code rids}, and the index-wide mark when
+   * {@code bulk}. After the publication or the rollback.
+   */
+  void putsConcluded(final RID[] rids, final int count, final boolean bulk) {
+    for (int i = 0; i < count; i++)
+      putsInFlight.computeIfPresent(rids[i], (rid, replays) -> replays > 1 ? replays - 1 : null);
+    if (bulk)
+      bulkPutsInFlight.decrementAndGet();
   }
 
   /**
@@ -12150,8 +12423,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
           final int id = allocateVectorId();
           // Recorded as soon as the id is minted, not after the writes below succeed: forgetting an id that never
           // reached the location index is a no-op, while missing one that did is the leak this exists to close.
-          if (undo != null)
+          if (undo != null) {
             undo.recordAllocated(id);
+            // Before the vector is visible: a search that finds it finds it marked (issue #13323)
+            undo.recordPut(rid);
+          }
 
           // Persist vector to page (will be added to vectorIndex inside persistVectorWithLocation)
           persistVectorWithLocation(id, rid, vector);
@@ -12747,8 +13023,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
       }
 
       final int id = allocateVectorId();
-      if (undo != null)
+      if (undo != null) {
         undo.recordAllocated(id);
+        // Before the vector is visible: a search that finds it finds it marked (issue #13323)
+        undo.recordPut(rid);
+      }
 
       persistVectorWithLocation(id, rid, vector);
 
@@ -14800,6 +15079,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   void setAfterLiveSetReadForTest(final Runnable hook) {
     afterLiveSetReadForTest = hook;
+  }
+
+  void setBeforeOrdinalWalkForTest(final Runnable hook) {
+    beforeOrdinalWalkForTest = hook;
+  }
+
+  void setAfterOrdinalWalkForTest(final Runnable hook) {
+    afterOrdinalWalkForTest = hook;
   }
 
   void setAfterPagesParsedForTest(final Runnable hook) {

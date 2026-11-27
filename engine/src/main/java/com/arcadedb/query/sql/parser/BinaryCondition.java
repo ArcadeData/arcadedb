@@ -41,19 +41,49 @@ public class BinaryCondition extends BooleanExpression {
   public BinaryCompareOperator operator;
   public Expression            right;
 
+  /** The key of the memo an execution converts the right operand with, assigned at its first use; see {@link #rightConversion}. */
+  private volatile String rightConversionKey;
+  /**
+   * Whether the right operand is a literal or a parameter, decided at its first use ({@link ConstantOperandConversion#literalState}),
+   * so a record does not walk the expression again. A benign race: two threads compute the same answer.
+   */
+  private          byte   rightLiteralState = ConstantOperandConversion.UNKNOWN;
+  /**
+   * Each operand, evaluated once per execution when it is a call over constants that answers one value for the execution, such as
+   * {@code date('2024-06-01', 'yyyy-MM-dd')} (issue #13523). Built at first use.
+   */
+  private transient volatile ConstantCallOperand leftOperand;
+  private transient volatile ConstantCallOperand rightOperand;
+
   public BinaryCondition() {
   }
 
   @Override
   public Boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
-    return compare(context, left.execute(currentRecord, context), right.execute(currentRecord, context));
+    return compare(context, leftOperand().execute(currentRecord, context), rightOperand().execute(currentRecord, context));
   }
 
   @Override
   public Boolean evaluate(final Result currentRecord, final CommandContext context) {
-    final Object leftVal = left.execute(currentRecord, context);
-    final Object rightVal = right.execute(currentRecord, context);
+    final Object leftVal = leftOperand().execute(currentRecord, context);
+    final Object rightVal = rightOperand().execute(currentRecord, context);
     return compare(context, leftVal, rightVal);
+  }
+
+  ConstantCallOperand leftOperand() {
+    final ConstantCallOperand current = leftOperand;
+    final ConstantCallOperand operand = ConstantCallOperand.of(current, left);
+    if (operand != current)
+      leftOperand = operand;
+    return operand;
+  }
+
+  ConstantCallOperand rightOperand() {
+    final ConstantCallOperand current = rightOperand;
+    final ConstantCallOperand operand = ConstantCallOperand.of(current, right);
+    if (operand != current)
+      rightOperand = operand;
+    return operand;
   }
 
   /**
@@ -69,12 +99,37 @@ public class BinaryCondition extends BooleanExpression {
     if ((leftVal == null || rightVal == null) && operator.isUnknownOnNull())
       return null;
     try {
-      return operator.execute(context != null ? context.getDatabase() : null, leftVal, rightVal);
+      return operator.execute(context != null ? context.getDatabase() : null, leftVal, rightVal,
+          ConstantOperandConversion.isStringToConvert(leftVal, rightVal) && isRightConstant() ? rightConversion(context) : null);
     } catch (final ClassCastException e) {
       if (!operator.isRangeOperator())
         throw e;
       throw noOrder(leftVal, rightVal, operator.toString(), e);
     }
+  }
+
+  /**
+   * The memo the execution {@code context} runs converts the right operand with, when it is the same string on every record
+   * compared with a value of another class: the operator then parses it once, not once per record (issue #12713). Null without a
+   * context.
+   */
+  ConstantOperandConversion rightConversion(final CommandContext context) {
+    String key = rightConversionKey;
+    if (key == null) {
+      // A benign race, as the memo key of InCondition: two threads may give the node two keys, and the loser converts once more
+      key = ConstantOperandConversion.newKey();
+      rightConversionKey = key;
+    }
+    return ConstantOperandConversion.of(context, key);
+  }
+
+  private boolean isRightConstant() {
+    byte state = rightLiteralState;
+    if (state == ConstantOperandConversion.UNKNOWN) {
+      state = ConstantOperandConversion.literalState(right);
+      rightLiteralState = state;
+    }
+    return state == ConstantOperandConversion.CONSTANT;
   }
 
   /**

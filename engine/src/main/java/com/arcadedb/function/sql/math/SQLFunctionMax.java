@@ -126,4 +126,10 @@ public class SQLFunctionMax extends SQLAggregatedFunction {
   public Object getResult() {
     return context;
   }
+
+  /** Pure over its rows and arguments (issue #6190): a statement that holds the call keeps its execution plan. */
+  @Override
+  public boolean isDeterministic() {
+    return true;
+  }
 }

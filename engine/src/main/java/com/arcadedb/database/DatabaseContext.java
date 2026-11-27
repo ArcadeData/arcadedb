@@ -278,6 +278,27 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
   }
 
   /**
+   * {@link #removeCurrentThreadContexts()} for a thread that is about to end, when none of its contexts holds an active
+   * transaction: the thread of a transaction that ran to its end has nothing left to roll back, and its contexts (page lists,
+   * the index-entry journal, buffers) would otherwise stay in CONTEXTS until the dead-thread sweep, which runs every
+   * {@value #CLEANUP_INTERVAL} calls of init(). A context with an active transaction is left to that sweep, which rolls the
+   * transaction back.
+   *
+   * @return true when the contexts were released
+   */
+  public boolean releaseCurrentThreadContextsIfIdle() {
+    final ThreadContexts registered = CONTEXTS.get(Thread.currentThread().threadId());
+    if (registered == null)
+      return false;
+    for (final DatabaseContextTL context : registered.contexts.values())
+      for (final TransactionContext transaction : context.transactions)
+        if (transaction.isActive())
+          return false;
+    removeCurrentThreadContexts();
+    return true;
+  }
+
+  /**
    * Scans CONTEXTS and removes the entries whose owning thread is no longer alive, rolling back any transaction
    * they abandoned. Also opportunistically drops the empty entries of LIVE threads left behind by a foreign
    * database close ({@code removeAllContexts} cannot prune them without racing the owner, see #4939/#5067);

@@ -36,6 +36,7 @@ import com.arcadedb.index.vector.GroupAdmissionState;
 import com.arcadedb.index.vector.GroupedTopUpPlanner;
 import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.RidHashSet;
@@ -209,6 +210,10 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
       final float[] queryValues, final int k, final Set<RID> allowedRIDs, final String groupBy, final int groupSize,
       final float minScore, final CommandContext context) {
 
+    // One bound for every pass and every index searched: the command's deadline and the termination of its statement,
+    // honoured between the passes, while the records of the answer are loaded and inside each index search
+    final WorkGuard guard = WorkGuard.forCommand(context, NAME + "()");
+
     // Memory-budget guard. The integrated grouped path (issue #4071) no longer over-fetches
     // candidates - the per-group min-heap inside BMW DAAT bounds memory at O(k * groupSize) per
     // bucket. We still apply the historical cap to reject pathological combinations (e.g.
@@ -232,11 +237,11 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
     if (groupBy != null)
       return searchGroupedWithStaleTopUp(k, groupSize, MAX_FETCH_CANDIDATES,
           (fetchGroups, fetchGroupSize, staleRids) -> searchAndEmit(indexes, queryIndices, queryValues, k, fetchGroups,
-              allowedRIDs, groupBy, fetchGroupSize, groupSize, minScore, context, new int[1], staleRids, null));
+              allowedRIDs, groupBy, fetchGroupSize, groupSize, minScore, context, guard, new int[1], staleRids, null));
 
     return VectorUtils.searchWithStaleTopUp(k,
         (fetchK, staleSkipped, saturated) -> searchAndEmit(indexes, queryIndices, queryValues, k, fetchK, allowedRIDs, null,
-            groupSize, groupSize, minScore, context, staleSkipped, null, saturated));
+            groupSize, groupSize, minScore, context, guard, staleSkipped, null, saturated));
   }
 
   /**
@@ -249,10 +254,14 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
    */
   private ArrayList<Object> searchAndEmit(final List<LSMSparseVectorIndex> indexes, final int[] queryIndices,
       final float[] queryValues, final int k, final int fetchK, final Set<RID> allowedRIDs, final String groupBy,
-      final int fetchGroupSize, final int groupSize, final float minScore, final CommandContext context,
+      final int fetchGroupSize, final int groupSize, final float minScore, final CommandContext context, final WorkGuard guard,
       final int[] staleSkipped, final Set<RID> staleRids, final boolean[] saturated) {
+    // Every pass, the top-ups included, starts on a bound that may have been reached since the last one
+    guard.check();
     final ArrayList<RidScore> merged = new ArrayList<>();
     final BasicDatabase databaseRef = context.getDatabase();
+    // What the searches read: the same bound without the interrupt flag, because they run on scoring pool threads too
+    final WorkGuard searchGuard = guard.withoutInterrupt();
 
     // One resolver for every search of this pass and for the emit below, so they all group a candidate the same way
     // and a record that changed under the search is caught at emit (issue #10002) - see GroupKeyMemo.
@@ -282,19 +291,19 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
     final boolean serial = SparseVectorScoringPool.callerHoldsUncommittedChanges(databaseRef.getDatabasePath());
 
     // The weights actually scored, resolved ONCE for the pass and shared by every search below, the top-ups included.
-    final float[] weights = indexes.isEmpty() ? queryValues : indexes.get(0).effectiveWeights(queryIndices, queryValues);
+    final float[] weights = indexes.isEmpty() ? queryValues : indexes.get(0).effectiveWeights(queryIndices, queryValues, guard);
 
     final List<Callable<List<RidScore>>> searches = new ArrayList<>(indexes.size());
     for (int i = 0; i < indexes.size(); i++) {
       final LSMSparseVectorIndex idx = indexes.get(i);
       final SparseTransactionOverlay overlay = overlays.get(i);
       if (groupBy == null)
-        searches.add(() -> idx.topKWeighted(queryIndices, weights, fetchK, allowedRIDs, overlay));
+        searches.add(() -> idx.topKWeighted(queryIndices, weights, fetchK, allowedRIDs, overlay, searchGuard));
       else
         searches.add(() -> idx.topKGroupedWeighted(queryIndices, weights, groupBudget, fetchGroupSize, allowedRIDs,
-            groupKeyResolver, overlay));
+            groupKeyResolver, overlay, searchGuard));
     }
-    final List<List<RidScore>> perIndex = SparseVectorScoringPool.runAll(searches, serial);
+    final List<List<RidScore>> perIndex = SparseVectorScoringPool.runAll(searches, serial, guard);
     for (final List<RidScore> partial : perIndex) {
       merged.addAll(partial);
       // Any sub-index at its budget may hold more, so the answer as a whole can grow. Over several sub-indexes this can
@@ -309,12 +318,16 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
     // top k may still hold members of it, and never returned them. The planner names the buckets that may, for which
     // winners, and below what score nothing they hold could matter; it asks none in the common case.
     if (groupBy != null && indexes.size() > 1) {
+      guard.check();
       final GroupedTopUpPlanner planner = new GroupedTopUpPlanner(fetchK, fetchGroupSize);
+      int resolved = 0;
       for (final List<RidScore> partial : perIndex) {
         final List<RID> rids = new ArrayList<>(partial.size());
         final float[] scores = new float[partial.size()];
         final List<Object> keys = new ArrayList<>(partial.size());
         for (int i = 0; i < partial.size(); i++) {
+          // The group key of a candidate is read off its record
+          guard.checkPeriodically(++resolved);
           rids.add(partial.get(i).rid());
           scores[i] = partial.get(i).score();
           keys.add(groupKeyResolver.apply(partial.get(i).rid()));
@@ -328,9 +341,9 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
           final LSMSparseVectorIndex idx = indexes.get(topUp.source());
           final SparseTransactionOverlay overlay = overlays.get(topUp.source());
           topUpSearches.add(() -> idx.topKForGroupsWeighted(queryIndices, weights, topUp.groupKeys(), fetchGroupSize,
-              topUp.floor(), allowedRIDs, groupKeyResolver, overlay));
+              topUp.floor(), allowedRIDs, groupKeyResolver, overlay, searchGuard));
         }
-        for (final List<RidScore> partial : SparseVectorScoringPool.runAll(topUpSearches, serial))
+        for (final List<RidScore> partial : SparseVectorScoringPool.runAll(topUpSearches, serial, guard))
           merged.addAll(partial);
       }
     }
@@ -349,7 +362,10 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
     // near Integer.MAX_VALUE overflow the power-of-two rounding to a negative capacity.
     final RidHashSet emitted = new RidHashSet(Math.min(k, merged.size()));
 
+    int visited = 0;
     for (final RidScore neighbor : merged) {
+      // One record is loaded per candidate, and a caller can ask for as many candidates as the index holds
+      guard.checkPeriodically(++visited);
       if (groupBy == null) {
         if (result.size() >= k)
           break;

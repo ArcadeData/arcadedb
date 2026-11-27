@@ -324,8 +324,13 @@ public class BinaryComparator {
       case BinaryTypes.TYPE_DECIMAL:
         return ((BigDecimal) value1).compareTo((BigDecimal) value2);
       case BinaryTypes.TYPE_FLOAT:
+        // an infinity or NaN has no decimal form: ordered in double, the decimal clamped to the double range (issue #12694)
+        if (!Type.isFinite((Float) value2))
+          return compareDoubles(Type.finiteDoubleValue((BigDecimal) value1), ((Float) value2).doubleValue());
         return ((BigDecimal) value1).compareTo(Type.floatToBigDecimal((Float) value2));
       case BinaryTypes.TYPE_DOUBLE:
+        if (!Type.isFinite((Double) value2))
+          return compareDoubles(Type.finiteDoubleValue((BigDecimal) value1), (Double) value2);
         return ((BigDecimal) value1).compareTo(BigDecimal.valueOf((Double) value2));
       case BinaryTypes.TYPE_STRING:
         return ((BigDecimal) value1).compareTo(new BigDecimal((String) value2));
@@ -1043,7 +1048,9 @@ public class BinaryComparator {
       return -compareIntegralAgainstFloatingNumber(b.longValue(), a);
 
     if (!Type.isFinite(a) || !Type.isFinite(b))
-      return compareDoubles(a.doubleValue(), b.doubleValue());
+      // a decimal past the double range still orders below an infinity: clamped, not read as the infinity it overflows to (#12694)
+      return compareDoubles(a instanceof BigDecimal decimalA ? Type.finiteDoubleValue(decimalA) : a.doubleValue(),
+          b instanceof BigDecimal decimalB ? Type.finiteDoubleValue(decimalB) : b.doubleValue());
     return Type.floatingToBigDecimal(a).compareTo(Type.floatingToBigDecimal(b));
   }
 

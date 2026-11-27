@@ -17,21 +17,23 @@ package com.arcadedb.function.polyglot;/*
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import com.arcadedb.exception.HeapLimitExceededException;
 import com.arcadedb.function.FunctionExecutionException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import org.graalvm.polyglot.Value;
 import org.graalvm.polyglot.proxy.ProxyArray;
 import org.graalvm.polyglot.proxy.ProxyObject;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.logging.Level;
-import java.util.stream.Collectors;
 
 /**
  * Javascript implementation of a function. To define the function, pass the function name, code and optional parameters in the constructor.
@@ -178,61 +180,44 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
         final Value fn = polyglotEngine.context.getBindings("js").getMember(functionName);
         if (fn == null)
           throw new FunctionExecutionException("Function '" + functionName + "' is not defined");
+        final ArgumentCopy argumentCopy = new ArgumentCopy();
         final Object[] args = new Object[parameters.length];
         for (int i = 0; i < parameters.length; i++)
-          args[i] = toJsArg(parameters[i]);
-        return jsValueToJava(fn.execute(args));
-      } catch (final FunctionExecutionException e) {
+          args[i] = argumentCopy.toJs(parameters[i]);
+        return jsValueToJava(fn.execute(args), new ResultCopy(library, functionName));
+      } catch (final FunctionExecutionException | HeapLimitExceededException e) {
         throw e;
+      } catch (final StackOverflowError e) {
+        // A VALUE NESTED TOO DEEPLY, OR THAT HOLDS ITSELF, IS COPIED BY RECURSION: THE STACK IS UNWOUND TO THIS FRAME
+        throw new FunctionExecutionException("Error on execution of function '" + functionName + "': a value is nested too deeply", e);
       } catch (final Exception e) {
         throw new FunctionExecutionException("Error on execution of function '" + functionName + "'", e);
       }
     });
   }
 
-  private static Object toJsArg(final Object value) {
-    if (value instanceof Map<?, ?> map)
-      return toDeepProxyObject(normalizeMapKeys(map));
-    if (value instanceof List<?> list)
-      return toDeepProxyList(normalizeListValues(list));
-    return value;
-  }
-
-  private static Map<String, Object> normalizeMapKeys(final Map<?, ?> map) {
-    final Map<String, Object> result = new LinkedHashMap<>(map.size());
-    for (final Map.Entry<?, ?> entry : map.entrySet()) {
-      final String key = entry.getKey() instanceof String s ? s : String.valueOf(entry.getKey());
-      result.put(key, normalizeValue(entry.getValue()));
-    }
-    return result;
-  }
-
-  private static List<Object> normalizeListValues(final List<?> list) {
-    final List<Object> result = new ArrayList<>(list.size());
-    for (final Object item : list)
-      result.add(normalizeValue(item));
-    return result;
-  }
-
-  private static Object normalizeValue(final Object value) {
-    if (value instanceof Map<?, ?> map)
-      return normalizeMapKeys(map);
-    if (value instanceof List<?> list)
-      return normalizeListValues(list);
-    return value;
-  }
-
   public static List<?> jsArrayToJava(final ProxyArray array) {
+    return jsArrayToJava(array, ResultCopy.UNBOUNDED);
+  }
+
+  private static List<?> jsArrayToJava(final ProxyArray array, final ResultCopy copy) {
     if (array == null)
       return null;
 
+    final long size = array.getSize();
+    copy.add(size);
+
     final List<Object> list = new ArrayList<>();
-    for (int i = 0; i < array.getSize(); ++i)
-      list.add(jsAnyToJava(array.get(i)));
+    for (long i = 0; i < size; ++i)
+      list.add(jsAnyToJava(array.get(i), copy));
     return list;
   }
 
   public static Object jsObjectToJava(final ProxyObject result) {
+    return jsObjectToJava(result, ResultCopy.UNBOUNDED);
+  }
+
+  private static Object jsObjectToJava(final ProxyObject result, final ResultCopy copy) {
     if (result == null)
       return null;
 
@@ -242,8 +227,10 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
 
     final Iterable<String> iterableKeys;
     if (keys instanceof ProxyArray proxyArray) {
-      List<String> list = new ArrayList<>();
-      for (int i = 0; i < proxyArray.getSize(); ++i) {
+      final long size = proxyArray.getSize();
+      copy.add(size);
+      final List<String> list = new ArrayList<>();
+      for (long i = 0; i < size; ++i) {
         final Object key = proxyArray.get(i);
         if (key instanceof String s)
           list.add(s);
@@ -253,7 +240,7 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
       iterableKeys = (Iterable<String>) keys;
 
     for (final String key : iterableKeys) {
-      final Object value = jsAnyToJava(result.getMember(key));
+      final Object value = jsAnyToJava(result.getMember(key), copy);
       if (value != null)
         map.put(key, value);
     }
@@ -262,18 +249,22 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
   }
 
   public static Object jsAnyToJava(final Object value) {
+    return jsAnyToJava(value, ResultCopy.UNBOUNDED);
+  }
+
+  private static Object jsAnyToJava(final Object value, final ResultCopy copy) {
     switch (value) {
     case null -> {
       return null;
     }
     case ProxyObject proxyObject -> {
-      return jsObjectToJava(proxyObject);
+      return jsObjectToJava(proxyObject, copy);
     }
     case ProxyArray proxyArray -> {
-      return jsArrayToJava(proxyArray);
+      return jsArrayToJava(proxyArray, copy);
     }
     case Value result -> {
-      return jsValueToJava(result);
+      return jsValueToJava(result, copy);
     }
     case Function<?, ?> fx -> {
       // NOT SUPPORTED
@@ -282,6 +273,7 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
       return null;
     }
     case List list -> {
+      copy.add(list.size());
       final List newList = new ArrayList<>();
 
       for (int i = 0; i < list.size(); ++i) {
@@ -292,11 +284,12 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
               .log(JavascriptFunctionDefinition.class, Level.WARNING, "Skip function member %d in list '%s' (class=%s)", i, list,
                   list.getClass().getName());
         } else
-          newList.add(jsAnyToJava(elem));
+          newList.add(jsAnyToJava(elem, copy));
       }
       return newList;
     }
     case Map<?, ?> map -> {
+      copy.add(map.size());
       final Map<String, Object> newMap = new HashMap<>();
       for (Map.Entry<?, ?> entry : map.entrySet()) {
         final Object key = entry.getKey();
@@ -308,7 +301,7 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
                 .log(JavascriptFunctionDefinition.class, Level.WARNING, "Skip function member '%s' in map '%s' (class=%s)", keyStr,
                     map, map.getClass().getName());
           } else
-            valueEntry = jsAnyToJava(valueEntry);
+            valueEntry = jsAnyToJava(valueEntry, copy);
 
           if (valueEntry != null)
             newMap.put(keyStr, valueEntry);
@@ -323,10 +316,14 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
   }
 
   public static Object jsValueToJava(final Value result) {
+    return jsValueToJava(result, ResultCopy.UNBOUNDED);
+  }
+
+  private static Object jsValueToJava(final Value result, final ResultCopy copy) {
     if (result == null)
       return null;
     else if (result.isHostObject()) {
-      return jsAnyToJava(result.asHostObject());
+      return jsAnyToJava(result.asHostObject(), copy);
     } else if (result.isString())
       return result.asString();
     else if (result.isBoolean())
@@ -341,10 +338,13 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
       else
         return result.asDouble();
     } else if (result.hasArrayElements()) {
+      // THE LENGTH OF A SCRIPT ARRAY IS ITS HIGHEST INDEX PLUS ONE, NOT THE NUMBER OF ELEMENTS IT HOLDS: IT IS COUNTED BEFORE THE
+      // ELEMENTS ARE READ
       final long size = result.getArraySize();
+      copy.add(size);
       final List<Object> array = new ArrayList<>();
-      for (int i = 0; i < size; i++) {
-        final Object elem = jsValueToJava(result.getArrayElement(i));
+      for (long i = 0; i < size; i++) {
+        final Object elem = jsValueToJava(result.getArrayElement(i), copy);
         array.add(elem);
       }
       return array;
@@ -364,15 +364,18 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
       try {
         final Object hosted = result.as(Object.class);
         if (hosted instanceof Map<?, ?> || hosted instanceof List<?>)
-          return jsAnyToJava(hosted);
+          return jsAnyToJava(hosted, copy);
+      } catch (final HeapLimitExceededException e) {
+        throw e;
       } catch (final Exception ignored) {
         // Not a hosted Java collection — fall through to the JS-object member enumeration below.
       }
 
       final Map<String, Object> map = new HashMap<>();
       final Set<String> keys = result.getMemberKeys();
+      copy.add(keys.size());
       for (final String key : keys) {
-        final Object elem = jsValueToJava(result.getMember(key));
+        final Object elem = jsValueToJava(result.getMember(key), copy);
         map.put(key, elem);
       }
       return map;
@@ -383,41 +386,98 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
 
   /**
    * Recursively converts a Java Map into a ProxyObject suitable for JS.
-   * It handles nested Maps and Lists.
+   * It handles nested Maps and Lists. A Map or List that is referred to more than once is converted once.
    *
    * @param map The Java Map to convert.
    *
    * @return A ProxyObject representing the deep structure.
    */
   public static ProxyObject toDeepProxyObject(final Map<String, Object> map) {
-    // Use a new map to avoid modifying the original
-    final Map<String, Object> processedMap = new LinkedHashMap<>();
-
-    for (Map.Entry<String, Object> entry : map.entrySet()) {
-      final Object value = entry.getValue();
-      if (value instanceof Map subMap) {
-        // If the value is a map, recurse
-        processedMap.put(entry.getKey(), toDeepProxyObject(subMap));
-      } else if (value instanceof List list)
-        // If the value is a list, process its elements
-        processedMap.put(entry.getKey(), toDeepProxyList(list));
-      else
-        // Otherwise, just put the primitive/simple value
-        processedMap.put(entry.getKey(), value);
-    }
-    return ProxyObject.fromMap(processedMap);
+    return (ProxyObject) new ArgumentCopy().toJs(map);
   }
 
   /**
-   * Helper method to recursively convert elements within a List.
+   * Helper method to recursively convert elements within a List. A Map or List that is referred to more than once is converted
+   * once.
    */
   public static ProxyArray toDeepProxyList(final List<?> list) {
-    return ProxyArray.fromList(list.stream().map(item -> {
-      if (item instanceof Map subMap)
-        return toDeepProxyObject(subMap);
-      else if (item instanceof List)
-        return toDeepProxyList((List<?>) item);
-      return item;
-    }).collect(Collectors.toList()));
+    return (ProxyArray) new ArgumentCopy().toJs(list);
+  }
+
+  /**
+   * Copies the lists and maps handed to a function into the proxies the language reads, with the keys of a map as strings. A list
+   * or map that is referred to more than once, as a value that is built from shared parts is, is copied once and every reference
+   * reads the same proxy: the copy holds as many lists and maps as the arguments do, not as many as there are paths to them. A
+   * collection that holds itself is copied the same way.
+   * <p>
+   * The proxies are copies, so the function cannot change the values it was given. One instance serves one call.
+   */
+  private static final class ArgumentCopy {
+    // THE LIST OR MAP THAT WAS GIVEN -> ITS PROXY, BY IDENTITY. CREATED WHEN THE FIRST LIST OR MAP IS MET
+    private IdentityHashMap<Object, Object> proxies;
+
+    Object toJs(final Object value) {
+      if (!(value instanceof Map) && !(value instanceof List))
+        return value;
+
+      if (proxies == null)
+        proxies = new IdentityHashMap<>(8);
+      else {
+        final Object known = proxies.get(value);
+        if (known != null)
+          return known;
+      }
+
+      if (value instanceof Map<?, ?> map) {
+        final Map<String, Object> copy = LinkedHashMap.newLinkedHashMap(map.size());
+        final ProxyObject proxy = ProxyObject.fromMap(copy);
+        // REGISTERED BEFORE ITS VALUES ARE COPIED: A VALUE THAT LEADS BACK TO THIS MAP FINDS IT
+        proxies.put(value, proxy);
+        for (final Map.Entry<?, ?> entry : map.entrySet()) {
+          final Object key = entry.getKey();
+          copy.put(key instanceof String s ? s : String.valueOf(key), toJs(entry.getValue()));
+        }
+        return proxy;
+      }
+
+      final List<?> list = (List<?>) value;
+      final List<Object> copy = new ArrayList<>(list.size());
+      final ProxyArray proxy = ProxyArray.fromList(copy);
+      proxies.put(value, proxy);
+      for (final Object item : list)
+        copy.add(toJs(item));
+      return proxy;
+    }
+  }
+
+  /**
+   * The elements that the conversion of what a function answered has copied so far, held to the cap of elements that one operation
+   * of a query keeps in the heap, as the rows of a function written in SQL are. The size of an array or of an object is counted
+   * before its elements are read, so an array whose length is far beyond what it holds is refused at once, and a value that
+   * leads to the same array by several paths is counted at every path. One instance serves one conversion.
+   */
+  private static final class ResultCopy {
+    // FOR A VALUE THAT IS NOT THE ANSWER OF A FUNCTION OF A DATABASE
+    static final ResultCopy UNBOUNDED = new ResultCopy(null, null);
+
+    private final PolyglotFunctionLibraryDefinition<?> library;
+    private final String                               functionName;
+    private       OperationHeapLimit                   limit;
+    private       long                                 copied;
+
+    ResultCopy(final PolyglotFunctionLibraryDefinition<?> library, final String functionName) {
+      this.library = library;
+      this.functionName = functionName;
+    }
+
+    void add(final long elements) {
+      if (library == null)
+        return;
+
+      if (limit == null)
+        limit = OperationHeapLimit.of(library.database, "JavaScript function '" + library.getName() + "." + functionName + "'");
+      copied += elements;
+      limit.check(copied);
+    }
   }
 }

@@ -1,0 +1,12 @@
+name: x
+on: [ workflow_dispatch ]
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build
+        run: |
+          docker buildx build \
+            --push -t a/b:1 .
+      - name: Sign
+        run: cosign sign --yes img

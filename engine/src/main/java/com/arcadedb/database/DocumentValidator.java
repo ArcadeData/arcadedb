@@ -304,6 +304,27 @@ public class DocumentValidator {
   }
 
   /**
+   * Refuses a null written to a NOTNULL property by a write path that never stores the null it is given: openCypher removes
+   * the property on {@code SET n += {p: null}} and leaves it out on {@code CREATE (n {p: null})}, so the presence-based rule
+   * of {@link #unmetExistenceConstraint} would never see the null, and the write SQL refuses would be accepted (issue
+   * #13227). The caller asks before it writes anything, so a refused statement leaves nothing behind. A removal
+   * ({@code REMOVE n.p}) is not a null write and is not checked here.
+   *
+   * @param type         the type of the record written, null when unknown (nothing is checked then)
+   * @param propertyName the property the null is written to
+   * @param record       the record written, only for the message: null for a record not created yet
+   */
+  public static void requireNullAllowed(final DocumentType type, final String propertyName, final Document record)
+      throws ValidationException {
+    if (type == null || propertyName == null)
+      return;
+    final Property p = type.getPolymorphicPropertyIfExists(propertyName);
+    if (p != null && p.isNotNull())
+      throwValidationException(type, p, ValidationException.Kind.NOT_NULL,
+          record != null ? "cannot be null, record: " + record : "cannot be null");
+  }
+
+  /**
    * The same rule for constraint flags the property does not carry yet: lets a caller that is about to add MANDATORY or
    * NOTNULL ask whether a stored record would violate it (#8943) without changing the schema first.
    */
