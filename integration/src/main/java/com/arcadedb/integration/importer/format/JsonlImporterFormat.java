@@ -90,6 +90,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 /**
@@ -143,6 +145,9 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
   /** A link that pass 1 could not resolve: where it is in the record, and the source RID it holds. */
   private record PendingLink(String property, Object[] path, RID oldRid) {
   }
+
+  /** Stands in a copy of a list for an element to take out of it, until the list's links are all resolved. */
+  private static final Object MISSING_ELEMENT = new Object();
 
   /**
    * Records - or TIMESERIES samples - accumulated before the periodic commit in {@link #load} fires.
@@ -1484,34 +1489,23 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
         // The properties whose links are rewritten, null while there is none
         Set<String> rewritten = null;
 
-        // HIGHEST LIST POSITION FIRST: AN ELEMENT REMOVED FROM A TYPED LIST SHIFTS ONLY THE ONES AFTER IT
-        final List<PendingLink> links = new ArrayList<>(entry.getValue());
-        links.sort(JsonlImporterFormat::reconciliationOrder);
-
+        // A PROPERTY IS REWRITTEN ONCE, WHATEVER THE NUMBER OF ITS LINKS: ONE COPY OF EACH CONTAINER ON THE WAY TO THEM, ONE set()
         final DocumentType type = document.getType();
-        for (final PendingLink link : links) {
-          // Null when the target is not in the export: deleted before it was taken, or left out of it. Its old RID names
-          // another record of this database, or none, so it is cleared rather than kept (issue #10201)
-          final RID newRid = ridIndex.get(link.oldRid());
-          final boolean[] replaced = { false };
-          final Object current = mutable.get(link.property());
+        for (final Map.Entry<String, Object> site : linkSitesByProperty(entry.getValue()).entrySet()) {
+          final String name = site.getKey();
           // A LIST OF or MAP OF holds no null element: one whose target is missing is removed from it instead
-          final Property property = type.getPolymorphicPropertyIfExists(link.property());
-          final boolean removeIfMissing = link.path().length == 1 && property != null && property.getOfType() != null
-              && (property.getType() == Type.LIST || property.getType() == Type.MAP);
-          final Object updated = replaceAt(current, link.path(), 0, link.oldRid(), newRid, removeIfMissing, replaced);
-          if (!replaced[0])
+          final Property property = type.getPolymorphicPropertyIfExists(name);
+          final boolean removeIfMissing =
+              property != null && property.getOfType() != null && (property.getType() == Type.LIST || property.getType() == Type.MAP);
+          final LinkResolution resolution = new LinkResolution(entry.getKey(), name, context.danglingLinks);
+          final Object updated = resolveLinks(mutable.get(name), site.getValue(), removeIfMissing, resolution);
+          if (resolution.replaced == 0)
             continue;
 
-          mutable.set(link.property(), updated);
+          mutable.set(name, updated);
           if (rewritten == null)
             rewritten = new HashSet<>();
-          rewritten.add(link.property());
-          if (newRid == null) {
-            context.danglingLinks.incrementAndGet();
-            LogManager.instance().log(this, Level.FINE, "Record %s: the link %s in property '%s' points to a record that is not in the "
-                + "export, it is set to null", null, entry.getKey(), link.oldRid(), link.property());
-          }
+          rewritten.add(name);
         }
 
         // The record was saved with the check of its links' target types suspended (see saveReadRecord): this is where it is made.
@@ -1572,68 +1566,148 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
   }
 
   /**
-   * A total order over the pending links of one record: by property, then the ones whose path starts with a list position by
-   * that position, highest first, then every other one. Only the relative order of the positions in one list matters, but a
-   * comparator that answered "equal" across kinds would not be transitive, which List.sort() may refuse.
+   * The positions of the pending links of one record, by property, in the order of the property names. A property that is a link
+   * itself maps to the source RID it holds; a container maps to the {@link LinkSite} of the positions inside it.
    */
-  private static int reconciliationOrder(final PendingLink a, final PendingLink b) {
-    final int byProperty = a.property().compareTo(b.property());
-    if (byProperty != 0)
-      return byProperty;
-    final Integer x = a.path().length > 0 && a.path()[0] instanceof Integer i ? i : null;
-    final Integer y = b.path().length > 0 && b.path()[0] instanceof Integer i ? i : null;
-    if (x != null && y != null)
-      return Integer.compare(y, x);
-    if (x != null)
-      return -1;
-    return y != null ? 1 : 0;
+  private static Map<String, Object> linkSitesByProperty(final List<PendingLink> links) {
+    final Map<String, Object> sites = new TreeMap<>();
+    for (final PendingLink link : links) {
+      final Object[] path = link.path();
+      if (path.length == 0) {
+        sites.put(link.property(), link.oldRid());
+        continue;
+      }
+
+      LinkSite site = (LinkSite) sites.computeIfAbsent(link.property(), property -> new LinkSite());
+      for (int i = 0; i < path.length - 1; i++)
+        site = site.inner(path[i]);
+      site.below.put(path[path.length - 1], link.oldRid());
+    }
+    return sites;
   }
 
   /**
-   * {@code current} with the element at {@code path} (from position {@code depth}) replaced by {@code replacement}, when it
-   * still holds {@code expected}. Containers are copied rather than changed, since a value read from a record is not
-   * necessarily mutable; an embedded document is modified through its owner.
+   * {@code current} with the links at {@code site} resolved: each one that still holds the identity it had in the source is
+   * replaced by the identity of the record that took its place, or by null when the export does not hold it. Containers are
+   * copied rather than changed, since a value read from a record is not necessarily mutable, and each one only once, however many
+   * links it holds: an element of a {@code LIST OF} / {@code MAP OF} whose target is missing is taken out of the copy, a list's
+   * in a single pass at the end, since a removal in the middle moves everything after it. An embedded document is modified
+   * through its owner. Returns {@code current} itself when nothing under it was replaced.
+   *
+   * @param site            the source RID of a link at this position, or the {@link LinkSite} of the links below it
+   * @param removeIfMissing whether an element of the container at this position, whose target is missing, is removed from it
    */
-  private static Object replaceAt(final Object current, final Object[] path, final int depth, final RID expected,
-      final RID replacement, final boolean removeIfMissing, final boolean[] replaced) {
-    if (depth == path.length) {
-      if (current instanceof Identifiable identifiable && expected.equals(identifiable.getIdentity())) {
-        replaced[0] = true;
-        return replacement;
+  private Object resolveLinks(final Object current, final Object site, final boolean removeIfMissing, final LinkResolution resolution) {
+    if (site instanceof RID oldRid) {
+      if (!(current instanceof Identifiable identifiable) || !oldRid.equals(identifiable.getIdentity()))
+        return current;
+
+      // Null when the target is not in the export: deleted before it was taken, or left out of it. Its old RID names
+      // another record of this database, or none, so it is cleared rather than kept (issue #10201)
+      final RID newRid = ridIndex.get(oldRid);
+      resolution.replaced++;
+      if (newRid == null) {
+        resolution.danglingLinks.incrementAndGet();
+        LogManager.instance().log(this, Level.FINE, "Record %s: the link %s in property '%s' points to a record that is not in the "
+            + "export, it is set to null", null, resolution.record, oldRid, resolution.property);
       }
-      return current;
+      return newRid;
     }
 
-    // THE ELEMENT ITSELF, IN A CONTAINER THAT CANNOT HOLD A NULL
-    final boolean removeHere = removeIfMissing && replacement == null && depth == path.length - 1;
+    final Map<Object, Object> below = ((LinkSite) site).below;
+    final int replacedBefore = resolution.replaced;
 
-    final Object step = path[depth];
-    if (current instanceof List<?> list && step instanceof Integer index && index < list.size()) {
+    if (current instanceof List<?> list) {
       final List<Object> copy = new ArrayList<>(list);
-      final Object element = replaceAt(list.get(index), path, depth + 1, expected, replacement, removeIfMissing, replaced);
-      if (removeHere && replaced[0])
-        copy.remove((int) index);
-      else
-        copy.set(index, element);
-      return copy;
+      boolean removed = false;
+      for (final Map.Entry<Object, Object> next : below.entrySet()) {
+        if (!(next.getKey() instanceof Integer index) || index >= copy.size())
+          continue;
+
+        final int before = resolution.replaced;
+        final Object resolved = resolveLinks(copy.get(index), next.getValue(), false, resolution);
+        if (resolution.replaced == before)
+          continue;
+
+        if (resolved == null && removeIfMissing && next.getValue() instanceof RID) {
+          // LEFT IN PLACE UNTIL THE END: THE POSITIONS OF THE OTHER LINKS ARE THE ONES OF THE LIST AS IT WAS READ
+          copy.set(index, MISSING_ELEMENT);
+          removed = true;
+        } else
+          copy.set(index, resolved);
+      }
+      if (removed)
+        copy.removeIf(element -> element == MISSING_ELEMENT);
+      return resolution.replaced > replacedBefore ? copy : current;
     }
-    if (current instanceof Map<?, ?> map && map.containsKey(step)) {
+
+    if (current instanceof Map<?, ?> map) {
       final Map<Object, Object> copy = new LinkedHashMap<>(map);
-      final Object element = replaceAt(map.get(step), path, depth + 1, expected, replacement, removeIfMissing, replaced);
-      if (removeHere && replaced[0])
-        copy.remove(step);
-      else
-        copy.put(step, element);
-      return copy;
+      for (final Map.Entry<Object, Object> next : below.entrySet()) {
+        final Object key = next.getKey();
+        if (!copy.containsKey(key))
+          continue;
+
+        final int before = resolution.replaced;
+        final Object resolved = resolveLinks(copy.get(key), next.getValue(), false, resolution);
+        if (resolution.replaced == before)
+          continue;
+
+        if (resolved == null && removeIfMissing && next.getValue() instanceof RID)
+          copy.remove(key);
+        else
+          copy.put(key, resolved);
+      }
+      return resolution.replaced > replacedBefore ? copy : current;
     }
-    if ((current instanceof ImmutableEmbeddedDocument || current instanceof MutableEmbeddedDocument) && step instanceof String name) {
+
+    if (current instanceof ImmutableEmbeddedDocument || current instanceof MutableEmbeddedDocument) {
       final MutableEmbeddedDocument mutable = current instanceof ImmutableEmbeddedDocument immutable ?
           immutable.modify() :
           (MutableEmbeddedDocument) current;
-      mutable.set(name, replaceAt(mutable.get(name), path, depth + 1, expected, replacement, removeIfMissing, replaced));
+      for (final Map.Entry<Object, Object> next : below.entrySet()) {
+        if (!(next.getKey() instanceof String name))
+          continue;
+
+        final Object value = mutable.get(name);
+        final Object resolved = resolveLinks(value, next.getValue(), false, resolution);
+        if (resolved != value)
+          mutable.set(name, resolved);
+      }
       return mutable;
     }
     return current;
+  }
+
+  /** What the resolution of the links of one property of one record has done so far. */
+  private static final class LinkResolution {
+    private final RID        record;
+    private final String     property;
+    private final AtomicLong danglingLinks;
+    /** The links found at the position they were recorded at and replaced. */
+    private int              replaced;
+
+    private LinkResolution(final RID record, final String property, final AtomicLong danglingLinks) {
+      this.record = record;
+      this.property = property;
+      this.danglingLinks = danglingLinks;
+    }
+  }
+
+  /**
+   * The pending links inside one container of a record: for each list position, map key or embedded property name, either the
+   * source RID of the link there, or the {@link LinkSite} of the links inside the container that is there.
+   */
+  private static final class LinkSite {
+    private final Map<Object, Object> below = new HashMap<>();
+
+    private LinkSite inner(final Object step) {
+      if (below.get(step) instanceof LinkSite site)
+        return site;
+      final LinkSite site = new LinkSite();
+      below.put(step, site);
+      return site;
+    }
   }
 
   private Map<String, Object> json2map(final DatabaseInternal database, final JSONObject json, final JSONObject hints) {
