@@ -129,6 +129,51 @@ class Issue12932CreatePropertyStoredCollectionTest extends TestHelper {
         .hasMessageContaining("has been declared as LINK of 'Addr' but a value that is not a link is used");
   }
 
+  /**
+   * A fresh write never reaches the validator's LINK arm with a non-link: the write path's conversion refuses it first. The arm
+   * only ever sees a non-link stored before the declaration, which is what the test above covers.
+   */
+  @Test
+  void freshWriteOfANonLinkUnderLinkOfIsRefusedAsASchemaError() {
+    database.command("sql", "CREATE DOCUMENT TYPE Holder");
+    database.command("sql", "CREATE PROPERTY Holder.p LINK OF Addr");
+
+    assertThatThrownBy(() -> database.transaction(() -> database.command("sql", "INSERT INTO Holder SET p = 10")))
+        .isNotInstanceOf(ClassCastException.class)
+        .hasMessageContaining("to 'LINK' found in property 'p'");
+    assertThatThrownBy(() -> database.transaction(() -> database.newDocument("Holder").set("p", "abc").save()))
+        .isNotInstanceOf(ClassCastException.class)
+        .hasMessageContaining("property 'p'");
+    assertThatThrownBy(() -> database.transaction(() -> database.command("sql", "INSERT INTO Holder SET p = " + otherLink)))
+        .isInstanceOf(ValidationException.class)
+        .hasMessageContaining("has been declared as LINK of 'Addr' but a link to type 'Other' is used");
+
+    database.transaction(() -> database.command("sql", "INSERT INTO Holder SET p = " + addrLink));
+    assertThat(database.countType("Holder", false)).isEqualTo(1L);
+  }
+
+  /**
+   * The save path accepts, without converting it, a narrower number in a numeric LIST OF that holds it without loss, so the
+   * element keeps its stored Java type. The index on the list's items converts its keys to the declared type, so a lookup by
+   * item still finds the record, through the index and through a scan alike.
+   */
+  @Test
+  void widenedElementsSaveUnconvertedAndAreStillFoundByItem() {
+    final String typeName = newTypeWithRecord("[1, 2, 3]");
+    database.command("sql", "CREATE PROPERTY " + typeName + ".p LIST OF LONG");
+    assertThat(updateOtherProperty(typeName)).isNull();
+
+    final List<Object> stored = database.query("sql", "SELECT p FROM " + typeName).next().getProperty("p");
+    assertThat(stored).containsExactly(1, 2, 3);
+
+    assertThat(database.query("sql", "SELECT FROM " + typeName + " WHERE p CONTAINS 2").stream().count()).isEqualTo(1L);
+    database.command("sql", "CREATE INDEX ON " + typeName + " (p BY ITEM) NOTUNIQUE");
+    assertThat(database.query("sql", "SELECT FROM " + typeName + " WHERE p CONTAINS 2").stream().count()).isEqualTo(1L);
+    assertThat(database.query("sql", "SELECT FROM " + typeName + " WHERE p CONTAINS 4").stream().count()).isEqualTo(0L);
+    // a fraction is not a lossless widening of a LONG: the save path refuses it (covered by the table test as well)
+    assertRefused("[1.5, 2.5]", "LIST OF LONG", "is declared as LIST OF LONG but a stored value cannot be read as such");
+  }
+
   @Test
   void nonConformingStoredShapesAreRefusedWithTheScalarMessage() {
     assertRefused("[1, 2]", "MAP", "is declared as MAP but a stored value cannot be read as such: [1, 2]");

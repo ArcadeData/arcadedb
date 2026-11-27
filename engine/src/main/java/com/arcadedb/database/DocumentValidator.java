@@ -331,7 +331,9 @@ public class DocumentValidator {
           throwValidationException(document.getType(), p, ValidationException.Kind.TYPE,
               "is declared as " + type + (p.getOfType() != null ? " OF " + p.getOfType() : "")
                   + " but a stored value cannot be read as such: " + printableValue(stored));
-        // the bounds of a LIST or a MAP are a number of items, which a value of another shape does not have
+        // Only MIN, MAX or REGEXP is being added (ALTER PROPERTY): skip the record, as an unreadable scalar is skipped above. The
+        // bounds of a LIST or a MAP are a number of items, which a value of another shape does not have, and the save path refuses
+        // this record for its shape whatever bound or pattern is declared, so neither can decide whether the record still saves
         return;
       }
     }
