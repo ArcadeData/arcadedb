@@ -22,14 +22,15 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 import com.arcadedb.serializer.BinaryComparator;
 
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
+import java.util.Set;
 
 /**
  * @author Christian Himpe
@@ -38,6 +39,8 @@ import java.util.Map;
 public class SQLMethodSort extends AbstractSQLMethod {
 
   public static final String NAME = "sort";
+
+  private static final String ROWS_NO_ORDER = "some of the values they hold, or stand beside in the list, have no order between them";
 
   public SQLMethodSort() {
     super(NAME, 0, 1);
@@ -53,12 +56,19 @@ public class SQLMethodSort extends AbstractSQLMethod {
     if (list != null) {
       final List<Object> result = new ArrayList<>(list);
       final boolean descending = params != null && params.length > 0 && params[0] instanceof Boolean bool && !bool;
-      if (holdsRows(result))
-        sortRows(result, descending);
-      else if (descending)
-        result.sort((left, right) -> BinaryComparator.compareTo(right, left));
-      else
-        result.sort((left, right) -> BinaryComparator.compareTo(left, right));
+      final boolean rows = holdsRows(result);
+      try {
+        if (rows)
+          sortRows(result, descending);
+        else if (descending)
+          result.sort((left, right) -> BinaryComparator.compareTo(right, left));
+        else
+          result.sort((left, right) -> BinaryComparator.compareTo(left, right));
+      } catch (final ClassCastException | IllegalArgumentException e) {
+        // VALUES WITH NO ORDER (TWO EMBEDDED DOCUMENTS, A ROW HOLDING ONE, A DATE AGAINST A MAP): THE COMPARATOR REFUSES THEM, AND
+        // THAT IS THE STATEMENT'S MISTAKE, A CLIENT ERROR, NOT AN INTERNAL ONE (ISSUE #12881)
+        throw noOrder(list, rows, e);
+      }
       return result;
     } else {
       return value;
@@ -67,7 +77,9 @@ public class SQLMethodSort extends AbstractSQLMethod {
 
   /**
    * Whether the list holds a query row or a record, such as the result of a subquery. Neither has an order of its own, so
-   * comparing two of them directly fails (issue #12881).
+   * comparing two of them directly fails (issue #12881). In a list that mixes rows with plain values each row is ordered as its
+   * property map and each plain value as itself, the order the same list written with map literals gets; a pair with no order
+   * between them is refused.
    */
   private static boolean holdsRows(final List<Object> list) {
     for (final Object item : list)
@@ -97,16 +109,32 @@ public class SQLMethodSort extends AbstractSQLMethod {
       list.set(i, items[order[i]]);
   }
 
+  /**
+   * The properties of a row read in one pass of a stored record ({@link ResultInternal#propertiesOf(Result)}) rather than one
+   * header walk per property name. The map order does not matter: maps compare by their sorted keys.
+   */
   private static Object sortKey(final Object item) {
-    if (item instanceof Result row) {
-      final Map<String, Object> key = new HashMap<>();
-      for (final String name : row.getPropertyNames())
-        key.put(name, row.getProperty(name));
-      return key;
-    }
+    if (item instanceof Result row)
+      return ResultInternal.propertiesOf(row);
     if (item instanceof Document document)
       return document.toMap(false);
     return item;
+  }
+
+  /**
+   * The refusal of a list whose values have no order between them, the way {@code max()} and {@code min()} refuse them.
+   */
+  private static IllegalArgumentException noOrder(final List<Object> list, final boolean rows, final RuntimeException cause) {
+    if (rows)
+      return new IllegalArgumentException(NAME + "() cannot order these rows by their properties: " + ROWS_NO_ORDER, cause);
+
+    final Set<String> kinds = new LinkedHashSet<>();
+    for (final Object item : list)
+      if (item != null)
+        kinds.add(item.getClass().getSimpleName());
+    return new IllegalArgumentException(kinds.size() == 1 ?
+        NAME + "() cannot order values of type " + kinds.iterator().next() + ": the values have no order" :
+        NAME + "() cannot order values of types " + String.join(", ", kinds) + ": the values have no order between them", cause);
   }
 
   @Override
