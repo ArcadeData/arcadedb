@@ -524,12 +524,24 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    * (fail-closed) on any mismatch.
    */
   private void authorizeTransactionAccess(final TransactionContext txCtx, final DatabaseCredentials credentials) {
-    // Authorize against the transaction's actual database so a caller cannot lie about the database name.
-    validateCredentials(credentials, txCtx.db.getName());
+    try {
+      // Authorize against the transaction's actual database so a caller cannot lie about the database name.
+      validateCredentials(credentials, txCtx.db.getName());
 
-    final String caller = resolvedUsername(credentials);
-    if (txCtx.owner != null && !txCtx.owner.equals(caller))
-      throw Status.PERMISSION_DENIED.withDescription("Transaction is owned by another user").asRuntimeException();
+      final String caller = resolvedUsername(credentials);
+      if (txCtx.owner != null && !txCtx.owner.equals(caller))
+        throw Status.PERMISSION_DENIED.withDescription("Transaction is owned by another user").asRuntimeException();
+    } catch (final StatusRuntimeException e) {
+      // A refused call may be the last one that ever reaches a transaction whose owner can no longer act (the owner's own
+      // calls are refused here too): the transaction is ended now, on its own thread, not left to the idle reaper
+      if (txCtx.user != null && !txCtx.user.isValid())
+        try {
+          txCtx.executor.submit(() -> endTransactionOfInvalidUser(txCtx));
+        } catch (final RejectedExecutionException ignore) {
+          // already being ended by a commit, a rollback or the reaper
+        }
+      throw e;
+    }
   }
 
   /**
@@ -770,12 +782,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    */
   private void bindOwnerToCurrentThread(final TransactionContext txCtx) {
     final GrpcCallUser user = txCtx.user;
-    if (user == null)
-      return;
-
-    final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.getContextIfExists(txCtx.db.getDatabasePath());
-    if (ctx != null)
-      ctx.setCurrentUser(user.databaseUser(txCtx.db));
+    if (user != null)
+      user.bindTo(txCtx.db);
   }
 
   /**
@@ -802,7 +810,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
   /**
    * As {@link #endTransactionOfInvalidUser}, for a caller that is not on the transaction's thread: a stream whose user can no
-   * longer act ends the transaction it writes into, which is that user's.
+   * longer act ends the transaction it writes into, which is that user's. Waits for the transaction to be ended, so the call
+   * that reports the refusal finds it gone.
    */
   private void endTransactionOfInvalidUserFrom(final TransactionContext txCtx) {
     if (txCtx == null || activeTransactions.get(txCtx.txId) != txCtx)
@@ -3121,19 +3130,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           } else {
 
             // The user of the stream as it stands now: the chunk is written with what that user holds, and one dropped or
-            // given other credentials since the stream began ends the call, with what it holds open rolled back
-            try {
-              ctx.refreshUser();
-            } catch (final GrpcCallUser.NoLongerValid invalid) {
-              cancelled.set(true);
-              final InsertContext ended = ctxRef.getAndSet(null);
-              if (ended != null)
-                ended.closeQuietly();
-              endTransactionOfInvalidUserFrom(extTxCtxRef.get());
-              out.onError(invalid);
-              entry.close();
-              return;
-            }
+            // given other credentials since the stream began ends the call (see the catch below)
+            ctx.refreshUser();
 
             // Issue #4644: a later chunk may be dispatched on a different pool thread than the one
             // that began the transaction; re-bind the transaction to this thread before inserting.
@@ -3178,6 +3176,19 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             insertRows(runCtx, c.getRowsList().iterator(), chunk);
           totals.add(chunk);
         } catch (Exception e) {
+          // The user of the stream can no longer act - found before the chunk, or by the thread of the client transaction it
+          // writes into: not a failure of the chunk to report in the summary, but the end of the call, with what the stream
+          // holds open rolled back and the client transaction it wrote into
+          if (e instanceof GrpcCallUser.NoLongerValid invalid) {
+            cancelled.set(true);
+            final InsertContext ended = ctxRef.getAndSet(null);
+            if (ended != null)
+              ended.closeQuietly();
+            endTransactionOfInvalidUserFrom(extTxCtxRef.get());
+            out.onError(invalid);
+            entry.close();
+            return;
+          }
           // Terminated (issue #9875): not a failure of the chunk to report in the summary, but the end of the load,
           // which the finally below carries out
           if (entry.isTerminated())
@@ -3661,7 +3672,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           // The user of the stream as it stands now: one dropped or given other credentials since the first chunk ends the
           // load, which drops the batch instead of writing what it still buffers
           if (streamUser[0] != null)
-            streamUser[0].live();
+            streamUser[0].bindTo(dbRef.get());
 
           // Process records in this chunk
           for (final GraphBatchRecord rec : chunk.getRecordsList()) {
@@ -3752,7 +3763,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           // The user of the stream as it stands now: one dropped or given other credentials since the last chunk writes
           // nothing more, and what the batch still buffers is dropped
           if (streamUser[0] != null)
-            streamUser[0].live();
+            streamUser[0].bindTo(dbRef.get());
 
           // Flush remaining vertices
           if (!vertexPropsBatch.isEmpty())
@@ -4003,7 +4014,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           // The user of the stream as it stands now: one dropped or given other credentials since the first chunk ends the
           // stream, and the chunk is not appended
           if (streamUser[0] != null)
-            streamUser[0].live();
+            streamUser[0].bindTo(db);
 
           entry.checkNotTerminated();
           final List<Sample> samples = GrpcTimeSeriesSupport.toSamples(chunk.getPointsList(), chunk.getType(),
@@ -5000,6 +5011,16 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
                 final InsertContext ctx = require(ref.get(), "session not started");
                 final InsertChunk c = reqMsg.getChunk();
 
+                // The user of the stream as it stands now, before anything is acknowledged: the chunk is written with what that
+                // user holds, and one dropped or given other credentials since START ends the session instead of being
+                // acknowledged as a failed chunk (or as a replay)
+                try {
+                  ctx.refreshUser();
+                } catch (final GrpcCallUser.NoLongerValid invalid) {
+                  endTransactionOfInvalidUserFrom(extTxCtxRef.get());
+                  throw invalid;
+                }
+
                 // idempotent replay guard
                 final long hi = sessionWatermark.getOrDefault(ctx.sessionId, 0L);
 
@@ -5010,15 +5031,6 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
                   call.request(1);
                   return;
-                }
-
-                // The user of the stream as it stands now: the chunk is written with what that user holds, and one dropped or
-                // given other credentials since START ends the session instead of being acknowledged as a failed chunk
-                try {
-                  ctx.refreshUser();
-                } catch (final GrpcCallUser.NoLongerValid invalid) {
-                  endTransactionOfInvalidUserFrom(extTxCtxRef.get());
-                  throw invalid;
                 }
 
                 // Filled row by row, so a chunk that fails part way still acknowledges what its rows did (issue #12130)
@@ -5051,6 +5063,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
                       .build());
 
                 } catch (Exception e) {
+                  // The thread of the client transaction found the user no longer valid, after the check above: the end of
+                  // the session, not a failed chunk to acknowledge
+                  if (e instanceof GrpcCallUser.NoLongerValid invalid)
+                    throw invalid;
                   // Terminated: not a failed chunk to acknowledge, but the end of the load, which the finally below
                   // carries out
                   if (entry.isTerminated())
@@ -6046,11 +6062,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         return;
       }
 
-      final SecurityDatabaseUser current = user.databaseUser(db);
-      txUser = current;
-      final DatabaseContext.DatabaseContextTL tl = DatabaseContext.INSTANCE.getContextIfExists(db.getDatabasePath());
-      if (tl != null)
-        tl.setCurrentUser(current);
+      txUser = user.bindTo(db);
     }
 
     /**

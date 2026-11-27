@@ -37,6 +37,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.time.Duration;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -215,6 +216,39 @@ class GrpcOpenCallsCurrentUserTest extends BaseGraphServerTest {
     assertThat(service.getActiveTransactionForTesting(tx)).isNull();
   }
 
+  @Test
+  void aTransactionOfADroppedOwnerEndsAtTheNextCallItReceives() {
+    final String tx = begin();
+    assertThat(command(tx, "INSERT INTO Open SET name = 'before'").error).isNull();
+
+    getServer(0).getSecurity().dropUser(USER);
+
+    // the call is refused before it reaches the transaction, and the refusal ends the transaction of the owner that is gone
+    final Outcome<ExecuteCommandResponse> refused = command(tx, "INSERT INTO Open SET name = 'after'");
+    assertThat(refused.error).as("the call must be refused").isNotNull();
+
+    await().atMost(Duration.ofSeconds(30)).until(() -> service.getActiveTransactionForTesting(tx) == null);
+    assertThat(service.getActiveTransactionCount()).isZero();
+    assertThat(service.getTransactionCountForPrincipal(USER)).isZero();
+    assertThat(countOf("Open")).isZero();
+  }
+
+  @Test
+  void aRefusedCallOfAnotherUserLeavesTheTransactionOfAValidOwnerAlone() {
+    final String tx = begin();
+    assertThat(command(tx, "INSERT INTO Open SET name = 'one'").error).isNull();
+
+    final Outcome<ExecuteCommandResponse> other = new Outcome<>();
+    service.executeCommand(ExecuteCommandRequest.newBuilder().setDatabase(NAME).setCommand("INSERT INTO Open SET name = 'two'")
+        .setCredentials(DatabaseCredentials.newBuilder().setUsername("root").setPassword(DEFAULT_PASSWORD_FOR_TESTS))
+        .setTransaction(TransactionContext.newBuilder().setTransactionId(tx)).build(), other);
+    assertThat(Status.fromThrowable(other.error).getCode()).isEqualTo(Status.Code.PERMISSION_DENIED);
+
+    assertThat(service.getActiveTransactionForTesting(tx)).isNotNull();
+    assertThat(commit(tx).getCommitted()).isTrue();
+    assertThat(countOf("Open")).isEqualTo(1);
+  }
+
   // ---- InsertStream ----
 
   @Test
@@ -319,6 +353,53 @@ class GrpcOpenCallsCurrentUserTest extends BaseGraphServerTest {
     assertThat(countOf("Open")).isZero();
   }
 
+  @Test
+  void anInsertStreamWithNoTransactionOfItsOwnRunsWithTheGrantsTheUserHoldsNow() throws Exception {
+    final Outcome<InsertSummary> outcome = new Outcome<>();
+    final StreamObserver<InsertChunk> stream = service.insertStream(outcome);
+
+    // the rows are stored as they come: the stream holds no transaction between its chunks
+    runOnNewThread(() -> stream.onNext(firstChunk("a", InsertOptions.TransactionMode.NONE)));
+    assertThat(outcome.error).isNull();
+    narrowUser();
+    runOnNewThread(() -> stream.onNext(chunk("b")));
+    runOnNewThread(stream::onCompleted);
+
+    assertThat(outcome.error).isNull();
+    assertThat(outcome.last.getFailed()).isEqualTo(1);
+    assertThat(countOf("Open")).isEqualTo(1);
+  }
+
+  @Test
+  void anInsertStreamIntoATransactionEndsWhenTheTransactionThreadFindsItsUserDropped() throws Exception {
+    final String tx = begin();
+    final ArcadeDbGrpcService.TransactionContext txCtx = service.getActiveTransactionForTesting(tx);
+    final Outcome<InsertSummary> outcome = new Outcome<>();
+    final StreamObserver<InsertChunk> stream = service.insertStream(outcome);
+
+    runOnNewThread(() -> stream.onNext(firstChunk("a").toBuilder().setTransaction(TransactionContext.newBuilder().setTransactionId(tx)).build()));
+    assertThat(outcome.error).isNull();
+
+    // The second chunk passes the check of the call and waits behind a task that holds the transaction's thread: the user is
+    // dropped after that check and before the chunk runs there
+    final CountDownLatch release = new CountDownLatch(1);
+    txCtx.executor.submit(() -> {
+      release.await(60, TimeUnit.SECONDS);
+      return null;
+    });
+    final Thread second = new Thread(() -> stream.onNext(chunk("b")), "open-calls-second-chunk");
+    second.start();
+    await().atMost(Duration.ofSeconds(30)).until(() -> txCtx.executor.getQueue().size() == 1);
+    getServer(0).getSecurity().dropUser(USER);
+    release.countDown();
+    second.join(60_000);
+
+    assertThat(outcome.error).as("the stream must end with a refusal, not with a summary").isNotNull();
+    assertThat(Status.fromThrowable(outcome.error).getCode()).isEqualTo(Status.Code.UNAUTHENTICATED);
+    assertThat(service.getActiveTransactionForTesting(tx)).isNull();
+    assertThat(countOf("Open")).isZero();
+  }
+
   // ---- InsertBidirectional ----
 
   @Test
@@ -361,6 +442,25 @@ class GrpcOpenCallsCurrentUserTest extends BaseGraphServerTest {
   }
 
   @Test
+  void aBidirectionalInsertEndsWhenItsUserWasDroppedBeforeAReplayIsAcknowledged() {
+    final BidiOutcome outcome = new BidiOutcome();
+    final StreamObserver<InsertRequest> stream = service.insertBidirectional(outcome);
+
+    stream.onNext(start());
+    await().atMost(Duration.ofSeconds(30)).until(() -> outcome.started);
+    stream.onNext(bidiChunk("a", 1));
+    await().atMost(Duration.ofSeconds(30)).until(() -> outcome.acknowledged >= 1);
+    getServer(0).getSecurity().dropUser(USER);
+    // the same sequence again: a replay of what was acknowledged
+    stream.onNext(bidiChunk("a", 1));
+    await().atMost(Duration.ofSeconds(30)).until(() -> outcome.error != null);
+
+    assertThat(Status.fromThrowable(outcome.error).getCode()).isEqualTo(Status.Code.UNAUTHENTICATED);
+    assertThat(outcome.acknowledged).isEqualTo(1);
+    assertThat(countOf("Open")).isZero();
+  }
+
+  @Test
   void aBidirectionalInsertDoesNotCommitWhenItsUserWasDropped() {
     final BidiOutcome outcome = new BidiOutcome();
     final StreamObserver<InsertRequest> stream = service.insertBidirectional(outcome);
@@ -379,6 +479,45 @@ class GrpcOpenCallsCurrentUserTest extends BaseGraphServerTest {
   }
 
   // ---- GraphBatchLoad and TimeSeriesWriteStream ----
+
+  @Test
+  void aGraphLoadChunkRunsWithTheGrantsTheUserHoldsNow() throws Exception {
+    final Outcome<GraphBatchResult> outcome = new Outcome<>();
+    final ExecutorService thread = Executors.newSingleThreadExecutor();
+    try {
+      final StreamObserver<GraphBatchChunk> stream = service.graphBatchLoad(outcome);
+      // a buffer of one vertex: each vertex is written by the chunk that carries it
+      runOn(thread, () -> stream.onNext(firstGraphChunk("a", 1)));
+      assertThat(outcome.error).isNull();
+      narrowUser();
+      runOn(thread, () -> stream.onNext(GraphBatchChunk.newBuilder().addRecords(vertex("b")).build()));
+    } finally {
+      thread.shutdownNow();
+    }
+
+    assertThat(outcome.error).as("the chunk must be refused").isNotNull();
+    assertThat(Status.fromThrowable(outcome.error).getCode()).isEqualTo(Status.Code.PERMISSION_DENIED);
+    assertThat(countOf("Node")).isEqualTo(1);
+  }
+
+  @Test
+  void aTimeSeriesChunkRunsWithTheGrantsTheUserHoldsNow() throws Exception {
+    final Outcome<TimeSeriesWriteSummary> outcome = new Outcome<>();
+    final ExecutorService thread = Executors.newSingleThreadExecutor();
+    try {
+      final StreamObserver<TimeSeriesWriteChunk> stream = service.timeSeriesWriteStream(outcome);
+      runOn(thread, () -> stream.onNext(firstSeriesChunk()));
+      assertThat(outcome.error).isNull();
+      narrowUser();
+      runOn(thread, () -> stream.onNext(seriesChunk()));
+    } finally {
+      thread.shutdownNow();
+    }
+
+    assertThat(outcome.error).as("the chunk must be refused").isNotNull();
+    assertThat(Status.fromThrowable(outcome.error).getCode()).isEqualTo(Status.Code.PERMISSION_DENIED);
+    assertThat(countOf("Metric")).isEqualTo(1);
+  }
 
   @Test
   void aGraphLoadEndsWhenItsUserWasDropped() throws Exception {
@@ -478,8 +617,12 @@ class GrpcOpenCallsCurrentUserTest extends BaseGraphServerTest {
   }
 
   private static InsertOptions insertOptions() {
-    return InsertOptions.newBuilder().setTargetClass("Open").setTransactionMode(InsertOptions.TransactionMode.PER_STREAM)
-        .setDatabase(NAME).setCredentials(credentials()).build();
+    return insertOptions(InsertOptions.TransactionMode.PER_STREAM);
+  }
+
+  private static InsertOptions insertOptions(final InsertOptions.TransactionMode mode) {
+    return InsertOptions.newBuilder().setTargetClass("Open").setTransactionMode(mode).setDatabase(NAME)
+        .setCredentials(credentials()).build();
   }
 
   private static GrpcRecord row(final String name) {
@@ -488,7 +631,11 @@ class GrpcOpenCallsCurrentUserTest extends BaseGraphServerTest {
 
   /** The first chunk of an insert stream, sent by the user of the test. */
   private static InsertChunk firstChunk(final String name) {
-    return InsertChunk.newBuilder().setDatabase(NAME).setCredentials(credentials()).setOptions(insertOptions()).setChunkSeq(1)
+    return firstChunk(name, InsertOptions.TransactionMode.PER_STREAM);
+  }
+
+  private static InsertChunk firstChunk(final String name, final InsertOptions.TransactionMode mode) {
+    return InsertChunk.newBuilder().setDatabase(NAME).setCredentials(credentials()).setOptions(insertOptions(mode)).setChunkSeq(1)
         .addRows(row(name)).build();
   }
 
@@ -508,6 +655,11 @@ class GrpcOpenCallsCurrentUserTest extends BaseGraphServerTest {
 
   private static GraphBatchChunk firstGraphChunk(final String name) {
     return GraphBatchChunk.newBuilder().setDatabase(NAME).setCredentials(credentials()).addRecords(vertex(name)).build();
+  }
+
+  /** The first chunk of a graph load that holds {@code bufferSize} vertices before it writes them. */
+  private static GraphBatchChunk firstGraphChunk(final String name, final int bufferSize) {
+    return firstGraphChunk(name).toBuilder().setOptions(GraphBatchOptions.newBuilder().setVertexBatchSize(bufferSize)).build();
   }
 
   private static GraphBatchRecord vertex(final String name) {

@@ -19,6 +19,7 @@
 package com.arcadedb.server.grpc;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.security.ServerSecurity;
@@ -84,6 +85,23 @@ final class GrpcCallUser {
   /** The user's rights on {@code db} as they stand now. */
   SecurityDatabaseUser databaseUser(final Database db) {
     return live().getDatabaseUser(db);
+  }
+
+  /**
+   * The user's rights on {@code db} as they stand now, applied to the calling thread when it holds a context for the
+   * database: the engine's permission checks read the user the thread's context carries, which is the one the call bound on
+   * the thread it started on.
+   *
+   * @return the rights, whether the thread held a context for them or not
+   *
+   * @throws NoLongerValid when the user was dropped, or its password changed, since the work began
+   */
+  SecurityDatabaseUser bindTo(final Database db) {
+    final SecurityDatabaseUser current = databaseUser(db);
+    final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(db.getDatabasePath());
+    if (context != null)
+      context.setCurrentUser(current);
+    return current;
   }
 
   /** Whether {@link #live()} would answer. */
