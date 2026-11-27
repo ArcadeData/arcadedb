@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.query.RunningQuery;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.LocalTimeSeriesType;
@@ -151,7 +152,11 @@ public final class AiSchemaDigest {
   /** Builds the summary. Performs no authorization of the database itself; {@link #forUser} does. */
   public static String build(final Database database, final String databaseName) {
     final List<Entry> entries = new ArrayList<>();
+    // The entry the caller listed this read under: a terminate stops the walk between two types
+    final RunningQuery runningQuery = RunningQuery.current();
     for (final DocumentType type : readableTypes(database)) {
+      if (runningQuery != null)
+        runningQuery.checkNotTerminated("the schema read");
       final List<DocumentType> parents = new ArrayList<>(type.getSuperTypes().size());
       for (final DocumentType parent : type.getSuperTypes())
         if (readable(database, parent))
