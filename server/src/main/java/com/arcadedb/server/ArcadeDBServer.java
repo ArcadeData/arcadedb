@@ -1528,8 +1528,9 @@ public class ArcadeDBServer {
    * <p>
    * A database that is already open is served as before, with no lock: one a restore holds keeps its readers until the swap and
    * refuses every write in the database itself, so a handle resolved before the restore began is refused too (issue #10689).
-   * Unlike {@link #getDatabaseForRequest} this does not look at the disk first: a name that is neither open nor on disk fails in
-   * the open, as it always did for these protocols.
+   * Unlike {@link #getDatabaseForRequest} this does not look at the disk before taking the lock: a name that is neither open nor on
+   * disk is refused under it, right before the open, with a {@link DatabaseNotFoundException} that names the database and not its
+   * directory on the server (issue #12830).
    * <p>
    * A name reserved for the server's own use (see {@link #isReservedDatabaseName}) and a directory that holds no database (see
    * {@link #holdsDatabase}) are no database for a client, whatever is registered or on disk: they are refused with
@@ -2692,8 +2693,8 @@ public class ArcadeDBServer {
 
         // A client names a database that exists: a directory that holds none is not one, whatever its name, and opening it would
         // create a database inside it (issue #8805). Only a client is held to it: the operator's steps resolve their own
-        // directories through the unflagged entry point. A name with no directory fails in the open as it always did, with the
-        // same exception.
+        // directories through the unflagged entry point. A name with no directory is answered further down, with the same
+        // exception.
         if (refuseIfClosedByCommand && databaseDirectory.exists() && !holdsDatabase(databaseDirectory))
           throw new DatabaseNotFoundException("Database '" + databaseName + "' does not exist");
 
@@ -2728,9 +2729,14 @@ public class ArcadeDBServer {
           final Database activeDatabase = DatabaseFactory.getActiveDatabaseInstance(path);
           if (activeDatabase != null && activeDatabase.isOpen())
             embDatabase = (DatabaseInternal) activeDatabase;
-          else
+          else {
+            // A name with no directory is answered here, with the name alone: the engine's own message carries the absolute
+            // database directory of the server, which gRPC and Bolt handed to their client (issue #12830)
+            if (!databaseDirectory.exists())
+              throw new DatabaseNotFoundException("Database '" + databaseName + "' does not exist");
             // OPEN A NEW DATABASE. THIS IS MOSTLY FOR TESTS WHERE MULTIPLE SERVERS SHARE THE SAME JVM
             embDatabase = (DatabaseInternal) factory.open(defaultDbMode);
+          }
         }
 
         embDatabase = wrapForHA(embDatabase);

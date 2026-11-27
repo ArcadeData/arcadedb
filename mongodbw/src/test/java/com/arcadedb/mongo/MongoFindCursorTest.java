@@ -28,6 +28,7 @@ import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -240,6 +241,62 @@ class MongoFindCursorTest {
     final Iterator<Object> rows = IntStream.range(0, 50).<Object>mapToObj(i -> new Document("b", new BinData(megabyte))).iterator();
     final MongoFindCursor cursor = new MongoFindCursor(rows, null, 0, 0, null);
     assertThat(cursor.takeBatch(Integer.MAX_VALUE, 10_000_000L).size()).as("10 MB of budget, 1 MB a document").isBetween(9, 10);
+  }
+
+  @Test
+  void theDocumentsAreReadWhenAskedForAndTheCursorIsReleasedWithTheLastOne() {
+    final Source source = new Source(1_000);
+    final MongoFindCursor cursor = new MongoFindCursor(source, source, 10, 0, null);
+
+    final Iterator<Document> documents = cursor.documents();
+    for (int expected = 10; expected < 15; expected++) {
+      assertThat(documents.hasNext()).isTrue();
+      assertThat(documents.next().get("n")).isEqualTo(expected);
+    }
+    assertThat(source.pulled.get()).as("5 documents asked for: the skipped rows and those 5, no row ahead").isEqualTo(15);
+    assertThat(source.closed.get()).isZero();
+
+    int count = 5;
+    while (documents.hasNext()) {
+      documents.next();
+      ++count;
+    }
+    assertThat(count).isEqualTo(990);
+    assertThat(source.closed.get()).as("released with the last document").isEqualTo(1);
+    assertThatThrownBy(documents::next).isInstanceOf(NoSuchElementException.class);
+  }
+
+  @Test
+  void aFailureReadingADocumentSurfacesWhenItIsAskedForAndReleasesTheCursor() {
+    final Source source = new Source(100, 3);
+    final MongoFindCursor cursor = new MongoFindCursor(source, source, 0, 0, null);
+
+    final Iterator<Document> documents = cursor.documents();
+    for (int expected = 0; expected < 3; expected++) {
+      assertThat(documents.hasNext()).isTrue();
+      assertThat(documents.next().get("n")).isEqualTo(expected);
+    }
+    assertThat(source.closed.get()).as("nothing failed yet").isZero();
+
+    assertThatThrownBy(documents::hasNext).isInstanceOf(IllegalStateException.class).hasMessageContaining("row 3");
+    assertThat(source.closed.get()).as("the failed cursor is released").isEqualTo(1);
+    assertThat(cursor.isClosed()).isTrue();
+    assertThat(documents.hasNext()).isFalse();
+  }
+
+  @Test
+  void aStreamOfTheCursorStopsReadingWhereItIsStoppedAndReleasesTheCursorWhenClosed() {
+    final Source source = new Source(100_000);
+    final MongoFindCursor cursor = new MongoFindCursor(source, source, 0, 0, null);
+
+    try (final Stream<Document> stream = cursor.stream()) {
+      assertThat(stream.limit(3).map(d -> d.get("n")).toList()).containsExactly(0, 1, 2);
+      assertThat(source.pulled.get()).as("a limit stops the reading at the documents it takes").isBetween(3, 4);
+      assertThat(source.closed.get()).isZero();
+    }
+    assertThat(source.closed.get()).as("closing the stream releases the rows").isEqualTo(1);
+    assertThat(cursor.isClosed()).isTrue();
+    assertThat(cursor.documents().hasNext()).isFalse();
   }
 
   @Test

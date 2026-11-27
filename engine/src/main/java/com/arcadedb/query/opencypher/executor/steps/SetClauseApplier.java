@@ -156,12 +156,64 @@ public final class SetClauseApplier {
     if (reloadedRids != null)
       reloadedRids.clear();
 
-    // Phase 1: evaluate all right-hand-side expressions against the graph state *before* the SET clause runs.
-    // openCypher / Neo4j SET is a simultaneous assignment: every read must observe the pre-clause value, never a
-    // value written by an earlier item in the same clause (issue #5190). E.g. "SET a.x = a.y, a.y = a.x" must swap
-    // rather than copy.
+    // The items are applied in order, and each group of them sees the effect of every earlier group (issue #12832): a run of
+    // consecutive property items on the same variable is one simultaneous assignment (issue #5190), and a map item, a label
+    // item or a property item on another variable starts the next group. "SET a.x = a.y, a.y = a.x" swaps, while
+    // "SET m.a = 5, n.l = m.a", "SET n += {b: 1}, n += {c: n.b}" and "SET n.b = 5, n:L, n.c = n.b" read the value written
+    // before them. Every observed answer of the reference implementation follows this rule, which is how it plans the
+    // clause: consecutive property writes on one entity in one operator, every other item in an operator of its own.
+    // A value is refused (a type mismatch, a NOTNULL null, a target that is not an entity) before any item of ITS group is
+    // written, but after the earlier groups were, exactly as between two SET clauses of one statement: the statement fails,
+    // and the rollback of its transaction (its own, or the caller's that the failure leads to) undoes the earlier groups too.
+    int from = 0;
+    // The variable the current run of property items writes: the first one a plain item of the run names
+    String runVariable = items.get(0).getVariable();
+    for (int i = 1; i < items.size(); i++) {
+      final SetClause.SetItem item = items.get(i);
+      if (continuesRun(items.get(i - 1), item, runVariable)) {
+        if (runVariable == null)
+          runVariable = item.getVariable();
+        continue;
+      }
+      applyGroup(items.subList(from, i), result, writtenDocs, labelReplacements);
+      // The next group reads what this one wrote, through the row's lists and maps and through a moved vertex too
+      heldCollections.refresh(result);
+      labelReplacements.redirect(result);
+      from = i;
+      runVariable = item.getVariable();
+    }
+    applyGroup(from == 0 ? items : items.subList(from, items.size()), result, writtenDocs, labelReplacements);
+
+    // The row's own aliases follow each write as it lands (RowAliases.propagateUpdate); a node the row holds in a list or
+    // a map, such as the collect() the target was read from, follows it here, once per row (issue #11754). A label write
+    // above already moved those to the replacement vertex, and the redirect keeps a copy shared with earlier rows there too
+    heldCollections.refresh(result);
+    labelReplacements.redirect(result);
+  }
+
+  /**
+   * Whether {@code item}, which follows {@code previous} in the clause, joins the simultaneous run of {@link #apply} that
+   * writes {@code runVariable} instead of starting a new group: only property items on one variable form a run. An expression
+   * target ({@code SET (CASE ... THEN n END).p = ...}) names no variable and joins the run it follows.
+   */
+  private static boolean continuesRun(final SetClause.SetItem previous, final SetClause.SetItem item, final String runVariable) {
+    if (item.getType() != SetClause.SetType.PROPERTY || previous.getType() != SetClause.SetType.PROPERTY)
+      return false;
+    return item.getVariable() == null || runVariable == null || runVariable.equals(item.getVariable());
+  }
+
+  /**
+   * Applies one group of items (see {@link #apply}): every right-hand side of the group is evaluated against the state the
+   * earlier groups left, and only then are the writes of the group applied.
+   */
+  private void applyGroup(final List<SetClause.SetItem> items, final Result result, final Map<RID, MutableDocument> writtenDocs,
+      final LabelReplacements labelReplacements) {
+    // Phase 1: evaluate all right-hand-side expressions of the group against the graph state *before* the group runs.
+    // A run of property items on one variable is a simultaneous assignment: every read must observe the value from before
+    // the run, never a value written by an earlier item of the same run (issue #5190). E.g. "SET a.x = a.y, a.y = a.x" must
+    // swap rather than copy.
     //
-    // #5227: for a stand-alone SET the pre-clause snapshot must be the LATEST COMMITTED state (what a locked read
+    // #5227: for a stand-alone SET the pre-group snapshot must be the LATEST COMMITTED state (what a locked read
     // would observe), NOT the possibly-stale record snapshot the MATCH loaded. reloadTarget() below reloads each
     // variable target to its current committed version before its right-hand side is evaluated, so a concurrent
     // transaction that committed between the MATCH read and this write is observed here instead of being silently
@@ -190,7 +242,7 @@ public final class SetClauseApplier {
       evaluateRightHandSides(items, result, writtenDocs, false, values, targets, keys, keyIsNull);
     }
 
-    // A null written to a NOTNULL property is refused here, before any item of the clause is written (issue #13227)
+    // A null written to a NOTNULL property is refused here, before any item of the group is written (issue #13227)
     refuseNullsOnNotNullProperties(items, result, writtenDocs, values, targets, keys, keyIsNull);
 
     // Phase 2: apply the writes using the pre-computed snapshot values.
@@ -211,19 +263,13 @@ public final class SetClauseApplier {
         break;
       }
     }
-
-    // The row's own aliases follow each write as it lands (RowAliases.propagateUpdate); a node the row holds in a list or
-    // a map, such as the collect() the target was read from, follows it here, once per row (issue #11754). A label write
-    // above already moved those to the replacement vertex, and the redirect keeps a copy shared with earlier rows there too
-    heldCollections.refresh(result);
-    labelReplacements.redirect(result);
   }
 
   /**
-   * Refuses the clause when one of its items writes a null to a NOTNULL property of its target (issue #13227). openCypher
+   * Refuses the group when one of its items writes a null to a NOTNULL property of its target (issue #13227). openCypher
    * never stores a null, it removes the property ({@code SET n.p = null}, {@code SET n += {p: null}}) or leaves it out
    * ({@code SET n = {p: null}}), so the presence-based rule of the validator would never see the null that SQL refuses.
-   * Asked between the two phases, so a refused clause has written nothing. The properties {@code SET n = map} leaves out
+   * Asked between the two phases, so a refused group has written nothing. The properties {@code SET n = map} leaves out
    * are removals, not null writes, and stay accepted like {@code REMOVE n.p}.
    */
   private void refuseNullsOnNotNullProperties(final List<SetClause.SetItem> items, final Result result,
@@ -265,8 +311,8 @@ public final class SetClauseApplier {
   }
 
   /**
-   * Phase 1 of {@link #apply}: evaluates every right-hand side (and every computed target and key) of the clause against
-   * the pre-clause state, into the given arrays.
+   * Phase 1 of {@link #applyGroup}: evaluates every right-hand side (and every computed target and key) of the group against
+   * the state before the group, into the given arrays.
    *
    * @param reload whether each variable target is first reloaded to its latest committed version (issue #5227)
    */
@@ -282,17 +328,18 @@ public final class SetClauseApplier {
         if (reload)
           reloadTarget(item.getVariable(), result, writtenDocs);
         if (item.getTargetExpression() != null) {
-          // WHICH record an expression target names is a read of the graph too, so it is answered from the
-          // pre-clause state like every other read: "SET n.enabled = false, (CASE WHEN n.enabled THEN n END).flag = 1"
-          // writes the flag, because n.enabled was true when the clause began. Phase 2 re-resolves the captured
-          // record through labelReplacements, so a label write earlier in the clause still moves the write with it.
+          // WHICH record an expression target names is a read of the graph too, so it is answered from the state
+          // before its group like every other read: "SET n.enabled = false, (CASE WHEN n.enabled THEN n END).flag = 1"
+          // writes the flag, because the target joins the run of n and n.enabled was true when it began. Phase 2
+          // re-resolves the captured record through labelReplacements, so a label write earlier in the clause still
+          // moves the write with it.
           targets[i] = evaluator.evaluate(item.getTargetExpression(), result, context);
           // #5795: the CASE branch (or bracket-syntax base) can itself resolve to a variable that was deleted
           // earlier in the same query, e.g. SET (CASE WHEN true THEN t END).v = 99 after DELETE t. Unlike the
           // plain-variable branch, this path never goes through resolveLatestDoc(), so the check happens here.
           DeletedEntityMarker.checkNotDeleted(targets[i]);
           // #11693: only a node or a relationship holds properties. A map (or any other value) is refused here, before
-          // any item of the clause is written, instead of being skipped as if the write had happened.
+          // any item of the group is written, instead of being skipped as if the write had happened.
           if (targets[i] != null && !(targets[i] instanceof Document))
             throw new TypeMismatchException("TypeError: Type mismatch: expected Node or Relationship but was "
                 + CypherFunctionHelper.cypherTypeName(targets[i]));
@@ -303,9 +350,8 @@ public final class SetClauseApplier {
           keyIsNull[i] = keyValue == null;
           keys[i] = keyIsNull[i] ? null : keyValue.toString();
         }
-        // Coerce and validate HERE so an invalid value rejects the clause before any of it has been written: the
-        // step rolls back only a transaction it opened itself, so a value refused halfway through would otherwise
-        // leave the earlier items behind in the caller's transaction.
+        // Coerce and validate HERE so an invalid value rejects the group before any of it has been written (the
+        // earlier groups are undone by the rollback of the failed statement's transaction, see apply()).
         // The property name is the static one when the clause spells it (SET n.m2 = ...), the resolved key when it
         // computes it (SET n[$k] = ...); either way it is what a refusal has to be able to name (issue #7729).
         values[i] = coerceAndValidate(evaluator.evaluate(item.getValueExpression(), result, context),
@@ -316,16 +362,16 @@ public final class SetClauseApplier {
         if (reload)
           reloadTarget(item.getVariable(), result, writtenDocs);
         // Materialise the properties HERE, not at write time: an entity right-hand side evaluates to the live record,
-        // so deferring the copy to phase 2 would let an earlier item of this same clause be read back through it
-        // ("SET b.name = 'new', a = b" must copy b's PRE-clause name). Resolving the shape now also means a
-        // right-hand side that is neither an entity nor a map fails the clause before any of it has been written.
+        // and the copy is what the item read when it was evaluated, never what a later write makes of it
+        // ("SET a += b, b.name = 'new'" copies b's old name, issue #12832). Resolving the shape now also means a
+        // right-hand side that is neither an entity nor a map fails the group before any of it has been written.
         values[i] = toPropertyMap(evaluator.evaluate(item.getValueExpression(), result, context),
             item.getType() == SetClause.SetType.REPLACE_MAP ? "=" : "+=", item.getValueExpression());
         break;
       case LABELS:
-        // A Cypher 25 dynamic label - SET n:$(expr) - is a read of the row, so it is answered from the pre-clause
-        // state like every other right-hand side, and it is validated here so an unusable label rejects the clause
-        // before any of it has been written (issue #7059).
+        // A Cypher 25 dynamic label - SET n:$(expr) - is a read of the row, so it is answered from the state before
+        // its group like every other right-hand side, and it is validated here so an unusable label is refused
+        // before the label is written (issue #7059).
         values[i] = resolveLabels(item, result);
         break;
       }
@@ -500,8 +546,8 @@ public final class SetClauseApplier {
     final String variableToUpdate;
 
     if (item.getTargetExpression() != null) {
-      // Expression target: SET (CASE WHEN ... THEN t END).prop = value, resolved in phase 1 against the pre-clause
-      // state. A label write earlier in this clause replaced the record it named, so follow that move: the captured
+      // Expression target: SET (CASE WHEN ... THEN t END).prop = value, resolved in phase 1 against the state before
+      // its group. A label write earlier in this clause replaced the record it named, so follow that move: the captured
       // vertex is the one the rewrite deleted.
       obj = precomputedTarget instanceof Vertex vertex ? labelReplacements.resolve(vertex) : precomputedTarget;
       if (obj == null)

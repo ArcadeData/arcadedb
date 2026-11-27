@@ -214,6 +214,9 @@ public class BoltNetworkExecutor extends Thread {
   /** What a COMMIT or a RUN past the explicit transaction's tx_timeout is refused with (issue #11392). */
   private static final String TRANSACTION_TIMED_OUT_MESSAGE =
       "The transaction has been terminated because it ran longer than the timeout it was begun with (tx_timeout)";
+  /** What a statement that needs more stack than the thread has is answered with. */
+  private static final String STACK_EXHAUSTED_MESSAGE =
+      "The statement is too deeply nested to be evaluated (stack exhausted): simplify the query";
   private static final AtomicLong LAST_CONNECTION_ID = new AtomicLong();
   /** How {@code SHOW TRANSACTIONS} and {@code list queries} name this connection (issue #9689). */
   private final String connectionId = "bolt-" + LAST_CONNECTION_ID.incrementAndGet();
@@ -821,11 +824,23 @@ public class BoltNetworkExecutor extends Thread {
    * whatever the client left open has to go regardless of how many streams there were.
    */
   private void closeAllStreams(final String phase) {
-    for (final BoltQueryStream stream : openStreams.values())
-      stream.close(this, phase);
+    // Every stream is closed, whatever one of them raises: the first Error is held and thrown once none is left open
+    Error pending = null;
+    for (final BoltQueryStream stream : openStreams.values()) {
+      try {
+        stream.close(this, phase);
+      } catch (final Error e) {
+        if (pending == null)
+          pending = e;
+        else
+          pending.addSuppressed(e);
+      }
+    }
     openStreams.clear();
     currentStream = null;
     nextQid = 0;
+    if (pending != null)
+      throw pending;
   }
 
   /**
@@ -972,6 +987,9 @@ public class BoltNetworkExecutor extends Thread {
     }
 
     RunningQuery.Binding binding = null;
+    // Set once the stream is registered with the connection: from then on its release is the job of the teardown paths (PULL,
+    // DISCARD, RESET, ROLLBACK, connection close). Until then this method owns it, on every way out of it
+    boolean streamRegistered = false;
     final boolean readAccessMode = explicitTransaction ? transactionReadOnly : isReadAccessMode(message.getExtra());
     try {
       // Determine if this is a write query using the query analyzer: one it cannot analyze counts as a write, to be safe
@@ -1063,6 +1081,7 @@ public class BoltNetworkExecutor extends Thread {
       }
 
       openStream(stream);
+      streamRegistered = true;
 
       // Build success response with query metadata
       final Map<String, Object> metadata = new LinkedHashMap<>();
@@ -1101,11 +1120,34 @@ public class BoltNetworkExecutor extends Thread {
       final String errorMsg = failureText(e, "Database error");
       sendExecutionFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR), loggedClientMessage(errorMsg), e);
       state = State.FAILED;
+    } catch (final StackOverflowError e) {
+      // A statement whose evaluation needs more stack than the thread has is a failed statement like any other: released first,
+      // answered, and the connection goes on serving
+      stream.close(this, "RUN failure");
+      answerStackExhausted("RUN");
     } finally {
-      CommandTimeoutOverride.clear();
-      if (binding != null)
-        binding.close();
+      try {
+        CommandTimeoutOverride.clear();
+        if (binding != null)
+          binding.close();
+      } finally {
+        // Any other way out of the try block that did not register the stream (an Error that ends the connection among them): the
+        // admission slot, the entry of the list of running statements and the result set go back before the exception travels on
+        if (!streamRegistered)
+          stream.close(this, "RUN failure");
+      }
     }
+  }
+
+  /**
+   * Answers a statement whose evaluation needed more stack than the thread has, as any other failed statement is answered. The
+   * caller has released the statement's stream already. The stack is unwound by now, so there is room to answer, and the
+   * connection goes on serving once the client RESETs.
+   */
+  private void answerStackExhausted(final String phase) throws IOException {
+    LogManager.instance().log(this, Level.WARNING, "BOLT %s error: %s", phase, STACK_EXHAUSTED_MESSAGE);
+    sendFailure(BoltErrorCodes.DATABASE_ERROR, STACK_EXHAUSTED_MESSAGE);
+    state = State.FAILED;
   }
 
   /** Whether the Bolt {@code mode} of a BEGIN or an auto-commit RUN asks for READ access ({@code "r"}; the default is write). */
@@ -1202,6 +1244,11 @@ public class BoltNetworkExecutor extends Thread {
       // rather than held until the client RESETs or disconnects
       closeStream(stream, "PULL failure");
       state = State.FAILED;
+    } catch (final StackOverflowError e) {
+      // The rows are evaluated here as they are read: a row that needs more stack than the thread has fails the stream, as it
+      // does when it is the one the RUN read
+      closeStream(stream, "PULL failure");
+      answerStackExhausted("PULL");
     }
   }
 
@@ -1245,6 +1292,11 @@ public class BoltNetworkExecutor extends Thread {
       sendExecutionFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR), loggedClientMessage(errorMsg), e);
       closeStream(stream, "DISCARD failure");
       state = State.FAILED;
+      return;
+    } catch (final StackOverflowError e) {
+      // As in PULL: the rows skipped are evaluated as they are skipped
+      closeStream(stream, "DISCARD failure");
+      answerStackExhausted("DISCARD");
       return;
     }
 
@@ -2623,26 +2675,31 @@ public class BoltNetworkExecutor extends Thread {
    * Cleanup resources when connection closes.
    */
   private void cleanup() {
-    closeAllStreams("connection close");
-    rollbackExplicitTransaction();
-
-    // Database is managed by the server - just release our reference
-    // DO NOT close the shared database instance
-    database = null;
-
     try {
-      socket.close();
-    } catch (final Exception e) {
-      // Ignore
-    }
+      try {
+        closeAllStreams("connection close");
+      } finally {
+        rollbackExplicitTransaction();
+      }
+    } finally {
+      // Database is managed by the server - just release our reference
+      // DO NOT close the shared database instance
+      database = null;
 
-    // Notify listener that this connection is closed
-    if (listener != null) {
-      listener.removeConnection(this);
-    }
+      try {
+        socket.close();
+      } catch (final Exception e) {
+        // Ignore
+      }
 
-    if (debug) {
-      LogManager.instance().log(this, Level.FINE, "BOLT connection closed");
+      // Notify listener that this connection is closed
+      if (listener != null) {
+        listener.removeConnection(this);
+      }
+
+      if (debug) {
+        LogManager.instance().log(this, Level.FINE, "BOLT connection closed");
+      }
     }
   }
 

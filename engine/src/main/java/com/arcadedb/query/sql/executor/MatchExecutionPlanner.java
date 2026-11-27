@@ -30,6 +30,7 @@ import com.arcadedb.query.sql.parser.AndBlock;
 import com.arcadedb.query.sql.parser.BaseExpression;
 import com.arcadedb.query.sql.parser.BooleanExpression;
 import com.arcadedb.query.sql.parser.Bucket;
+import com.arcadedb.query.sql.parser.BucketList;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.FieldMatchPathItem;
 import com.arcadedb.query.sql.parser.FromClause;
@@ -57,6 +58,7 @@ import com.arcadedb.query.sql.parser.Unwind;
 import com.arcadedb.query.sql.parser.WhereClause;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.Pair;
 
 import java.util.*;
@@ -589,7 +591,16 @@ public class MatchExecutionPlanner {
     // Add all the remaining aliases after all the suggested start points.
     remainingStarts.addAll(pattern.aliasToNode.keySet());
 
-    final Set<String> rootCandidates = estimatedRootEntries.keySet();
+    // A NODE WITH NO rid:, type: OR bucket: HAS NO ESTIMATE, BUT IT CAN START A PATTERN TOO, FROM EVERY VERTEX (ISSUE #12743): LEFT
+    // OUT, AN EDGE WALKED ONLY FORWARD WOULD NOT WAIT FOR SUCH A SOURCE AND WOULD BE WALKED BACKWARDS FROM ITS TARGET. NOT ONE
+    // WHOSE where: READS ANOTHER ALIAS OF THIS PATTERN THROUGH $matched: IT STARTS NOTHING BEFORE THAT ALIAS IS BOUND, SO AN EDGE
+    // THAT WAITED FOR IT WOULD BE LEFT TO A ROOT SCAN THAT REJECTS EVERY CANDIDATE, WHERE THE WALK FROM THE TARGET ANSWERS THE
+    // MATCH. AN ALIAS BOUND BY ANOTHER SUB-PATTERN IS NOT IN THE DEPENDENCIES: THE OUTER TUPLE SUPPLIES IT
+    final Set<String> rootCandidates = new HashSet<>(estimatedRootEntries.keySet());
+    for (final String alias : pattern.aliasToNode.keySet())
+      if (aliasRids.get(alias) == null && aliasTypes.get(alias) == null && aliasBuckets.get(alias) == null
+          && remainingDependencies.get(alias).isEmpty())
+        rootCandidates.add(alias);
     while (resultingSchedule.size() < pattern.numOfEdges) {
       // Start a new depth-first pass, adding all nodes with satisfied dependencies.
       // 1. Find a starting vertex for the depth-first pass. A node that an edge walked only forward leads to waits for that
@@ -1125,6 +1136,13 @@ public class MatchExecutionPlanner {
    * answers no rows. Without a RID the type is the fetch, so its indexes serve the {@code where:}, and the bucket is a filter
    * on it. The checks run on the record rather than at planning time because the RID can be a parameter or an
    * expression, resolved per execution of a cached plan.
+   * <p>
+   * A node with none of the three is every vertex, as an unlabelled openCypher {@code MATCH (n)} is (issue #12743): the fetch
+   * is the buckets of every vertex type. Buckets rather than types, because a polymorphic scan of each type would visit a
+   * vertex whose type has two vertex supertypes twice. The bucket list is read from the schema at planning time, like the
+   * buckets of a {@code type:}, and a schema change invalidates the cached plan. Every vertex type, not only the readable ones:
+   * the scan reads each bucket through the per-bucket gate, so a user who may not read one vertex type is refused the statement,
+   * as by {@code MATCH (n)} and {@code SELECT FROM V}, rather than answered a silent subset.
    */
   private InternalExecutionPlan createRootPlan(final String alias, final CommandContext context) {
     final String typeName = aliasTypes.get(alias);
@@ -1139,6 +1157,20 @@ public class MatchExecutionPlanner {
       fromItem.setIdentifier(new Identifier(typeName));
     else if (bucketName != null)
       fromItem.setBucket(new Bucket(bucketName));
+    else {
+      final BucketList vertexBuckets = new BucketList();
+      for (final DocumentType type : context.getDatabase().getSchema().getTypes())
+        if (type instanceof VertexType)
+          // var: THE ENGINE BUCKET SHARES ITS SIMPLE NAME WITH THE PARSER NODE IMPORTED ABOVE
+          for (final var bucket : type.getBuckets(false))
+            vertexBuckets.buckets.add(new Identifier(bucket.getName()));
+      if (vertexBuckets.buckets.isEmpty()) {
+        final SelectExecutionPlan nothing = new SelectExecutionPlan(context, 0);
+        nothing.chain(new EmptyStep(context));
+        return nothing;
+      }
+      fromItem.setBucketList(vertexBuckets);
+    }
     final FromClause from = new FromClause();
     from.setItem(fromItem);
 

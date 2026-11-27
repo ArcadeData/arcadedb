@@ -503,9 +503,13 @@ public class FullTextQueryExecutor {
   }
 
   private Query parseQuery(final String queryString) {
+    // Every walk of a query starts here, so the size of a query is checked here, once
+    FullTextQueryParsers.checkText(queryString);
     try {
       // QueryParser is not thread-safe, so create one per invocation.
-      return createQueryParser().parse(queryString);
+      final Query query = createQueryParser().parse(queryString);
+      FullTextQueryParsers.checkTree(query);
+      return query;
     } catch (final ParseException e) {
       throw new FullTextQueryParseException("Invalid search query: " + queryString, e);
     }
@@ -612,6 +616,8 @@ public class FullTextQueryExecutor {
       }
 
       final Map<RID, AtomicInteger> groupResults;
+      boolean exclusionsApplied = false;
+      boolean writtenInPlace = false;
       if (mustResults != null) {
         // SHOULD clauses add bonus score to documents that already match every MUST clause
         if (!shouldResults.isEmpty())
@@ -627,14 +633,20 @@ public class FullTextQueryExecutor {
         groupResults = shouldResults;
       else if (hasMustNotClauses) {
         // A group made only of MUST_NOT clauses answers every indexed record less what they match, where Lucene answers nothing:
-        // an ArcadeDB extension, so that `-bar` is a query, and `+foo +(-bar)` is foo less bar
-        groupResults = new HashMap<>();
-        collectAllIndexedRids(groupResults);
+        // an ArcadeDB extension, so that `-bar` is a query, and `+foo +(-bar)` is foo less bar. What they match is collected first
+        // and the index is read once after it, keeping the records that are not among them
+        final Map<RID, AtomicInteger> prohibited = new HashMap<>();
+        collectProhibitedClauses(bq, prohibited);
+        // an answer that is the whole of this call's result is written in place, not built and then copied into it
+        writtenInPlace = scoreMap.isEmpty();
+        groupResults = writtenInPlace ? scoreMap : new HashMap<>();
+        collectIndexedRidsExcept(prohibited, groupResults);
+        exclusionsApplied = true;
       } else
         return;
 
       // The MUST_NOT clauses are matched only when there is something left for them to exclude
-      if (hasMustNotClauses)
+      if (hasMustNotClauses && !exclusionsApplied)
         for (final BooleanClause clause : bq.clauses()) {
           if (groupResults.isEmpty())
             break;
@@ -642,13 +654,15 @@ public class FullTextQueryExecutor {
             removeMatches(clause.query(), groupResults);
         }
 
-      if (scoreMap.isEmpty())
-        scoreMap.putAll(groupResults);
-      else
-        for (final Map.Entry<RID, AtomicInteger> entry : groupResults.entrySet()) {
-          tick();
-          scoreMap.computeIfAbsent(entry.getKey(), k -> new AtomicInteger(0)).addAndGet(entry.getValue().get());
-        }
+      if (!writtenInPlace) {
+        if (scoreMap.isEmpty())
+          scoreMap.putAll(groupResults);
+        else
+          for (final Map.Entry<RID, AtomicInteger> entry : groupResults.entrySet()) {
+            tick();
+            scoreMap.computeIfAbsent(entry.getKey(), k -> new AtomicInteger(0)).addAndGet(entry.getValue().get());
+          }
+      }
 
     } else if (query instanceof BoostQuery bq) {
       // Caret boost, e.g. `title:java^3`. Compound nested boosts and descend into the wrapped query.
@@ -681,18 +695,41 @@ public class FullTextQueryExecutor {
    * tokens are negative and must not contribute to BM25 scoring, so token capture is suppressed for the duration of the scan.
    */
   private void removeMatches(final Query query, final Map<RID, AtomicInteger> results) {
+    final Map<RID, AtomicInteger> prohibited = new HashMap<>();
+    collectExclusion(query, prohibited);
+    for (final RID rid : prohibited.keySet()) {
+      tick();
+      results.remove(rid);
+    }
+  }
+
+  /**
+   * Adds to {@code prohibited} the records the MUST_NOT clauses of {@code group} match, each matched as {@link #removeMatches}
+   * matches one. A clause that is a group of its own is matched before the others, so that what the others matched is not held
+   * while it is. Their tokens are negative, so no order of them changes what BM25 scoring sees.
+   */
+  private void collectProhibitedClauses(final BooleanQuery group, final Map<RID, AtomicInteger> prohibited) {
+    for (final BooleanClause clause : group.clauses())
+      if (clause.occur() == BooleanClause.Occur.MUST_NOT && isGroup(clause.query()))
+        collectExclusion(clause.query(), prohibited);
+    for (final BooleanClause clause : group.clauses())
+      if (clause.occur() == BooleanClause.Occur.MUST_NOT && !isGroup(clause.query()))
+        collectExclusion(clause.query(), prohibited);
+  }
+
+  /** Adds to {@code prohibited} the records {@code query} matches, as a MUST_NOT clause does: its tokens are negative. */
+  private void collectExclusion(final Query query, final Map<RID, AtomicInteger> prohibited) {
     final boolean previous = collectingExclusion;
     collectingExclusion = true;
     try {
-      final Map<RID, AtomicInteger> prohibited = new HashMap<>();
       collectMatches(query, prohibited);
-      for (final RID rid : prohibited.keySet()) {
-        tick();
-        results.remove(rid);
-      }
     } finally {
       collectingExclusion = previous;
     }
+  }
+
+  private static boolean isGroup(final Query query) {
+    return query instanceof BooleanQuery || query instanceof final BoostQuery bq && isGroup(bq.getQuery());
   }
 
   /**
@@ -801,19 +838,20 @@ public class FullTextQueryExecutor {
   }
 
   /**
-   * Seeds the score map with every record reachable through the underlying index. Used as the
-   * candidate universe for a group made only of MUST_NOT clauses, so that subtracting what they match
-   * yields the correct complement. Runs in O(index entries) where one entry exists per (token, RID) pair, not
-   * per unique document, so a document indexed under N tokens is visited N times and deduplicated
-   * via computeIfAbsent. Each RID is assigned a constant score of 1 because no positive clause
-   * contributed to its presence in the result set.
+   * Seeds the score map with every record reachable through the underlying index but those in {@code excluded}. Used as the
+   * candidate universe for a group made only of MUST_NOT clauses, whose matches {@code excluded} holds, so that the complement is
+   * built in one pass over the index. Runs in O(index entries) where one entry exists per (token, RID) pair, not per unique
+   * document, so a document indexed under N tokens is visited N times and deduplicated via computeIfAbsent. Each RID is assigned a
+   * constant score of 1 because no positive clause contributed to its presence in the result set.
    */
-  private void collectAllIndexedRids(final Map<RID, AtomicInteger> scoreMap) {
+  private void collectIndexedRidsExcept(final Map<RID, AtomicInteger> excluded, final Map<RID, AtomicInteger> scoreMap) {
     final IndexCursor cursor = index.iterateUnderlying(true, null, true);
     try {
       while (cursor.hasNext()) {
         tick();
-        scoreMap.computeIfAbsent(cursor.next().getIdentity(), k -> new AtomicInteger(1));
+        final RID rid = cursor.next().getIdentity();
+        if (!excluded.containsKey(rid))
+          scoreMap.computeIfAbsent(rid, k -> new AtomicInteger(1));
       }
     } finally {
       // a compacted-series cursor registers with its file, so an abandoned one keeps a retired file alive for the

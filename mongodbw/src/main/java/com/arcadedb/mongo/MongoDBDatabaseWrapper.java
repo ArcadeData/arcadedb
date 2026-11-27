@@ -32,9 +32,7 @@ import com.arcadedb.exception.ValidationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.ProfiledLimitScope;
-import com.arcadedb.query.sql.executor.IteratorResultSet;
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.schema.DocumentType;
@@ -80,7 +78,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Lock;
 import java.util.logging.Level;
-import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static de.bwaldvogel.mongo.backend.Utils.markOkay;
@@ -145,7 +142,6 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   protected final MongoDBProtocolPlugin              plugin;
   protected final MongoBackend                       backend;
   protected final Map<String, MongoCollection<Long>> collections    = new ConcurrentHashMap();
-  protected final Map<Channel, List<Document>>       lastResults    = new ConcurrentHashMap();
   protected final CursorRegistry                     cursorRegistry = new CursorRegistry();
   /** The cursors of the {@code find} commands that left rows for a {@code getMore}, by id. */
   private final Map<Long, MongoFindCursor>           findCursors    = new ConcurrentHashMap<>();
@@ -209,9 +205,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   @Override
   public void handleClose(final Channel channel) {
     // THIS IS CALLED FROM THE CLIENT TO FREE CONNECTION RESOURCES. DO NOT CLOSE THE DATABASE BECAUSE OTHER CONNECTIONS MAY
-    // NEED IT. ONLY THE CLOSING CHANNEL'S STATE MUST BE REMOVED: THE COLLECTION CACHE AND OTHER CONNECTIONS' RESULTS ARE
-    // SHARED ACROSS ALL CLIENTS (THIS WRAPPER IS CACHED PER-DATABASE IN THE BACKEND).
-    lastResults.remove(channel);
+    // NEED IT: THE COLLECTION CACHE IS SHARED ACROSS ALL CLIENTS (THIS WRAPPER IS CACHED PER-DATABASE IN THE BACKEND), AND THE
+    // WRAPPER KEEPS NO STATE OF ITS OWN PER CONNECTION.
     // THE CURSORS OF A FIND ARE NOT TIED TO A CONNECTION, AS MONGOD'S ARE NOT: A DRIVER CLOSES CONNECTIONS OF ITS POOL WHILE A CLIENT
     // IS STILL READING A CURSOR (A POOL CLEARED BY AN ERROR ON ANOTHER CONNECTION, maxIdleTimeMS), AND READS THE NEXT BATCH ON
     // ANOTHER ONE. WHAT A CLIENT ABANDONS IS CLOSED BY THE IDLE TIMEOUT, WHICH A CLOSED CONNECTION IS A CHANCE TO CHECK
@@ -237,7 +232,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       new Route("find", (wrapper, channel, document, opLog, quota) -> wrapper.find(document, quota)),
       new Route("create", (wrapper, channel, document, opLog, quota) -> wrapper.createCollection(document)),
       new Route("count", (wrapper, channel, document, opLog, quota) -> wrapper.countCollection(document)),
-      new Route("insert", (wrapper, channel, document, opLog, quota) -> wrapper.insertDocument(channel, document)),
+      new Route("insert", (wrapper, channel, document, opLog, quota) -> wrapper.insertDocument(document)),
       new Route("delete", (wrapper, channel, document, opLog, quota) -> wrapper.deleteDocuments(document)),
       new Route("update", (wrapper, channel, document, opLog, quota) -> wrapper.updateDocuments(document)),
       new Route("aggregate", (wrapper, channel, document, opLog, quota) -> wrapper.aggregateCollection(document, opLog, quota)),
@@ -307,11 +302,10 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     return database instanceof DatabaseInternal internal ? internal.getResultSetLimit() : -1L;
   }
 
-  /** The documents of an answer, cut at the quota of the user's groups: {@code documents} itself when it holds no more. */
-  private static List<Document> capped(final List<Document> documents, final long quota) {
-    return quota < 0 || documents.size() <= quota ? documents : new ArrayList<>(documents.subList(0, (int) quota));
-  }
-
+  /**
+   * The documents a query of the {@code mongo} query language selects, read from the collection as the caller consumes the rows: a
+   * caller that stops early (the row limit of an HTTP request) never reads the rest, and the rows are not held in memory together.
+   */
   public ResultSet query(final String query) throws MongoServerException {
     final JSONObject queryJson = new JSONObject(query);
 
@@ -325,18 +319,40 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     final MongoQuery mongoQuery = new MongoQuery(null, null, getFullCollectionNamespace(collection), numberToSkip, numberToReturn,
         transformedQuery, null);
 
-    final QueryResult result = handleQuery(mongoQuery);
+    return new MongoCursorResultSet(openQueryCursor(mongoQuery));
+  }
 
-    // TRANSFORM THE RESULT INTO ARCADEDB RESULT SET
-    final IteratorResultSet resultset = new IteratorResultSet(result.iterator()) {
-      @Override
-      public Result next() {
-        final Map doc = (Map) ResultInternal.wrap(super.next().getProperty("value"));
-        return new ResultInternal(doc);
+  /**
+   * The cursor over the documents a query selects, for a caller that consumes them as it goes: what {@link #runQuery} answers whole,
+   * under the same quota. Opened inside the {@link ProfiledLimitScope}, as the cursor of a {@code find} is: the SQL statement it runs
+   * must not take the quota as its LIMIT.
+   */
+  private MongoFindCursor openQueryCursor(final MongoQuery query) throws MongoServerException {
+    purgeIdleCursorsOnce(System.nanoTime());
+    final long quota = profiledLimit();
+    ProfiledLimitScope.enter();
+    try {
+      this.clearLastStatus(query.getChannel());
+      if (!(getCollection(query.getCollectionName()) instanceof MongoDBCollectionWrapper collection))
+        return MongoFindCursor.empty();
+
+      final int numSkip = query.getNumberToSkip();
+      if (quota == 0) {
+        // NO DOCUMENT IS ANSWERED, AND 0 MEANS NO LIMIT TO THE COLLECTION: THE QUERY STILL RUNS, FOR ONE ROW, SO A MALFORMED ONE IS REFUSED
+        final MongoFindCursor probe = collection.openCursor(new QueryParameters(query.getQuery(), numSkip, 1), null);
+        try {
+          probe.takeBatch(1, MongoFindCursor.MAX_BATCH_BYTES);
+        } finally {
+          probe.close();
+        }
+        return MongoFindCursor.empty();
       }
-    };
-
-    return resultset;
+      return collection.openCursor(new QueryParameters(query.getQuery(), numSkip, tighterLimit(query.getNumberToReturn(), quota)), null);
+    } catch (final Exception e) {
+      throw wireException("Error on executing MongoDB query", e);
+    } finally {
+      ProfiledLimitScope.exit();
+    }
   }
 
   private Document json2Document(final JSONObject map) {
@@ -384,7 +400,6 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    */
   private QueryResult runQuery(final MongoQuery query, final long quota) throws MongoServerException {
     try {
-      this.clearLastStatus(query.getChannel());
       final String collectionName = query.getCollectionName();
       final MongoCollection<Long> collection = getCollection(collectionName);
       if (collection == null) {
@@ -417,7 +432,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
   /**
    * Wraps a failure so the client is told whose fault it was (issue #5628). Every failure used to become a bare
-   * {@link MongoServerException}, and {@link #putLastError} can only emit {@code code}/{@code codeName} for a
+   * {@link MongoServerException}, and a reply can only carry {@code code}/{@code codeName} of a
    * {@link MongoServerError} - so a caller who divided by zero or hit a unique index got an uncoded error
    * indistinguishable from the server having broken.
    * <p>
@@ -507,8 +522,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     aggregation.validate(document);
 
     // THE PIPELINE RUNS OVER EVERY DOCUMENT, A STAGE THAT WRITES ($out, $merge) INCLUDED: THE QUOTA CAPS THE DOCUMENTS IT ANSWERS
-    return firstBatchCursorResponse(collectionName, "firstBatch", capped(computeResult(aggregation, pipeline, collection, oplog), quota),
-        0);
+    return firstBatchCursorResponse(collectionName, "firstBatch", computeResult(aggregation, pipeline, collection, oplog, quota), 0);
   }
 
   /**
@@ -517,36 +531,53 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * two {@code $match} run as the library runs them, on the stream the previous part produced; the failures are reported as
    * {@link Aggregation#computeResult()} reports them. A {@code $match} nested in a sub-pipeline ({@code $facet}, {@code $lookup},
    * {@code $unionWith}) is still the library's.
+   * <p>
+   * The collection is read as the stages consume it, so a pipeline that keeps little (a count, a group, a limit) never holds the
+   * collection. What is held is counted against the heap limits, as the buffers of the SQL operations are: the documents a
+   * {@code $sort} takes in, which it all holds, and the documents of the answer. The pipeline runs over every document, a stage that
+   * writes ({@code $out}, {@code $merge}) included: only the answer is cut at the quota.
    */
   private List<Document> computeResult(final Aggregation aggregation, final List<Document> pipeline, final MongoCollection<?> collection,
-      final Oplog oplog) {
-    boolean matches = false;
-    for (final Document stage : pipeline)
-      if (stage.get("$match") instanceof Document) {
-        matches = true;
-        break;
-      }
-    if (!matches)
-      return aggregation.computeResult();
-
+      final Oplog oplog, final long quota) {
     // a malformed $match is refused before any document is read, as mongod refuses it when it parses the pipeline
     for (final Document stage : pipeline)
       if (stage.size() == 1 && stage.get("$match") instanceof Document query)
         new MongoQueryMatcher().validate(query);
 
+    final OperationHeapLimit heap = MongoResultHeap.of(database, "MongoDB aggregation");
+    final Stream<Document> input = collection.queryAllAsStream();
     try {
-      Stream<Document> stream = collection.queryAllAsStream();
+      Stream<Document> stream = input;
       List<Document> segment = new ArrayList<>();
+      boolean split = false;
       for (final Document stage : pipeline) {
         if (stage.size() == 1 && stage.get("$match") instanceof Document query) {
           stream = runSegment(segment, stream, collection, oplog);
           segment = new ArrayList<>();
+          split = true;
           final MongoQueryMatcher matcher = new MongoQueryMatcher();
           stream = stream.filter(candidate -> matcher.matches(candidate, query));
-        } else
+        } else {
+          if (stage.size() == 1 && stage.containsKey("$sort")) {
+            // the documents that reach the sort are all held until it has seen the last one
+            stream = runSegment(segment, stream, collection, oplog);
+            segment = new ArrayList<>();
+            split = true;
+            stream = heldBy(stream, heap);
+          }
           segment.add(stage);
+        }
       }
-      return runSegment(segment, stream, collection, oplog).collect(Collectors.toList());
+      stream = split ? runSegment(segment, stream, collection, oplog) : aggregation.runStagesAsStream(stream);
+
+      final List<Document> result = new ArrayList<>();
+      stream.forEach(document -> {
+        if (quota < 0 || result.size() < quota) {
+          result.add(document);
+          MongoResultHeap.add(heap, result.size(), document);
+        }
+      });
+      return result;
     } catch (final TypeMismatchException | FailedToOptimizePipelineError | ProjectStage.InvalidProjectException e) {
       throw e;
     } catch (final MongoServerError e) {
@@ -554,7 +585,21 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         throw e;
       throw new MongoServerError(e.getCode(), e.getCodeName(),
           "PlanExecutor error during aggregation :: caused by :: " + e.getMessageWithoutErrorCode(), e);
+    } finally {
+      // the list is the answer by now: the limits count what a query buffers, not a reply on its way out
+      heap.release();
+      input.close();
     }
+  }
+
+  /**
+   * The documents of {@code stream}, each counted against {@code heap} as a stage that holds them all takes it in. The documents of the
+   * answer are counted against the same limit by their own count: the cap on elements applies to each of the two, the budget of bytes to
+   * both.
+   */
+  private static Stream<Document> heldBy(final Stream<Document> stream, final OperationHeapLimit heap) {
+    final long[] held = { 0L };
+    return stream.peek(document -> MongoResultHeap.add(heap, ++held[0], document));
   }
 
   private Stream<Document> runSegment(final List<Document> segment, final Stream<Document> stream, final MongoCollection<?> collection,
@@ -1116,7 +1161,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         "BSON field '" + field + "' is the wrong type '" + typeName(value) + "', expected type 'object'");
   }
 
-  private Document insertDocument(final Channel channel, final Document query) throws MongoServerException {
+  private Document insertDocument(final Document query) throws MongoServerException {
     final String collectionName = query.get("insert").toString();
     // MongoDB's default is an ordered insert: it stops at the first failing document
     final boolean isOrdered = query.get("ordered") == null || Utils.isTrue(query.get("ordered"));
@@ -1125,49 +1170,38 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
     int n = 0;
     try {
-      this.clearLastStatus(channel);
+      if (collectionName.startsWith("system.")) {
+        throw new MongoServerError(16459, "attempt to insert in system namespace");
+      } else if (database.getSchema().getTypeOrNull(collectionName) instanceof TimeSeriesType timeSeries) {
+        // its samples are not records, so there is no _id index to keep: they go to the engine of the type (issue #10476)
+        n = MongoTimeSeriesInserts.insert(database, timeSeries, documents, isOrdered, writeErrors);
+      } else {
+        final MongoDBCollectionWrapper collection = getOrCreateCollection(collectionName);
+        try {
+          // FAST PATH: the whole batch in one transaction. n is what the engine stored, not what it was given (issue #9974)
+          n = collection.insertDocumentsCountingStored(documents);
+        } catch (final RuntimeException e) {
+          // a document refused on its own (a duplicated key, a declared constraint, a value that cannot be stored) is reported in
+          // writeErrors with the others kept, as mongod does (issue #11444): anything else is the command's failure
+          if (statementErrorCode(e) == null)
+            throw e;
 
-      try {
-        if (collectionName.startsWith("system.")) {
-          throw new MongoServerError(16459, "attempt to insert in system namespace");
-        } else if (database.getSchema().getTypeOrNull(collectionName) instanceof TimeSeriesType timeSeries) {
-          // its samples are not records, so there is no _id index to keep: they go to the engine of the type (issue #10476)
-          n = MongoTimeSeriesInserts.insert(database, timeSeries, documents, isOrdered, writeErrors);
-          this.putLastResult(channel, new Document("n", n));
-        } else {
-          final MongoDBCollectionWrapper collection = getOrCreateCollection(collectionName);
-          try {
-            // FAST PATH: the whole batch in one transaction. n is what the engine stored, not what it was given (issue #9974)
-            n = collection.insertDocumentsCountingStored(documents);
-          } catch (final RuntimeException e) {
-            // a document refused on its own (a duplicated key, a declared constraint, a value that cannot be stored) is reported in
-            // writeErrors with the others kept, as mongod does (issue #11444): anything else is the command's failure
-            if (statementErrorCode(e) == null)
-              throw e;
-
-            // The batch was rolled back. MongoDB is not atomic across a batch, so insert the documents one by one to
-            // report each refusal by index and keep the others (ordered: only the ones before the first failure)
-            for (int i = 0; i < documents.size(); i++) {
-              final Document doc = documents.get(i);
-              try {
-                n += collection.insertDocumentsCountingStored(List.of(doc));
-              } catch (final RuntimeException refused) {
-                final Document error = writeError(i, collectionName, refused);
-                if (error == null)
-                  throw refused;
-                writeErrors.add(error);
-                if (isOrdered)
-                  break;
-              }
+          // The batch was rolled back. MongoDB is not atomic across a batch, so insert the documents one by one to
+          // report each refusal by index and keep the others (ordered: only the ones before the first failure)
+          for (int i = 0; i < documents.size(); i++) {
+            final Document doc = documents.get(i);
+            try {
+              n += collection.insertDocumentsCountingStored(List.of(doc));
+            } catch (final RuntimeException refused) {
+              final Document error = writeError(i, collectionName, refused);
+              if (error == null)
+                throw refused;
+              writeErrors.add(error);
+              if (isOrdered)
+                break;
             }
           }
-
-          final Document result = new Document("n", n);
-          this.putLastResult(channel, result);
         }
-      } catch (final MongoServerError var7) {
-        this.putLastError(channel, var7);
-        throw var7;
       }
     } catch (final MongoServerError e) {
       final Document error = new Document();
@@ -2320,36 +2354,5 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       return number.longValue();
     throw new MongoServerError(TYPE_MISMATCH, "TypeMismatch",
         "BSON field '" + fieldName + "' is the wrong type '" + typeName(value) + "', expected type 'number'");
-  }
-
-  private synchronized void clearLastStatus(final Channel channel) {
-    if (channel == null)
-      // EMBEDDED CALL WITHOUT THE SERVER
-      return;
-
-    final List<Document> results = this.lastResults.computeIfAbsent(channel, k -> new ArrayList<>(10));
-    results.add(null);
-  }
-
-  private synchronized void putLastResult(final Channel channel, final Document result) {
-    final List<Document> results = this.lastResults.get(channel);
-    final Document last = results.getLast();
-    if (last != null)
-      throw new IllegalStateException("last result already set: " + last);
-    results.set(results.size() - 1, result);
-  }
-
-  private void putLastError(final Channel channel, final MongoServerException ex) {
-    final Document error = new Document();
-    if (ex instanceof MongoServerError err) {
-      error.put("err", err.getMessage());
-      error.put("code", err.getCode());
-      error.putIfNotNull("codeName", err.getCodeName());
-    } else {
-      error.put("err", ex.getMessage());
-    }
-
-    error.put("connectionId", channel.id().asShortText());
-    this.putLastResult(channel, error);
   }
 }
