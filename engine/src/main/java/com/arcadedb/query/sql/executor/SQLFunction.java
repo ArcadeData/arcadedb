@@ -84,6 +84,23 @@ public interface SQLFunction extends RecordFunction {
   }
 
   /**
+   * Whether every call to this function with these argument values, made while one statement executes, answers the same value, so
+   * a condition can evaluate a call over literals or parameters once per execution rather than once per record (issue #13523).
+   * <p>
+   * Weaker than {@link #isDeterministic()}, which it defaults to: the answer may also depend on what stays fixed while a statement
+   * executes, such as the database's datetime format and zone, and it may depend on the values, as {@code date()} reads the clock
+   * with no argument and parses its argument with one. It is asked with the values of one execution, never at plan time, so it
+   * never folds a call into a cached plan or lets a plan be cached that would not be otherwise.
+   *
+   * @param arguments the values the call is made with
+   *
+   * @return {@code true} only when a call with these arguments answers the same value for every record of an execution
+   */
+  default boolean isConstantForArguments(final Object[] arguments) {
+    return isDeterministic();
+  }
+
+  /**
    * Whether evaluating this function on a record sets the {@code $score} context variable to the score the record matched
    * with (0 when it did not match), as the full-text functions do. A boolean condition that holds such a call combines the
    * scores of its arms instead of letting the last one evaluated win (issues #11618, #11773).

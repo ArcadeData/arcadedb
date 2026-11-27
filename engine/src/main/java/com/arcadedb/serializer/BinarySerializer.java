@@ -63,6 +63,7 @@ import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.DateUtils;
+import com.arcadedb.utility.Interruptions;
 
 import org.locationtech.spatial4j.context.SpatialContext;
 import org.locationtech.spatial4j.io.ShapeWriter;
@@ -296,7 +297,11 @@ public class BinarySerializer {
     final DatabaseContext.DatabaseContextTL context = database.getContext();
 
     final boolean serializeProperties;
-    if (header == null || (vertex instanceof MutableVertex mutableVertex && mutableVertex.isDirty())) {
+    // A vertex whose properties were never decoded has them as its buffer holds them (reading or changing one decodes them first),
+    // so what made it dirty is an edge-list head: the serialization copies the buffer and writes the two heads below, instead of
+    // decoding the properties of the record (a 1,024-float embedding among them) to encode them again, unchanged
+    if (header == null || (vertex instanceof MutableVertex mutableVertex && mutableVertex.isDirty()
+        && mutableVertex.arePropertiesLoaded())) {
       header = context.getTemporaryBuffer1();
       header.putByte(vertex.getRecordType()); // RECORD TYPE
       serializeProperties = true;
@@ -384,16 +389,22 @@ public class BinarySerializer {
       final int headerEndOffset = buffer.getInt(); // HEADER-SIZE
       final int properties = checkPropertyCount(buffer, headerEndOffset, initialPosition);
 
+      if (properties == 0)
+        // EMPTY: NO NAME, AND NO NEED TO REACH THE DICTIONARY
+        return result;
+
+      final Dictionary dictionary = dictionaryOf(database);
       for (int i = 0; i < properties; ++i) {
         final int nameId = (int) buffer.getUnsignedNumber();
         buffer.getUnsignedNumber(); //contentPosition
-        final String name = database.getSchema().getDictionary().getNameById(nameId);
+        final String name = dictionary.getNameById(nameId);
         result.add(name);
       }
     } catch (final DatabaseIsClosedException e) {
       // A CLOSED DATABASE IS NOT A DAMAGED RECORD: LET THE CALLER SEE IT, AS db.query() DOES (SAME AT EVERY CATCH BELOW)
       throw e;
     } catch (Exception e) {
+      Interruptions.rethrowIfInterruption(e);
       LogManager.instance().log(this, Level.WARNING, "Possible corrupted record %s, returning %d names read so far", e, rid,
           result.size());
     }
@@ -447,7 +458,7 @@ public class BinarySerializer {
 
       final int[] fieldIds = new int[fieldNames.length];
 
-      final Dictionary dictionary = database.getSchema().getDictionary();
+      final Dictionary dictionary = dictionaryOf(database);
       for (int i = 0; i < fieldNames.length; ++i)
         fieldIds[i] = dictionary.getIdByName(fieldNames[i], false);
       // A wide filter (every property of a wide record but the few a projection excludes, issue #12558) is searched, not
@@ -517,6 +528,7 @@ public class BinarySerializer {
         } catch (final DatabaseIsClosedException e) {
           throw e;
         } catch (Exception e) {
+          Interruptions.rethrowIfInterruption(e);
           if (strict)
             throw new SerializationException("Property '" + propertyName + "' of record " + rid + " cannot be decoded: "
                 + e.getMessage(), e);
@@ -535,6 +547,7 @@ public class BinarySerializer {
     } catch (final DatabaseIsClosedException e) {
       throw e;
     } catch (Exception e) {
+      Interruptions.rethrowIfInterruption(e);
       if (strict)
         throw e instanceof SerializationException serializationException ?
             serializationException :
@@ -556,7 +569,7 @@ public class BinarySerializer {
         // EMPTY: NOT FOUND
         return false;
 
-      final int fieldId = database.getSchema().getDictionary().getIdByName(fieldName, false);
+      final int fieldId = dictionaryOf(database).getIdByName(fieldName, false);
       if (fieldId < 0)
         // A PROPERTY NAME IS ALWAYS WRITTEN THROUGH THE DICTIONARY: ONE IT DOES NOT KNOW IS IN NO RECORD
         return false;
@@ -569,6 +582,7 @@ public class BinarySerializer {
     } catch (final DatabaseIsClosedException e) {
       throw e;
     } catch (Exception e) {
+      Interruptions.rethrowIfInterruption(e);
       LogManager.instance().log(this, Level.SEVERE, "Possible corrupted record %s", e, rid);
     }
 
@@ -613,7 +627,7 @@ public class BinarySerializer {
         // EMPTY: NOT FOUND
         return absentValue;
 
-      final Dictionary dictionary = database.getSchema().getDictionary();
+      final Dictionary dictionary = dictionaryOf(database);
       final int fieldId = dictionary.getIdByName(fieldName, false);
       if (fieldId < 0)
         // A PROPERTY NAME IS ALWAYS WRITTEN THROUGH THE DICTIONARY: ONE IT DOES NOT KNOW IS IN NO RECORD
@@ -633,6 +647,7 @@ public class BinarySerializer {
     } catch (final DatabaseIsClosedException e) {
       throw e;
     } catch (final Exception e) {
+      Interruptions.rethrowIfInterruption(e);
       LogManager.instance().log(this, Level.SEVERE, "Possible corrupted record %s", e, rid);
       return found ? null : absentValue;
     }
@@ -676,6 +691,7 @@ public class BinarySerializer {
     } catch (final DatabaseIsClosedException e) {
       throw e;
     } catch (final Exception e) {
+      Interruptions.rethrowIfInterruption(e);
       // NOT LOGGED HERE: THE CALLER READS EVERY PROPERTY ON ITS OWN, WHICH LOGS THE DAMAGED RECORD AS A SINGLE READ ALWAYS DID
       return false;
     }
@@ -693,6 +709,7 @@ public class BinarySerializer {
     } catch (final DatabaseIsClosedException e) {
       throw e;
     } catch (final Exception e) {
+      Interruptions.rethrowIfInterruption(e);
       LogManager.instance().log(this, Level.SEVERE, "Possible corrupted record %s", e, rid);
       return null;
     }
@@ -989,7 +1006,7 @@ public class BinarySerializer {
       final byte[] keyTypes = new byte[mapSize];
       final byte[] valueTypes = new byte[mapSize];
       int validCount = 0;
-      boolean characterKey = false;
+      boolean nonStringTextKey = false;
       for (final Map.Entry<Object, Object> entry : map.entrySet()) {
         try {
           Object entryKey = entry.getKey();
@@ -1013,7 +1030,8 @@ public class BinarySerializer {
             entryValue = null;
           }
 
-          // NOT EVERY KEY LABELLED TYPE_STRING IS A String: A Character IS TOO, AND IT IS WRITTEN AS ITS TEXT (ISSUE #12021)
+          // NOT EVERY KEY LABELLED TYPE_STRING IS A String: A Character AND AN ENUM CONSTANT ARE TOO, AND THEY ARE WRITTEN AS THEIR
+          // TEXT (ISSUES #12021, #12624)
           if (entryKeyType == BinaryTypes.TYPE_STRING) {
             if (entryKey instanceof String stringKey) {
               final int id = dictionary.getIdByName(stringKey, false);
@@ -1023,7 +1041,7 @@ public class BinarySerializer {
                 entryKey = id;
               }
             } else
-              characterKey = true;
+              nonStringTextKey = true;
           }
 
           keys[validCount] = entryKey;
@@ -1038,8 +1056,8 @@ public class BinarySerializer {
               "Error on serializing map value for key '" + entry.getKey() + "' = '" + entry.getValue() + "'", e);
         }
       }
-      if (characterKey)
-        checkCharacterKeysDoNotCollide(map);
+      if (nonStringTextKey)
+        checkTextKeysDoNotCollide(map);
       content.putUnsignedNumber(validCount);
       for (int i = 0; i < validCount; ++i) {
         content.putByte(keyTypes[i]);
@@ -1166,17 +1184,17 @@ public class BinarySerializer {
   }
 
   /**
-   * A Character key is stored as its one-character text, the same key a String of that text is: a map holding both would be
-   * read back with one of the two values, so it is refused instead of losing one silently (issue #12021). Only a map that
-   * has a Character key pays this pass, and it never calls {@code containsKey()}, which a sorted map of one key class refuses
-   * for the other.
+   * A Character or an enum key is stored as its text, the same key a String of that text is: a map holding both would be read
+   * back with one of the two values, so it is refused instead of losing one silently (issues #12021, #12624). The same holds
+   * for two constants of different enums with the same name. Only a map that has a key of that kind pays this pass, and it
+   * never calls {@code containsKey()}, which a sorted map of one key class refuses for the other.
    */
-  private static void checkCharacterKeysDoNotCollide(final Map<Object, Object> map) {
+  private static void checkTextKeysDoNotCollide(final Map<Object, Object> map) {
     final Set<String> texts = new HashSet<>();
     for (final Object key : map.keySet())
-      if ((key instanceof String || key instanceof Character) && !texts.add(key.toString()))
-        throw new SerializationException("Cannot serialize a map with a Character key and a String key of the same text '" + key
-            + "': a Character is stored as its text");
+      if ((key instanceof String || key instanceof Character || key instanceof Enum<?>) && !texts.add(key.toString()))
+        throw new SerializationException("Cannot serialize a map with two keys of the same text '" + key
+            + "': a Character or an enum key is stored as its text, as a String key is");
   }
 
   /**
@@ -1230,7 +1248,7 @@ public class BinarySerializer {
       value = content.getString();
       break;
     case BinaryTypes.TYPE_COMPRESSED_STRING:
-      value = database.getSchema().getDictionary().getNameById((int) content.getUnsignedNumber());
+      value = dictionaryOf(database).getNameById((int) content.getUnsignedNumber());
       break;
     case BinaryTypes.TYPE_BINARY:
       value = content.getBytes();
@@ -1332,7 +1350,7 @@ public class BinarySerializer {
       break;
     }
     case BinaryTypes.TYPE_EMBEDDED: {
-      final String typeName = database.getSchema().getDictionary().getNameById((int) content.getUnsignedNumber());
+      final String typeName = dictionaryOf(database).getNameById((int) content.getUnsignedNumber());
 
       final int embeddedObjectSize = (int) content.getUnsignedNumber();
 
@@ -1409,6 +1427,14 @@ public class BinarySerializer {
       throw new SerializationException("Invalid element count " + count + " in buffer of size " + buffer.size()
           + " (corrupted record or misaligned read)");
     return (int) count;
+  }
+
+  /**
+   * The dictionary a read resolves property names through, by {@link DatabaseInternal#getDictionary()}: asked once or more
+   * per property read, so it must not cost the transaction-context lookup {@code getSchema()} makes (#12356).
+   */
+  private static Dictionary dictionaryOf(final Database database) {
+    return database instanceof DatabaseInternal internal ? internal.getDictionary() : database.getSchema().getDictionary();
   }
 
   /**

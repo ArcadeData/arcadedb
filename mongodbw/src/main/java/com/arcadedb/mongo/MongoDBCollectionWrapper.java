@@ -21,11 +21,14 @@ package com.arcadedb.mongo;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
 import com.arcadedb.engine.OwnTransaction;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.Identifier;
@@ -34,6 +37,8 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.TimeSeriesType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.TypeIndexBuilder;
+import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityHelper;
 import de.bwaldvogel.mongo.MongoCollection;
 import de.bwaldvogel.mongo.MongoDatabase;
 import de.bwaldvogel.mongo.backend.ArrayFilters;
@@ -45,6 +50,7 @@ import de.bwaldvogel.mongo.bson.ObjectId;
 import de.bwaldvogel.mongo.oplog.Oplog;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -60,6 +66,9 @@ import java.util.logging.Level;
 import java.util.stream.Stream;
 
 public class MongoDBCollectionWrapper implements MongoCollection<Long> {
+  /** The records a key backfill updates per transaction. */
+  static final int BACKFILL_BATCH = 10_000;
+
   private final Database database;
   //  private final int      collectionId;
   private final String   collectionName;
@@ -148,9 +157,14 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
     return MongoCollection.super.queryAll();
   }
 
+  /**
+   * Every document of the collection, read and converted as the stream is consumed: an aggregation over a big collection holds the
+   * documents its stages keep, not the whole collection. The stream releases the cursor when its last document is taken or when it is
+   * closed, so a caller that stops early closes it.
+   */
   @Override
   public Stream<Document> queryAllAsStream() {
-    return MongoCollection.super.queryAllAsStream();
+    return openCursor(new QueryParameters(new Document(), 0, 0), null).stream();
   }
 
   @Override
@@ -170,6 +184,33 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
 
   @Override
   public QueryResult handleQuery(final QueryParameters queryParameters) {
+    // an OP_QUERY answers every document in the one reply: the cursor is drained, and closed with the last row. The documents the
+    // answer keeps are counted against the heap limits while it is built
+    final OperationHeapLimit heap = MongoResultHeap.of(database, "MongoDB query result");
+    final MongoFindCursor cursor = openCursor(queryParameters, null);
+    try {
+      final List<Document> documents = new ArrayList<>();
+      final Iterator<Document> rows = cursor.documents();
+      while (rows.hasNext()) {
+        final Document document = rows.next();
+        documents.add(document);
+        MongoResultHeap.add(heap, documents.size(), document);
+      }
+      return new QueryResult(documents);
+    } finally {
+      // the list is the answer by now: the limits count what a query buffers, not a reply on its way out
+      heap.release();
+      cursor.close();
+    }
+  }
+
+  /**
+   * The documents a query selects, as a cursor that reads and converts them one batch at a time. The caller owns it: it must
+   * {@link MongoFindCursor#close() close} it, unless it is drained, which releases it too.
+   *
+   * @param projection applied to every document the cursor answers, or {@code null}
+   */
+  MongoFindCursor openCursor(final QueryParameters queryParameters, final MongoProjection projection) {
     int numberToReturn = queryParameters.getLimit();
     if (numberToReturn < 0)
       numberToReturn = -numberToReturn;
@@ -197,11 +238,9 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
     // so is an invalid sort
     final MongoSortOrder sortOrder = orderBy != null && !orderBy.isEmpty() ? new MongoSortOrder(orderBy) : null;
     if (this.count() == 0)
-      return new QueryResult();
+      return MongoFindCursor.empty();
 
-    final Iterable<Document> objs = this.queryDocuments(filter, sortOrder, numberToSkip, numberToReturn);
-
-    return new QueryResult(objs);
+    return this.queryDocuments(filter, sortOrder, numberToSkip, numberToReturn, projection);
   }
 
   @Override
@@ -214,21 +253,19 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
    * document a {@code BeforeRecordCreateListener} vetoed is not stored and is not counted (issue #9974).
    */
   int insertDocumentsCountingStored(final List<Document> list) {
-    final List<Object> ids = new ArrayList<>(list.size());
-    for (final Document d : list)
-      if (d.containsKey("_id"))
-        ids.add(d.get("_id"));
+    // before the lock of the unique indexes is taken
+    checkAccess(database, collectionName, SecurityDatabaseUser.ACCESS.CREATE_RECORD);
 
-    // Inserts share the read lock; only a change of the _id index (the first insert, or a new kind of _id) takes the write
-    // lock, so no transaction ever runs against an index that is being dropped and rebuilt
+    // Inserts share the read lock; only the creation of the _id index (the first insert) takes the write lock, so no transaction
+    // ever runs against an index that is being built
     final ReadWriteLock lock = idIndexLock(database, collectionName);
     lock.readLock().lock();
     try {
-      if (!idIndexSatisfies(database, collectionName, ids)) {
+      if (!idIndexReady(database, collectionName)) {
         lock.readLock().unlock();
         lock.writeLock().lock();
         try {
-          ensureIdIndex(database, collectionName, ids);
+          ensureIdIndex(database, collectionName);
         } finally {
           // downgrade: take the read lock before releasing the write one
           lock.readLock().lock();
@@ -242,12 +279,14 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
   }
 
   private int insertInTransaction(final List<Document> list) {
-    // a type without the unique index (made through SQL or Studio, or already holding duplicates) is checked by hand
-    final boolean checkByHand = !hasUniqueIdIndex(database.getSchema().getType(collectionName));
+    final DocumentType type = database.getSchema().getType(collectionName);
+    // a type whose unique index could not be built (it already holds duplicates) is checked by hand
+    final boolean checkByHand = !MongoKeys.hasIdKeyIndex(type);
     if (checkByHand && ID_INDEX_SLOW_PATH_LOGGED.add(idIndexKey(database, collectionName)))
       LogManager.instance().log(this, Level.WARNING,
           "Collection '%s' has no unique index on _id: every insert checks the _id with a query, which is slow on a big collection", null,
           collectionName);
+    final List<String[]> unique = MongoKeys.uniquePaths(type);
 
     // The insert's OWN transaction, nested in whatever the caller holds: an ArcadeDB nested transaction is independent, not a
     // savepoint, and the commit pops it. Asking database.isTransactionActive() afterwards answers for the CALLER's, which a
@@ -256,14 +295,17 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
     try {
       int stored = 0;
       for (final Document d : list) {
-        if (checkByHand && d.containsKey("_id"))
-          checkIdIsFree(d.get("_id"));
+        // like mongod, a document without an _id is given one, as its first field: its key is what makes it unique
+        final Document document = d.containsKey("_id") ? d : withGeneratedId(d);
+        if (checkByHand)
+          checkIdIsFree(document.get("_id"));
 
         final MutableDocument record = database.newDocument(collectionName);
-
-        for (final Map.Entry<String, Object> p : d.entrySet()) {
+        for (final Map.Entry<String, Object> p : document.entrySet()) {
+          MongoKeys.checkNotKey(p.getKey());
           record.set(p.getKey(), MongoBsonValues.toStored(p.getKey(), p.getValue()));
         }
+        MongoKeys.setKeys(record, document, unique);
 
         if (record.saveReportingVeto())
           ++stored;
@@ -277,17 +319,23 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
     }
   }
 
+  private static Document withGeneratedId(final Document document) {
+    final Document withId = new Document("_id", new ObjectId());
+    withId.putAll(document);
+    return withId;
+  }
+
   /**
    * Best effort, not a uniqueness guarantee: a check followed by an insert, with no lock against other writers, so two
-   * concurrent inserts of the same {@code _id} can both pass. It is only the fallback for a collection without the unique index.
+   * concurrent inserts of the same {@code _id} can both pass. It is only the fallback for a collection whose unique index could
+   * not be built because it already holds duplicates.
    */
   private void checkIdIsFree(final Object id) {
-    // the _id in the form it is stored in: an ObjectId is its hex string, a String that reads as one is escaped (issue #12073)
-    final Object bound = MongoBsonValues.toStored("_id", id);
-    try (final ResultSet rs = database.query("SQL", "select @rid from " + Identifier.quote(collectionName) + " where _id = :id limit 1",
-        Map.of("id", bound))) {
+    try (final ResultSet rs = database.query("SQL",
+        "select @rid from " + Identifier.quote(collectionName) + " where " + Identifier.quote(MongoKeys.ID_KEY) + " = :key limit 1",
+        Map.of("key", MongoKeys.key(id)))) {
       if (rs.hasNext())
-        throw new DuplicatedKeyException(collectionName + "[_id]", String.valueOf(bound), rs.next().getIdentity().orElse(null));
+        throw new DuplicatedKeyException(collectionName + "[_id]", String.valueOf(id), rs.next().getIdentity().orElse(null));
     }
   }
 
@@ -327,139 +375,198 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
   }
 
   /**
-   * The lock guarding the {@code _id} index of one collection of one database: shared by the writes that rely on the index,
-   * exclusive for whoever creates or rebuilds it.
+   * The lock guarding the unique indexes of one collection of one database: shared by the writes that rely on them, exclusive for
+   * whoever creates one (and fills in the keys it is built on). The registry keeps one entry per name asked for, so only a collection
+   * that exists (or the caller is about to create) is asked for.
    */
   static ReadWriteLock idIndexLock(final Database database, final String collectionName) {
     return ID_INDEX_LOCKS.computeIfAbsent(idIndexKey(database, collectionName), k -> new ReentrantReadWriteLock());
   }
 
   /**
-   * Creates or rebuilds the {@code _id} index under the exclusive lock, for a caller outside {@link #insertDocuments} (an
-   * upsert, which runs its own transaction afterwards).
+   * Whether a lock is kept for the collection: a read of what the registry holds, for the tests.
    */
-  static void ensureIdIndexLocked(final Database database, final String collectionName, final Collection<?> ids) {
+  static boolean hasIdIndexLock(final Database database, final String collectionName) {
+    return ID_INDEX_LOCKS.containsKey(idIndexKey(database, collectionName));
+  }
+
+  /**
+   * Refuses a user who may not {@code access} the records of a collection. A write command asks it first: before it takes the lock
+   * of the unique indexes and before it reads a record, where the engine asks it when a record is saved. A collection that does not
+   * exist is not refused here (creating it is a schema change, checked where it is made), nor is a call with no user bound.
+   */
+  static void checkAccess(final Database database, final String collectionName, final SecurityDatabaseUser.ACCESS access) {
+    SecurityHelper.checkAccessOnType((DatabaseInternal) database, database.getSchema().getTypeOrNull(collectionName), access);
+  }
+
+  /**
+   * Creates the {@code _id} index under the exclusive lock, for a caller outside {@link #insertDocuments} (an upsert, which runs
+   * its own transaction afterwards).
+   */
+  static void ensureIdIndexLocked(final Database database, final String collectionName) {
     final ReadWriteLock lock = idIndexLock(database, collectionName);
     lock.writeLock().lock();
     try {
-      ensureIdIndex(database, collectionName, ids);
+      ensureIdIndex(database, collectionName);
     } finally {
       lock.writeLock().unlock();
     }
   }
 
   /**
-   * Whether the {@code _id} index already holds every kind of key in {@code ids}: the cheap check of the insert path.
+   * Whether the {@code _id} index exists, or could not be built: the cheap check of the insert path.
    */
-  static boolean idIndexSatisfies(final Database database, final String collectionName, final Collection<?> ids) {
-    if (ids.isEmpty() || ID_INDEX_GAVE_UP.contains(idIndexKey(database, collectionName)))
-      return true;
-    final TypeIndex existing = findUniqueIdIndex(database.getSchema().getType(collectionName));
-    return existing != null && holds(existing.getKeyTypes()[0], requiredKeyType(ids));
+  static boolean idIndexReady(final Database database, final String collectionName) {
+    return ID_INDEX_GAVE_UP.contains(idIndexKey(database, collectionName)) || MongoKeys.hasIdKeyIndex(
+        database.getSchema().getType(collectionName));
   }
 
   /**
    * MongoDB guarantees the {@code _id} of a collection is unique through an index every collection has. ArcadeDB has no implicit
-   * one, so the plugin creates a unique index on {@code _id} when the first document arrives, because only then the type of the
-   * key is known: the index orders its keys by their type, so a numeric {@code _id} needs a numeric key (a string key would
-   * answer {@code {_id: {$gt: 5}}} and a sort lexicographically, "10" before "5"). Integral ids get a long key, a mix of
-   * integral and floating ones a double key (which loses the precision of a long above 2^53), any other mix, or any other kind
-   * of {@code _id}, a string key: it accepts everything, but orders as text and makes {@code 1} and {@code "1"} the same key.
-   * A collection that already holds duplicated {@code _id} values cannot get the index: it is left alone and
-   * {@link #insertDocuments} checks by hand instead. The caller must hold the exclusive lock. Readers do not take the lock: the
-   * engine resolves the indexes of a type when it plans a query, so a query planned during a rebuild uses the old or the new one.
-   *
-   * @param ids the {@code _id} values about to be stored
+   * one, so the plugin creates it when the first document arrives: a unique index on the derived key of the {@code _id}
+   * ({@link MongoKeys}), which tells the kinds of {@code _id} apart where an index on the {@code _id} itself converted every key to
+   * one type and made {@code 1} and {@code "1"} the same key (issue #12073). A collection that already holds documents (written
+   * before #12073, or through another protocol) gets the keys of its documents first, and loses the unique index on the plain
+   * {@code _id} the plugin built before. A collection that holds duplicated {@code _id} values cannot get the index: it is left
+   * without and {@link #insertDocuments} checks by hand instead. The caller must hold the exclusive lock.
    */
-  static void ensureIdIndex(final Database database, final String collectionName, final Collection<?> ids) {
-    if (ids.isEmpty() || ID_INDEX_GAVE_UP.contains(idIndexKey(database, collectionName)))
+  static void ensureIdIndex(final Database database, final String collectionName) {
+    if (idIndexReady(database, collectionName))
       return;
 
-    final Type keyType = requiredKeyType(ids);
-    final TypeIndex existing = findUniqueIdIndex(database.getSchema().getType(collectionName));
-    if (existing == null) {
-      if (database.countType(collectionName, false) > 0)
-        LogManager.instance().log(MongoDBCollectionWrapper.class, Level.INFO,
-            "Building the unique index on _id of the existing collection '%s': writes to it wait until it is done", null, collectionName);
-      createIdIndex(database, collectionName, keyType, true);
-      return;
+    if (database.countType(collectionName, false) > 0) {
+      LogManager.instance().log(MongoDBCollectionWrapper.class, Level.INFO,
+          "Building the unique index on _id of the existing collection '%s': writes to it wait until it is done", null, collectionName);
+      backfillKeys(database, collectionName, MongoKeys.ID_KEY, null);
     }
 
-    final Type current = existing.getKeyTypes()[0];
-    if (holds(current, keyType))
-      return;
-
-    // the existing index cannot hold this key: rebuild it with the narrowest key type that holds both kinds. A failed rebuild
-    // must not leave the collection without the index it had, so that one is put back.
-    final boolean numeric = isNumeric(current) && isNumeric(keyType);
-    LogManager.instance().log(MongoDBCollectionWrapper.class, Level.INFO,
-        "Rebuilding the unique index on _id of collection '%s' with %s keys: writes to it wait until it is done", null, collectionName,
-        numeric ? Type.DOUBLE : Type.STRING);
-    database.getSchema().dropIndex(existing.getName());
-    if (!createIdIndex(database, collectionName, numeric ? Type.DOUBLE : Type.STRING, false))
-      createIdIndex(database, collectionName, current, false);
-  }
-
-  private static boolean isNumeric(final Type type) {
-    return type == Type.LONG || type == Type.DOUBLE;
-  }
-
-  /**
-   * Whether an index with keys of type {@code current} holds a key of type {@code needed}.
-   */
-  private static boolean holds(final Type current, final Type needed) {
-    return current == Type.STRING || current == needed || (current == Type.DOUBLE && needed == Type.LONG);
-  }
-
-  /**
-   * The key type that holds all of {@code ids}: the type of the kind they share, DOUBLE for a mix of numeric kinds, STRING
-   * otherwise.
-   */
-  private static Type requiredKeyType(final Collection<?> ids) {
-    Type result = null;
-    for (final Object id : ids) {
-      final Type type = idKeyType(id);
-      if (type == null)
-        return Type.STRING;
-      if (result == null || result == type)
-        result = type;
-      else if (isNumeric(result) && isNumeric(type))
-        result = Type.DOUBLE;
-      else
-        return Type.STRING;
-    }
-    return result;
-  }
-
-  /**
-   * @param permanent whether a duplicate found while building makes the collection stay on the by-hand check for good: only for
-   *                  the first build, a failed rebuild leaves the previous index (restored by the caller) in charge
-   */
-  private static boolean createIdIndex(final Database database, final String collectionName, final Type keyType,
-      final boolean permanent) {
     try {
-      final TypeIndexBuilder builder = database.getSchema().buildTypeIndex(collectionName, new String[] { "_id" });
-      builder.withType(Schema.INDEX_TYPE.LSM_TREE);
-      builder.withUnique(true);
-      builder.withIgnoreIfExists(true);
-      builder.withDefaultKeyTypesForUndeclaredProperties(new Type[] { keyType });
-      builder.create();
-      return true;
+      createKeyIndex(database, collectionName, MongoKeys.ID_KEY);
     } catch (final RuntimeException e) {
       // only duplicates are permanent: any other failure (a timeout, a lock) may well succeed on the next insert
-      if (permanent && ErrorCategory.of(e) == ErrorCategory.DUPLICATED_KEY)
+      if (ErrorCategory.of(e) == ErrorCategory.DUPLICATED_KEY)
         ID_INDEX_GAVE_UP.add(idIndexKey(database, collectionName));
-      // never leave a half built index behind
-      final TypeIndex partial = findUniqueIdIndex(database.getSchema().getType(collectionName));
-      if (partial != null)
-        database.getSchema().dropIndex(partial.getName());
       LogManager.instance().log(MongoDBCollectionWrapper.class, Level.WARNING,
           "Cannot create the unique index on _id of collection '%s': duplicates of _id will be checked on insert (%s)", null,
           collectionName, e.getMessage());
-      return false;
+      return;
+    }
+
+    // the unique index on the plain _id compares its keys as one type: it would refuse "1" next to 1
+    final TypeIndex legacy = findUniqueIdIndex(database.getSchema().getType(collectionName));
+    if (legacy != null)
+      database.getSchema().dropIndex(legacy.getName());
+  }
+
+  /**
+   * The unique index of a {@code createIndexes} on the fields {@code paths}, on their derived key {@code property}: the keys of the
+   * records that exist are written, then the index is built, then the index the plugin built on the plain fields before #12073 is
+   * dropped, as it would go on refusing {@code 1} next to {@code "1"}. An index that already exists costs nothing, as on mongod:
+   * the keys of the records written since are the plugin's to keep. The caller must hold the exclusive lock.
+   */
+  static void ensureUniqueKeyIndex(final Database database, final String collectionName, final String property, final String[] paths) {
+    if (keyIndexNames(database, collectionName, property).isEmpty()) {
+      if (database.countType(collectionName, false) > 0)
+        backfillKeys(database, collectionName, property, paths);
+      createKeyIndex(database, collectionName, property);
+    }
+    dropLegacyUniqueIndexes(database, database.getSchema().getType(collectionName), paths);
+  }
+
+  /**
+   * Drops the unique indexes {@code createIndexes} built on the plain fields before #12073: on exactly these fields, none of them
+   * declared, so that the keys were read as strings (a unique index on a declared field is the application's own, and compares what
+   * its type says).
+   */
+  private static void dropLegacyUniqueIndexes(final Database database, final DocumentType type, final String[] paths) {
+    final List<String> legacy = new ArrayList<>();
+    for (final TypeIndex index : type.getAllIndexes(false))
+      if (index.isUnique() && index.getPropertyNames().equals(Arrays.asList(paths)) && !hasDeclaredProperty(type, paths))
+        legacy.add(index.getName());
+    for (final String name : legacy)
+      database.getSchema().dropIndex(name);
+  }
+
+  private static boolean hasDeclaredProperty(final DocumentType type, final String[] paths) {
+    for (final String path : paths)
+      if (type.getPolymorphicPropertyIfExists(path) != null)
+        return true;
+    return false;
+  }
+
+  /**
+   * Builds the unique index on a derived key property; a failed build (a duplicate) leaves no partial index behind. Only an index
+   * this call created is dropped on failure: one that already existed on the property is left as it was.
+   */
+  static void createKeyIndex(final Database database, final String collectionName, final String property) {
+    final List<String> before = keyIndexNames(database, collectionName, property);
+    try {
+      final TypeIndexBuilder builder = database.getSchema().buildTypeIndex(collectionName, new String[] { property });
+      builder.withType(Schema.INDEX_TYPE.LSM_TREE);
+      builder.withUnique(true);
+      builder.withIgnoreIfExists(true);
+      builder.withDefaultKeyTypesForUndeclaredProperties(new Type[] { Type.STRING });
+      builder.create();
+    } catch (final RuntimeException e) {
+      for (final String name : keyIndexNames(database, collectionName, property))
+        if (!before.contains(name))
+          database.getSchema().dropIndex(name);
+      throw e;
     }
   }
 
+  private static List<String> keyIndexNames(final Database database, final String collectionName, final String property) {
+    final List<String> names = new ArrayList<>();
+    for (final TypeIndex index : database.getSchema().getType(collectionName).getAllIndexes(false))
+      if (index.getPropertyNames().size() == 1 && property.equals(index.getPropertyNames().getFirst()))
+        names.add(index.getName());
+    return names;
+  }
+
+  /**
+   * Writes a derived key on every record of a collection, in transactions of {@link #BACKFILL_BATCH} records: the key of the
+   * {@code _id} ({@code paths == null}, not for a record without one) or the key of {@code paths}. Each batch is its OWN
+   * transaction, committed before the index is built on the keys whatever transaction the caller holds (issue #9977). The caller
+   * holds the exclusive lock, so no write of the plugin runs meanwhile. One scan of the buckets feeds the batches, so the memory
+   * held is one batch of RIDs whatever the size of the collection.
+   */
+  static void backfillKeys(final Database database, final String collectionName, final String property, final String[] paths) {
+    final List<RID> batch = new ArrayList<>(BACKFILL_BATCH);
+    final Iterator<Record> scan = database.iterateType(collectionName, true);
+    while (scan.hasNext()) {
+      batch.add(scan.next().getIdentity());
+      if (batch.size() == BACKFILL_BATCH || !scan.hasNext()) {
+        writeKeys(database, batch, property, paths);
+        batch.clear();
+      }
+    }
+  }
+
+  private static void writeKeys(final Database database, final List<RID> rids, final String property, final String[] paths) {
+    final OwnTransaction tx = OwnTransaction.begin((DatabaseInternal) database);
+    try {
+      for (final RID rid : rids) {
+        final MutableDocument record = rid.asDocument().modify();
+        final String key;
+        if (paths == null) {
+          if (!record.has("_id"))
+            continue;
+          key = MongoKeys.key(MongoDBToSqlTranslator.convertIdToMongoDB(record.get("_id")));
+        } else
+          key = MongoKeys.key(MongoDBToSqlTranslator.convertDocumentToMongoDB(record), paths);
+        // a record that has its key is not written again: what a retry after a failed build (or an interrupted one) costs is the scan
+        if (!key.equals(record.getString(property)))
+          record.set(property, key).save();
+      }
+      tx.commit();
+    } finally {
+      tx.rollbackIfMine();
+    }
+  }
+
+  /**
+   * The unique index on the plain {@code _id} this plugin built before #12073.
+   */
   private static TypeIndex findUniqueIdIndex(final DocumentType type) {
     for (final TypeIndex index : type.getAllIndexes(false))
       if (index.isUnique() && index.getPropertyNames().size() == 1 && "_id".equals(index.getPropertyNames().getFirst()))
@@ -468,21 +575,10 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
   }
 
   /**
-   * The index key type for an {@code _id}: an ObjectId is stored as its hex string. {@code null} for anything else, which
-   * cannot be ordered by a single key type.
+   * Whether the collection has the unique index of its {@code _id}, the one on its derived key or the one built before #12073.
    */
-  private static Type idKeyType(final Object id) {
-    if (id instanceof String || id instanceof ObjectId)
-      return Type.STRING;
-    if (id instanceof Integer || id instanceof Long || id instanceof Short || id instanceof Byte)
-      return Type.LONG;
-    if (id instanceof Double || id instanceof Float)
-      return Type.DOUBLE;
-    return null;
-  }
-
   static boolean hasUniqueIdIndex(final DocumentType type) {
-    return findUniqueIdIndex(type) != null;
+    return MongoKeys.hasIdKeyIndex(type) || findUniqueIdIndex(type) != null;
   }
 
   @Override
@@ -601,71 +697,107 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
   }
 
   /**
+   * The documents of a query, read and converted as the cursor is consumed.
+   *
    * @param sortOrder the order of the answer, or {@code null} for the order the documents are read in
    */
-  private Iterable<Document> queryDocuments(final MongoFilter filter, final MongoSortOrder sortOrder, final int numberToSkip,
-      final int numberToReturn) {
-    final List<Document> result = new ArrayList<>();
-
+  private MongoFindCursor queryDocuments(final MongoFilter filter, final MongoSortOrder sortOrder, final int numberToSkip,
+      final int numberToReturn, final MongoProjection projection) {
     // a TIMESERIES type keeps its samples in its own engine, not in its buckets: the scan would answer no document while the
     // count answers the samples, so it is read with SQL, which serves them (issue #10442)
     if (filter.isEmpty() && !(database.getSchema().getTypeOrNull(collectionName) instanceof TimeSeriesType)) {
       // SCAN
       final Iterator<?> records = database.iterateType(collectionName, false);
       if (sortOrder == null)
-        MongoDBToSqlTranslator.fillResultSet(numberToSkip, numberToReturn, result, records);
-      else
-        fillSorted(sortOrder, numberToSkip, numberToReturn, result, records);
-    } else {
-      // EXECUTE A SQL QUERY. A filter the SQL cannot answer exactly (see MongoFilter) is applied to the rows the query returns, in the
-      // order it returns them, so skip and limit count the matches
-      final Map<String, Object> params = new HashMap<>();
-      final StringBuilder sql = new StringBuilder("select from ").append(Identifier.quote(collectionName));
-
-      filter.appendCandidateWhere(sql, params, database.getSchema().getTypeOrNull(collectionName));
-
-      try (final ResultSet rs = database.query("SQL", sql.toString(), params)) {
-        final Iterator<?> rows = filter.isEmpty() ? rs : new FilteredIterator(rs, filter);
-        if (sortOrder == null)
-          MongoDBToSqlTranslator.fillResultSet(numberToSkip, numberToReturn, result, rows);
-        else
-          fillSorted(sortOrder, numberToSkip, numberToReturn, result, rows);
-      }
+        return new MongoFindCursor(records, null, numberToSkip, numberToReturn, projection);
+      return sorted(sortOrder, numberToSkip, numberToReturn, records, projection);
     }
 
-    return result;
+    // EXECUTE A SQL QUERY. A filter the SQL cannot answer exactly (see MongoFilter) is applied to the rows the query returns, in the
+    // order it returns them, so skip and limit count the matches
+    final Map<String, Object> params = new HashMap<>();
+    final StringBuilder sql = new StringBuilder("select from ").append(Identifier.quote(collectionName));
+
+    filter.appendCandidateWhere(sql, params, database.getSchema().getTypeOrNull(collectionName));
+
+    final ResultSet rs = database.query("SQL", sql.toString(), params);
+    // the cursor owns the result set once it exists: a sort reads every row at once and is done with it
+    boolean handedOver = false;
+    try {
+      final Iterator<?> rows = filter.isEmpty() ? rs : new FilteredIterator(rs, filter);
+      if (sortOrder == null) {
+        final MongoFindCursor cursor = new MongoFindCursor(rows, rs, numberToSkip, numberToReturn, projection);
+        handedOver = true;
+        return cursor;
+      }
+      return sorted(sortOrder, numberToSkip, numberToReturn, rows, projection);
+    } finally {
+      if (!handedOver)
+        rs.close();
+    }
+  }
+
+  /**
+   * The cursor over the rows in the order of a sort, which is known only once every row is read. The rows it holds are counted
+   * against the heap limits for as long as the cursor is open: closing the cursor gives them back.
+   */
+  private MongoFindCursor sorted(final MongoSortOrder sortOrder, final int numberToSkip, final int numberToReturn, final Iterator<?> rows,
+      final MongoProjection projection) {
+    final OperationHeapLimit heap = MongoResultHeap.of(database, "MongoDB sort");
+    final List<Object> result = new ArrayList<>();
+    try {
+      fillSorted(sortOrder, numberToSkip, numberToReturn, result, rows, heap);
+    } catch (final RuntimeException | Error e) {
+      heap.release();
+      throw e;
+    }
+    return new MongoFindCursor(result.iterator(), heap::release, 0L, 0L, projection);
   }
 
   /**
    * Answers the matching rows in the BSON order of the sort, then skips and limits (issue #12069). SQL {@code ORDER BY} cannot be used:
    * it coerces across types and sees an array as one value, so it answers another order and paginates over other documents. With a
    * limit only the first {@code skip + limit} documents of the order are held, and only those are converted to a reply document: the
-   * others are placed by the few properties the sort reads.
+   * others are placed by the few properties the sort reads, and the ones answered are converted as the cursor serves them.
+   *
+   * @param result receives the rows, or the converted documents when every match was converted to be placed
+   * @param heap   what every row or document the sort holds is charged to: the sort fails when it holds more than the limits allow
    */
-  private static void fillSorted(final MongoSortOrder sortOrder, final int numberToSkip, final int numberToReturn, final List<Document> result,
-      final Iterator<?> rows) {
+  private static void fillSorted(final MongoSortOrder sortOrder, final int numberToSkip, final int numberToReturn, final List<Object> result,
+      final Iterator<?> rows, final OperationHeapLimit heap) {
     final int skip = Math.max(numberToSkip, 0);
     if (numberToReturn > 0) {
-      final MongoSortOrder.TopEntries<Object> top = new MongoSortOrder.TopEntries<>(sortOrder, (int) Math.min(Integer.MAX_VALUE,
-          (long) skip + numberToReturn));
+      final int kept = (int) Math.min(Integer.MAX_VALUE, (long) skip + numberToReturn);
+      final MongoSortOrder.TopEntries<Object> top = new MongoSortOrder.TopEntries<>(sortOrder, kept);
+      // every row is estimated: a row that leaves gives back what it was charged, whatever its size
+      heap.estimateEachElement();
       long position = 0;
+      long held = 0;
       while (rows.hasNext()) {
         final Object row = rows.next();
         final Object[] keys = sortOrder.keyOf(MongoDBToSqlTranslator.toMatchDocument(propertiesOf(row), sortOrder.properties()));
-        if (top.accepts(keys))
-          top.offer(new MongoSortOrder.Entry<>(keys, position, row));
+        if (top.accepts(keys)) {
+          final MongoSortOrder.Entry<Object> evicted = top.offer(new MongoSortOrder.Entry<>(keys, position, row));
+          if (evicted == null)
+            heap.add(++held, row);
+          else if (evicted.value != row)
+            // the buffer keeps what it held, with a better row in the place of the worst: the charge follows the rows it retains
+            heap.replace(evicted.value, row);
+        }
         ++position;
       }
       final List<MongoSortOrder.Entry<Object>> sorted = top.sorted();
       for (int i = skip; i < sorted.size(); i++)
-        result.add(toMongoDocument(sorted.get(i).value));
+        result.add(sorted.get(i).value);
     } else {
       // every match is answered: each is converted once, and its keys read off the reply document. Known cost: without a limit
-      // every match is held before the sort (mongod would spill to disk past 100MB), as the SQL ORDER BY this replaces held them
+      // every match is held before the sort (mongod would spill to disk past 100MB), as the SQL ORDER BY this replaces held them,
+      // under the same limits
       final List<MongoSortOrder.Entry<Document>> entries = new ArrayList<>();
       while (rows.hasNext()) {
-        final Document document = toMongoDocument(rows.next());
+        final Document document = MongoFindCursor.toDocument(rows.next());
         entries.add(new MongoSortOrder.Entry<>(sortOrder.keyOf(document), 0, document));
+        MongoResultHeap.add(heap, entries.size(), document);
       }
       sortOrder.sort(entries);
       for (int i = skip; i < entries.size(); i++)
@@ -678,14 +810,6 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
       return result.toPropertyMap(false);
     if (row instanceof com.arcadedb.database.Document document)
       return document.toMap(false);
-    throw new IllegalArgumentException("Object not supported: " + (row != null ? row.getClass().getName() : null));
-  }
-
-  private static Document toMongoDocument(final Object row) {
-    if (row instanceof Result result)
-      return MongoDBToSqlTranslator.convertDocumentToMongoDB(result);
-    if (row instanceof com.arcadedb.database.Document document)
-      return MongoDBToSqlTranslator.convertDocumentToMongoDB(document);
     throw new IllegalArgumentException("Object not supported: " + (row != null ? row.getClass().getName() : null));
   }
 

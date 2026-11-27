@@ -532,6 +532,68 @@ class HttpAuthSessionManagerTest {
   }
 
   @Test
+  void remoteCopyIsRefusedWhenTheTokenOrThePrincipalWasRemovedSinceTheLookupStarted() {
+    manager = new HttpAuthSessionManager(30_000L, 0L, 0, 0, "node-b");
+    final ServerSecurityUser alice = createUser("alice");
+    final String token = "AU-node-a-2af64e60-8455-423a-bc64-ed0e19729f04";
+
+    try (final HttpAuthSessionManager.PeerLookup lookup = manager.beginPeerLookup(token)) {
+      assertThat(manager.removeSession("AU-node-a-9f1c0d7e-3b52-4a86-8d1e-5c7a2b9e0f31")).isFalse();
+      assertThat(lookup.isRevoked()).as("another token").isFalse();
+
+      assertThat(manager.removeSession(token)).as("nothing held, but the lookup is told").isFalse();
+      assertThat(lookup.isRevoked()).isTrue();
+      assertThat(manager.addRemoteSession(token, alice, 0L, "node-a", lookup)).isNull();
+    }
+    try (final HttpAuthSessionManager.PeerLookup lookup = manager.beginPeerLookup(token)) {
+      assertThat(manager.removeSessionsForUser("bob")).isZero();
+      assertThat(lookup.isRevoked()).as("any principal's removal concerns a lookup whose principal is not known yet").isTrue();
+      assertThat(manager.addRemoteSession(token, alice, 0L, "node-a", lookup)).isNull();
+    }
+    assertThat(manager.getActiveSessionCount()).isZero();
+
+    try (final HttpAuthSessionManager.PeerLookup lookup = manager.beginPeerLookup(token)) {
+      assertThat(lookup.isRevoked()).as("a removal before the lookup started does not concern it").isFalse();
+      assertThat(manager.addRemoteSession(token, alice, 0L, "node-a", lookup)).isNotNull();
+    }
+    assertThat(manager.getSessionByToken(token)).isNotNull();
+  }
+
+  @Test
+  void peerLookupIsReleasedOnCloseWhateverTheOutcome() {
+    manager = new HttpAuthSessionManager(30_000L, 0L, 0, 0, "node-b");
+    final String token = "AU-node-a-2af64e60-8455-423a-bc64-ed0e19729f04";
+
+    try (final HttpAuthSessionManager.PeerLookup first = manager.beginPeerLookup(token);
+        final HttpAuthSessionManager.PeerLookup second = manager.beginPeerLookup(token)) {
+      assertThat(manager.getPeerLookupCount()).isEqualTo(2);
+      manager.removeSession(token);
+      assertThat(first.isRevoked()).isTrue();
+      assertThat(second.isRevoked()).isTrue();
+    }
+    assertThat(manager.getPeerLookupCount()).isZero();
+  }
+
+  @Test
+  void leaseIsConfirmedOnlyWhileThatCopyIsStillHeld() {
+    manager = new HttpAuthSessionManager(30_000L, 0L, 0, 0, "node-b", () -> fakeNow);
+    fakeNow = 0L;
+    final String token = "AU-node-a-2af64e60-8455-423a-bc64-ed0e19729f04";
+    final HttpAuthSession copy = manager.addRemoteSession(token, createUser("alice"), 0L, "node-a");
+    fakeNow = 5_000L;
+
+    assertThat(manager.confirmIfHeld(copy)).isTrue();
+    assertThat(copy.elapsedFromConfirmation()).isZero();
+
+    fakeNow = 8_000L;
+    manager.removeSession(token);
+    final HttpAuthSession replacement = manager.addRemoteSession(token, createUser("alice"), 0L, "node-a");
+    assertThat(manager.confirmIfHeld(copy)).as("the held copy is another one now").isFalse();
+    assertThat(copy.elapsedFromConfirmation()).isEqualTo(3_000L);
+    assertThat(manager.confirmIfHeld(replacement)).isTrue();
+  }
+
+  @Test
   void renewalIntervalIsAThirdOfTheIdleTimeoutCapped() {
     manager = new HttpAuthSessionManager(30_000L, 0L, 0, 0, "n");
     assertThat(manager.getRemoteRenewalIntervalMs()).isEqualTo(10_000L);

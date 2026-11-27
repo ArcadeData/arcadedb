@@ -1104,7 +1104,7 @@ class HttpErrorStatusMappingTest {
   /**
    * Issue #7760 on the HTTP transport: production mode conceals the duplicated-key VALUES in {@code exceptionArgs}
    * (stored data), while the class, the index name and the RID stay so the remote driver can still rebuild a typed
-   * {@code DuplicatedKeyException}. The gRPC twin is {@code Issue7760GrpcDuplicatedKeyConcealmentTest}.
+   * {@code DuplicatedKeyException}. The gRPC twin is {@code GrpcErrorMapperTest}.
    *
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */

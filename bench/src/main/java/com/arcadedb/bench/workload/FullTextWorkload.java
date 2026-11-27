@@ -25,6 +25,7 @@ import com.arcadedb.bench.runner.Measurement;
 import com.arcadedb.bench.runner.Workload;
 import com.arcadedb.bench.runner.WorkloadContext;
 import com.arcadedb.bench.server.ServerUnderTest;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
 
@@ -50,6 +51,8 @@ public class FullTextWorkload implements Workload {
   static final String MULTI  = "bm25-multi-term";
   static final String PHRASE = "bm25-phrase";
   static final String HYBRID = "hybrid";
+  static final String BROAD          = "bm25-broad-or";
+  static final String BROAD_FILTERED = "bm25-broad-or-filtered";
 
   private static final String TYPE            = "Doc";
   private static final String TEXT_INDEX      = "Doc[body]";
@@ -59,6 +62,21 @@ public class FullTextWorkload implements Workload {
   private static final int    K               = 10;
   private static final int    BATCH           = 100;
   private static final long   DOC_SEED_OFFSET = 1_000L;
+
+  // the broad corpus: a separate type, so the history of the Doc cases keeps its baseline
+  private static final String POST_TYPE          = "Post";
+  private static final String POST_INDEX         = "Post[body]";
+  private static final int    WORDS_PER_POST     = 10;
+  private static final int    BROAD_LIMIT        = 50;
+  private static final long   POST_SEED_OFFSET   = 5_000_000L;
+  // one seed for both broad cases: plain and filtered run the identical query set
+  private static final long   BROAD_QUERY_SEED   = 201L;
+  private static final double MIN_DELETED_SHARE  = 0.08;
+  private static final double MAX_DELETED_SHARE  = 0.12;
+  private static final double MIN_BROAD_SHARE    = 0.35;
+  private static final double MAX_BROAD_SHARE    = 0.55;
+  private static final int    POSTS_S            = 100_000;
+  private static final int    POST_BATCH         = 500;
 
   // Lucene query operators: a drawn term spelled like one would not be a term
   private static final Set<String> OPERATORS = Set.of("and", "or", "not", "to");
@@ -71,8 +89,16 @@ public class FullTextWorkload implements Workload {
           + "', :q) = true ORDER BY $score DESC LIMIT " + K + "), `vector.neighbors`('" + VECTOR_INDEX + "', :v, " + K
           + "), { fusion: 'RRF', limit: " + K + " })))";
 
+  private static final String BROAD_SQL =
+      "SELECT id, deleted_at, $score AS score FROM " + POST_TYPE + " WHERE SEARCH_INDEX('" + POST_INDEX
+          + "', :q) = true ORDER BY score DESC LIMIT " + BROAD_LIMIT;
+  private static final String BROAD_FILTERED_SQL =
+      "SELECT id, deleted_at, $score AS score FROM " + POST_TYPE + " WHERE SEARCH_INDEX('" + POST_INDEX
+          + "', :q) = true AND deleted_at IS NULL ORDER BY score DESC LIMIT " + BROAD_LIMIT;
+
   private String[]  queryTexts;
   private float[][] queryVectors;
+  private long      deletedRowsSeen;
 
   static int documents(final Scale scale) {
     return switch (scale) {
@@ -83,6 +109,33 @@ public class FullTextWorkload implements Workload {
     };
   }
 
+  static int posts(final Scale scale) {
+    return switch (scale) {
+      case XS -> 2_000;
+      case S -> POSTS_S;
+      case M -> 300_000;
+      case L -> 1_000_000;
+    };
+  }
+
+  /**
+   * Queries per rep of the broad cases. The 1,000-operation rule binds at S only. The filtered case costs about 0.5 ms per
+   * 1,000 posts per query (S: 100k posts, 20 qps, 50 s per rep of 1,000 queries), so the counts above S keep a rep to about
+   * 75 s at M (300k posts, 500 queries) and 125 s at L (1M posts, 250 queries): 7 steps of at most 2.1 min, a case of about 9 and
+   * 15 min, far inside the 30 min step limit and the 120 min case cap.
+   */
+  static int broadQueries(final Scale scale) {
+    return switch (scale) {
+      case XS, S -> QUERIES_PER_REP;
+      case M -> 500;
+      case L -> 250;
+    };
+  }
+
+  static String postBody(final long seed, final int post) {
+    return new DatasetGenerator(seed + POST_SEED_OFFSET + post).broadText(WORDS_PER_POST);
+  }
+
   @Override
   public String name() {
     return "fulltext";
@@ -90,12 +143,16 @@ public class FullTextWorkload implements Workload {
 
   @Override
   public List<String> cases() {
-    return List.of(BUILD, SINGLE, MULTI, PHRASE, HYBRID);
+    return List.of(BUILD, SINGLE, MULTI, PHRASE, HYBRID, BROAD, BROAD_FILTERED);
   }
 
   @Override
   public void prepare(final WorkloadContext ctx, final String caseName) {
     RemoteClients.ensureDatabase(ctx.server(), DATABASE);
+    if (isBroad(caseName)) {
+      prepareBroad(ctx, caseName);
+      return;
+    }
     try (final RemoteDatabase db = RemoteClients.open(ctx.server(), DATABASE)) {
       // the documents are inserted once; each build repetition only drops and recreates the full-text index
       if (!dataReady(db, ctx.scale())) {
@@ -114,6 +171,56 @@ public class FullTextWorkload implements Workload {
     queryTexts = queries(ctx, caseName);
     if (HYBRID.equals(caseName))
       queryVectors = new DatasetGenerator(ctx.seed() + 5).vectors(QUERIES_PER_REP, DIM);
+  }
+
+  private static boolean isBroad(final String caseName) {
+    return BROAD.equals(caseName) || BROAD_FILTERED.equals(caseName);
+  }
+
+  private void prepareBroad(final WorkloadContext ctx, final String caseName) {
+    deletedRowsSeen = 0;
+    final int posts = posts(ctx.scale());
+    try (final RemoteDatabase db = RemoteClients.open(ctx.server(), DATABASE)) {
+      if (!postsReady(db, posts)) {
+        createPostType(db);
+        insertPosts(db, ctx, posts);
+      }
+      if (!indexReady(db, POST_INDEX))
+        db.command("sql", "CREATE INDEX ON " + POST_TYPE + " (body) FULL_TEXT").close();
+    }
+    final SplittableRandom random = new SplittableRandom(ctx.seed() + BROAD_QUERY_SEED);
+    queryTexts = new String[broadQueries(ctx.scale())];
+    for (int i = 0; i < queryTexts.length; i++)
+      queryTexts[i] = DatasetGenerator.broadQuery(random);
+    checkBroadShare(ctx, queryTexts[0], posts);
+    checkDeletedShare(ctx, posts);
+  }
+
+  // the filter only proves something if deleted_at is stored: about 10% of the posts must have it, counted on the server
+  private static void checkDeletedShare(final WorkloadContext ctx, final int posts) {
+    try (final RemoteDatabase db = RemoteClients.open(ctx.server(), DATABASE)) {
+      final long deleted = RemoteClients.count(db, "sql", "SELECT count(*) AS n FROM " + POST_TYPE + " WHERE deleted_at IS NOT NULL");
+      final double share = (double) deleted / posts;
+      if (share < MIN_DELETED_SHARE || share > MAX_DELETED_SHARE)
+        throw new IllegalStateException(deleted + " of " + posts + " posts have deleted_at (" + share + "), expected about 0.10");
+    }
+  }
+
+  /** The rows with deleted_at set seen by the last broad run (the plain case must see some, or the filter proves nothing). */
+  long deletedRowsSeen() {
+    return deletedRowsSeen;
+  }
+
+  // what the case claims to measure: a query matching about 45% of the corpus, counted on the server
+  private static void checkBroadShare(final WorkloadContext ctx, final String query, final int posts) {
+    try (final RemoteDatabase db = RemoteClients.open(ctx.server(), DATABASE)) {
+      final long matches = RemoteClients.count(db, "sql",
+          "SELECT count(*) AS n FROM " + POST_TYPE + " WHERE SEARCH_INDEX('" + POST_INDEX + "', '" + query + "') = true");
+      final double share = (double) matches / posts;
+      if (share < MIN_BROAD_SHARE || share > MAX_BROAD_SHARE)
+        throw new IllegalStateException("A broad query matches " + matches + " of " + posts + " posts (" + share
+            + "), expected about 0.45: '" + query + "'");
+    }
   }
 
   @Override
@@ -150,21 +257,35 @@ public class FullTextWorkload implements Workload {
 
   private Measurement queries(final WorkloadContext ctx, final String caseName, final int count, final int[] hits) {
     final boolean hybrid = HYBRID.equals(caseName);
-    final String sql = hybrid ? HYBRID_SQL : BM25_SQL;
+    final boolean broad = isBroad(caseName);
+    final boolean filtered = BROAD_FILTERED.equals(caseName);
+    final String sql = hybrid ? HYBRID_SQL : broad ? (filtered ? BROAD_FILTERED_SQL : BROAD_SQL) : BM25_SQL;
     final LatencyRecorder latencies = new LatencyRecorder(count);
     try (final RemoteDatabase db = RemoteClients.open(ctx.server(), DATABASE)) {
       ctx.server().resetPeak();
       for (int i = 0; i < count; i++) {
         final Map<String, Object> params = hybrid ? Map.of("q", queryTexts[i], "v", queryVectors[i]) : Map.of("q", queryTexts[i]);
         int rows = 0;
+        int deletedRows = 0;
         final long t0 = System.nanoTime();
         try (final ResultSet rs = db.query("sql", sql, params)) {
           while (rs.hasNext()) {
-            rs.next();
+            final Result row = rs.next();
+            // read only in the broad cases: the timed loop of the baselined cases is unchanged
+            if (broad && row.getProperty("deleted_at") != null)
+              deletedRows++;
             rows++;
           }
         }
         latencies.record(System.nanoTime() - t0);
+        if (broad) {
+          deletedRowsSeen += deletedRows;
+          // a wrong answer fails the case
+          if (rows != BROAD_LIMIT)
+            throw new IllegalStateException(caseName + ": query '" + queryTexts[i] + "' returned " + rows + " rows, expected " + BROAD_LIMIT);
+          if (filtered && deletedRows > 0)
+            throw new IllegalStateException(caseName + ": query '" + queryTexts[i] + "' returned " + deletedRows + " rows with deleted_at set");
+        }
         if (hits != null)
           hits[i] = rows;
       }
@@ -172,7 +293,7 @@ public class FullTextWorkload implements Workload {
     final List<Metric> metrics = new ArrayList<>();
     metrics.add(Metrics.rate("queries_per_s", "queries/s", count / (latencies.totalNanos() / 1e9)));
     metrics.addAll(Metrics.latencies(latencies));
-    return new Measurement(metrics);
+    return Measurement.of(metrics, latencies);
   }
 
   /** Query strings built from the words of documents that exist: the same documents the insert draws. */
@@ -240,6 +361,41 @@ public class FullTextWorkload implements Workload {
       }
       script.append("COMMIT;");
       db.command("sqlscript", script.toString()).close();
+    }
+  }
+
+  private static void createPostType(final RemoteDatabase db) {
+    db.command("sql", "DROP TYPE " + POST_TYPE + " IF EXISTS UNSAFE").close();
+    db.command("sql", "CREATE DOCUMENT TYPE " + POST_TYPE).close();
+    db.command("sql", "CREATE PROPERTY " + POST_TYPE + ".id INTEGER").close();
+    db.command("sql", "CREATE PROPERTY " + POST_TYPE + ".body STRING").close();
+    db.command("sql", "CREATE PROPERTY " + POST_TYPE + ".deleted_at DATETIME").close();
+  }
+
+  private static void insertPosts(final RemoteDatabase db, final WorkloadContext ctx, final int posts) {
+    final StringBuilder script = new StringBuilder(POST_BATCH * 120);
+    for (int from = 0; from < posts; from += POST_BATCH) {
+      final int to = Math.min(from + POST_BATCH, posts);
+      script.setLength(0);
+      script.append("BEGIN;\n");
+      for (int i = from; i < to; i++) {
+        script.append("INSERT INTO ").append(POST_TYPE).append(" SET id = ").append(i).append(", body = '")
+            .append(postBody(ctx.seed(), i)).append('\'');
+        // null (property absent) on 90% of the rows
+        if (DatasetGenerator.broadDeleted(ctx.seed(), i))
+          script.append(", deleted_at = date('2026-01-01 00:00:00', 'yyyy-MM-dd HH:mm:ss')");
+        script.append(";\n");
+      }
+      script.append("COMMIT;");
+      db.command("sqlscript", script.toString()).close();
+    }
+  }
+
+  private static boolean postsReady(final RemoteDatabase db, final int posts) {
+    try {
+      return RemoteClients.count(db, "sql", "SELECT count(*) AS n FROM " + POST_TYPE) == posts;
+    } catch (final RuntimeException e) {
+      return false;
     }
   }
 

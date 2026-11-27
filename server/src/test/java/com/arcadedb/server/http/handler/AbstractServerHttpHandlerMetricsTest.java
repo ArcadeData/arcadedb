@@ -22,6 +22,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.server.FakeArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
+import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.Timer;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.PathTemplateMatch;
@@ -29,7 +30,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -72,6 +75,67 @@ class AbstractServerHttpHandlerMetricsTest {
     // A different tuple resolves to a distinct timer.
     final Timer differentStatus = AbstractServerHttpHandler.httpRequestTimer("GET", "unmatched", "500", "none");
     assertThat(differentStatus).isNotSameAs(first);
+  }
+
+  @Test
+  void httpRequestTimerSharesOneSeriesAcrossMethodsOutsideTheStandardSet() {
+    // Every method outside the standard set lands on the same series, and on the same cache entry, so the number
+    // of timers does not depend on how many distinct method tokens were seen.
+    AbstractServerHttpHandler.invalidateTimerCache();
+    try {
+      final Timer first = AbstractServerHttpHandler.httpRequestTimer("XMETHOD0", "unmatched", "200", "none");
+      for (int i = 1; i < 1_000; i++)
+        assertThat(AbstractServerHttpHandler.httpRequestTimer("XMETHOD" + i, "unmatched", "200", "none")).isSameAs(first);
+
+      assertThat(AbstractServerHttpHandler.httpRequestTimerCacheSize()).isEqualTo(1);
+      assertThat(first.getId().getTag("method")).isEqualTo("OTHER");
+
+      final long inventedMethodMeters = Metrics.globalRegistry.find("arcadedb.http.requests").timers().stream()
+          .map(t -> t.getId().getTag("method"))
+          .filter(m -> m != null && m.startsWith("XMETHOD"))
+          .count();
+      assertThat(inventedMethodMeters).as("a method outside the standard set must never become a tag value").isZero();
+    } finally {
+      AbstractServerHttpHandler.invalidateTimerCache();
+    }
+  }
+
+  @Test
+  void httpRequestTimerKeepsASeriesPerStandardMethod() {
+    AbstractServerHttpHandler.invalidateTimerCache();
+    try {
+      final Timer get = AbstractServerHttpHandler.httpRequestTimer("GET", "unmatched", "200", "none");
+      final Timer post = AbstractServerHttpHandler.httpRequestTimer("POST", "unmatched", "200", "none");
+      final Timer other = AbstractServerHttpHandler.httpRequestTimer("XMETHOD0", "unmatched", "200", "none");
+
+      assertThat(post).isNotSameAs(get);
+      assertThat(other).isNotSameAs(get).isNotSameAs(post);
+      assertThat(get.getId().getTag("method")).isEqualTo("GET");
+      assertThat(post.getId().getTag("method")).isEqualTo("POST");
+      assertThat(AbstractServerHttpHandler.httpRequestTimerCacheSize()).isEqualTo(3);
+    } finally {
+      AbstractServerHttpHandler.invalidateTimerCache();
+    }
+  }
+
+  @Test
+  void methodTagKeepsEveryStandardMethodAndCollapsesTheRest() {
+    final Set<String> standard = Set.of("GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "TRACE", "CONNECT");
+    for (final String method : standard)
+      assertThat(AbstractServerHttpHandler.methodTag(method)).isEqualTo(method);
+
+    // The method token is case sensitive; anything outside the standard set collapses, whatever its length.
+    for (final String method : new String[] { "get", "Get", "PROPFIND", "XMETHOD1", "", "G".repeat(4_096) })
+      assertThat(AbstractServerHttpHandler.methodTag(method)).isEqualTo("OTHER");
+
+    // The registry-side bound counts every value the tag can take: the standard methods plus the collapse value.
+    assertThat(AbstractServerHttpHandler.MAX_METHOD_TAG_VALUES).isEqualTo(standard.size() + 1);
+
+    // However many distinct tokens arrive, the tag takes one value for all of them.
+    final Set<String> seen = new HashSet<>();
+    for (int i = 0; i < 100; i++)
+      seen.add(AbstractServerHttpHandler.methodTag("XMETHOD" + i));
+    assertThat(seen).containsExactly("OTHER");
   }
 
   @Test

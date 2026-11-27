@@ -85,7 +85,7 @@ public class MCPPrompts {
 
   private static void requireAvailable(final boolean available, final String name) {
     if (!available)
-      throw new SecurityException(
+      throw new MCPRefusalException(
           "Prompt '" + name + "' is not available with the current MCP tool profile and permissions");
   }
 }

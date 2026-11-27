@@ -238,7 +238,7 @@ class GrpcAuthInterceptor implements ServerInterceptor {
       // it holds no grant on a database called "default" (issue #7320). Authenticating a header-less
       // call at server level instead grants nothing extra - per-database authorization is enforced
       // downstream in ArcadeDbGrpcService.validateCredentials against the database named in the REQUEST
-      // BODY, which is the gate Issue4794GrpcPerDbAuthorizationIT pins.
+      // BODY, which is the gate GrpcControlPlaneAuthorizationIT.PerDatabaseAuthorization pins.
       final String database = normalizeDatabase(headers.get(DATABASE_HEADER));
 
       // Try Bearer token authentication first

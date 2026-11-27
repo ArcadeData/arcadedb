@@ -39,7 +39,7 @@ public class FakeRaftTransactionBroker extends RaftTransactionBroker {
   /** What each recorded method answers; {@code Void} for the ones that answer nothing. */
   private static final Map<String, Class<?>> RETURN_TYPES = Map.ofEntries(Map.entry("replicateTransaction", Long.class),
       Map.entry("replicateSchema", Void.class), Map.entry("replicateSealedChunk", Void.class),
-      Map.entry("replicateSchemaInstalment", Void.class), Map.entry("replicateInstallDatabase", Void.class),
+      Map.entry("replicateSchemaInstalment", Void.class), Map.entry("replicateInstallDatabase", Long.class),
       Map.entry("replicateDropDatabase", Long.class), Map.entry("replicateBootstrapFingerprint", Void.class),
       Map.entry("replicateSecurityUsers", Boolean.class), Map.entry("replicateSecurityGroups", Boolean.class),
       Map.entry("replicateSecurityApiTokens", Boolean.class), Map.entry("stop", Void.class),
@@ -114,9 +114,13 @@ public class FakeRaftTransactionBroker extends RaftTransactionBroker {
   public void replicateSchema(final String dbName, final String schemaJson, final Map<Integer, String> filesToAdd,
       final Map<Integer, String> filesToRemove, final List<byte[]> walEntries, final List<Map<Integer, Integer>> bucketDeltas,
       final List<RaftLogEntryCodec.TsSealedBlob> sealedFileBlobs, final List<RaftLogEntryCodec.TsSealedChunk> sealedFileChunks,
-      final SchemaDelta.Payload schemaDelta, final Map<Integer, String> filesToRename) {
+      final SchemaDelta.Payload schemaDelta, final Map<Integer, String> filesToRename, final Runnable onEntryCommitted) {
     call("replicateSchema", () -> null, dbName, schemaJson, filesToAdd, filesToRemove, walEntries, bucketDeltas,
-        sealedFileBlobs, sealedFileChunks, schemaDelta, filesToRename);
+        sealedFileBlobs, sealedFileChunks, schemaDelta, filesToRename, onEntryCommitted);
+    // An answer that returned is an entry that committed: a test that refuses a later entry of a split change runs the
+    // callback itself from its answer before it throws (issue #13437)
+    if (onEntryCommitted != null)
+      onEntryCommitted.run();
   }
 
   @Override
@@ -126,23 +130,23 @@ public class FakeRaftTransactionBroker extends RaftTransactionBroker {
 
   @Override
   public void replicateSchemaInstalment(final String dbName, final Map<Integer, String> filesToAdd,
-      final List<byte[]> walEntries, final List<Map<Integer, Integer>> bucketDeltas) {
-    call("replicateSchemaInstalment", () -> null, dbName, filesToAdd, walEntries, bucketDeltas);
+      final List<byte[]> walEntries, final List<Map<Integer, Integer>> bucketDeltas, final Runnable onEntryCommitted) {
+    call("replicateSchemaInstalment", () -> null, dbName, filesToAdd, walEntries, bucketDeltas, onEntryCommitted);
+    if (onEntryCommitted != null)
+      onEntryCommitted.run();
   }
 
   @Override
-  public void replicateInstallDatabase(final String dbName, final boolean forceSnapshot) {
-    call("replicateInstallDatabase", () -> null, dbName, forceSnapshot);
+  public long replicateInstallDatabase(final String dbName, final boolean forceSnapshot) {
+    return (Long) call("replicateInstallDatabase", () -> 0L, dbName, forceSnapshot);
   }
 
   // The fenced forms of a restore (issue #10974): recorded under the same names, with the fence when there is one, so a test that
   // pins the arguments of an unfenced call sees what it always saw
   @Override
-  public void replicateInstallDatabase(final String dbName, final boolean forceSnapshot, final long restoreFenceTerm) {
-    if (restoreFenceTerm < 0)
-      replicateInstallDatabase(dbName, forceSnapshot);
-    else
-      call("replicateInstallDatabase", () -> null, dbName, forceSnapshot, restoreFenceTerm);
+  public long replicateInstallDatabase(final String dbName, final boolean forceSnapshot, final long restoreFenceTerm) {
+    return restoreFenceTerm < 0 ? replicateInstallDatabase(dbName, forceSnapshot) :
+        (Long) call("replicateInstallDatabase", () -> 0L, dbName, forceSnapshot, restoreFenceTerm);
   }
 
   @Override

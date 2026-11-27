@@ -83,6 +83,36 @@ class PreAuthConnectionGateTest {
   }
 
   @Test
+  void anAbandonedConnectionGivesItsPermitBackAndClosesItsSocket() throws Exception {
+    final PreAuthConnectionGate gate = new PreAuthConnectionGate("TEST", 1);
+
+    try (final Socket socket = new Socket()) {
+      final PreAuthConnectionGate.Ticket ticket = gate.accept(socket);
+      assertThat(ticket).isNotNull();
+      assertThat(gate.accept()).isNull();
+
+      ticket.abandon();
+
+      assertThat(socket.isClosed()).as("the socket handed to the ticket is closed").isTrue();
+      assertThat(ticket.isReleased()).isTrue();
+      assertThat(gate.getPending()).isZero();
+      assertThat(gate.accept()).as("the permit is back").isNotNull();
+    }
+  }
+
+  @Test
+  void abandoningAfterTheReleaseAndATicketWithoutASocketAreHarmless() {
+    final PreAuthConnectionGate gate = new PreAuthConnectionGate("TEST", 1);
+
+    final PreAuthConnectionGate.Ticket ticket = gate.accept();
+    ticket.release();
+    ticket.abandon();
+
+    assertThat(gate.accept()).isNotNull();
+    assertThat(gate.accept()).as("the cap is still 1, not 2").isNull();
+  }
+
+  @Test
   void aCapOfZeroMeansUnlimited() {
     final PreAuthConnectionGate gate = new PreAuthConnectionGate("TEST", 0);
 

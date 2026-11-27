@@ -28,6 +28,18 @@ import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 public interface BinaryCompareOperator {
   boolean execute(DatabaseInternal database, Object left, Object right);
 
+  /**
+   * {@link #execute(DatabaseInternal, Object, Object)}, converting a string on the right through {@code rightConversion}, the memo
+   * of an execution whose right operand is the same string on every record (issue #12713). An operator that converts nothing
+   * answers as {@link #execute(DatabaseInternal, Object, Object)} does.
+   *
+   * @param rightConversion the memo of the right operand, or null to convert it as it is
+   */
+  default boolean execute(final DatabaseInternal database, final Object left, final Object right,
+      final ConstantOperandConversion rightConversion) {
+    return execute(database, left, right);
+  }
+
   BinaryCompareOperator copy();
 
   default boolean isRangeOperator() {

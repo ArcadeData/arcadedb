@@ -72,8 +72,9 @@ public final class RangeCollector implements FacetCollector {
    * @param database  converts the date literals of a date column
    * @param extractor the declaring type's extractor: converts a literal bound as stored values are converted
    *
-   * @throws CommandExecutionException  when the column is not a number or date column, or a bound is not a value of it
-   * @throws CommandSQLParsingException when a range is empty once its bounds are in the column's encoding
+   * @throws CommandSQLParsingException when the column is not a number or date column, or a range is empty once its bounds are in the
+   *                                    column's encoding
+   * @throws CommandExecutionException  when a bound is not a value of the column
    */
   RangeCollector(final RangeFacetSpec spec, final ColumnDefinition column, final long budgetWaitMs, final DatabaseInternal database,
       final ColumnConversion extractor) {
@@ -256,7 +257,7 @@ public final class RangeCollector implements FacetCollector {
 
   private void convertBounds(final DatabaseInternal database, final ColumnConversion extractor) {
     if (column.kind() != ColumnKind.LONG && column.kind() != ColumnKind.DOUBLE)
-      throw new CommandExecutionException(
+      throw new CommandSQLParsingException(
           "FACETS " + spec.alias() + ": RANGES needs a number or date property, '" + spec.property() + "' is " + column.propertyType());
     final List<RangeBound> ranges = spec.ranges();
     final int n = ranges.size();

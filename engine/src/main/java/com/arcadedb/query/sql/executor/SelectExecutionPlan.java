@@ -138,6 +138,15 @@ public class SelectExecutionPlan implements InternalExecutionPlan {
   }
 
   @Override
+  public void applyRowCap(final int rowCap) {
+    // ONLY THE STEPS OF THIS PLAN: A STEP THAT RUNS A SUB-PLAN OF ITS OWN (A SUBQUERY, A LET) KEEPS IT UNBOUNDED, IT FEEDS THE STATEMENT
+    // AND IS NOT AN ANSWER TO ITS CALLER
+    for (final ExecutionStepInternal step : steps)
+      if (step instanceof RowCapAwareStep aware)
+        aware.applyRowCap(rowCap);
+  }
+
+  @Override
   public boolean canBeCached() {
     for (final ExecutionStepInternal step : steps) {
       if (!step.canBeCached()) {
