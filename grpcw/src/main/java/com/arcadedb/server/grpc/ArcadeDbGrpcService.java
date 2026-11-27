@@ -4134,8 +4134,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         : TS_DEFAULT_BATCH_SIZE;
 
     if (req.hasAggregation())
-      streamTimeSeriesBuckets(call, cancelled, serverTimedOut, req, engine, columns, fromTs, toTs, tagFilter,
-          batchSize);
+      // The names the read counters are filed under are the resolved ones: the database field of a request that
+      // names a transaction is not what the read ran against.
+      streamTimeSeriesBuckets(call, cancelled, serverTimedOut, req, db.getName(), resolved.type().getName(), engine,
+          columns, fromTs, toTs, tagFilter, batchSize);
     else
       streamTimeSeriesRows(call, cancelled, serverTimedOut, req, engine, columns, fromTs, toTs, tagFilter,
           batchSize);
@@ -4279,8 +4281,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    */
   private void streamTimeSeriesBuckets(final ServerCallStreamObserver<TimeSeriesQueryResult> call,
       final AtomicBoolean cancelled, final AtomicBoolean serverTimedOut, final TimeSeriesQueryRequest req,
-      final TimeSeriesEngine engine, final List<ColumnDefinition> columns, final long fromTs, final long toTs,
-      final TagFilter tagFilter, final int batchSize) throws Exception {
+      final String databaseName, final String typeName, final TimeSeriesEngine engine,
+      final List<ColumnDefinition> columns, final long fromTs, final long toTs, final TagFilter tagFilter,
+      final int batchSize) throws Exception {
 
     final TimeSeriesAggregation aggregation = req.getAggregation();
     // Both refusals moved into TimeSeriesGateway (issue #7675): the RULE is now the one the two HTTP endpoints
@@ -4335,7 +4338,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           TimeBucketGrid.normalizeOffset(aggregation.getBucketOriginMs(), aggregation.getBucketIntervalMs()), tagFilter,
           readMetrics, configuredMax);
     } finally {
-      TimeSeriesReadMetrics.publish(readMetrics, req.getDatabase(), req.getType(), TimeSeriesReadMetrics.SURFACE_GRPC);
+      TimeSeriesReadMetrics.publish(readMetrics, databaseName, typeName, TimeSeriesReadMetrics.SURFACE_GRPC);
     }
     final List<Long> timestamps = result.getBucketTimestamps();
 
@@ -4454,7 +4457,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     try {
       latest = TimeSeriesGateway.latest(resolved.engine(), tagFilter, readMetrics);
     } finally {
-      TimeSeriesReadMetrics.publish(readMetrics, db.getName(), req.getType(), TimeSeriesReadMetrics.SURFACE_TS_LATEST);
+      TimeSeriesReadMetrics.publish(readMetrics, db.getName(), resolved.type().getName(),
+          TimeSeriesReadMetrics.SURFACE_TS_LATEST);
     }
 
     final TimeSeriesLatestResponse.Builder response = TimeSeriesLatestResponse.newBuilder()
