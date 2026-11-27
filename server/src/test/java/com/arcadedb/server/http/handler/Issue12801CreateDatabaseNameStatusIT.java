@@ -26,12 +26,14 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.File;
+import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.HttpResponse.BodyHandlers;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Base64;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -76,10 +78,22 @@ class Issue12801CreateDatabaseNameStatusIT extends BaseGraphServerTest {
   void aNameOfMultiByteCharactersIsCreatedOrRefusedAsABadRequestAsTheFileSystemDecides() throws Exception {
     final String name = "\u65e5".repeat(100);
 
+    // Asked of the file system itself, so that a limit of the server's own on a name this file system takes is a red run
+    final Path directory = new File(
+        getServer(0).getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY), name).toPath();
+    boolean accepted;
+    try {
+      Files.delete(Files.createDirectory(directory));
+      accepted = true;
+    } catch (final IOException e) {
+      accepted = false;
+    }
+
     final HttpResponse<String> response = executeServerCommand("create database " + name);
     try {
-      assertThat(response.statusCode()).as("body=%s", response.body()).isIn(200, 400);
-      if (response.statusCode() == 400)
+      assertThat(response.statusCode()).as("the file system takes the name: %s, body=%s", accepted, response.body())
+          .isEqualTo(accepted ? 200 : 400);
+      if (!accepted)
         assertThat(response.body()).as("the reply does not echo the whole path").doesNotContain(name);
     } finally {
       if (response.statusCode() == 200)
