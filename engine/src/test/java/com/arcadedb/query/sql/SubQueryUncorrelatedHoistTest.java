@@ -234,6 +234,19 @@ class SubQueryUncorrelatedHoistTest extends TestHelper {
   }
 
   @Test
+  void aSubQueryReadingTheOuterRowThroughANestedSubQueryStillAnswersPerRow() {
+    // the only outer-row read sits in a sub-query of the sub-query's projection: the sub-query is correlated all the same
+    for (final String sql : new String[] {
+        "SELECT id, ((SELECT (SELECT $parent.$parent.$current.id AS v FROM M)[0].v AS m FROM M)[0].m + 0) AS c FROM T ORDER BY id",
+        "SELECT id, (SELECT (SELECT $parent.$parent.$current.id AS v FROM M)[0].v AS m FROM M)[0].m AS c FROM T ORDER BY id" }) {
+      final List<Result> rows = run(sql);
+      assertThat(rows).as(sql).hasSize(N);
+      for (final Result row : rows)
+        assertThat(row.<Integer>getProperty("c")).as(sql).isEqualTo(row.<Integer>getProperty("id"));
+    }
+  }
+
+  @Test
   void aSubQueryReadingAPerRecordLetInsideParenthesesStillAnswersPerRow() {
     final List<Result> rows = run(
         "SELECT id FROM T LET $a = g WHERE ((SELECT count(*) AS c FROM M WHERE " + COUNTED + "(g) = $a)[0].c + 0) > 0 ORDER BY id");
