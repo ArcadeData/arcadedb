@@ -81,9 +81,9 @@ public class ArrayRangeSelector extends SimpleNode {
     if (toSelector != null) {
       lTo = toSelector.getValue(currentRecord, result, context);
     }
-    if (included) {
+    // saturated: an inclusive end of Integer.MAX_VALUE wrapped to a negative end and selected nothing (issue #12914)
+    if (included && lTo < Integer.MAX_VALUE)
       lTo++;
-    }
     if (lFrom > lTo) {
       return null;
     }
@@ -93,10 +93,9 @@ public class ArrayRangeSelector extends SimpleNode {
       return arrayResult;
     }
     lFrom = Math.max(lFrom, 0);
-    if (arrayResult.length < lFrom) {
+    // a range starting at the size selects nothing, as REMOVE takes nothing out of it: it used to read the last element (issue #12914)
+    if (arrayResult.length <= lFrom)
       return null;
-    }
-    lFrom = Math.min(lFrom, arrayResult.length - 1);
 
     lTo = Math.min(lTo, arrayResult.length);
 
@@ -121,9 +120,9 @@ public class ArrayRangeSelector extends SimpleNode {
     if (toSelector != null) {
       lTo = toSelector.getValue(currentRecord, result, context);
     }
-    if (included) {
+    // saturated: an inclusive end of Integer.MAX_VALUE wrapped to a negative end and selected nothing (issue #12914)
+    if (included && lTo < Integer.MAX_VALUE)
       lTo++;
-    }
     if (lFrom > lTo) {
       return null;
     }
@@ -133,10 +132,10 @@ public class ArrayRangeSelector extends SimpleNode {
       return arrayResult;
     }
     lFrom = Math.max(lFrom, 0);
-    if (arrayResult.length < lFrom)
+    // a range starting at the size selects nothing, as REMOVE takes nothing out of it: it used to read the last element (issue #12914)
+    if (arrayResult.length <= lFrom)
       return null;
 
-    lFrom = Math.min(lFrom, arrayResult.length - 1);
     lTo = Math.min(lTo, arrayResult.length);
 
     return Arrays.asList(Arrays.copyOfRange(arrayResult, lFrom, lTo));
@@ -303,9 +302,8 @@ public class ArrayRangeSelector extends SimpleNode {
     if (from == null || to == null) {
       throw new CommandExecutionException("Invalid range expression: " + this + " one of the elements is null");
     }
-    if (included) {
+    if (included && to < Integer.MAX_VALUE)
       to++;
-    }
     if (from < 0) {
       from = 0;
     }

@@ -38,7 +38,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * handed to {@code List.remove(Object)}, which looked for an element EQUAL to it), and {@code REMOVE l[9]} past the end or
  * {@code REMOVE l[-1]} answered an IndexOutOfBoundsException. A REMOVE takes out what the same selector reads: a range the
  * elements {@code l[a..b]} reads (end exclusive, {@code ...} inclusive), and an index outside the list, negative included,
- * reads null, so it selects nothing and removes nothing.
+ * reads null, so it selects nothing and removes nothing. The read form had to change for the rule to hold: a range starting
+ * exactly at the size read the last element, and an inclusive end of {@code Integer.MAX_VALUE} wrapped and read nothing.
  */
 class Issue12914UpdateRemoveListIndexTest extends TestHelper {
   private static final String       TYPE     = "Doc12914";
@@ -53,6 +54,12 @@ class Issue12914UpdateRemoveListIndexTest extends TestHelper {
         Arguments.of("l[0..4]", List.of()), //
         Arguments.of("l[3..3]", ORIGINAL), //
         Arguments.of("l[5..7]", ORIGINAL), //
+        // a range starting exactly at the size selects nothing: the read used to clamp the start to the last element
+        Arguments.of("l[4..6]", ORIGINAL), //
+        Arguments.of("l[4...4]", ORIGINAL), //
+        Arguments.of("l[-3..2]", List.of(30, 40)), //
+        // an inclusive end at Integer.MAX_VALUE: the +1 used to wrap to a negative end, and both forms selected nothing
+        Arguments.of("l[1...2147483647]", List.of(10)), //
         Arguments.of("l[0]", List.of(20, 30, 40)), //
         Arguments.of("l[3]", List.of(10, 20, 30)), //
         Arguments.of("l[0,2]", List.of(20, 40)), //
@@ -60,6 +67,8 @@ class Issue12914UpdateRemoveListIndexTest extends TestHelper {
         Arguments.of("l[9]", ORIGINAL), //
         Arguments.of("l[-1]", ORIGINAL), //
         Arguments.of("l[0,9]", List.of(20, 30, 40)), //
+        // the same index twice names one element: it used to remove the element at that index and then its successor
+        Arguments.of("l[1,1]", List.of(10, 30, 40)), //
         Arguments.of("l[-1,1]", List.of(10, 30, 40)));
   }
 
