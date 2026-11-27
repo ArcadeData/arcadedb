@@ -71,6 +71,28 @@ class Issue12960MatchDepthWhereLeftFilterTest extends TestHelper {
         + "RETURN a0.id AS a0, a2.id AS a2")).containsExactly("1,0", "2,1");
   }
 
+  @Test
+  void aWhereMixingDepthAndAPropertyIsLeftWholeToTheHopThatOwnsIt() {
+    // the occurrence where: is dropped from the left filter as a whole, the property test with it: the while: hop still applies it
+    assertThat(rows("MATCH {type: V, as: a0}.in('A'){as: a2, where: ($depth >= 1 AND id = 0), while: ($depth < 2)}, {as: a2}-A2-{as: a0} "
+        + "RETURN a0.id AS a0, a2.id AS a2")).containsExactly("1,0");
+    assertThat(rows("MATCH {type: V, as: a0}.in('A'){as: a2, where: ($depth >= 1 AND id = 1), while: ($depth < 2)}, {as: a2}-A2-{as: a0} "
+        + "RETURN a0.id AS a0, a2.id AS a2")).isEmpty();
+  }
+
+  @Test
+  void aPropertyWhereOnAnotherOccurrenceStillFiltersTheBackwardsWalk() {
+    // the where: of the other occurrence reads no $depth, so the left filter keeps it
+    assertThat(rows("MATCH {type: V, as: a0}.in('A'){as: a2, where: ($depth >= 1), while: ($depth < 2)}, {as: a2, where: (id = 1)}.both(){as: a0} "
+        + "RETURN a0.id AS a0, a2.id AS a2")).containsExactly("2,1");
+  }
+
+  @Test
+  void theClosingHopWrittenFirst() {
+    assertThat(rows("MATCH {type: V, as: a2}-A2-{as: a0}, {type: V, as: a0}.in('A'){as: a2, where: ($depth >= 1), while: ($depth < 2)} "
+        + "RETURN a0.id AS a0, a2.id AS a2")).containsExactly("1,0");
+  }
+
   private List<String> rows(final String match) {
     final List<String> out = new ArrayList<>();
     try (final ResultSet rs = database.query("sql", match)) {
