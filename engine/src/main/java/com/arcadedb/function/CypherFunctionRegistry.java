@@ -382,6 +382,7 @@ public final class CypherFunctionRegistry {
     register(new ApocDateField());
     register(new ApocDateFields());
     register(new ApocDateToISO8601());
+    register(new ApocDateConvertFormat());
   }
 
   private static void registerUtilFunctions() {
