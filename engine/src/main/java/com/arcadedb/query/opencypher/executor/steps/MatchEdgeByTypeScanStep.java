@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.executor.steps;
 
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
@@ -38,6 +39,8 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.security.SecurityHelper;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -150,6 +153,7 @@ public class MatchEdgeByTypeScanStep extends AbstractExecutionStep implements Pa
         if (!initialized) {
           initialized = true;
           started = true;
+          requireReadable(context);
           // A predicate of its own (the WHERE conjuncts it took, the inline map) filters the rows in the workers, which hand them
           // over in the sequential order
           final ParallelRecordScan scan = relationshipFilter != null || relationshipProperties != null ?
@@ -225,7 +229,33 @@ public class MatchEdgeByTypeScanStep extends AbstractExecutionStep implements Pa
 
   @Override
   public ParallelRecordScan planParallelRows(final CommandContext context, final List<BooleanExpression> filters) {
-    return started ? null : planScan(context, filters);
+    if (started)
+      return null;
+    requireReadable(context);
+    return planScan(context, filters);
+  }
+
+  /**
+   * Refuses the user who may not read a type the scan reads, or the label of an endpoint it binds, as the walk of the buckets of
+   * those types does and as the edge index seek does (issue #12663), once before the first edge is read.
+   * <p>
+   * The scan loads the endpoints of the edges its predicate keeps only, so left to itself it would refuse a user who may not read
+   * the label of an endpoint only when an edge holds the value asked for, and tell that user whether one does. The walk it stands
+   * for opens the buckets of the source's label, and of every type under it, whatever the value is. The plan is not always built
+   * for the user who runs it (the cache of Cypher plans belongs to the database), so the check is the step's to make, per
+   * execution, on the thread of the query: the workers of a parallel scan start after it.
+   *
+   * @throws SecurityException when the current user may not read one of the types
+   */
+  private void requireReadable(final CommandContext context) {
+    final DatabaseInternal database = context.getDatabase();
+    final Schema schema = database.getSchema();
+    for (int i = 0; i < edgeTypes.size(); i++)
+      SecurityHelper.checkReadOnTypeAndSubTypes(database, schema.getTypeOrNull(edgeTypes.get(i)));
+    for (final String label : sourceFilter.labels())
+      SecurityHelper.checkReadOnTypeAndSubTypes(database, schema.getTypeOrNull(label));
+    for (final String label : targetFilter.labels())
+      SecurityHelper.checkReadOnTypeAndSubTypes(database, schema.getTypeOrNull(label));
   }
 
   /**

@@ -57,6 +57,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import java.util.ArrayList;
@@ -829,21 +830,34 @@ final class MatchStepBuilder {
    * (issue #11874). An unlabelled source is a scan of every vertex, whose edge lists hold every edge of the types: the scan of the
    * types reads less. A labelled one reads the vertices of its labels and their edges of the types, estimated at the labels'
    * share of all vertices.
+   * <p>
+   * A count is refused to a user who may not read the type. The total over every vertex type is only the denominator of an
+   * estimate and reads types the statement never names, so a type the user may not read is left out of it rather than refusing a
+   * statement that does not touch it. A type the statement does name (a label of the source, a relationship type) keeps the walk,
+   * which refuses the user when it opens the buckets.
    */
   private boolean isTypeScanCheaperThanWalk(final NodePattern source, final List<String> edgeTypes) {
     if (!source.hasLabels())
       return true;
     final Schema schema = database.getSchema();
     long anchorVertices = 0;
-    for (final DocumentType type : Labels.matchingVertexTypes(schema, source.getLabels(), source.isLabelDisjunction()))
-      anchorVertices += database.countType(type.getName(), false);
+    long edges = 0;
+    try {
+      for (final DocumentType type : Labels.matchingVertexTypes(schema, source.getLabels(), source.isLabelDisjunction()))
+        anchorVertices += database.countType(type.getName(), false);
+      for (final String edgeType : edgeTypes)
+        edges += database.countType(edgeType, true);
+    } catch (final SecurityException e) {
+      return false;
+    }
     long allVertices = 0;
     for (final DocumentType type : schema.getTypes())
-      if (type instanceof VertexType)
-        allVertices += database.countType(type.getName(), false);
-    long edges = 0;
-    for (final String edgeType : edgeTypes)
-      edges += database.countType(edgeType, true);
+      if (type instanceof VertexType && SecurityHelper.isReadable(database, type))
+        try {
+          allVertices += database.countType(type.getName(), false);
+        } catch (final SecurityException e) {
+          // readable in part only: one of its buckets refuses the count
+        }
     return edges <= anchorVertices + (double) edges * anchorVertices / Math.max(1L, allVertices);
   }
 
