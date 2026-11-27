@@ -18,12 +18,9 @@
  */
 package com.arcadedb.query.opencypher;
 
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -38,24 +35,15 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author lvca (l.garulli@arcadedata.com)
  */
-class CypherNullBoundRelationshipReuseIssue12621Test {
+class CypherNullBoundRelationshipReuseIssue12621Test extends TestHelper {
   private static final String NULL_R = "OPTIONAL MATCH (a:P {n: 'A'})-[r:Nonexistent]->(b) WITH r ";
 
-  private Database database;
-
-  @BeforeEach
-  void setup() {
-    database = new DatabaseFactory("./target/databases/cypher12621").create();
+  @Override
+  protected void beginTest() {
     database.transaction(() -> {
       database.command("opencypher", "CREATE (:P {n: 'A'})-[:K]->(:P {n: 'B'})");
       database.command("opencypher", "CREATE (:P {n: 'C'})-[:K]->(:P {n: 'D'})");
     });
-  }
-
-  @AfterEach
-  void teardown() {
-    if (database != null)
-      database.drop();
   }
 
   private List<Result> rows(final String query) {
