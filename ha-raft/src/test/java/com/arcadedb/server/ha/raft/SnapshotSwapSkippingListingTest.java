@@ -62,6 +62,7 @@ class SnapshotSwapSkippingListingTest {
   void clearHooks() {
     SnapshotInstaller.snapshotOpensForTesting = null;
     SnapshotInstaller.directoryListingForTesting = null;
+    SnapshotInstaller.swapProgressForTesting = null;
   }
 
   /** The first listing of each directory drops every third entry, the way a readdir walk under renames can on NFS. */
@@ -315,6 +316,44 @@ class SnapshotSwapSkippingListingTest {
 
     assertThat(databaseFiles(dbDir)).as("every original is back, the two phase 1 missed included").isEqualTo(originals());
     assertThat(snapshotBackup).doesNotExist();
+  }
+
+  // Regression for #13618: an original no listing showed before the rollback's clear is kept by the clear itself
+  @Test
+  void rollbackClearKeepsAnOriginalOnlyItsOwnListingShows(@TempDir final Path databasesDir) throws IOException {
+    final Path dbDir = databasesDir.resolve("drill");
+    final Path snapshotNew = dbDir.resolve(SnapshotInstaller.SNAPSHOT_NEW_DIR);
+    final Path snapshotBackup = dbDir.resolve(SnapshotInstaller.SNAPSHOT_BACKUP_DIR);
+    write(dbDir, originals());
+    write(snapshotNew, snapshot());
+    SnapshotInstaller.writeInstalledFilesManifest(snapshotNew, SnapshotInstaller.expectedInstalledFiles(snapshotNew));
+    Files.writeString(snapshotNew.resolve(SnapshotInstaller.SNAPSHOT_COMPLETE_FILE), "");
+
+    // The v0 dictionary is missing from every listing of the live directory (the backup phase's and the rescue's) until
+    // ROLLING_BACK is published, so the clear is the first to see it; the staging listings make phase 2 fail.
+    final String missed = "dictionary.0.327680.v0.dict";
+    final AtomicBoolean rollingBack = new AtomicBoolean();
+    SnapshotInstaller.swapProgressForTesting = point -> {
+      if ("ROLLING_BACK".equals(point))
+        rollingBack.set(true);
+    };
+    SnapshotInstaller.directoryListingForTesting = (dir, entries) -> {
+      if (dir.equals(snapshotNew)) {
+        final List<Path> listed = new ArrayList<>(entries);
+        listed.add(dir.resolve("Ghost_0.999.65536.v0.bucket"));
+        return listed;
+      }
+      if (!dir.equals(dbDir) || rollingBack.get())
+        return entries;
+      return entries.stream().filter(entry -> !entry.getFileName().toString().equals(missed)).toList();
+    };
+    try {
+      assertThatThrownBy(() -> SnapshotInstaller.atomicSwap(dbDir, snapshotNew, snapshotBackup)).isInstanceOf(IOException.class);
+    } finally {
+      SnapshotInstaller.swapProgressForTesting = null;
+    }
+
+    assertThat(databaseFiles(dbDir)).as("the original only the clear saw is restored, not deleted").isEqualTo(originals());
   }
 
   // Regression for #13618: recovery never accepts an install whose staging still holds staged files
