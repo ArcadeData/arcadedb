@@ -48,6 +48,7 @@ import io.netty.channel.Channel;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -312,12 +313,41 @@ public class MongoDBBackend extends AbstractMongoBackend {
     // getMore, killCursors, dropDatabase...) touches the server's databases or another client's cursors and needs a login
     if (!ADMIN_HANDSHAKE_COMMANDS.contains(normalizedCommand)) {
       final ServerSecurityUser user = authenticated(channel, COMMAND, command);
+      // answered here: the library's own reply names every database a client has opened, whoever the user is
+      if ("listdatabases".equals(normalizedCommand))
+        return listAuthorizedDatabases(user);
       // these two resolve the database the library is told about, which for the admin namespace is one named "admin"
       if (("dropdatabase".equals(normalizedCommand) || "getmore".equals(normalizedCommand)) && !user.canAccessToDatabase(
           databaseName))
         throw notAuthorizedOn(user, databaseName);
     }
     return super.handleCommand(channel, databaseName, command, query);
+  }
+
+  /**
+   * The reply to a {@code listDatabases}: the databases the library holds open for the clients of this server that {@code user} has a
+   * grant on, sorted by name, in the shape the library answers ({@code name} and {@code empty} of each, which a database never is
+   * here, as {@link MongoDBDatabaseWrapper#isEmpty} answers). The names are the library's, as before; only the user's grants narrow them,
+   * as they do the list of the HTTP, Bolt and gRPC protocols. No wrapper is built to answer.
+   */
+  private Document listAuthorizedDatabases(final ServerSecurityUser user) {
+    final List<String> names = new ArrayList<>();
+    for (final String name : listDatabaseNames())
+      if (user.canAccessToDatabase(name))
+        names.add(name);
+    Collections.sort(names);
+
+    final List<Document> databases = new ArrayList<>(names.size());
+    for (final String name : names) {
+      final Document database = new Document("name", name);
+      database.put("empty", Boolean.FALSE);
+      databases.add(database);
+    }
+
+    final Document reply = new Document();
+    reply.put("databases", databases);
+    Utils.markOkay(reply);
+    return reply;
   }
 
   /** Whether a {@code getMore} names a cursor of a {@code find} of the database: the rows of its batch are read by the request itself. */
