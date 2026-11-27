@@ -51,7 +51,17 @@ Every release can be checked independently of us, for what it contains and for w
 - **Image signatures.** A cosign signature on every container image, including the multi-architecture native tag,
   which carries a signature but no SBOM attestation of its own.
 
-The accepted signer identity is one of the workflows `mvn-release.yml`, `native-image.yml`, `release-assets.yml` or
+The GPG signatures (Maven Central artifacts and `SHA256SUMS.asc`) are made by the ArcadeDB release signing key:
+
+```
+84BC E850 6583 E8FC 20BE  FEAD 1FA7 72BE 48D5 DB9A   ArcadeDB Release Signing <security@arcadedb.com>
+```
+
+Releases up to and including 26.11.1 were signed by `F3F3 4F5F CBA9 CBD5 02A5  DA0E F060 7669 1BEF 0134`, which
+remains valid for them. Both public keys are in the [`KEYS`](KEYS) file and on `keyserver.ubuntu.com` and
+`keys.openpgp.org`. A GPG signature by any other key must be treated as invalid.
+
+The accepted cosign signer identity is one of the workflows `mvn-release.yml`, `native-image.yml`, `release-assets.yml` or
 `publish-contract.yml` of `ArcadeData/arcadedb`, running on `main` or on a release tag, with the OIDC issuer
 `https://token.actions.githubusercontent.com`. A signature from any other identity must be treated as invalid.
 
