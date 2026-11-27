@@ -29,6 +29,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests for TimeSeries retention policy execution.
@@ -632,6 +633,27 @@ class TimeSeriesRetentionTest extends TestHelper {
     assertThat(issueShard.getSealedStore().getGlobalMinTimestamp()).isEqualTo(now - 60_000L);
     assertThat(blocks(youngShard).getFirst().blockId).isEqualTo(youngId);
     assertThat(youngShard.getSealedStore().getTotalSampleCount()).isEqualTo(10L);
+  }
+
+  /**
+   * The bounded pass needs a positive retention: with none, {@code cutoff - retention} is at or past the cutoff and every straddling
+   * block would be rewritten on every pass, which is the unbounded pass the bound exists to avoid.
+   */
+  // #12887
+  @Test
+  void theBoundedPassRefusesARetentionThatIsNotPositive() throws Exception {
+    final TimeSeriesEngine engine = createEngine("retention_non_positive_test", 1);
+    try {
+      final TimeSeriesShard shard = engine.getShard(0);
+      appendAndCompact(shard, expiredAndRecent(NOW, 2, 8));
+      final long blockId = blocks(shard).getFirst().blockId;
+
+      assertThatThrownBy(() -> engine.applyRetention(NOW - RETENTION, 0L)).isInstanceOf(IllegalArgumentException.class);
+      assertThatThrownBy(() -> engine.applyRetention(NOW - RETENTION, -RETENTION)).isInstanceOf(IllegalArgumentException.class);
+      assertThat(blocks(shard).getFirst().blockId).as("nothing rewritten").isEqualTo(blockId);
+    } finally {
+      engine.close();
+    }
   }
 
   private LocalTimeSeriesType createTypeWithRetention(final String name) {

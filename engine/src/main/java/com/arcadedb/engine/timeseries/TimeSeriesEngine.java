@@ -1341,8 +1341,13 @@ public class TimeSeriesEngine implements AutoCloseable {
    * most one extra retention period.
    *
    * @param retentionMs the retention period of the type, positive
+   *
+   * @throws IllegalArgumentException if {@code retentionMs} is not positive: {@code cutoffTimestamp - retentionMs} would then be at
+   *                                  or past the cutoff, and every straddling block would be rewritten on every pass
    */
   public void applyRetention(final long cutoffTimestamp, final long retentionMs) throws IOException {
+    if (retentionMs <= 0)
+      throw new IllegalArgumentException("Retention period must be positive, got " + retentionMs);
     // held at the smallest timestamp rather than wrapped around by a retention longer than the clock goes back
     final long staleBefore = cutoffTimestamp < Long.MIN_VALUE + retentionMs ? Long.MIN_VALUE : cutoffTimestamp - retentionMs;
     runSealedMaintenanceReplicated(shard -> shard.getSealedStore().truncateBefore(cutoffTimestamp, staleBefore));

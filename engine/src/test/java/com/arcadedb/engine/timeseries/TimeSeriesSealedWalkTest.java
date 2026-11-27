@@ -27,6 +27,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
+import com.arcadedb.utility.ShortTransferFileChannel;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
@@ -1097,6 +1098,8 @@ class TimeSeriesSealedWalkTest {
 
     @AfterEach
     void tearDown() {
+      TimeSeriesSealedStore.TEST_CHANNEL_DECORATOR = null;
+      TimeSeriesSealedStore.TEST_RETENTION_PLANNED_HOOK = null;
       FileUtils.deleteRecursively(new File(BASE_DIR));
     }
 
@@ -1248,7 +1251,152 @@ class TimeSeriesSealedWalkTest {
       }
     }
 
+    /**
+     * The header write that follows the swap fails. The blocks the trim dropped and rebuilt are already gone from the live directory,
+     * so the retention boundary and the ledger must have moved with it: a walk in flight that met block B with neither moved skipped it
+     * as vanished, losing the two rows the rebuilt block still holds, and a retry found nothing left to remove that would repair it.
+     */
+    // #12887
+    @Test
+    void aWalkCrossingATrimWhoseHeaderWriteFailedStillReadsTheKeptRows() throws Exception {
+      try (final TimeSeriesSealedStore store = threeBlockStore(STORE_PATH)) {
+        final BlockDirectorySnapshot snapshot = store.snapshotBlockDirectory(0L, Long.MAX_VALUE);
+
+        final AtomicBoolean failHeader = failHeaderWritesWhile();
+        failHeader.set(true);
+        assertThatThrownBy(() -> store.truncateBefore(CUTOFF_TS)).isInstanceOf(IOException.class).hasMessageContaining("injected");
+        failHeader.set(false);
+
+        final AggregationMetrics metrics = new AggregationMetrics();
+        final List<Object[]> rows = new ArrayList<>();
+        assertThat(store.forEachRow(snapshot, 0L, Long.MAX_VALUE, null, null, metrics, rows::add)).isTrue();
+
+        assertThat(timestamps(rows)).containsExactly(5000L, 6000L, 7000L, 8000L);
+        assertThat(metrics.getVanishedBlocks()).as("block A, which retention dropped whole").isEqualTo(1);
+        assertThat(timestamps(readAll(store))).containsExactly(5000L, 6000L, 7000L, 8000L);
+      }
+    }
+
+    /**
+     * The same failure on a delete of samples, which rebuilds a block a walk cannot follow: the walk must be refused, as when the
+     * header write succeeds, and not answered without the rows of the rebuilt block.
+     */
+    // #12887
+    @Test
+    void aWalkCrossingADeleteWhoseHeaderWriteFailedIsRefusedNotAnsweredShort() throws Exception {
+      try (final TimeSeriesSealedStore store = threeBlockStore(STORE_PATH)) {
+        final BlockDirectorySnapshot snapshot = store.snapshotBlockDirectory(0L, Long.MAX_VALUE);
+
+        final AtomicBoolean failHeader = failHeaderWritesWhile();
+        failHeader.set(true);
+        assertThatThrownBy(() -> store.deleteSamples(3000L, 4000L, null)).isInstanceOf(IOException.class)
+            .hasMessageContaining("injected");
+        failHeader.set(false);
+
+        assertThatThrownBy(() -> store.forEachRow(snapshot, 0L, Long.MAX_VALUE, null, null, null, row -> true))
+            .isInstanceOf(TimeSeriesWalkCoarsenedException.class);
+        assertThat(timestamps(readAll(store))).containsExactly(1000L, 2000L, 5000L, 6000L, 7000L, 8000L);
+      }
+    }
+
+    /**
+     * Deciding whether a straddling block is worth rebuilding decodes its timestamps, and the maintenance pass does it every minute
+     * for every shard, usually to rebuild nothing. That decode runs under the directory READ lock, so a reader of the store answers
+     * while it runs; under the write lock the reader below would wait until the timeout.
+     */
+    // #12887
+    @Test
+    void aRetentionPassThatRebuildsNothingDoesNotHoldTheReaders() throws Exception {
+      final AtomicReference<TimeSeriesSealedStore> storeRef = new AtomicReference<>();
+      final AtomicBoolean armed = new AtomicBoolean();
+      final AtomicReference<Boolean> readerAnswered = new AtomicReference<>();
+      // installed before the store opens its channel, which it keeps
+      TimeSeriesSealedStore.TEST_CHANNEL_DECORATOR = channel -> new ShortTransferFileChannel(channel, Integer.MAX_VALUE) {
+        @Override
+        public int read(final ByteBuffer dst, final long position) throws IOException {
+          // the first block read of the planning: a reader on another thread takes the read lock meanwhile
+          if (position > 0 && armed.compareAndSet(true, false)) {
+            final Thread reader = new Thread(() -> storeRef.get().snapshotBlockDirectory(0L, Long.MAX_VALUE));
+            reader.start();
+            try {
+              reader.join(10_000L);
+            } catch (final InterruptedException e) {
+              Thread.currentThread().interrupt();
+            }
+            readerAnswered.set(!reader.isAlive());
+          }
+          return super.read(dst, position);
+        }
+      };
+
+      try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(STORE_PATH, columns)) {
+        storeRef.set(store);
+        appendBlock(store, new long[] { 3000L, 4000L, 5000L, 6000L }, "B");
+        appendBlock(store, new long[] { 7000L, 8000L }, "C");
+        store.flushHeader();
+        final List<Long> idsBefore = blockIds(store);
+
+        // one of B's four samples expired and none is older than staleBefore: B is read, and kept as it is
+        armed.set(true);
+        store.truncateBefore(3500L, Long.MIN_VALUE);
+
+        assertThat(readerAnswered.get()).as("the planning read a block").isNotNull();
+        assertThat(readerAnswered.get()).as("a reader answered while the pass decoded the straddling block").isTrue();
+        assertThat(blockIds(store)).as("nothing rewritten").isEqualTo(idsBefore);
+      }
+    }
+
+    /**
+     * The plan is made under the read lock and applied under the write lock, so a block can land in between. The pass sees the
+     * directory moved and plans again: applying the old plan would rewrite the file without the block that landed.
+     */
+    // #12887
+    @Test
+    void aBlockAppendedBetweenThePlanAndTheRewriteIsKept() throws Exception {
+      try (final TimeSeriesSealedStore store = threeBlockStore(STORE_PATH)) {
+        final AtomicInteger hookRuns = new AtomicInteger();
+        TimeSeriesSealedStore.TEST_RETENTION_PLANNED_HOOK = () -> {
+          if (hookRuns.getAndIncrement() == 0)
+            try {
+              appendBlock(store, new long[] { 9000L, 10_000L }, "D");
+            } catch (final Exception e) {
+              throw new IllegalStateException(e);
+            }
+        };
+
+        store.truncateBefore(CUTOFF_TS);
+
+        assertThat(hookRuns.get()).isEqualTo(1);
+        assertThat(timestamps(readAll(store))).containsExactly(5000L, 6000L, 7000L, 8000L, 9000L, 10_000L);
+        assertThat(store.getBlockCount()).isEqualTo(3);
+      }
+    }
+
     // ---- Helpers ----
+
+    /**
+     * Makes the header write that follows the swap of a rewrite fail with an {@link IOException} while the flag answers {@code true}:
+     * the one-byte read of the header version at offset 4 that opens it is refused, which no other read of the store makes.
+     */
+    private static AtomicBoolean failHeaderWritesWhile() {
+      final AtomicBoolean armed = new AtomicBoolean();
+      TimeSeriesSealedStore.TEST_CHANNEL_DECORATOR = channel -> new ShortTransferFileChannel(channel, Integer.MAX_VALUE) {
+        @Override
+        public int read(final ByteBuffer dst, final long position) throws IOException {
+          if (armed.get() && position == 4 && dst.remaining() == 1)
+            throw new IOException("injected header write failure");
+          return super.read(dst, position);
+        }
+      };
+      return armed;
+    }
+
+    private static List<Long> blockIds(final TimeSeriesSealedStore store) {
+      final List<Long> ids = new ArrayList<>();
+      for (final TimeSeriesSealedStore.BlockEntry entry : store.snapshotBlockDirectory(Long.MIN_VALUE, Long.MAX_VALUE).blocks())
+        ids.add(entry.blockId);
+      return ids;
+    }
 
     /** A [1000, 2000], B [3000 .. 6000] (four samples) and C [7000, 8000], one sensor each. */
     private TimeSeriesSealedStore threeBlockStore(final String path) throws Exception {

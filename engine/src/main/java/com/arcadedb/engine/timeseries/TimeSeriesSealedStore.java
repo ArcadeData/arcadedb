@@ -66,6 +66,7 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.function.Consumer;
 import java.util.function.UnaryOperator;
 import java.util.logging.Level;
 import java.util.zip.CRC32;
@@ -272,6 +273,12 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * a test can hold a downsampling pass in the middle of its sweep and see what the readers and the writers of the shard do meanwhile.
    */
   static volatile Runnable TEST_DOWNSAMPLE_SWEEP_HOOK = null;
+
+  /**
+   * Test seam (issue #12887): when set, run by {@link #truncateBefore(long, long)} between the plan it made under the directory read
+   * lock and the write lock it takes to apply it, holding no lock of the store, so a test can move the directory in between.
+   */
+  static volatile Runnable TEST_RETENTION_PLANNED_HOOK = null;
 
   enum BlockMatchResult { SKIP, FAST_PATH, SLOW_PATH }
 
@@ -2835,7 +2842,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * therefore rebuilt only when at least half of its samples are older than the cutoff, or when its oldest sample is older than
    * {@code staleBefore}; otherwise it is left for a later pass. The maintenance scheduler passes a whole retention period before the
    * cutoff, so an expired sample stays at most one extra retention period, and a block is rebuilt again only once either condition
-   * holds again. Deciding costs the decode of the timestamps of the straddling blocks, one per shard unless blocks overlap.
+   * holds again. Deciding costs the decode of the timestamps of the straddling blocks, one per shard unless blocks overlap, and is
+   * made under the directory READ lock: a pass that rewrites nothing never takes the write lock.
    * <p>
    * A walk in flight that meets a block this dropped counts it as removed ({@link #retentionRemovedBelowTs}); one that meets a block
    * this rebuilt follows it to the rebuilt block through {@link #mergeLedger}, which hands it the rows the rebuild kept. The rows it
@@ -2849,24 +2857,52 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     if (timestamp == Long.MIN_VALUE)
       return;
 
-    directoryLock.writeLock().lock();
+    final int tsColIdx = findTimestampColumnIndex();
+    // Planned under the READ lock: deciding whether a straddling block is worth rebuilding decodes its timestamps, and a pass that
+    // then rebuilds nothing - the common case, every maintenance tick - must not hold the readers of the store for that decode.
+    // Only a pass that has something to remove takes the write lock, and plans again under it if the directory moved meanwhile
+    List<BlockEntry> retained;
+    RebuildPlan trimmed = new RebuildPlan(tsColIdx);
+    final int plannedVersion;
+    directoryLock.readLock().lock();
     try {
-      final List<BlockEntry> retained = new ArrayList<>(blockDirectory.size());
-      final RebuildPlan trimmed = new RebuildPlan(findTimestampColumnIndex());
+      plannedVersion = directoryVersion;
+      retained = new ArrayList<>(blockDirectory.size());
       if (planRemoval(Long.MIN_VALUE, timestamp - 1, null, staleBefore, retained, trimmed) == 0L)
         return; // Nothing to truncate
+    } finally {
+      directoryLock.readLock().unlock();
+    }
 
-      final BlockEntry[] rebuilt = rewriteWithBlocks(retained, trimmed);
-      // HERE, and not beside the decision at the top of the method (review of PR #8197). The boundary is a claim
-      // that a range of timestamps is GONE, and until the rewrite above lands nothing has gone: a failed write or a
-      // failed swap leaves the live file and this directory intact, and the method rethrows. Advancing it first
-      // left the store permanently believing a range had been retired when it had not - and because the claim is
-      // monotonic there is no path back, so a later downsample inside that range would be excused as retention
-      // and a walk crossing it answered silently short, which is the defect issue #8166 exists to close.
-      retentionRemovedBelowTs = Math.max(retentionRemovedBelowTs, timestamp);
-      // After the rewrite too: a walk follows a link only to a block that exists
-      if (trimmed.size() > 0)
-        appendToMergeLedger(trimmed.trimLinks(rebuilt));
+    final Runnable hook = TEST_RETENTION_PLANNED_HOOK;
+    if (hook != null)
+      hook.run();
+
+    directoryLock.writeLock().lock();
+    try {
+      if (directoryVersion != plannedVersion) {
+        retained = new ArrayList<>(blockDirectory.size());
+        trimmed = new RebuildPlan(tsColIdx);
+        if (planRemoval(Long.MIN_VALUE, timestamp - 1, null, staleBefore, retained, trimmed) == 0L)
+          return;
+      }
+
+      final RebuildPlan plan = trimmed;
+      rewriteWithBlocks(retained, plan, rebuilt -> {
+        // HERE, once the new directory is live, and not beside the decision at the top of the method (review of PR #8197). The
+        // boundary is a claim that a range of timestamps is GONE, and until the swap lands nothing has gone: a failed write or a
+        // failed swap leaves the live file and this directory intact, and the method rethrows. Advancing it first left the store
+        // permanently believing a range had been retired when it had not - and because the claim is monotonic there is no path
+        // back, so a later downsample inside that range would be excused as retention and a walk crossing it answered silently
+        // short, which is the defect issue #8166 exists to close.
+        // And not after the header write that follows the install either (issue #12887): if that write fails, the blocks are
+        // already gone from the directory, and a walk in flight that met one with neither the boundary nor the ledger moved would
+        // skip it as vanished - dropping the rows a rebuilt block still holds - while a retry would find nothing left to remove
+        retentionRemovedBelowTs = Math.max(retentionRemovedBelowTs, timestamp);
+        // after the install too: a walk follows a link only to a block that exists
+        if (plan.size() > 0)
+          appendToMergeLedger(plan.trimLinks(rebuilt));
+      });
     } finally {
       directoryLock.writeLock().unlock();
     }
@@ -2912,12 +2948,12 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         return 0L;
 
       // the rebuilt blocks are built as the rewrite reaches them, one at a time: a delete over a store of blocks that all mix tags
-      // does not hold the store
-      rewriteWithBlocks(retained, rebuilt);
-      // A walk in flight cannot tell this from a downsample: either way blocks it was about to read are gone, or are other rows. After
-      // the rewrite, so a rewrite that failed does not make a walk fail for a change that never happened; a walk reads the epoch under
-      // the directory read lock, which this write lock excludes until both are done
-      downsampleEpoch++;
+      // does not hold the store.
+      // A walk in flight cannot tell this from a downsample: either way blocks it was about to read are gone, or are other rows. The
+      // epoch moves once the new directory is installed, so a rewrite that failed before does not make a walk fail for a change that
+      // never happened, and a header write that fails after does not leave a walk skipping the rebuilt blocks as vanished (issue
+      // #12887); a walk reads the epoch under the directory read lock, which this write lock excludes until both are done
+      rewriteWithBlocks(retained, rebuilt, written -> downsampleEpoch++);
       return deleted;
     } finally {
       directoryLock.writeLock().unlock();
@@ -2928,7 +2964,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * Plans the removal of every sample whose timestamp is in {@code [fromTs, toTs]} and whose tags satisfy {@code tagFilter}
    * ({@code null} for any tags), and answers how many samples go: {@code retained} receives the blocks that keep every sample,
    * {@code rebuilt} the ones that keep some, and a block that keeps none is in neither. What each block costs is described at
-   * {@link #deleteSamples}. Called under the directory write lock, which must still be held when the plan is written.
+   * {@link #deleteSamples}. Called under the directory lock, read or write: the plan holds for the {@link #directoryVersion} it was
+   * made on, and is written only under the write lock and while that version is still the live one.
    *
    * @param staleBefore a block that would keep some of its samples is rebuilt only when at least half of them go or its oldest sample
    *                    is older than this, and is otherwise retained whole, removing nothing (the retention bound of
@@ -3049,6 +3086,11 @@ public class TimeSeriesSealedStore implements AutoCloseable {
      * How a walk in flight follows each planned block to the block {@code written} holds at its index, for a plan whose rows go from
      * the head of each block only - a retention trim, which removes every row below its cutoff (issue #12887). A source with no
      * identity (a block read from a pre-#8043 file) cannot be named, so a walk that meets it is refused as before.
+     * <p>
+     * The {@code firstRow} of a {@link MergeLink} says that row {@code r} of the rebuilt block is row {@code firstRow + r} of its
+     * source, which holds only when the dropped rows are exactly {@code [0, firstRow)}. They are because the rows of a block are in
+     * timestamp order and the trim takes every row below a cutoff ({@link #rowsToDelete} binary-searches them). A block whose dropped
+     * rows are not a head gets no link, so a walk that meets it is refused rather than handed the wrong rows.
      */
     List<MergeLink> trimLinks(final BlockEntry[] written) {
       final List<MergeLink> links = new ArrayList<>(entries.size());
@@ -3056,7 +3098,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         final long sourceId = entries.get(i).blockId;
         if (sourceId == BlockEntry.NO_BLOCK_ID)
           continue;
-        final int dropped = doomed.get(i).cardinality();
+        final BitSet dropRows = doomed.get(i);
+        final int dropped = dropRows.cardinality();
+        if (dropRows.nextClearBit(0) != dropped)
+          continue;
         links.add(new MergeLink(written[i], new long[] { sourceId }, new int[] { dropped + written[i].sampleCount }, null, dropped));
       }
       return links;
@@ -4419,16 +4464,22 @@ public class TimeSeriesSealedStore implements AutoCloseable {
             newTagDistinctValues != null ? newTagDistinctValues.get(index) : null,
             newBlocksGranularities != null ? newBlocksGranularities[index] : newBlocksGranularityMs);
       }
-    });
+    }, null);
   }
 
   /**
    * {@link #rewriteWithBlocks(List, List, List, List, List, long[], long)} over a source that builds each new block when the rewrite
    * reaches it, so it holds it for as long as it takes to write it and no longer.
    *
-   * @return the entries the new blocks have in the directory, at the index each has in {@code newBlocks}
+   * @param onInstalled run under the directory write lock as soon as the new directory is the live one, before the file is reopened
+   *                    and its header rewritten, with the entries the new blocks have in it, at the index each has in
+   *                    {@code newBlocks}: what a walk in flight reads to tell a rebuilt block from a vanished one (an epoch, the
+   *                    merge ledger, the retention boundary) must move with the directory, even when the header write that follows
+   *                    fails, as {@link #commitTempFile(List, String, Runnable)} does for a merge (issue #12610). {@code null} for
+   *                    nothing
    */
-  private BlockEntry[] rewriteWithBlocks(final List<BlockEntry> retained, final NewBlocks newBlocks) throws IOException {
+  private void rewriteWithBlocks(final List<BlockEntry> retained, final NewBlocks newBlocks, final Consumer<BlockEntry[]> onInstalled)
+      throws IOException {
     final String tempPath = basePath + ".ts.sealed.tmp";
 
     // Build new directory in a local list — do NOT modify blockDirectory until after the
@@ -4480,10 +4531,12 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       if (e.maxTimestamp > globalMaxTs) globalMaxTs = e.maxTimestamp;
     }
 
+    if (onInstalled != null)
+      onInstalled.accept(written);
+
     indexFile = new RandomAccessFile(oldFile, "rw");
     indexChannel = channelOf(indexFile);
     rewriteHeader();
-    return written;
   }
 
   /** Reads the compressed columns of a block a rewrite keeps, or answers {@code null} when the rewrite has to be dropped. */
