@@ -652,7 +652,9 @@ public class MatchExecutionPlanner {
       updateScheduleStartingAt(startingNode, visitedNodes, visitedEdges, remainingDependencies, resultingSchedule, rootCandidates);
       if (resultingSchedule.size() == scheduledBefore) {
         // A pass that schedules no edge binds nothing (only the first scheduled edge gets a root step): left visited, the node
-        // would have a later edge walked from it unbound (issue #12943). The pass never recursed, so this undoes all it changed
+        // would have a later edge walked from it unbound (issue #12943). The pass never recursed, so this undoes all it changed.
+        // The node is NOT put back among the starts: started after another pass, it would bind nothing either, and a node no edge
+        // reaches later is refused below rather than walked from unbound
         visitedNodes.remove(startingNode);
         if (satisfiedByStart != null)
           for (final Set<String> dependencies : satisfiedByStart)

@@ -27,6 +27,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for #12943. The schedule of a MATCH starts a depth-first pass at the cheapest root candidate. When that node's only neighbour
@@ -68,18 +69,29 @@ class Issue12943MatchMatchedDependencyRootTest extends TestHelper {
         + "RETURN a0.id AS a0, a1.id AS a1, a2.id AS a2")).containsExactly("0,1,2", "0,1,3", "3,1,2", "3,1,3");
   }
 
+  /**
+   * a1 waits for a0 AND a2 through {@code $matched}: whichever end starts, its pass schedules nothing, and one root cannot bind
+   * both ends before a1 (the right answer, 0,1,3 and 3,1,3, needs a second root). Before the fix this answered no rows, the second
+   * end walked from unbound; it is refused now. Should the planner learn to bind a second root, assert those rows instead.
+   */
   @Test
-  void aMiddleNodeReadingBothEndsNeverAnswersWrongRows() {
-    // a1 waits for a0 AND a2 through $matched: whichever end starts, its pass schedules nothing, and one root cannot bind both
-    // ends before a1. Before the fix this answered no rows (the second end was walked from unbound); the planner may refuse
-    // the statement, but whenever it answers, the answer must be the right one
-    final String match = "MATCH {type: V, as: a0}.out('A'){as: a1, where: ($matched.a0.c = c AND $matched.a2.c = c)}.in('A'){type: W, as: a2} "
-        + "RETURN a0.id AS a0, a1.id AS a1, a2.id AS a2";
-    try {
-      assertThat(rows(match)).containsExactly("0,1,3", "3,1,3");
-    } catch (final CommandExecutionException e) {
-      assertThat(e.getMessage()).contains("cannot be evaluated");
-    }
+  void aMiddleNodeReadingBothEndsIsRefusedNotAnsweredWrong() {
+    assertThatThrownBy(() -> rows("MATCH {type: V, as: a0}.out('A'){as: a1, where: ($matched.a0.c = c AND $matched.a2.c = c)}"
+        + ".in('A'){type: W, as: a2} RETURN a0.id AS a0, a1.id AS a1, a2.id AS a2"))//
+        .isInstanceOf(CommandExecutionException.class).hasMessageContaining("cannot be evaluated");
+  }
+
+  /**
+   * The undone start r (the cheapest root) is the only node that can walk its forward-only {@code while:} edge to n, and it is
+   * never a start candidate again. Putting it back among the starts would not bind it either: only the first scheduled edge gets a
+   * root step, so its edge would be walked from r unbound, which is the empty answer this statement gave before the fix. The right
+   * answer (0,1,2 / 0,1,3 / 3,1,2 / 3,1,3) needs r bound by a second root; until then the statement is refused, not answered wrong.
+   */
+  @Test
+  void anUndoneStartThatOnlyItCouldWalkFromIsRefusedNotAnsweredWrong() {
+    assertThatThrownBy(() -> rows("MATCH {type: V, as: x}.out('A'){as: n, where: ($matched.x.c = c)}, "
+        + "{type: W, as: r}.out('A'){as: n, while: (c > 0), maxDepth: 1} RETURN x.id AS x, n.id AS n, r.id AS r"))//
+        .isInstanceOf(CommandExecutionException.class).hasMessageContaining("cannot be evaluated");
   }
 
   @Test
