@@ -79,9 +79,10 @@ final class SchemaEntryApplier {
    * ({@link RaftTransactionBroker#splitSchemaEntry}), and a recording session that ships its WAL in instalments drains the files
    * it created so far into each instalment: in both shapes the entry that publishes the change no longer names them, and it is
    * the one that has to know which vector graphs the change shipped. Collected here and handed to the publishing entry, which
-   * takes them out. Only the Raft apply thread touches it; a sequence cut short by a leadership change leaves a few ids behind
-   * until the next publishing entry of the database, which is harmless: a graph is certified only on its own evidence (see
-   * {@link LSMVectorIndex#certifyGraphShippedByReplicatedCompaction}).
+   * takes them out, and a drop of the database forgets them ({@link #forgetUnpublishedChange}), so the map holds at most one
+   * change per database this node holds. A sequence cut short (a leadership change, a quarantine that skips the rest) leaves
+   * its ids until the next publishing entry of the database, which is harmless: a graph is certified only on its own evidence
+   * (see {@link LSMVectorIndex#certifyGraphShippedByReplicatedCompaction}).
    */
   private final Map<String, Set<Integer>> filesCreatedByUnpublishedChunks = new ConcurrentHashMap<>();
 
@@ -420,6 +421,16 @@ final class SchemaEntryApplier {
     if (!isEmptyMap(named))
       delivered.addAll(named.keySet());
     return delivered;
+  }
+
+  /**
+   * Forgets the files the delivery-only entries of a change of {@code databaseName} created, for a database being dropped, whose
+   * change will never be published (issue #13484). Without it the ids of a dropped database would stay for the life of the
+   * node, one set per name ever dropped mid-change.
+   */
+  void forgetUnpublishedChange(final String databaseName) {
+    if (databaseName != null)
+      filesCreatedByUnpublishedChunks.remove(databaseName);
   }
 
   /**

@@ -31,6 +31,7 @@ import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.Pair;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
@@ -189,6 +190,7 @@ class VectorFollowerReusesGraphAfterFileRetirementHATest extends BaseRaftHATest 
    * pieces without rebuilding them.
    */
   @Test
+  @Tag("slow")
   void aFollowerSearchesThePiecesTheLeaderCompactedDuringAReIngestWithoutRebuildingThem() throws Exception {
     GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE.setValue(2);
     final int dimensions = 512;
