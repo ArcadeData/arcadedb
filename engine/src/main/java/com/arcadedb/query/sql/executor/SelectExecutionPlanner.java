@@ -2322,7 +2322,8 @@ public class SelectExecutionPlanner {
     // A RID naming a bucket this schema does not know is in none of the filter's buckets
     // Fully qualified like the other lookups here: the SQL parser's Bucket node is the imported one
     final com.arcadedb.engine.Bucket bucket = context.getDatabase().getSchema().getBucketByIdIfExists(resolved.getBucketId());
-    return bucket != null && filterClusters.contains(bucket.getName());
+    // by id when the filter holds the buckets of a type that way: a concurrent ALTER TYPE ... NAME renames them (issue #12758)
+    return bucket != null && BucketIdSet.includes(filterClusters, bucket);
   }
 
   private void handleNoTarget(final SelectExecutionPlan result, final CommandContext context) {
