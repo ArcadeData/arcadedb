@@ -738,6 +738,8 @@ public class BoltNetworkExecutor extends Thread {
     rollbackExplicitTransaction();
 
     user = null;
+    // The GQL session parameters belong to the identity that set them: the next one starts with an empty session
+    session.reset();
     markUnauthenticated();
     sendSuccess(Map.of());
     state = State.AUTHENTICATION;
@@ -2151,6 +2153,8 @@ public class BoltNetworkExecutor extends Thread {
       // The transaction of the connection ends before the principal changes
       rollbackExplicitTransaction();
     user = null;
+    // Same for the GQL session parameters: an attempt to change identity, successful or not, starts from an empty session
+    session.reset();
 
     ServerSecurityUser authenticated = null;
     if (principal != null && credentials != null)
