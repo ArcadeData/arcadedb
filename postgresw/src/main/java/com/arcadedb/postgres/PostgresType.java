@@ -2061,6 +2061,9 @@ public enum PostgresType {
       if (elemLen == -1) {
         result.add(null);
       } else {
+        // The element is read out of the bytes this value holds: a length past them, or below the null marker, is no element
+        if (elemLen < -1 || elemLen > buffer.remaining())
+          throw new PostgresProtocolException("Invalid array element length: " + elemLen);
         final byte[] elemBytes = new byte[elemLen];
         buffer.get(elemBytes);
         result.add(deserializeBinaryElement(elemOid, elemBytes));

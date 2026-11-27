@@ -98,6 +98,7 @@ import io.micrometer.core.instrument.Metrics;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.StringUtils;
 
+import java.io.DataInputStream;
 import java.io.EOFException;
 import java.io.IOException;
 import java.math.BigDecimal;
@@ -179,6 +180,11 @@ public class PostgresNetworkExecutor extends Thread {
   private static final AtomicLong                                     REFUSED_SINCE_WARNING     = new AtomicLong();
   /** Bind-message parameter length denoting a NULL value (wire value -1, read unsigned). */
   private static final long                                           NULL_PARAM_LENGTH = 0xFFFFFFFFL;
+  /**
+   * A Bind parameter value longer than this is read in pieces of this size, so what is held while it arrives is what has been
+   * received and not the length the message declared for it.
+   */
+  private static final int                                            BIND_VALUE_READ_STEP = 64 * 1024;
   private static final Object[]                                       NO_PARAMETERS     = new Object[0];
   /** PostgreSQL itself caps a statement at 65535 parameters. */
   static final int                                                    MAX_STATEMENT_PARAMETERS = 65535;
@@ -217,6 +223,8 @@ public class PostgresNetworkExecutor extends Thread {
   private boolean                           tlsActive;
   private boolean                           gssEncRequestAnswered;
   private final byte[]                      buffer                = new byte[BUFFER_LENGTH];
+  // The bytes the last readString() took off the wire, its terminator included, for the messages that account for their own length
+  private int                               lastStringBytes;
   private final Map<String, PostgresPortal> portals               = new HashMap<>();
   // Prepared statements registered by PARSE, keyed by statement name (issue #6660 / CodeRabbit on #6658).
   // Read-only after PARSE creates the entry - bindCommand() clones from here via PostgresPortal.bindFrom()
@@ -532,8 +540,8 @@ public class PostgresNetworkExecutor extends Thread {
                 return;
 
               switch (type) {
-              case 'P' -> parseCommand();
-              case 'B' -> bindCommand();
+              case 'P' -> parseCommand(length);
+              case 'B' -> bindCommand(length);
               case 'E' -> executeCommand();
               case 'Q' -> queryCommand();
               case 'S' -> syncCommand();
@@ -3510,16 +3518,24 @@ public class PostgresNetworkExecutor extends Thread {
     out.clear();
   }
 
-  private void bindCommand() {
+  /**
+   * @param messageBodyLength the bytes the message declared after its length field: every size and count inside it has to fit in
+   *                          what is left of them, so nothing is sized from a number the message cannot back
+   */
+  private void bindCommand(final long messageBodyLength) {
     // Track read progress so a mid-message exception can drain the remaining Bind bytes
     // and keep the channel aligned for the next message.
     int totalParamValues = 0;
     int paramsConsumed = 0;
     boolean resultFormatSectionRead = false;
+    // The bytes of the message not read yet
+    long bytesLeft = messageBodyLength;
     try {
       // BIND
       final String portalName = readString();
+      bytesLeft -= lastStringBytes;
       final String sourcePreparedStatement = readString();
+      bytesLeft -= lastStringBytes;
 
       // THE DESTINATION PORTAL IS INVALIDATED BEFORE ANYTHING THAT CAN FAIL (issue #8071), the Bind-side twin of
       // parseCommand()'s rule for prepared statements (issue #7906). The registration further down runs only on
@@ -3563,18 +3579,30 @@ public class PostgresNetworkExecutor extends Thread {
                 Thread.currentThread().threadId());
 
       final int paramFormatCount = channel.readUnsignedShort();
+      bytesLeft -= 2;
       if (DEBUG)
         LogManager.instance().log(this, Level.INFO, "PSQL: bind paramFormatCount=%d (thread=%s)",
             paramFormatCount, Thread.currentThread().threadId());
+      if (paramFormatCount * 2L > bytesLeft) {
+        refuseMessageAndClose("bind message declares " + paramFormatCount + " parameter formats, more than its length holds");
+        return;
+      }
       if (paramFormatCount > 0) {
         portal.parameterFormats = new ArrayList<>(paramFormatCount);
         for (int i = 0; i < paramFormatCount; i++) {
           final int formatCode = channel.readUnsignedShort();
           portal.parameterFormats.add(formatCode);
         }
+        bytesLeft -= paramFormatCount * 2L;
       }
 
       final int paramValuesCount = channel.readUnsignedShort();
+      bytesLeft -= 2;
+      // A value takes at least its 4-byte length
+      if (paramValuesCount * 4L > bytesLeft) {
+        refuseMessageAndClose("bind message declares " + paramValuesCount + " parameters, more than its length holds");
+        return;
+      }
       totalParamValues = paramValuesCount;
       if (DEBUG)
         LogManager.instance().log(this, Level.INFO, "PSQL: bind paramValuesCount=%d (thread=%s)",
@@ -3598,6 +3626,7 @@ public class PostgresNetworkExecutor extends Thread {
           if (DEBUG)
             LogManager.instance().log(this, Level.INFO, "PSQL: bind reading param %d size (thread=%s)", i, Thread.currentThread().threadId());
           final long paramSize = channel.readUnsignedInt();
+          bytesLeft -= 4;
           if (DEBUG)
             LogManager.instance().log(this, Level.INFO, "PSQL: bind param %d size=%d (thread=%s)", i, paramSize, Thread.currentThread().threadId());
 
@@ -3616,14 +3645,18 @@ public class PostgresNetworkExecutor extends Thread {
             // either reintroduce an unbounded read or block the connection thread indefinitely if the
             // declared bytes never arrive. Tell the client why, then close the connection outright
             // rather than gamble on realigning the stream.
-            setExtendedProtocolError();
-            writeError(ERROR_SEVERITY.FATAL, "Postgres bind parameter too large: " + paramSize + " bytes (max "
-                + server.getConfiguration().getValueAsInteger(GlobalConfiguration.POSTGRES_MAX_PARAM_SIZE) + ")", "08P01");
-            shutdown = true;
+            refuseMessageAndClose("Postgres bind parameter too large: " + paramSize + " bytes (max "
+                + server.getConfiguration().getValueAsInteger(GlobalConfiguration.POSTGRES_MAX_PARAM_SIZE) + ")");
             return;
           }
-          final byte[] paramValue = new byte[(int) paramSize];
-          channel.readBytes(paramValue);
+          if (paramSize > bytesLeft) {
+            // The message has fewer bytes left than this value declares, so its bytes are not all in this message
+            refuseMessageAndClose("bind parameter " + (i + 1) + " declares " + paramSize + " bytes, but the message has " + Math.max(0L, bytesLeft)
+                + " left");
+            return;
+          }
+          bytesLeft -= paramSize;
+          final byte[] paramValue = readBindValue((int) paramSize);
           // The length prefix and value bytes for this parameter are now fully consumed off the wire,
           // regardless of whether deserialize() below succeeds. Advance paramsConsumed here (rather than
           // after a successful deserialize()) so the catch block's drain/recovery loop always restarts at
@@ -3666,6 +3699,11 @@ public class PostgresNetworkExecutor extends Thread {
       if (DEBUG)
         LogManager.instance().log(this, Level.INFO, "PSQL: bind reading resultFormatCount (thread=%s)", Thread.currentThread().threadId());
       final int resultFormatCount = channel.readShort();
+      bytesLeft -= 2;
+      if (resultFormatCount * 2L > bytesLeft) {
+        refuseMessageAndClose("bind message declares " + resultFormatCount + " result formats, more than its length holds");
+        return;
+      }
       if (resultFormatCount > 0) {
         portal.resultFormats = new ArrayList<>(resultFormatCount);
         for (int i = 0; i < resultFormatCount; i++) {
@@ -3739,16 +3777,19 @@ public class PostgresNetworkExecutor extends Thread {
       try {
         for (int i = paramsConsumed; i < totalParamValues; i++) {
           final long sz = channel.readUnsignedInt();
+          bytesLeft -= 4;
           if (sz == NULL_PARAM_LENGTH)
             continue;
-          if (sz > server.getConfiguration().getValueAsInteger(GlobalConfiguration.POSTGRES_MAX_PARAM_SIZE)) {
+          if (sz > server.getConfiguration().getValueAsInteger(GlobalConfiguration.POSTGRES_MAX_PARAM_SIZE) || sz > bytesLeft) {
             // Same reasoning as the main loop's guard: draining a declared-but-undelivered amount of
             // data risks an unbounded/blocking read, so give up on resyncing rather than attempt it.
             drainedCleanly = false;
             break;
           }
+          bytesLeft -= sz;
+          // Skipped as it arrives: nothing is sized from the declared length
           if (sz > 0)
-            channel.readBytes(new byte[(int) sz]);
+            channel.getDataInput().skipNBytes(sz);
         }
         if (drainedCleanly && !resultFormatSectionRead) {
           final int resultFormatCount = channel.readShort();
@@ -3767,10 +3808,51 @@ public class PostgresNetworkExecutor extends Thread {
     }
   }
 
-  private void parseCommand() {
+  /**
+   * Reads a Bind parameter value of {@code size} bytes. Up to {@link #BIND_VALUE_READ_STEP} it is read straight into its array;
+   * beyond that it is taken in pieces of that size and put together once it has all arrived, so a client that declares a long
+   * value and stops sending holds the bytes it sent and not the length it declared.
+   */
+  private byte[] readBindValue(final int size) throws IOException {
+    final DataInputStream input = channel.getDataInput();
+    if (size <= BIND_VALUE_READ_STEP) {
+      final byte[] value = new byte[size];
+      input.readFully(value);
+      return value;
+    }
+
+    final List<byte[]> pieces = new ArrayList<>();
+    for (int remaining = size; remaining > 0; ) {
+      final byte[] piece = new byte[Math.min(remaining, BIND_VALUE_READ_STEP)];
+      input.readFully(piece);
+      pieces.add(piece);
+      remaining -= piece.length;
+    }
+
+    final byte[] value = new byte[size];
+    int offset = 0;
+    for (final byte[] piece : pieces) {
+      System.arraycopy(piece, 0, value, offset, piece.length);
+      offset += piece.length;
+    }
+    return value;
+  }
+
+  /**
+   * Answers a message whose own sizes do not fit its length with a FATAL protocol error and ends the connection: what follows in
+   * the stream cannot be told apart from the rest of the message, so there is no point to resume reading from.
+   */
+  private void refuseMessageAndClose(final String message) {
+    setExtendedProtocolError();
+    writeError(ERROR_SEVERITY.FATAL, message, "08P01");
+    shutdown = true;
+  }
+
+  private void parseCommand(final long messageBodyLength) {
     try {
       // PARSE
       final String portalName = readString();
+      long bytesLeft = messageBodyLength - lastStringBytes;
 
       // Normalized HERE, once, for every branch below and for everything that reads portal.query later (issue
       // #8245): PostgresTransactionStatement.parse() matches whole tokens up to the end of the text, and
@@ -3781,9 +3863,16 @@ public class PostgresNetworkExecutor extends Thread {
       // ReadyForQuery status byte - never moved, so a statement pipelined after a failure inside the block still
       // ran and was committed. The same normalization queryCommand() applies to its own text.
       final String statementText = normalizeStatementText(readString());
+      bytesLeft -= lastStringBytes;
       // The whole message is read before anything about the statement can be refused (its language marker below): a
       // refusal answered with the declared parameter types still unread would leave them to be read as the next message
       final int paramCount = channel.readUnsignedShort();
+      bytesLeft -= 2;
+      // Each declared type takes 4 bytes of the message
+      if (paramCount * 4L > bytesLeft) {
+        refuseMessageAndClose("parse message declares " + paramCount + " parameter types, more than its length holds");
+        return;
+      }
       final long[] declaredTypes = new long[paramCount];
       for (int i = 0; i < paramCount; i++)
         declaredTypes[i] = channel.readUnsignedInt();
@@ -5097,8 +5186,10 @@ public class PostgresNetworkExecutor extends Thread {
     int len = 0;
     for (; len < buffer.length; len++) {
       final int b = readNextByte();
-      if (b == 0)
+      if (b == 0) {
+        lastStringBytes = len + 1;
         return new String(buffer, 0, len, DatabaseFactory.getDefaultCharset());
+      }
 
       buffer[len] = (byte) b;
     }
