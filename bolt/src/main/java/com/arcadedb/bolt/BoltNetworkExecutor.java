@@ -994,7 +994,7 @@ public class BoltNetworkExecutor extends Thread {
       // The grammar does not parse the prefix, so the analysis above fails for them and reads as a write: what to run, and in
       // which access mode, stays decided by it, but a PROFILE of a read must not report a write
       final CypherStatement typedStatement =
-          explainMode || profileMode ? analyzeStatement(trimmedQuery.substring(PLAN_PREFIX_LENGTH).trim()) : statement;
+          explainMode || profileMode ? analyzeStatement(OpenCypherQueryEngine.stripCypherPreparser(trimmedQuery.substring(PLAN_PREFIX_LENGTH)).trim()) : statement;
       stream.writeOperation = typedStatement == null || !typedStatement.isReadOnly();
       stream.schemaOperation = typedStatement instanceof CypherDDLStatement;
 

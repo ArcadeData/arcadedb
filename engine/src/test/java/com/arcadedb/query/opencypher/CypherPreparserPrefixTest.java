@@ -68,6 +68,10 @@ class CypherPreparserPrefixTest extends TestHelper {
     try (final ResultSet rs = database.command("opencypher", "CYPHER 5\nEXPLAIN MATCH (p:Person) RETURN p.name")) {
       assertThat(rs.next().<Object>getProperty("executionPlan")).isNotNull();
     }
+    // @neo4j/graphql's TCK check sends EXPLAIN in front of the statement it generated, prefix and all
+    try (final ResultSet rs = database.command("opencypher", "EXPLAIN CYPHER 5\nMATCH (p:Person) RETURN p.name")) {
+      assertThat(rs.next().<Object>getProperty("executionPlan")).isNotNull();
+    }
     try (final ResultSet rs = database.command("opencypher", "CYPHER 5\nPROFILE MATCH (p:Person) RETURN p.name AS name")) {
       assertThat(rs.next().<String>getProperty("name")).isEqualTo("a");
     }

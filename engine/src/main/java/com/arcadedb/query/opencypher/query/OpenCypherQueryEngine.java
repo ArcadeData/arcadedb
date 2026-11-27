@@ -153,7 +153,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
       // it stays idempotent while still reporting the wrapped statement's operation types (issue #9313).
       final String stripped = stripLeadingComments(query);
       final boolean explain = stripped.regionMatches(true, 0, "EXPLAIN ", 0, 8);
-      final String actual = explain || stripped.regionMatches(true, 0, "PROFILE ", 0, 8) ? stripped.substring(8).trim() : stripCypherPreparser(query);
+      final String actual = explain || stripped.regionMatches(true, 0, "PROFILE ", 0, 8) ? stripCypherPreparser(stripped.substring(8)).trim() : stripCypherPreparser(query);
 
       // Use statement cache to avoid re-parsing
       // The same lookup the execution makes, so the literals of the text are extracted the same way and the cache holds one
@@ -255,10 +255,10 @@ public class OpenCypherQueryEngine implements QueryEngine {
 
       if (upperQuery.startsWith("EXPLAIN ")) {
         explain = true;
-        actualQuery = actualQuery.substring(8).trim();
+        actualQuery = stripCypherPreparser(actualQuery.substring(8)).trim();
       } else if (upperQuery.startsWith("PROFILE ")) {
         profile = true;
-        actualQuery = actualQuery.substring(8).trim();
+        actualQuery = stripCypherPreparser(actualQuery.substring(8)).trim();
       }
 
       final boolean timeExecution = asksForTimedExecution(parameters);
@@ -440,7 +440,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
     final boolean explain = actual.regionMatches(true, 0, "EXPLAIN ", 0, 8);
     final boolean profile = !explain && actual.regionMatches(true, 0, "PROFILE ", 0, 8);
     if (explain || profile)
-      actual = actual.substring(8).trim();
+      actual = stripCypherPreparser(actual.substring(8)).trim();
 
     final CypherStatement statement = (explain || profile ?
         database.getCypherStatementCache().getAsWritten(actual) :
@@ -486,10 +486,10 @@ public class OpenCypherQueryEngine implements QueryEngine {
 
       if (upperQuery.startsWith("EXPLAIN ")) {
         explain = true;
-        actualQuery = actualQuery.substring(8).trim();
+        actualQuery = stripCypherPreparser(actualQuery.substring(8)).trim();
       } else if (upperQuery.startsWith("PROFILE ")) {
         profile = true;
-        actualQuery = actualQuery.substring(8).trim();
+        actualQuery = stripCypherPreparser(actualQuery.substring(8)).trim();
       }
 
       final boolean timeExecution = asksForTimedExecution(parameters);
