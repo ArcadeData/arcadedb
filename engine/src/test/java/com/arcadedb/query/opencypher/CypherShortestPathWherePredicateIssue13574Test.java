@@ -19,7 +19,19 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.ast.BooleanExpression;
+import com.arcadedb.query.opencypher.ast.Direction;
+import com.arcadedb.query.opencypher.ast.NodePattern;
+import com.arcadedb.query.opencypher.ast.RelationshipPattern;
+import com.arcadedb.query.opencypher.ast.ShortestPathPattern;
+import com.arcadedb.query.opencypher.executor.steps.ShortestPathStep;
+import com.arcadedb.query.sql.executor.AbstractExecutionStep;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
@@ -187,6 +199,56 @@ class CypherShortestPathWherePredicateIssue13574Test extends TestHelper {
         WHERE length(p) = 2
         RETURN [n IN nodes(p) | coalesce(n.name, n.title)] AS names LIMIT 1""";
     assertThat(namesOf(query, Map.of())).hasSize(1);
+  }
+
+  @Test
+  void stepEvaluatesThePredicateOnlyForThePathsItIsAskedFor() {
+    // Two passing paths of length 2 (through M1 and through M2): pulling one row must evaluate the predicate on one candidate only
+    final int[] evaluations = new int[1];
+    final BooleanExpression countingPredicate = new BooleanExpression() {
+      @Override
+      public boolean evaluate(final Result result, final CommandContext context) {
+        evaluations[0]++;
+        return true;
+      }
+
+      @Override
+      public String getText() {
+        return "counting";
+      }
+    };
+
+    database.transaction(() -> {
+      final BasicCommandContext context = new BasicCommandContext();
+      context.setDatabase(database);
+
+      final Vertex k = database.query("opencypher", "MATCH (k:Person {name:'K'}) RETURN k").next().getProperty("k");
+      final Vertex a = database.query("opencypher", "MATCH (a:Person {name:'A'}) RETURN a").next().getProperty("a");
+      final AbstractExecutionStep input = new AbstractExecutionStep(context) {
+        private boolean done;
+
+        @Override
+        public ResultSet syncPull(final CommandContext ctx, final int nRecords) {
+          final InternalResultSet rs = new InternalResultSet();
+          if (!done) {
+            done = true;
+            rs.add(new ResultInternal().setProperty("k", k).setProperty("a", a));
+          }
+          return rs;
+        }
+      };
+
+      final ShortestPathPattern pattern = new ShortestPathPattern(
+          List.of(new NodePattern("k", null, null), new NodePattern("a", null, null)),
+          List.of(new RelationshipPattern(null, List.of("R"), Direction.BOTH, null, 1, 2)), "p", true);
+      final ShortestPathStep step = new ShortestPathStep("k", "a", "p", pattern, countingPredicate, context);
+      step.setPrevious(input);
+
+      final ResultSet rs = step.syncPull(context, 1);
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<Object>getProperty("p")).isNotNull();
+      assertThat(evaluations[0]).isEqualTo(1);
+    });
   }
 
   @Test
