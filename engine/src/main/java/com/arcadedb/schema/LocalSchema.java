@@ -3343,7 +3343,7 @@ public class LocalSchema implements Schema {
     // Create executor
     final TriggerExecutor executor;
     if (trigger.getActionType() == Trigger.ActionType.SQL) {
-      executor = new SQLTriggerExecutor(trigger.getName(), trigger.getActionCode());
+      executor = new SQLTriggerExecutor(trigger);
     } else if (trigger.getActionType() == Trigger.ActionType.JAVASCRIPT) {
       executor = new ScriptTriggerExecutor(trigger.getName(), trigger.getActionCode());
     } else if (trigger.getActionType() == Trigger.ActionType.JAVA) {
