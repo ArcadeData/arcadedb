@@ -4924,13 +4924,26 @@ public class SelectExecutionPlanner {
     // Each branch then ends with the step that gives its rows their best $score (issue #11618)
     final boolean rescore = info.flattenedWhereClause.size() > 1 && !mergeByScore && rescoresTheBranches(typez, info, context);
 
+    // An OR with a branch no index answers is one scan of the type with the whole WHERE: the branch needs the scan anyway, and
+    // planning it as a union would read the type again for every such branch, plus an index search for each of the others,
+    // only to deduplicate what the one scan returns once. Only when the scan reproduces what every index of the other branches
+    // answers, which is what a key index (LSM_TREE, HASH) guarantees, see withoutKeyIndexes(): a FULL_TEXT index matches by the
+    // analyzer's tokens, which the scan's own evaluation of the condition does not, so such a branch stays planned on its own
+    final List<IndexSearchDescriptor> branchIndexes =
+        info.flattenedWhereClause.size() > 1 ? plainBranchIndexes(typez, info, context) : null;
+    if (branchIndexes != null && scanAnswersEveryBranch(branchIndexes))
+      return false;
+
+    int branchNo = 0;
     for (AndBlock block : info.flattenedWhereClause) {
+      final int thisBranch = branchNo++;
       List<BinaryCondition> indexedFunctionConditions = block.getIndexedFunctionConditions(typez, context);
 
       indexedFunctionConditions = filterIndexedFunctionsWithoutIndex(indexedFunctionConditions, info.target, context);
 
       if (indexedFunctionConditions == null || indexedFunctionConditions.isEmpty()) {
-        IndexSearchDescriptor bestIndex = findBestIndexFor(context, plannableIndexes(typez.getAllIndexes(true)), block, typez);
+        IndexSearchDescriptor bestIndex = branchIndexes != null ? branchIndexes.get(thisBranch)
+            : findBestIndexFor(context, plannableIndexes(typez.getAllIndexes(true)), block, typez);
         if (bestIndex != null) {
 
           final FetchFromIndexStep step = new FetchFromIndexStep(bestIndex.index, bestIndex.keyCondition,
@@ -5105,6 +5118,39 @@ public class SelectExecutionPlanner {
     } else {
       return false;
     }
+  }
+
+  /**
+   * The best index search of every branch of the WHERE's OR, in branch order (null for a branch no index answers), or null when a
+   * branch calls an indexed function, which the per-branch planning handles itself.
+   */
+  private List<IndexSearchDescriptor> plainBranchIndexes(final DocumentType type, final QueryPlanningInfo info,
+      final CommandContext context) {
+    final List<TypeIndex> indexes = plannableIndexes(type.getAllIndexes(true));
+    final List<IndexSearchDescriptor> result = new ArrayList<>(info.flattenedWhereClause.size());
+    for (final AndBlock block : info.flattenedWhereClause) {
+      final List<BinaryCondition> indexedFunctionConditions = filterIndexedFunctionsWithoutIndex(
+          block.getIndexedFunctionConditions(type, context), info.target, context);
+      if (indexedFunctionConditions != null && !indexedFunctionConditions.isEmpty())
+        return null;
+      result.add(indexes.isEmpty() ? null : findBestIndexFor(context, indexes, block, type));
+    }
+    return result;
+  }
+
+  /**
+   * Whether one scan of the type filtered by the whole WHERE answers the OR whose branches {@link #plainBranchIndexes} planned: a
+   * branch no index answers needs the scan anyway, and every index search of the other branches is through a key index, whose
+   * answer the scan's evaluation of the condition reproduces exactly.
+   */
+  private static boolean scanAnswersEveryBranch(final List<IndexSearchDescriptor> branchIndexes) {
+    boolean unindexedBranch = false;
+    for (final IndexSearchDescriptor descriptor : branchIndexes)
+      if (descriptor == null)
+        unindexedBranch = true;
+      else if (!isKeyIndex(descriptor.index))
+        return false;
+    return unindexedBranch;
   }
 
   /**
@@ -6156,16 +6202,17 @@ public class SelectExecutionPlanner {
     if (indexes.isEmpty())
       return null;
 
-    List<IndexSearchDescriptor> indexSearchDescriptors =
-        info.flattenedWhereClause.stream()
-            .map(x -> findBestIndexFor(context, indexes, x, typez))
-            .collect(Collectors.toList());
-
     // Fix for issue #2695: If any OR branch cannot be optimized with an index,
     // we must fall back to a full scan. Otherwise, those branches would be silently
     // ignored, causing incomplete query results (e.g., DELETE only deleting some records).
-    if (indexSearchDescriptors.contains(null))
-      return null; // some blocks could not be managed with an index, fall back to full scan
+    // The search stops at the first such branch: the branches after it are not planned for nothing (issue #12976)
+    List<IndexSearchDescriptor> indexSearchDescriptors = new ArrayList<>(info.flattenedWhereClause.size());
+    for (final AndBlock block : info.flattenedWhereClause) {
+      final IndexSearchDescriptor descriptor = findBestIndexFor(context, indexes, block, typez);
+      if (descriptor == null)
+        return null; // some blocks could not be managed with an index, fall back to full scan
+      indexSearchDescriptors.add(descriptor);
+    }
 
     // A keyset page (WHERE e = ? AND k > :after ORDER BY k LIMIT n) can cost less walking k's index in order (issue #11700)
     if (allowDeferredLetFilter && indexSearchDescriptors.size() == 1) {
@@ -6467,7 +6514,8 @@ public class SelectExecutionPlanner {
       }
     } else {
       // Defensive, and not reachable through a SELECT today: handleTypeAsTargetWithIndexedFunction() runs first at
-      // both call sites and claims every multi-block WHERE, so an OR reaches its own per-branch planning - which
+      // both call sites and claims every multi-block WHERE whose branches all have an index or call an indexed function (an OR with a
+      // branch no index answers reaches the scan below), so an OR reaches its own per-branch planning - which
       // chains the LET into each sub-plan correctly, because that sub-plan is not empty by then. Kept because this
       // branch chains residual filters of its own, and one reading a per-record LET would be evaluated with the
       // variable unset, which is a wrong answer rather than a lost optimisation.
@@ -6921,12 +6969,13 @@ public class SelectExecutionPlanner {
   }
 
   /** Whether a scan filtered by the condition answers exactly what {@code index} does, see {@link #withoutKeyIndexes()}. */
-  private static boolean isKeyIndex(final TypeIndex index) {
+  private static boolean isKeyIndex(final Index index) {
     try {
       final Schema.INDEX_TYPE type = index.getType();
       return type != null && type.isExactKeyLookup();
     } catch (final IndexException e) {
-      // The index went away meanwhile: answering true removes it from the candidates, where it does not belong anyway
+      // The index went away meanwhile: answering true removes it from the candidates, where it does not belong anyway, and lets
+      // an OR with an unindexed branch be answered by the scan, which does not need it
       return true;
     }
   }
