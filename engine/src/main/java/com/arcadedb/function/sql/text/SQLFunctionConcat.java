@@ -69,6 +69,12 @@ public class SQLFunctionConcat extends SQLAggregatedFunction {
     return true;
   }
 
+  /** The text is built from the values, so the distinct values a DISTINCT call remembers do not account for it. */
+  @Override
+  public boolean holdsACopyOfItsValues() {
+    return true;
+  }
+
   @Override
   public long getHeldValues() {
     return held;

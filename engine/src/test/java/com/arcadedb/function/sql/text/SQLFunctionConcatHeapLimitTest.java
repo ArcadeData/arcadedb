@@ -82,6 +82,24 @@ class SQLFunctionConcatHeapLimitTest extends TestHelper {
   }
 
   @Test
+  void aDistinctConcatHoldsItsTextUnderTheBudget() {
+    GlobalConfiguration.QUERY_MAX_HEAP_RAM.setValue(1L);
+
+    // EVERY id IS A DISTINCT VALUE, SO THE LONG DELIMITER IS APPENDED FOR EVERY ROW
+    assertRefused("sql", "SELECT concat(DISTINCT id, payload) AS t FROM Item");
+    assertRefused("sql", "SELECT grp, concat(DISTINCT id, payload) AS t FROM Item GROUP BY grp");
+    assertRefused("opencypher", "MATCH (i:Item) RETURN sql.concat(DISTINCT i.id, i.payload) AS t");
+  }
+
+  @Test
+  void aDistinctConcatOverTheCapOfValuesFailsTheQuery() {
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP, 100L);
+
+    assertThatThrownBy(() -> drain("sql", "SELECT concat(DISTINCT id, ',') AS t FROM Item")).isInstanceOf(HeapLimitExceededException.class)
+        .hasMessageContaining(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getKey());
+  }
+
+  @Test
   void aConcatOverTheCapOfValuesFailsTheQuery() {
     database.getConfiguration().setValue(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP, 100L);
 
@@ -125,6 +143,10 @@ class SQLFunctionConcatHeapLimitTest extends TestHelper {
 
     try (final ResultSet rs = database.query("sql", "SELECT concat(DISTINCT grp, ',') AS t FROM Item")) {
       assertThat(rs.next().<String>getProperty("t")).isEqualTo("0,1,2");
+    }
+
+    try (final ResultSet rs = database.query("sql", "SELECT concat(DISTINCT tag, ',') AS t FROM Item")) {
+      assertThat(rs.next().<String>getProperty("t").split(",")).hasSize(ROWS);
     }
 
     try (final ResultSet rs = database.query("opencypher", "MATCH (i:Item) RETURN sql.concat(i.tag, ',') AS t")) {

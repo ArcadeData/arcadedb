@@ -129,6 +129,16 @@ public abstract class SQLAggregatedFunction extends SQLFunctionConfigurableAbstr
   }
 
   /**
+   * Whether what a function that {@link #holdsEveryValue() holds every value} holds is a copy of the values it was given, such
+   * as the text concat() builds from them, rather than the values themselves. A call that remembers the distinct values it was
+   * fed - {@code f(DISTINCT x)} - already holds those values, which covers a function that keeps them as they are, but not the
+   * copy: the copy is charged on top of them. {@code false} unless a function says otherwise.
+   */
+  public boolean holdsACopyOfItsValues() {
+    return false;
+  }
+
+  /**
    * How many values a function that {@link #holdsEveryValue() holds every value} holds now: what the per-operation element
    * cap counts it by (issue #9793). A {@code set()} fed a million rows of two distinct values holds two, and a
    * {@code list()} fed one collection holds every element of it, so the count is the function's to give. {@code -1} when
