@@ -196,7 +196,9 @@ public class InExpression implements BooleanExpression {
             return known;
         }
       }
-      valuesToCheck = listOperand(listValue);
+      // Neo4j cannot know the type of a stored value before it runs, so x IN n.p compares a scalar p with x as a one-element list;
+      // a literal or a parameter it does know, and those stay refused (issues #10541, #13563)
+      valuesToCheck = readsStoredValue(listItem) && isScalar(listValue) ? List.of(listValue) : listOperand(listValue);
     } else {
       // Multiple expressions (parsed list literal items)
       final List<Object> evaluated = new ArrayList<>(list.size());
@@ -283,6 +285,17 @@ public class InExpression implements BooleanExpression {
       return MultiValue.getMultiValueAsList(listValue);
     throw new IllegalArgumentException(
         "InvalidArgumentType: IN requires a list on the right side, got " + listValue.getClass().getSimpleName());
+  }
+
+  /** Whether the expression reads a value out of a record or a map (n.p, m.k, a chain of them), whose type is only known at run time. */
+  private static boolean readsStoredValue(final Expression operand) {
+    return operand instanceof PropertyAccessExpression || operand instanceof ChainedPropertyAccessExpression
+        || operand instanceof PropertyReadExpression;
+  }
+
+  private static boolean isScalar(final Object value) {
+    // a BINARY value stays refused: it is one opaque value that is no list (issue #8098)
+    return !(value instanceof Collection<?>) && !(value instanceof byte[]) && !MultiValue.isSequenceArray(value);
   }
 
   /**
