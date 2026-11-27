@@ -20,6 +20,7 @@ package com.arcadedb.gremlin;
 
 import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
+import org.apache.tinkerpop.gremlin.language.grammar.GraphTraversalSourceVisitor;
 import org.apache.tinkerpop.gremlin.language.grammar.GremlinAntlrToJava;
 import org.apache.tinkerpop.gremlin.language.grammar.GremlinParser;
 import org.apache.tinkerpop.gremlin.language.grammar.GremlinQueryParser;
@@ -58,7 +59,9 @@ import java.util.Set;
  * <li>every statement of a script counts, while the script engine answers only the last one, so a write before a read is a write</li>
  * <li>a traversal that has to run to build another one, a terminated traversal passed as an argument
  * ({@code g.V(g.V().has('name','a').id().next())}), runs only when it reads: the source it is built from carries
- * {@link WriteRefusingStrategy}, which stops one that writes before its first step, and the script is then a write</li>
+ * {@link WriteRefusingStrategy}, which stops one that writes before its first step, and the script is then a write. That holds for a
+ * statement that is a traversal source on its own too ({@code g.withSideEffect('k', g.V().count().next())}), which has no traversal but
+ * is built, with its arguments, when the script is evaluated</li>
  * </ul>
  * A script the grammar cannot read is Groovy, which only the {@code auto} and {@code groovy} engines run: it is code, which only
  * running tells what it does, so {@code ArcadeGremlin} does not evaluate it and answers {@link #anyOperation()} for it.
@@ -225,7 +228,12 @@ final class GremlinStatementAnalyzer {
       else if (ctx.query() != null)
         // <query>.toString()
         visitQuery(ctx.query());
-      // A BARE TRAVERSAL SOURCE, A TRANSACTION CONTROL OR AN EMPTY STATEMENT: NOTHING THAT READS OR WRITES THE GRAPH
+      else if (ctx.traversalSource() != null)
+        // A BARE TRAVERSAL SOURCE, WITH OR WITHOUT A TRANSACTION CONTROL AFTER IT. IT HAS NO TRAVERSAL OF ITS OWN, BUT THE ARGUMENTS OF
+        // ITS CONFIGURATION METHODS ARE BUILT WITH IT, AND A TERMINATED TRAVERSAL AMONG THEM RUNS AT THAT MOMENT: THE SOURCE IS BUILT
+        // FROM THE GUARDED ONE, WHICH STOPS A TERMINATED TRAVERSAL THAT WRITES
+        new GraphTraversalSourceVisitor(this).visitTraversalSource(ctx.traversalSource());
+      // A TRANSACTION CONTROL (NEVER APPLIED) OR AN EMPTY STATEMENT: NOTHING THAT READS OR WRITES THE GRAPH
       return null;
     }
   }
