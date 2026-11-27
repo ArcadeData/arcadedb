@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.executor;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.opencypher.InlineProperties;
+import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.ComparisonExpression;
 import com.arcadedb.query.opencypher.ast.CypherReferencedVariables;
@@ -41,6 +42,7 @@ import com.arcadedb.query.opencypher.executor.steps.ExpandPathStep;
 import com.arcadedb.query.opencypher.executor.steps.FilterPropertiesStep;
 import com.arcadedb.query.opencypher.executor.steps.IndexSeekStep;
 import com.arcadedb.query.opencypher.executor.steps.MatchEdgeByIndexStep;
+import com.arcadedb.query.opencypher.executor.steps.MatchEdgeByTypeScanStep;
 import com.arcadedb.query.opencypher.executor.steps.MatchNodeStep;
 import com.arcadedb.query.opencypher.executor.steps.MatchRelationshipStep;
 import com.arcadedb.query.opencypher.executor.steps.OptionalMatchStep;
@@ -51,9 +53,11 @@ import com.arcadedb.query.opencypher.executor.steps.ZeroLengthPathStep;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import java.util.ArrayList;
@@ -307,6 +311,14 @@ final class MatchStepBuilder {
               boundVariables, matchVariables, context);
           if (edgeIndexSeed != null) {
             currentStep = edgeIndexSeed;
+            continue;
+          }
+          // Issue #11874: no index answers the relationship's predicate, which a scan of its types' buckets answers when it
+          // requires a property of the relationship, instead of a scan of every vertex and a walk of every edge list
+          final MatchEdgeByTypeScanStep edgeTypeScanSeed = tryBuildEdgeTypeScanSeed(matchClause, pathPatterns, patternIndex,
+              boundVariables, matchVariables, pushedConjuncts, context);
+          if (edgeTypeScanSeed != null) {
+            currentStep = edgeTypeScanSeed;
             continue;
           }
         }
@@ -713,6 +725,145 @@ final class MatchStepBuilder {
       return pinned.isEmpty();
     }
     return true;
+  }
+
+  /**
+   * Builds a {@link MatchEdgeByTypeScanStep} seed for a single-hop pattern no index of its relationship types answers, when the
+   * MATCH's {@code WHERE} clause or the relationship's inline property map requires a property of the relationship (issue
+   * #11874): such a predicate keeps out every light edge, the one kind of edge the walk finds and a scan of the types' buckets
+   * does not (see {@link EdgeTypeScanPlanner}). So does a statement that only aggregates properties of the relationship with
+   * aggregates that skip a null, {@code RETURN count(e.w)}: a light edge adds nothing to them. The scan reads the edges of the
+   * types instead of every vertex and every edge list, and checks the endpoints' labels and inline properties on the two
+   * vertices of each edge it keeps.
+   * <p>
+   * Returns {@code null} - deferring to the ordinary vertex-scan + expansion plan - whenever a precondition is not met, when the
+   * statement writes, or when the source endpoint carries labels whose vertices and their share of the edges cost the walk less
+   * than the scan of every edge of the types. On success it registers the variables the step binds in {@code matchVariables}, and
+   * the conjuncts of the {@code WHERE} clause that read only the relationship in {@code pushedConjuncts}: the step decides them on
+   * every row it passes on, before it loads the endpoints, and the clause's filter leaves them out.
+   */
+  private MatchEdgeByTypeScanStep tryBuildEdgeTypeScanSeed(final MatchClause matchClause, final List<PathPattern> pathPatterns,
+      final int patternIndex, final Set<String> boundVariables, final Set<String> matchVariables,
+      final Set<BooleanExpression> pushedConjuncts, final CommandContext context) {
+    final PathPattern pathPattern = pathPatterns.get(patternIndex);
+    // A statement that writes could meet in the buckets the edges its own writes add behind the scan
+    if (!statement.isReadOnly() || pathPattern.hasPathVariable() || pathPattern.getRelationshipCount() != 1)
+      return null;
+
+    final RelationshipPattern rel = pathPattern.getRelationship(0);
+    if (rel instanceof QuantifiedPathPattern || rel.isVariableLength() || rel.hasWhereExpression()
+        || rel.getPropertiesParameterName() != null || !rel.hasTypes())
+      return null;
+
+    final String edgeVar = rel.getVariable();
+    final boolean namedEdge = edgeVar != null && !edgeVar.isEmpty();
+    if (namedEdge && (boundVariables.contains(edgeVar) || matchVariables.contains(edgeVar)))
+      return null;
+
+    // The seed is the first step of the plan: there is no row to evaluate an inline value that reads a variable against
+    final Map<String, Object> relProperties = rel.hasProperties() ? rel.getProperties() : null;
+    if (!EdgeIndexSeedPlanner.isRowIndependent(relProperties))
+      return null;
+
+    final WhereClause whereClause = matchClause.hasWhereClause() ? matchClause.getWhereClause() : null;
+    final BooleanExpression where = whereClause != null ? whereClause.getConditionExpression() : null;
+    if ((relProperties == null || relProperties.isEmpty()) && !(namedEdge
+        && (EdgeTypeScanPlanner.requiresAPropertyOf(edgeVar, where) || EdgeTypeScanPlanner.onlyAggregatesAPropertyOf(edgeVar, statement))))
+      return null;
+
+    final List<String> edgeTypes = EdgeTypeScanPlanner.scanTypes(database.getSchema(), rel.getTypes());
+    if (edgeTypes == null || edgeTypes.isEmpty())
+      return null;
+
+    final NodePattern srcNode = pathPattern.getFirstNode();
+    final NodePattern tgtNode = pathPattern.getLastNode();
+    if (!isTypeScannableEndpoint(srcNode, true, whereClause, boundVariables, matchVariables)
+        || !isTypeScannableEndpoint(tgtNode, false, whereClause, boundVariables, matchVariables)
+        || !isTypeScanCheaperThanWalk(srcNode, edgeTypes))
+      return null;
+    // A target a UNIQUE index pins is the cheaper start: one lookup and the relationships of one vertex (issue #12149)
+    if (startsFromUniquelyKeyedTarget(pathPattern, srcNode, srcNode.getVariable() != null ? srcNode.getVariable() : "  src",
+        whereClause, false, boundVariables, matchVariables))
+      return null;
+
+    final String effectiveSourceVar = srcNode.getVariable() != null ? srcNode.getVariable()
+        : ("  src" + nextAnonymousId());
+    final String effectiveTargetVar = tgtNode.getVariable() != null ? tgtNode.getVariable()
+        : ("  tgt" + nextAnonymousId());
+    // An anonymous relationship another hop of this MATCH could bind again is tracked as the index seed tracks it (issue #11585)
+    final String seededEdgeVar = namedEdge ? edgeVar
+        : hopEdges.computeHopEdgeTrackingNeeds(pathPatterns, patternIndex)[0] ? "  rel" + nextAnonymousId() : null;
+
+    matchVariables.add(effectiveSourceVar);
+    matchVariables.add(effectiveTargetVar);
+    if (seededEdgeVar != null)
+      matchVariables.add(seededEdgeVar);
+
+    final List<BooleanExpression> relationshipConjuncts = namedEdge ?
+        EdgeTypeScanPlanner.relationshipOnlyConjuncts(edgeVar, where) : List.of();
+    pushedConjuncts.addAll(relationshipConjuncts);
+
+    final MatchEdgeByTypeScanStep.Pattern pattern = new MatchEdgeByTypeScanStep.Pattern(edgeTypes, rel.getDirection(),
+        effectiveSourceVar, seededEdgeVar, effectiveTargetVar, EdgeIndexSeedPlanner.EndpointFilter.of(srcNode),
+        EdgeIndexSeedPlanner.EndpointFilter.of(tgtNode));
+    return new MatchEdgeByTypeScanStep(pattern, relProperties, EdgeTypeScanPlanner.and(relationshipConjuncts), context);
+  }
+
+  /**
+   * Whether the type scan can bind an endpoint and check what the pattern asks of it on the vertex of each edge (issue #11874).
+   * Not when it is bound already, or carries a dynamic label, an inline {@code WHERE} or a property map given as a parameter, or
+   * an inline value that reads a variable. Nor when it is the source and the pattern narrows it: an inline property map or a
+   * {@code WHERE} conjunct of its own (an {@code id()} included) is decided on each vertex of the scan the walk starts from, and
+   * the walk then reads only the edges of the vertices that pass, which costs less than reading every edge of the types. The
+   * target narrows nothing the walk reads: it is checked on each edge's vertex either way.
+   */
+  private boolean isTypeScannableEndpoint(final NodePattern node, final boolean source, final WhereClause whereClause,
+      final Set<String> boundVariables, final Set<String> matchVariables) {
+    final String var = node.getVariable();
+    if (var != null && (boundVariables.contains(var) || matchVariables.contains(var)))
+      return false;
+    if (node.hasDynamicLabels() || node.hasWhereExpression() || node.getPropertiesParameterName() != null)
+      return false;
+    if (node.hasProperties() && (source || !EdgeIndexSeedPlanner.isRowIndependent(node.getProperties())))
+      return false;
+    return !source || var == null || whereClause == null || whereClause.getConditionExpression() == null
+        || WhereClause.extractForVariables(whereClause.getConditionExpression(), Set.of(var)) == null;
+  }
+
+  /**
+   * Whether scanning every edge of the types costs no more than the walk the plan would otherwise start from the source endpoint
+   * (issue #11874). An unlabelled source is a scan of every vertex, whose edge lists hold every edge of the types: the scan of the
+   * types reads less. A labelled one reads the vertices of its labels and their edges of the types, estimated at the labels'
+   * share of all vertices.
+   * <p>
+   * A count is refused to a user who may not read the type. The total over every vertex type is only the denominator of an
+   * estimate and reads types the statement never names, so a type the user may not read is left out of it rather than refusing a
+   * statement that does not touch it. A type the statement does name (a label of the source, a relationship type) keeps the walk,
+   * which refuses the user when it opens the buckets.
+   */
+  private boolean isTypeScanCheaperThanWalk(final NodePattern source, final List<String> edgeTypes) {
+    if (!source.hasLabels())
+      return true;
+    final Schema schema = database.getSchema();
+    long anchorVertices = 0;
+    long edges = 0;
+    try {
+      for (final DocumentType type : Labels.matchingVertexTypes(schema, source.getLabels(), source.isLabelDisjunction()))
+        anchorVertices += database.countType(type.getName(), false);
+      for (final String edgeType : edgeTypes)
+        edges += database.countType(edgeType, true);
+    } catch (final SecurityException e) {
+      return false;
+    }
+    long allVertices = 0;
+    for (final DocumentType type : schema.getTypes())
+      if (type instanceof VertexType && SecurityHelper.isReadable(database, type))
+        try {
+          allVertices += database.countType(type.getName(), false);
+        } catch (final SecurityException e) {
+          // readable in part only: one of its buckets refuses the count
+        }
+    return edges <= anchorVertices + (double) edges * anchorVertices / Math.max(1L, allVertices);
   }
 
   /**

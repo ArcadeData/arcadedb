@@ -507,7 +507,7 @@ public class MatchEdgeByIndexStep extends AbstractExecutionStep {
     return builder.toString();
   }
 
-  private static String labelsOf(final EdgeIndexSeedPlanner.EndpointFilter filter) {
+  static String labelsOf(final EdgeIndexSeedPlanner.EndpointFilter filter) {
     return filter.labels().isEmpty() ? "" : ":" + String.join(filter.disjunction() ? "|" : ":", filter.labels());
   }
 
