@@ -35,6 +35,8 @@ import java.nio.file.Files;
 import java.util.Base64;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assumptions.assumeThat;
 
 /**
@@ -91,8 +93,19 @@ class Issue12801CreateDatabaseNameStatusIT extends BaseGraphServerTest {
    */
   @Test
   void theNameCheckSharedWithOpenAndDropHasNoLengthLimitOfItsOwn() {
-    getServer(0).checkDatabaseNameIsValid("\u65e5".repeat(100));
-    getServer(0).checkDatabaseNameIsValid("y".repeat(300));
+    assertThatCode(() -> getServer(0).checkDatabaseNameIsValid("\u65e5".repeat(100))).doesNotThrowAnyException();
+    assertThatCode(() -> getServer(0).checkDatabaseNameIsValid("y".repeat(300))).doesNotThrowAnyException();
+  }
+
+  /**
+   * The console, gRPC, open, backup and drop go through the same check without the HTTP handler in front of it: the refusal of a
+   * {@code *} is the check's own, and it is the caller's mistake there too.
+   */
+  @ParameterizedTest
+  @ValueSource(strings = { "a*b", "*", "trailing*" })
+  void theSharedNameCheckRefusesAStar(final String name) {
+    assertThatThrownBy(() -> getServer(0).checkDatabaseNameIsValid(name)).isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("invalid characters");
   }
 
   /**
@@ -108,7 +121,7 @@ class Issue12801CreateDatabaseNameStatusIT extends BaseGraphServerTest {
       // Whoever ignores the permission (root) still creates the database, and there is no failure to classify
       assumeThat(Files.isWritable(databaseDirectory.toPath())).isFalse();
 
-      for (final String name : new String[] { "x".repeat(256), "日".repeat(100) }) {
+      for (final String name : new String[] { "x".repeat(256), "\u65e5".repeat(100) }) {
         final HttpResponse<String> response = executeServerCommand("create database " + name);
 
         assertThat(response.statusCode()).as("body=%s", response.body()).isEqualTo(500);
