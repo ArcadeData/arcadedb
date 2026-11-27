@@ -288,9 +288,11 @@ final class MatchStepBuilder {
           matchVariables.add(targetVar); // Track as bound for subsequent patterns
         }
 
-        // Now add the ShortestPathStep to compute the path
+        // Now add the ShortestPathStep to compute the path. A WHERE conjunct on the path variable restricts the paths the search
+        // may answer, not only the one it found first (issue #13574)
         final ShortestPathStep shortestStep = new ShortestPathStep(sourceVar, targetVar, pathVariable,
-            shortestPathPattern, context);
+            shortestPathPattern, FilterPushdown.extractShortestPathPredicate(whereClause, pathVariable, boundVariables,
+            matchVariables), context);
         if (currentStep != null) {
           shortestStep.setPrevious(currentStep);
         }
