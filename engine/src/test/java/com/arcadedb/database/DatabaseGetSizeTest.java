@@ -25,6 +25,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.DisabledOnOs;
 import org.junit.jupiter.api.condition.OS;
@@ -34,6 +35,10 @@ import java.nio.file.AccessDeniedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -257,5 +262,52 @@ class DatabaseGetSizeTest extends TestHelper {
       final long size = rs.next().<Number>getProperty("size").longValue();
       assertThat(size).isGreaterThan(0L);
     }
+  }
+
+  /**
+   * Issue #12825: files created and removed in the database directory while getSize() walks it (what columnar flush and merge,
+   * WAL segments and manifest temp files do in the background) must not fail the call. Before the fix the walk measured each
+   * listed file with a second stat, and a file removed in between raised a NoSuchFileException wrapped in a
+   * DatabaseOperationException.
+   */
+  @Test
+  void getSizeToleratesFilesRemovedDuringTheWalk() throws Exception {
+    final Path churnDir = Path.of(database.getDatabasePath(), "churn-12825");
+    Files.createDirectory(churnDir);
+    final AtomicBoolean running = new AtomicBoolean(true);
+    final AtomicReference<Throwable> churnError = new AtomicReference<>();
+    final byte[] content = new byte[64];
+
+    final Thread churn = new Thread(() -> {
+      try {
+        int i = 0;
+        while (running.get()) {
+          final Path file = churnDir.resolve("seg-" + (i++ % 32) + ".tmp");
+          Files.write(file, content);
+          Files.deleteIfExists(file);
+        }
+      } catch (final Throwable t) {
+        churnError.set(t);
+      }
+    }, "churn-12825");
+    churn.start();
+
+    final List<Throwable> failures = new ArrayList<>();
+    try {
+      for (int i = 0; i < 2_000 && churnError.get() == null; i++) {
+        try {
+          assertThat(database.getSize()).isGreaterThan(0L);
+        } catch (final DatabaseOperationException e) {
+          failures.add(e);
+        }
+      }
+    } finally {
+      running.set(false);
+      churn.join(10_000);
+      FileUtils.deleteRecursively(churnDir.toFile());
+    }
+
+    assertThat(churnError.get()).isNull();
+    assertThat(failures).isEmpty();
   }
 }
