@@ -1891,6 +1891,15 @@ class TypeRenameTest {
       assertEveryRowIsReadAcrossTheRename("T12758D", "C12758D");
     }
 
+    @Test
+    void theRowsOfATypeThatReachesTheTargetByTwoPathsAreKept() {
+      // A DIAMOND: THE TARGET IS AN ANCESTOR OF THE RECORDS' TYPE BY TWO PATHS, AND THE IDENTITY WALK READS IT ONCE
+      database.command("sql", "CREATE DOCUMENT TYPE L12758D EXTENDS T12758D");
+      database.command("sql", "CREATE DOCUMENT TYPE R12758D EXTENDS T12758D");
+      database.command("sql", "CREATE DOCUMENT TYPE J12758D EXTENDS L12758D, R12758D");
+      assertEveryRowIsReadAcrossTheRename("T12758D", "J12758D");
+    }
+
     @Override
     protected void beginTest() {
       database.command("sql", "CREATE DOCUMENT TYPE T12758D");

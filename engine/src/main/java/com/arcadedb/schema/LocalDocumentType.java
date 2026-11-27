@@ -3766,8 +3766,12 @@ public class LocalDocumentType implements DocumentType {
   public boolean inheritsFrom(final DocumentType type) {
     if (type == this)
       return true;
-    for (final LocalDocumentType superType : superTypes)
-      if (superType.inheritsFrom(type))
+    if (superTypes.isEmpty())
+      return false;
+    // each type above this one once, as isSubTypeOf walks it: a recursion over superTypes visits a shared ancestor once per path
+    final LocalDocumentType[] lineage = getLineage();
+    for (int i = 1; i < lineage.length; i++)
+      if (lineage[i] == type)
         return true;
     return false;
   }
