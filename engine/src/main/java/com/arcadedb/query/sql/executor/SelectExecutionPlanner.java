@@ -5906,10 +5906,10 @@ public class SelectExecutionPlanner {
    *   the two are the same function, and a comparison with a null operand is unknown and stays unknown under NOT;</li>
    *   <li>{@code NOT (NOT (id < 3))} is {@code id < 3}, in the same three-valued logic;</li>
    *   <li>{@code 5 = id} is {@code id = 5} and {@code :lo < id} is {@code id > :lo}, and {@code NOT (id >= 3)} is {@code id < 3}, but
-   *   only when the value has the property's type. A comparison converts its right operand to the type of its left one, so with a
-   *   value of another type the spellings compare differently: {@code '10' > id} compares text where {@code id < '10'} compares
-   *   numbers, {@code 9 = s} reads the text "09" as 9 where {@code s = 9} looks for the key "9", and a value the comparison
-   *   cannot convert makes a range and its complement both false.</li>
+   *   only when the value has the property's type. The scan evaluates the reversed form as its mirror, so {@code '10' > id} and
+   *   {@code id < '10'} select the same records (issue #12921), but an index lookup of a value of another kind may decline where the
+   *   scan answers (see {@code IndexedRangeQueryTest}), and a value the comparison cannot convert makes a range and its complement
+   *   both false, so such a value keeps the scan.</li>
    * </ul>
    */
   private static BooleanExpression indexKeyForm(final BooleanExpression exp, final IndexSearchInfo info, final DocumentType clazz) {
@@ -5955,16 +5955,12 @@ public class SelectExecutionPlanner {
     return keyForm;
   }
 
-  /** {@code a op b} reads {@code b mirror a}, or null for an operator this planner does not turn round. */
+  /**
+   * {@code a op b} reads {@code b mirror a}, the mirror the comparison itself evaluates the reversed form with (issue #12921), or null
+   * for an operator an index does not answer: only {@code =} and the ranges.
+   */
   private static BinaryCompareOperator mirrorOf(final BinaryCompareOperator operator) {
-    return switch (operator) {
-      case EqualsCompareOperator equals -> equals;
-      case LtOperator ignored -> new GtOperator();
-      case GtOperator ignored -> new LtOperator();
-      case LeOperator ignored -> new GeOperator();
-      case GeOperator ignored -> new LeOperator();
-      default -> null;
-    };
+    return operator instanceof EqualsCompareOperator || operator.isRangeOperator() ? operator.mirrored() : null;
   }
 
   /** The operator of {@code NOT (a op b)} written without the NOT, when it is one an index answers, else null. */
