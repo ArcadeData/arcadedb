@@ -160,9 +160,16 @@ class Issue12743MatchRootWithoutTypeTest extends TestHelper {
     assertThatThrownBy(() -> planSelectFrom(empty)).isInstanceOf(CommandSemanticException.class)
         .hasMessageContaining("Unsupported target");
 
-    // ONE CHILD THAT IS NOT A $variable: THE OTHER BRANCH THAT USED TO RAISE THE BARE EXCEPTION
-    final FromItem oneChild = new FromItem();
-    oneChild.jjtAddChild(new Identifier("notAVariable"), 0);
+    // ONE CHILD THAT IS NOT A $variable: THE OTHER BRANCH THAT USED TO RAISE THE BARE EXCEPTION. THE PLANNER WORKS ON A COPY OF
+    // THE TARGET AND FromItem.copy() DOES NOT CARRY THE PARSER CHILDREN, SO THIS ONE KEEPS ITS CHILD ACROSS THE COPY
+    final FromItem oneChild = new FromItem() {
+      @Override
+      public FromItem copy() {
+        final FromItem copy = new FromItem();
+        copy.jjtAddChild(new Identifier("notAVariable"), 0);
+        return copy;
+      }
+    };
     assertThatThrownBy(() -> planSelectFrom(oneChild)).isInstanceOf(CommandSemanticException.class)
         .hasMessageContaining("Unsupported target");
   }
