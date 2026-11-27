@@ -799,9 +799,10 @@ final class MatchStepBuilder {
         EdgeTypeScanPlanner.relationshipOnlyConjuncts(edgeVar, where) : List.of();
     pushedConjuncts.addAll(relationshipConjuncts);
 
-    return new MatchEdgeByTypeScanStep(edgeTypes, rel.getDirection(), effectiveSourceVar, seededEdgeVar, effectiveTargetVar,
-        EdgeIndexSeedPlanner.EndpointFilter.of(srcNode), EdgeIndexSeedPlanner.EndpointFilter.of(tgtNode), relProperties,
-        EdgeTypeScanPlanner.and(relationshipConjuncts), context);
+    final MatchEdgeByTypeScanStep.Pattern pattern = new MatchEdgeByTypeScanStep.Pattern(edgeTypes, rel.getDirection(),
+        effectiveSourceVar, seededEdgeVar, effectiveTargetVar, EdgeIndexSeedPlanner.EndpointFilter.of(srcNode),
+        EdgeIndexSeedPlanner.EndpointFilter.of(tgtNode));
+    return new MatchEdgeByTypeScanStep(pattern, relProperties, EdgeTypeScanPlanner.and(relationshipConjuncts), context);
   }
 
   /**

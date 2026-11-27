@@ -19,8 +19,6 @@
 package com.arcadedb.query.opencypher.executor.operators;
 
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
-import com.arcadedb.query.opencypher.ast.Direction;
-import com.arcadedb.query.opencypher.executor.EdgeIndexSeedPlanner;
 import com.arcadedb.query.opencypher.executor.steps.MatchEdgeByTypeScanStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -41,41 +39,28 @@ import java.util.Locale;
  * scan of K reads the edges once. It runs the step the step-by-step plan seeds the same pattern with, {@link MatchEdgeByTypeScanStep}.
  */
 public class EdgeTypeScan extends AbstractPhysicalOperator implements RelationshipAnchor {
-  private final List<String>                        edgeTypes;
-  private final Direction                           direction;
-  private final String                              sourceVariable;
-  private final String                              relationshipVariable;
-  private final String                              targetVariable;
-  private final EdgeIndexSeedPlanner.EndpointFilter sourceFilter;
-  private final EdgeIndexSeedPlanner.EndpointFilter targetFilter;
-  private final BooleanExpression                   relationshipFilter;
+  private final MatchEdgeByTypeScanStep.Pattern pattern;
+  private final BooleanExpression               relationshipFilter;
 
-  public EdgeTypeScan(final List<String> edgeTypes, final Direction direction, final String sourceVariable,
-      final String relationshipVariable, final String targetVariable, final EdgeIndexSeedPlanner.EndpointFilter sourceFilter,
-      final EdgeIndexSeedPlanner.EndpointFilter targetFilter, final BooleanExpression relationshipFilter, final double estimatedCost,
-      final long estimatedCardinality) {
+  public EdgeTypeScan(final MatchEdgeByTypeScanStep.Pattern pattern, final BooleanExpression relationshipFilter,
+      final double estimatedCost, final long estimatedCardinality) {
     super(estimatedCost, estimatedCardinality);
-    this.edgeTypes = edgeTypes;
-    this.direction = direction;
-    this.sourceVariable = sourceVariable;
-    this.relationshipVariable = relationshipVariable;
-    this.targetVariable = targetVariable;
-    this.sourceFilter = sourceFilter;
-    this.targetFilter = targetFilter;
+    this.pattern = pattern;
     this.relationshipFilter = relationshipFilter;
   }
 
   @Override
   public ResultSet execute(final CommandContext context, final int nRecords) {
-    return new MatchEdgeByTypeScanStep(edgeTypes, direction, sourceVariable, relationshipVariable, targetVariable, sourceFilter,
-        targetFilter, null, relationshipFilter, context).syncPull(context, nRecords > 0 ? nRecords : 100);
+    return new MatchEdgeByTypeScanStep(pattern, null, relationshipFilter, context).syncPull(context,
+        nRecords > 0 ? nRecords : 100);
   }
 
   @Override
   public List<String> getBoundVariables() {
     final List<String> bound = new ArrayList<>(3);
-    bound.add(sourceVariable);
-    bound.add(targetVariable);
+    bound.add(pattern.sourceVariable());
+    bound.add(pattern.targetVariable());
+    final String relationshipVariable = pattern.relationshipVariable();
     if (relationshipVariable != null && !relationshipVariable.isEmpty())
       bound.add(relationshipVariable);
     return bound;
@@ -90,8 +75,7 @@ public class EdgeTypeScan extends AbstractPhysicalOperator implements Relationsh
   public String explain(final int depth) {
     final StringBuilder sb = new StringBuilder();
     sb.append(getIndent(depth)).append("+ ").append(getOperatorType()).append(' ');
-    sb.append(MatchEdgeByTypeScanStep.describe(edgeTypes, direction, sourceVariable, relationshipVariable, targetVariable,
-        sourceFilter, targetFilter, relationshipFilter));
+    sb.append(MatchEdgeByTypeScanStep.describe(pattern, relationshipFilter));
     sb.append(" [cost=").append(String.format(Locale.US, "%.2f", estimatedCost));
     sb.append(", rows=").append(estimatedCardinality);
     sb.append("]\n");

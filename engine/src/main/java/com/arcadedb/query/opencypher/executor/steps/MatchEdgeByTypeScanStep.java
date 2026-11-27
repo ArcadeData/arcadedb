@@ -90,27 +90,38 @@ public class MatchEdgeByTypeScanStep extends AbstractExecutionStep implements Pa
   private boolean servedInParallel;
 
   /**
-   * @param edgeTypes              the edge types to scan, none a sub-type of another
-   * @param direction              the written direction; {@link Direction#BOTH} binds each edge once per orientation
-   * @param relationshipVariable   the variable bound to the edge, null when nothing reads it
-   * @param sourceFilter           what the source endpoint asks of its vertex
-   * @param targetFilter           what the target endpoint asks of its vertex
+   * The single-hop pattern the scan binds: what the step-by-step plan and the cost-based plan's {@code EdgeTypeScan} both hand
+   * to this step.
+   *
+   * @param edgeTypes            the edge types to scan, none a sub-type of another
+   * @param direction            the written direction; {@link Direction#BOTH} binds each edge once per orientation
+   * @param sourceVariable       the variable bound to the source endpoint
+   * @param relationshipVariable the variable bound to the edge, null when nothing reads it
+   * @param targetVariable       the variable bound to the target endpoint
+   * @param sourceFilter         what the source endpoint asks of its vertex
+   * @param targetFilter         what the target endpoint asks of its vertex
+   */
+  public record Pattern(List<String> edgeTypes, Direction direction, String sourceVariable, String relationshipVariable,
+                        String targetVariable, EdgeIndexSeedPlanner.EndpointFilter sourceFilter,
+                        EdgeIndexSeedPlanner.EndpointFilter targetFilter) {
+  }
+
+  /**
+   * @param pattern                the single-hop pattern to bind
    * @param relationshipProperties the relationship's inline property map, null when it has none
    * @param relationshipFilter     the WHERE conjuncts that read only the relationship, null for none
    */
-  public MatchEdgeByTypeScanStep(final List<String> edgeTypes, final Direction direction, final String sourceVariable,
-      final String relationshipVariable, final String targetVariable, final EdgeIndexSeedPlanner.EndpointFilter sourceFilter,
-      final EdgeIndexSeedPlanner.EndpointFilter targetFilter, final Map<String, Object> relationshipProperties,
+  public MatchEdgeByTypeScanStep(final Pattern pattern, final Map<String, Object> relationshipProperties,
       final BooleanExpression relationshipFilter, final CommandContext context) {
     super(context);
-    this.edgeTypes = edgeTypes;
-    this.direction = direction;
-    this.sourceVariable = sourceVariable;
-    this.relationshipVariable = relationshipVariable;
-    this.targetVariable = targetVariable;
+    this.edgeTypes = pattern.edgeTypes();
+    this.direction = pattern.direction();
+    this.sourceVariable = pattern.sourceVariable();
+    this.relationshipVariable = pattern.relationshipVariable();
+    this.targetVariable = pattern.targetVariable();
     this.selfLoopOnly = sourceVariable.equals(targetVariable);
-    this.sourceFilter = sourceFilter;
-    this.targetFilter = targetFilter;
+    this.sourceFilter = pattern.sourceFilter();
+    this.targetFilter = pattern.targetFilter();
     this.relationshipProperties = relationshipProperties == null || relationshipProperties.isEmpty() ? null : relationshipProperties;
     this.relationshipFilter = relationshipFilter;
   }
@@ -394,7 +405,12 @@ public class MatchEdgeByTypeScanStep extends AbstractExecutionStep implements Pa
    * {@code MATCH EDGE BY TYPE SCAN (a)-[e:K|L]->(b) [filter: ...]}. Shared with the cost-based plan's {@code EdgeTypeScan}, which
    * runs this step.
    */
-  public static String describe(final List<String> edgeTypes, final Direction direction, final String sourceVariable,
+  public static String describe(final Pattern pattern, final BooleanExpression relationshipFilter) {
+    return describe(pattern.edgeTypes(), pattern.direction(), pattern.sourceVariable(), pattern.relationshipVariable(),
+        pattern.targetVariable(), pattern.sourceFilter(), pattern.targetFilter(), relationshipFilter);
+  }
+
+  private static String describe(final List<String> edgeTypes, final Direction direction, final String sourceVariable,
       final String relationshipVariable, final String targetVariable, final EdgeIndexSeedPlanner.EndpointFilter sourceFilter,
       final EdgeIndexSeedPlanner.EndpointFilter targetFilter, final BooleanExpression relationshipFilter) {
     final StringBuilder builder = new StringBuilder("MATCH EDGE BY TYPE SCAN ");

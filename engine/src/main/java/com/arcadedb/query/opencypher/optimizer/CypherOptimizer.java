@@ -71,6 +71,7 @@ import com.arcadedb.query.opencypher.executor.operators.RelationshipAnchor;
 import com.arcadedb.query.opencypher.executor.operators.SeekOrWalkExpand;
 import com.arcadedb.query.opencypher.executor.operators.GAVVarLengthExpand;
 import com.arcadedb.query.opencypher.executor.operators.VarLengthExpand;
+import com.arcadedb.query.opencypher.executor.steps.MatchEdgeByTypeScanStep;
 import com.arcadedb.query.opencypher.parser.FunctionValidator;
 import com.arcadedb.query.opencypher.optimizer.plan.AnchorSelection;
 import com.arcadedb.query.opencypher.optimizer.plan.LogicalNode;
@@ -1065,13 +1066,13 @@ public class CypherOptimizer {
 
     final LogicalNode source = logicalPlan.getPatternNode(rel.getSourceVariable());
     final LogicalNode target = logicalPlan.getPatternNode(rel.getTargetVariable());
-    final EdgeTypeScan operator = new EdgeTypeScan(edgeTypes, rel.getDirection(), rel.getSourceVariable(), relVar,
-        rel.getTargetVariable(),
+    final MatchEdgeByTypeScanStep.Pattern pattern = new MatchEdgeByTypeScanStep.Pattern(edgeTypes, rel.getDirection(),
+        rel.getSourceVariable(), relVar, rel.getTargetVariable(),
         source != null ? EdgeIndexSeedPlanner.EndpointFilter.ofLabels(source.getLabels(), source.isLabelDisjunction()) :
             EdgeIndexSeedPlanner.EndpointFilter.NONE,
         target != null ? EdgeIndexSeedPlanner.EndpointFilter.ofLabels(target.getLabels(), target.isLabelDisjunction()) :
-            EdgeIndexSeedPlanner.EndpointFilter.NONE,
-        EdgeTypeScanPlanner.and(relationshipConjuncts), cost, rows);
+            EdgeIndexSeedPlanner.EndpointFilter.NONE);
+    final EdgeTypeScan operator = new EdgeTypeScan(pattern, EdgeTypeScanPlanner.and(relationshipConjuncts), cost, rows);
     return new EdgeSeedPlan(rel, operator, new AnchorSelection(rel.getSourceVariable(), source, cost, rows));
   }
 
