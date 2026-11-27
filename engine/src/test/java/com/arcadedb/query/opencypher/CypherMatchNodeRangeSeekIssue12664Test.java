@@ -33,8 +33,12 @@ import org.junit.jupiter.params.provider.ValueSource;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.Year;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -219,13 +223,13 @@ class CypherMatchNodeRangeSeekIssue12664Test {
         { "UNWIND [5, 300, 2000] AS hi MATCH (n:Pair) WHERE n.a < hi RETURN n.id AS id",
             "UNWIND [5, 300, 2000] AS hi MATCH (n:N) WHERE n.id < hi RETURN n.id AS id" },
         { "UNWIND [5, 300] AS lo MATCH (n:Pair) WHERE n.a > lo AND n.b = 1 RETURN n.id AS id",
-            "UNWIND [5, 300] AS lo MATCH (n:N) WHERE n.id > lo AND n.id %% 7 = 1 RETURN n.id AS id" },
+            "UNWIND [5, 300] AS lo MATCH (n:N) WHERE n.id > lo AND n.id % 7 = 1 RETURN n.id AS id" },
         { "UNWIND [5, 995] AS lo MATCH (n:Sub) WHERE n.id > lo RETURN n.id AS id",
-            "UNWIND [5, 995] AS lo MATCH (n:N) WHERE n.id > lo AND n.id %% 2 = 0 RETURN n.id AS id" },
+            "UNWIND [5, 995] AS lo MATCH (n:N) WHERE n.id > lo AND n.id % 2 = 0 RETURN n.id AS id" },
         { "UNWIND [5, 995] AS lo MATCH (n:Base) WHERE n.id > lo RETURN n.id AS id",
             "UNWIND [5, 995] AS lo MATCH (n:N) WHERE n.id > lo RETURN n.id AS id" } }) {
       final String indexed = run(pair[0], parameters);
-      final String scanned = run(String.format(pair[1]), parameters);
+      final String scanned = run(pair[1], parameters);
       if (!indexed.equals(scanned))
         differences.add(pair[0] + " | " + indexed + " | " + scanned);
     }
@@ -352,6 +356,60 @@ class CypherMatchNodeRangeSeekIssue12664Test {
                 + " | " + scanned);
         }
     assertThat(differences).as("property, operator and operand | with the index | without the index").isEmpty();
+  }
+
+  /**
+   * A DATE key holds a day and a DATETIME key a millisecond: a temporal bound finer than that (a time of day against a DATE, a
+   * fraction of a millisecond against a DATETIME) is truncated when it is turned into a key, and the range then starts or ends one
+   * key off: {@code n.p < 00:00:00.0005} sought as {@code < 00:00:00.000} misses the vertex that holds 00:00:00.000.
+   */
+  @Test
+  void aTemporalBoundFinerThanTheKeyAnswersAsTheWalk() {
+    final LocalDateTime midnight = LocalDateTime.of(2020, 1, 1, 0, 0);
+    final Map<String, List<Object>> stored = new LinkedHashMap<>();
+    stored.put("DATE", List.of(LocalDate.of(2019, 12, 31), LocalDate.of(2020, 1, 1), LocalDate.of(2020, 1, 2)));
+    stored.put("DATETIME", List.of(midnight.minusNanos(1_000_000), midnight, midnight.plusNanos(1_000_000), midnight.plusHours(12),
+        midnight.plusDays(1)));
+    for (final Map.Entry<String, List<Object>> entry : stored.entrySet())
+      for (final String prefix : new String[] { "I_", "N_" }) {
+        final String type = prefix + entry.getKey();
+        database.command("sql", "CREATE VERTEX TYPE " + type).close();
+        database.command("sql", "CREATE PROPERTY " + type + ".id INTEGER").close();
+        database.command("sql", "CREATE PROPERTY " + type + ".p " + entry.getKey()).close();
+        if (prefix.equals("I_"))
+          database.command("sql", "CREATE INDEX ON " + type + " (p) NOTUNIQUE").close();
+        database.transaction(() -> {
+          for (int i = 0; i < entry.getValue().size(); i++)
+            database.newVertex(type).set("id", i).set("p", entry.getValue().get(i)).save();
+        });
+      }
+
+    final ZoneId zone = ZoneId.systemDefault();
+    final List<Object> operands = List.of(midnight, midnight.plusNanos(500_000), midnight.plusNanos(1), midnight.minusNanos(1),
+        midnight.minusNanos(500_000), midnight.plusNanos(1_000_000), midnight.plusNanos(1_500_000), midnight.plusHours(12),
+        midnight.plusHours(12).plusNanos(1), midnight.plusDays(1).minusNanos(1), LocalDate.of(2020, 1, 1), LocalDate.of(2020, 1, 2),
+        midnight.atZone(zone), midnight.plusNanos(500_000).atZone(zone), midnight.plusHours(12).atZone(zone),
+        midnight.atZone(zone).toInstant(), midnight.plusNanos(500_000).atZone(zone).toInstant(),
+        midnight.atZone(zone).toOffsetDateTime(), midnight.plusNanos(500_000).atZone(zone).toOffsetDateTime(),
+        Date.from(midnight.atZone(zone).toInstant()), Date.from(midnight.plusHours(12).atZone(zone).toInstant()),
+        LocalTime.of(12, 0), Year.of(2020));
+    final List<String> differences = new ArrayList<>();
+    for (final String property : stored.keySet())
+      for (final Object operand : operands)
+        for (final String operator : new String[] { ">", ">=", "<", "<=" }) {
+          final String statement = "WITH $x AS x MATCH (n:%s) WHERE n.p " + operator + " x RETURN n.id AS id";
+          final String indexed = run(String.format(statement, "I_" + property), Map.of("x", operand));
+          final String scanned = run(String.format(statement, "N_" + property), Map.of("x", operand));
+          if (!indexed.equals(scanned))
+            differences.add(property + " " + operator + " " + operand.getClass().getSimpleName() + " " + operand + " | " + indexed
+                + " | " + scanned);
+        }
+    assertThat(differences).as("property, operator and operand | with the index | without the index").isEmpty();
+
+    // the differential is worth something only if the bound finer than the key is sought, and keeps the key it would round onto
+    final String finer = "WITH $x AS x MATCH (n:I_DATETIME) WHERE n.p < x RETURN n.id AS id";
+    assertThat(profile(finer, Map.of("x", midnight.plusNanos(500_000)))).contains("[index: I_DATETIME[p], range");
+    assertThat(run(finer, Map.of("x", midnight.plusNanos(500_000)))).isEqualTo("rows [0, 1]");
   }
 
   @Test

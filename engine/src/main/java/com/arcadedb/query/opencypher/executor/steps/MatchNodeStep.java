@@ -1660,6 +1660,9 @@ public class MatchNodeStep extends AbstractExecutionStep {
    * bounds the row decides, each row would read the index as the rows before it left it: the walk, which is cached, answers.
    */
   private Iterator<Identifiable> tryRangeIndexSeek(final DocumentType type, final String label, final Result currentInputResult) {
+    // The large range of the row before is done with, whatever answers this row: a small range, the walk or no bound at all.
+    // Without this the addresses it holds stayed until the next large range or the end of the statement
+    closeRangeFetcher();
     if (rangeSeekDeclined)
       return null;
     final boolean readOnly = Boolean.TRUE.equals(context.getVariable(READ_ONLY_STATEMENT_KEY));
