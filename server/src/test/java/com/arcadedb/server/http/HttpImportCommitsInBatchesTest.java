@@ -62,6 +62,7 @@ class HttpImportCommitsInBatchesTest extends BaseGraphServerTest {
     final long commits = importAndCountCommits("  import database file://" + source.getAbsolutePath() + " WITH commitEvery = " + COMMIT_EVERY, null);
 
     assertThat(commits).as("the import must commit as it goes, not as one transaction at the end").isGreaterThanOrEqualTo(BATCHES);
+    assertThat(commits).as("one commit per batch of commitEvery records, not one per record (#12739)").isLessThan(RECORDS);
     assertImported();
   }
 
@@ -73,6 +74,7 @@ class HttpImportCommitsInBatchesTest extends BaseGraphServerTest {
         + " WITH commitEvery = " + COMMIT_EVERY, null);
 
     assertThat(commits).as("the import must commit as it goes, not as one transaction at the end").isGreaterThanOrEqualTo(BATCHES);
+    assertThat(commits).as("one commit per batch of commitEvery records, not one per record (#12739)").isLessThan(RECORDS);
     assertImported();
   }
 

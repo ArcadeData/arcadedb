@@ -64,8 +64,9 @@ import static com.google.gson.stream.JsonToken.END_OBJECT;
  * When the import owns the transaction ({@link ImporterContext#importOwnsTransaction}), {@code parseRecords} commits
  * every {@code -commitEvery} records (issue #12739): an import that fails keeps the batches already committed and rolls
  * back the one in flight, and says so. Under {@code -onRowError skip} it commits every record in a transaction of its
- * own instead, so one record can be discarded without touching the others. When the caller already holds a transaction, the records are created in it and nothing here commits: a
- * nested commit is independently durable, so the caller's rollback would not take them back (issue #8171).
+ * own instead, so one record can be discarded without touching the others. When the caller already holds a
+ * transaction, the records are created in it and nothing here commits: a nested commit is independently durable, so
+ * the caller's rollback would not take them back (issue #8171).
  * {@code -onRowError skip} is refused in that case, since discarding one record would mean rolling back the caller's.
  * See {@link ImporterSettings#isSkipOnRowError()} for the full contract.
  */
@@ -96,9 +97,9 @@ public class JSONImporterFormat implements FormatImporter {
 
         if (mapping == null && token == BEGIN_ARRAY) {
           // A TOP-LEVEL ARRAY WITH NO MAPPING: EVERY OBJECT IN IT IS A RECORD, IMPORTED AS AN ANONYMOUS DOCUMENT LIKE THE
-          // SINGLE TOP-LEVEL OBJECT BELOW, EACH IN ITS OWN TRANSACTION UNDER -onRowError skip, SO IT CAN DISCARD ONE. IT USED TO
-          // REACH parseRecord() AND DIE ON "Expected BEGIN_OBJECT but was BEGIN_ARRAY", AND THE SNIFFER, WHICH DID NOT
-          // KNOW '[' EITHER, DECLARED THE FILE CSV AND IMPORTED NOTHING (ISSUE #10754)
+          // SINGLE TOP-LEVEL OBJECT BELOW, EACH IN ITS OWN TRANSACTION UNDER -onRowError skip, SO IT CAN DISCARD ONE. IT
+          // USED TO REACH parseRecord() AND DIE ON "Expected BEGIN_OBJECT but was BEGIN_ARRAY", AND THE SNIFFER, WHICH DID
+          // NOT KNOW '[' EITHER, DECLARED THE FILE CSV AND IMPORTED NOTHING (ISSUE #10754)
           parseRecords(reader, parser, database, settings, context, null, false);
           // THE RECORDS OF THE ARRAY ARE IN: SAYING SO NOW IS THE ONLY WAY LEFT NOT TO DROP WHAT FOLLOWS IT IN SILENCE (ISSUE #11729)
           if (!endsAfterTopLevelValue(reader))
@@ -311,6 +312,7 @@ public class JSONImporterFormat implements FormatImporter {
           // on top, issue #7860) and restored when the commit is refused without popping it, so the catch below still
           // rolls it back (issue #11208). In "abort" mode only every -commitEvery records: one commit per record made a
           // large array import dominated by the write-ahead log and the page flush, not by parsing (issue #12739).
+          // A -commitEvery of zero or less has no batch to fill, so every record commits, as it did before.
           if (ownsTransaction && (!batched || pendingRecords >= settings.commitEvery)) {
             ImporterTransactions.commitOwnTransaction(database, txOpen, ownTx[0]);
             if (batched) {

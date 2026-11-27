@@ -27,7 +27,6 @@ import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
 import java.io.IOException;
@@ -57,8 +56,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class Issue12739JsonArrayCommitEveryTest {
   private static final String DATABASE_PATH = "target/databases/test-import-12739-json-array-commit-every";
 
-  @TempDir
-  Path tempDir;
+  // Under target/, like the database: a test of the build writes nowhere else
+  private static final File   SOURCE        = new File("target/issue12739-records.json");
 
   private Database database;
 
@@ -78,6 +77,7 @@ class Issue12739JsonArrayCommitEveryTest {
       database.drop();
     }
     FileUtils.deleteRecursively(new File(DATABASE_PATH));
+    SOURCE.delete();
   }
 
   @Test
@@ -249,7 +249,7 @@ class Issue12739JsonArrayCommitEveryTest {
         sb.append(",\"Name\":\"n").append(i).append('"');
       sb.append('}');
     }
-    final Path file = tempDir.resolve("records.json");
+    final Path file = SOURCE.toPath();
     Files.writeString(file, sb.append(tail).toString(), StandardCharsets.UTF_8);
     return file;
   }
