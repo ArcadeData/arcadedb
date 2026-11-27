@@ -38,6 +38,7 @@ import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.utility.IntHashSet;
 
 import java.util.*;
+import java.util.function.Function;
 import java.util.logging.Level;
 
 public class TransactionIndexContext {
@@ -781,6 +782,12 @@ public class TransactionIndexContext {
     return new HashMap<>(2);
   }
 
+  /**
+   * {@link #newKeyEntries()} as a non-capturing function, so {@code computeIfAbsent} on the hot path neither allocates a lambda per
+   * call nor a per-key map for a key that is already there (#13022).
+   */
+  private static final Function<ComparableKey, Map<IndexKey, IndexKey>> NEW_KEY_ENTRIES = key -> newKeyEntries();
+
   public void addIndexKeyLock(final IndexInternal index, IndexKey.IndexKeyOperation operation, final Object[] keysValues,
       final RID rid) {
     if (index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.SKIP && LSMTreeIndexAbstract.isKeyNull(keysValues))
@@ -828,12 +835,13 @@ public class TransactionIndexContext {
       values = newKeyEntries();
       keys.put(k, values);
     } else {
-      // ONE TRAVERSAL OF THE TREE FOR A KEY NOT SEEN YET (get() + put() WALKED IT TWICE, A COMPARISON PER LEVEL EACH)
-      final Map<IndexKey, IndexKey> fresh = newKeyEntries();
-      values = keys.putIfAbsent(k, fresh);
-      if (values == null) {
-        values = fresh;
-      } else {
+      // ONE TRAVERSAL OF THE TREE (get() + put() WALKED IT TWICE FOR A KEY NOT SEEN YET, A COMPARISON PER LEVEL EACH), AND THE
+      // PER-KEY MAP IS ALLOCATED ONLY WHEN THE KEY IS NEW: A REPEATED KEY (NON-UNIQUE INDEX, REMOVE + ADD) ALLOCATES NOTHING HERE.
+      // THE SIZE TELLS A NEW KEY FROM AN EXISTING ONE WITHOUT ASSUMING AN EXISTING PER-KEY MAP IS NEVER EMPTY
+      final int keysBefore = keys.size();
+      values = keys.computeIfAbsent(k, NEW_KEY_ENTRIES);
+      if (keys.size() == keysBefore) {
+        // EXISTING KEY: RECONCILE WITH THE ENTRY ALREADY QUEUED FOR IT
         if (v.operation == IndexKey.IndexKeyOperation.ADD) {
           if (index.isUnique() && !LSMTreeIndexAbstract.isKeyNull(keysValues)) {
             // CHECK IMMEDIATELY (INSTEAD OF AT COMMIT TIME) FOR DUPLICATED KEY IN CASE 2 ENTRIES WITH THE SAME KEY ARE SAVED IN TX.
