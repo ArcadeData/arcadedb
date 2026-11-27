@@ -698,6 +698,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
 
   public synchronized ServerSecurityUser createUser(final JSONObject userConfiguration) {
     final String name = userConfiguration.getString("name");
+    UserNameCheck.requireStorableName(name);
     if (users.containsKey(name))
       // A conflict, not a security failure (issue #10073): UserAlreadyExistsException does not extend
       // ServerSecurityException, so it is answered 409 and not the 403 a non-root caller gets. The same type
@@ -902,13 +903,16 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * which the caller is told the request changed nothing rather than that it succeeded.
    */
   public void createUserClusterWide(final JSONObject userConfiguration) {
+    final String name = userConfiguration.getString("name");
+    // Before the replication below: the entry it submits is applied by every peer, which does not check the name again
+    UserNameCheck.requireStorableName(name);
+
     final HAServerPlugin ha = server != null ? server.getHA() : null;
     if (ha == null) {
       createUser(userConfiguration);
       return;
     }
 
-    final String name = userConfiguration.getString("name");
     for (int attempt = 1; ; attempt++) {
       final boolean applied;
       synchronized (this) {

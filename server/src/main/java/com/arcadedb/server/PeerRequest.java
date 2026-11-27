@@ -20,6 +20,7 @@ package com.arcadedb.server;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.server.security.UserNameCheck;
 
 import java.io.IOException;
 import java.net.HttpURLConnection;
@@ -169,13 +170,19 @@ public final class PeerRequest {
 
   /**
    * Whether the request carries the pair. A token with no principal is refused rather than sent as half a pair or patched up as
-   * root: a dial that relays a caller's identity and lost it must fail, never act with more authority.
+   * root: a dial that relays a caller's identity and lost it must fail, never act with more authority. So is a principal whose
+   * name cannot be written into the header as it is (see {@link UserNameCheck#carriedNameProblem}): this is the one place every
+   * forwarded principal passes through.
    */
   private static boolean carriesCredentials(final String clusterToken, final String forwardedUser, final String url) {
     if (!hasToken(clusterToken))
       return false;
     if (forwardedUser == null || forwardedUser.isBlank())
       throw new IllegalArgumentException("A peer request carrying the cluster token must name the principal it acts for (" + url + ")");
+    final String problem = UserNameCheck.carriedNameProblem(forwardedUser);
+    if (problem != null)
+      throw new IllegalArgumentException(
+          "The principal a peer request acts for cannot be named in a header: the user name " + problem);
     return true;
   }
 
