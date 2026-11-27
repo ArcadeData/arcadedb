@@ -1505,13 +1505,30 @@ class AsyncBatchCommitRetryTest {
       // transaction stamped with the CURRENT durability flags and leaves it open (commitEvery is nowhere
       // near reached); the flag flip in between is picked up only when the 2nd create is dispatched, at
       // which point that still-open transaction's stamped flags no longer match and must be committed first.
-      database.async().createRecord(database.newDocument(TYPE), null);
+      //
+      // The flip waits for the 1st create to have run (#12894). A worker reads the durability flags when its thread
+      // starts, to stamp the transaction it begins, and again when it takes each task off its queue, never when the task
+      // is submitted. The workers are started by the first async() call above, and on a loaded machine one may not have
+      // reached that first read yet when the flip lands: it then stamps its transaction AND runs the 1st create under
+      // the NEW flags, so no boundary ever exists (nothing else commits with commitEvery at 100, so onOk() would fire
+      // only from the waitCompletion() marker, which is sent after the wait below). The record's own success callback
+      // runs inside the task, after the flags were read and stamped on the transaction the 2nd create then closes.
+      final CountDownLatch firstApplied = new CountDownLatch(1);
+      database.async().createRecord(database.newDocument(TYPE), record -> firstApplied.countDown());
+      assertThat(firstApplied.await(30, TimeUnit.SECONDS)).as("the 1st create must have run under the original durability flags")
+          .isTrue();
       database.async().setTransactionSync(WALFile.FlushType.YES_NOMETADATA);
       database.async().createRecord(database.newDocument(TYPE), null);
 
       assertThat(fired.await(30, TimeUnit.SECONDS))
           .as("onOk() must fire when a durability-setting change forces a boundary commit mid-batch")
           .isTrue();
+      // Read before waitCompletion(): its marker runs on every worker, and an idle worker's transaction still carries the
+      // durability flags it began with, so the marker can force a boundary commit there too. Until then only the worker of
+      // the single bucket has run a task, so exactly one boundary commit can have happened, and it is what fired onOk().
+      assertThat(((DatabaseAsyncExecutorImpl) database.async()).getStats().forcedBoundaryCommits)
+          .as("onOk() must have fired from the durability-policy boundary commit, not from another commit path")
+          .isEqualTo(1);
 
       database.async().waitCompletion();
       assertThat(onOkInvocations.get()).isGreaterThanOrEqualTo(1);
