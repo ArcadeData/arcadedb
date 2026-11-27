@@ -581,8 +581,8 @@ abstract class PostgresCatalogExpression {
       this.partitionBy = partitionBy;
       this.orderBy = orderBy;
       this.orderByDescending = orderByDescending;
-      adopt(partitionBy);
-      adopt(orderBy);
+      // Not adopted: evaluating this node only reads back the number the caller gave the row. The keys are evaluated where the
+      // numbers are computed, once for each row, and are charged there.
     }
 
     @Override

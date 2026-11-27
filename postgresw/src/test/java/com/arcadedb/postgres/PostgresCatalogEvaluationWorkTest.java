@@ -199,6 +199,22 @@ class PostgresCatalogEvaluationWorkTest {
   }
 
   @Test
+  void theKeysOfAWindowAreChargedWhereTheyAreEvaluatedAndNotAgainWhereTheNumberIsRead() {
+    // a key that costs 3.1 million units over these rows is evaluated once for each of them; had the number read back for every row
+    // charged the key a second time, the statement would spend 6.2 million of the 5 million it may
+    final String key = "g.n in (" + list(50_000) + ")";
+    final String rows = " from pg_database d, generate_series(1, 1000) as g(n)";
+
+    for (final String statement : List.of( //
+        "select row_number() over (partition by " + key + ") as r" + rows, //
+        "select row_number() over (order by " + key + ") as r" + rows)) {
+      final PostgresCatalog.Answer answer = PostgresCatalog.resolve(statement, database, USER);
+      assertThat(answer).as(statement.substring(0, 60)).isNotNull().isNotSameAs(PostgresCatalog.DECLINED);
+      assertThat(answer.rows).hasSize(1000);
+    }
+  }
+
+  @Test
   void theStatementsOfACatalogClientAreAnswered() {
     for (final String statement : List.of(
         "select c.relname, n.nspname from pg_class c join pg_namespace n on c.relnamespace = n.oid where c.relkind in ('r', 'v') "
@@ -227,6 +243,8 @@ class PostgresCatalogEvaluationWorkTest {
     assertThat(nodesOf("indkey[0]")).isEqualTo(3);
     assertThat(nodesOf("oid = any (current_schemas(true))")).isEqualTo(4);
     assertThat(nodesOf("exists (select 1 from pg_class)")).isEqualTo(1);
+    // reading the number a window call has been given is a lookup: its keys are charged where they are evaluated
+    assertThat(nodesOf("row_number() over (partition by relkind order by relname)")).isEqualTo(1);
   }
 
   @Test
