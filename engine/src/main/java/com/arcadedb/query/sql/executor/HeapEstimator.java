@@ -70,19 +70,23 @@ public final class HeapEstimator {
   /** The smallest object: a header and a field. */
   public static final int OBJECT_BYTES     = 16;
 
-  static final         int SAMPLED_ELEMENTS = 16;
+  static final         int SAMPLED_ELEMENTS      = 16;
   /** Down to this depth the first {@link #SAMPLED_ELEMENTS} elements of a container are estimated, below it {@link #DEEP_SAMPLED_ELEMENTS}. */
-  static final         int MAX_DEPTH        = 4;
+  static final         int MAX_DEPTH             = 4;
   /** The elements of a container estimated below {@link #MAX_DEPTH}: one per level, so the walk of a nested value is a chain, not a tree. */
   static final         int DEEP_SAMPLED_ELEMENTS = 1;
-  /** From this depth a value is not walked by recursion: the first element of each nested container is followed in a loop. */
-  static final         int MAX_WALK_DEPTH   = 32;
+  /**
+   * From this depth a value is not walked by recursion: the first element of each nested list, map or array is followed in a loop. A
+   * result row or a record built in memory met from this depth is counted for its fixed size only, and what it holds is not followed
+   * (a record read from storage counts its serialized buffer, as it does at any depth).
+   */
+  static final         int MAX_WALK_DEPTH        = 32;
   /** The levels the loop that follows the nesting past {@link #MAX_WALK_DEPTH} goes down, which bounds what one estimate of a shared value costs. */
-  static final         int MAX_CHAIN_STEPS  = 1 << 13;
+  static final         int MAX_CHAIN_STEPS       = 1 << 13;
   /** What an estimate is capped at (a petabyte): above it the sum of what is estimated could overflow a long. */
-  static final        long MAX_ESTIMATE    = 1L << 50;
+  static final        long MAX_ESTIMATE          = 1L << 50;
   /** A primitive array is remembered by a {@link Shared} from this many bytes: the entry that remembers it must be small beside it. */
-  static final         int SHARED_ARRAY_BYTES = 1024;
+  static final         int SHARED_ARRAY_BYTES    = 1024;
   // A String object and the header of its byte array
   private static final int STRING_BYTES     = 40;
   /** A ResultInternal and the LinkedHashMap it keeps its properties in, with its table and its key set. */
@@ -428,7 +432,8 @@ public final class HeapEstimator {
    * The estimate of a list, map or array met from {@link #MAX_WALK_DEPTH} down, the first element of each followed in a loop: a
    * value nested to any depth is charged for the levels it has, and the walk neither recurses nor looks at more than one element a
    * level, as the walk above it does below {@link #MAX_DEPTH}. A level counts its own slots, as many times as the levels above it
-   * have elements it stands for, and the slots of a map key that is a list, map or array. What is held at the end of the chain, or at {@link #MAX_CHAIN_STEPS} levels, is counted as it is.
+   * have elements it stands for, and the slots of a map key that is a list, map or array. What is held at the end of the chain, or at
+   * {@link #MAX_CHAIN_STEPS} levels, is counted as it is.
    */
   private static long estimateChain(final Object start) {
     long bytes = 0L;
