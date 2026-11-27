@@ -1528,8 +1528,9 @@ public class ArcadeDBServer {
    * <p>
    * A database that is already open is served as before, with no lock: one a restore holds keeps its readers until the swap and
    * refuses every write in the database itself, so a handle resolved before the restore began is refused too (issue #10689).
-   * Unlike {@link #getDatabaseForRequest} this does not look at the disk first: a name that is neither open nor on disk fails in
-   * the open, as it always did for these protocols.
+   * Unlike {@link #getDatabaseForRequest} this does not look at the disk before taking the lock: a name that is neither open nor on
+   * disk is refused under it, right before the open, with a {@link DatabaseNotFoundException} that names the database and not its
+   * directory on the server (issue #12830).
    */
   public ServerDatabase getDatabaseForClient(final String databaseName) {
     return getDatabase(databaseName, false, true, false, true);
@@ -2705,9 +2706,14 @@ public class ArcadeDBServer {
           final Database activeDatabase = DatabaseFactory.getActiveDatabaseInstance(path);
           if (activeDatabase != null && activeDatabase.isOpen())
             embDatabase = (DatabaseInternal) activeDatabase;
-          else
+          else {
+            // A name with no directory is answered here, with the name alone: the engine's own message carries the absolute
+            // database directory of the server, which gRPC and Bolt handed to their client (issue #12830)
+            if (!databaseDirectory.exists())
+              throw new DatabaseNotFoundException("Database '" + databaseName + "' does not exist");
             // OPEN A NEW DATABASE. THIS IS MOSTLY FOR TESTS WHERE MULTIPLE SERVERS SHARE THE SAME JVM
             embDatabase = (DatabaseInternal) factory.open(defaultDbMode);
+          }
         }
 
         embDatabase = wrapForHA(embDatabase);
