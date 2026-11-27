@@ -29,13 +29,16 @@ import com.arcadedb.database.TransactionContext;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.HeapLimitExceededException;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.QueryHeapBudgetExceededException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.utility.CollectionUtils;
+import com.arcadedb.query.sql.executor.HeapEstimator;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -45,6 +48,7 @@ import com.arcadedb.redis.RedisCounterOperations;
 import com.arcadedb.redis.RedisException;
 import com.arcadedb.redis.RedisIndexKeys;
 import com.arcadedb.redis.RedisRecords;
+import com.arcadedb.redis.RedisReplyHeap;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalEdgeType;
 import com.arcadedb.schema.LocalVertexType;
@@ -235,6 +239,10 @@ public class RedisQueryEngine implements QueryEngine {
       return executeSingleCommand(query);
     } catch (final RedisException | CommandParsingException | SchemaException e) {
       // a missing index is the caller's mistake (issue #11384): neither a server error logged SEVERE nor a command that cannot be read
+      throw e;
+    } catch (final QueryHeapBudgetExceededException | HeapLimitExceededException e) {
+      // The answer did not fit the heap budget the queries share: refused as such (HTTP 503 while other queries hold it), not as a
+      // command that could not be read, and not logged as an error of the server
       throw e;
     } catch (final NeedRetryException | DuplicatedKeyException e) {
       // Unwrapped rather than folded into the branch below: a conflict a write command's own
@@ -769,25 +777,37 @@ public class RedisQueryEngine implements QueryEngine {
     final String firstArg = parts.get(1);
     final List<Object> results = new ArrayList<>();
 
-    // Check if it's RID mode
-    if (firstArg.startsWith("#")) {
-      for (int i = 1; i < parts.size(); i++) {
-        final String rid = parts.get(i);
-        if (!rid.startsWith("#")) {
-          throw new CommandParsingException("All arguments must be RIDs when first argument is a RID");
+    // One entry per key: what each entry takes is charged to the budget the queries share while the answer is built, which refuses it
+    // once it does not fit instead of building it
+    final RedisReplyHeap heap = new RedisReplyHeap("HMGET reply");
+    try {
+      // Check if it's RID mode
+      if (firstArg.startsWith("#")) {
+        for (int i = 1; i < parts.size(); i++) {
+          final String rid = parts.get(i);
+          if (!rid.startsWith("#")) {
+            throw new CommandParsingException("All arguments must be RIDs when first argument is a RID");
+          }
+          final Record record = RedisRecords.lookupByRid(database, parseRid(rid));
+          results.add(record);
+          heap.add(HeapEstimator.estimate(record) + HeapEstimator.REFERENCE_BYTES);
         }
-        results.add(RedisRecords.lookupByRid(database, parseRid(rid)));
-      }
-    } else {
-      // It's an index lookup
-      if (parts.size() < 3) {
-        throw new CommandParsingException("HMGET requires index and keys: HMGET <index> <key> [key ...]");
-      }
+      } else {
+        // It's an index lookup
+        if (parts.size() < 3) {
+          throw new CommandParsingException("HMGET requires index and keys: HMGET <index> <key> [key ...]");
+        }
 
-      final String indexName = firstArg;
-      for (int i = 2; i < parts.size(); i++) {
-        results.add(getRecordByIndex(indexName, parts.get(i)));
+        final String indexName = firstArg;
+        for (int i = 2; i < parts.size(); i++) {
+          final Record record = getRecordByIndex(indexName, parts.get(i));
+          results.add(record);
+          heap.add(HeapEstimator.estimate(record) + HeapEstimator.REFERENCE_BYTES);
+        }
       }
+      heap.flush();
+    } finally {
+      heap.close();
     }
 
     return results;

@@ -76,6 +76,8 @@ public class RedisNetworkExecutor extends Thread {
   private volatile boolean             shutdown         = false;
   private          int                 posInBuffer      = 0;
   private final    StringBuilder       value            = new StringBuilder();
+  /** The heap the reply in {@link #value} takes, given back once it is sent, see {@link #queueReply}. */
+  private final    RedisReplyHeap      replyHeap        = new RedisReplyHeap("HMGET reply");
   private final    byte[]              buffer           = new byte[32 * 1024];
   private          int                 bytesRead        = 0;
   /** Replies written to the channel's buffer and not flushed yet, see {@link #queueReply}. */
@@ -263,6 +265,8 @@ public class RedisNetworkExecutor extends Thread {
       // Whatever ended the loop, the listener's permit must go back: a connection that dies without ever
       // authenticating would otherwise keep its slot for the life of the server (issue #6412).
       releasePreAuthTicket();
+      // a reply the connection was building when it ended is gone with it, and so is what it was charged
+      replyHeap.close();
     }
   }
 
@@ -277,33 +281,42 @@ public class RedisNetworkExecutor extends Thread {
    * command took. The replies go out when the input runs dry ({@link #fill()}), which is exactly when the client is waiting
    * for them, and in the order the commands arrived. Those are the only flush points with {@link #replyToClient}: a new code
    * path that can block after queuing a reply (other than by reading) must flush first, or the client waits for nothing.
+   * <p>
+   * The reply is gone from the builder when this returns, or fails: the heap it was charged is given back, and the array a large reply
+   * grew the builder to with it, so a connection that once read a large value does not hold that array for the rest of its life.
    */
   private void queueReply(final StringBuilder response) throws IOException {
-    if (LogManager.instance().isLoggable(this, Level.FINE))
-      LogManager.instance().log(this, Level.FINE, "Redis wrapper: Sending response back to the client '%s'...", response);
+    try {
+      if (LogManager.instance().isLoggable(this, Level.FINE))
+        LogManager.instance().log(this, Level.FINE, "Redis wrapper: Sending response back to the client '%s'...", response);
 
-    final int chars = response.length();
-    // Encoded straight into the connection's output buffer when every char is ASCII, the common case; the channel's own
-    // buffer holds 8KB, so writing through it flushed every second 4KB reply and undid the batching for larger values
-    if (chars <= MAX_PENDING_REPLY_BYTES) {
-      if (pendingReplyLength + chars > pendingReplies.length) {
-        if (pendingReplyLength + chars > MAX_PENDING_REPLY_BYTES)
-          writePendingReplies();
-        if (pendingReplyLength + chars > pendingReplies.length)
-          pendingReplies = Arrays.copyOf(pendingReplies,
-              Math.min(MAX_PENDING_REPLY_BYTES, Math.max(pendingReplyLength + chars, pendingReplies.length * 2)));
-      }
-      final int length = RedisBinaryCodec.encodeAscii(response, pendingReplies, pendingReplyLength);
-      if (length >= 0)
-        pendingReplyLength += length;
-      else
+      final int chars = response.length();
+      // Encoded straight into the connection's output buffer when every char is ASCII, the common case; the channel's own
+      // buffer holds 8KB, so writing through it flushed every second 4KB reply and undid the batching for larger values
+      if (chars <= MAX_PENDING_REPLY_BYTES) {
+        if (pendingReplyLength + chars > pendingReplies.length) {
+          if (pendingReplyLength + chars > MAX_PENDING_REPLY_BYTES)
+            writePendingReplies();
+          if (pendingReplyLength + chars > pendingReplies.length)
+            pendingReplies = Arrays.copyOf(pendingReplies,
+                Math.min(MAX_PENDING_REPLY_BYTES, Math.max(pendingReplyLength + chars, pendingReplies.length * 2)));
+        }
+        final int length = RedisBinaryCodec.encodeAscii(response, pendingReplies, pendingReplyLength);
+        if (length >= 0)
+          pendingReplyLength += length;
+        else
+          writeReplyBytes(RedisBinaryCodec.encode(response));
+      } else
         writeReplyBytes(RedisBinaryCodec.encode(response));
-    } else
-      writeReplyBytes(RedisBinaryCodec.encode(response));
 
-    batchReplyBytes += chars;
-    repliesPending = true;
-    response.setLength(0);
+      batchReplyBytes += chars;
+      repliesPending = true;
+    } finally {
+      response.setLength(0);
+      if (response.capacity() > MAX_PENDING_REPLY_BYTES)
+        response.trimToSize();
+      replyHeap.close();
+    }
   }
 
   /** A reply that does not go through the output buffer: what the buffer holds goes first, to keep the order. */
@@ -543,6 +556,9 @@ public class RedisNetworkExecutor extends Thread {
       } catch (final Exception e) {
         // the span is failed (issue #11638) before it is closed below: the client gets its error reply, the trace the error status
         span.error(e);
+        // what the command wrote before it failed is not a reply: the client gets the error alone (HMGET writes its entries as it
+        // reads them)
+        value.setLength(0);
         value.append('-');
         value.append(respErrorPrefix(e));
         value.append(' ');
@@ -808,48 +824,56 @@ public class RedisNetworkExecutor extends Thread {
     }
   }
 
+  /**
+   * One entry per key, in order, a key with nothing behind it (or a RID with no record, issue #9055) keeping its place as a null
+   * entry. Each entry is written straight into the reply as it is read, without a copy of it kept beside, and is charged to
+   * {@link #replyHeap}, which refuses the command once the reply does not fit the budget the queries share, instead of building it.
+   * <p>
+   * The header can go first, since it is the number of keys. A key that fails after some entries were written leaves a reply shorter
+   * than its header: {@link #executeCommand} drops what a failed command wrote, so the client gets the error alone, as it did when
+   * every key was resolved before the header was written (issue #9055).
+   */
   private void hMGet(final List<Object> list) {
     final String bucketName = (String) list.get(1);
     final List<Object> keys = list.subList(2, list.size());
 
+    value.append("*");
+    value.append(keys.size());
+
     // Check for transient mode: no dot in bucketName
     final int pos = bucketName.indexOf(".");
     if (pos < 0) {
-      // Transient mode: resolve every key BEFORE writing the array header, so a failure can never leave a reply that is
-      // shorter than its header announces (issue #9055). A RID with no record keeps its place as a null entry.
-      final List<String> values = new ArrayList<>(keys.size());
       Database database = null;
       for (final Object keyObj : keys) {
+        final int before = value.length();
         final String key = keyObj.toString();
+        appendCrLf();
         if (key.startsWith("#")) {
           // BY RID - persistent mode
           if (database == null)
             database = getAuthorizedDatabase(bucketName);
           final Record record = RedisRecords.lookupByRid(database, RedisRecords.parseRid(key));
-          values.add(record != null ? record.toJSON(true).toString() : null);
+          respondValue(record != null ? record.toJSON(true) : null, true);
         } else
-          values.add(getTransientValue(bucketName, key));
-      }
-
-      value.append("*");
-      value.append(values.size());
-      for (final String v : values) {
-        appendCrLf();
-        respondValue(v, true);
+          respondValue(getTransientValue(bucketName, key), true);
+        replyHeap.add(value.length() - before);
       }
     } else {
-      // Persistent mode: get records from database
-      final List<Record> records = getRecordsByIndex(bucketName, keys);
+      // Persistent mode: get records from database, by the index the bucket names. A key that is not there is a null entry
+      final String databaseName = bucketName.substring(0, pos);
+      final String keyType = bucketName.substring(pos + 1);
 
-      value.append("*");
-      value.append(records.size());
+      final DatabaseInternal database = getAuthorizedDatabase(databaseName);
 
-      for (int i = 0; i < records.size(); i++) {
+      for (final Object key : keys) {
+        final int before = value.length();
         appendCrLf();
-        final Record record = records.get(i);
-        respondValue(record != null ? record.toJSON(true) : null, true);
+        final Identifiable found = RedisIndexKeys.lookup(database, keyType, key.toString());
+        respondValue(found != null ? found.asDocument().toJSON(true) : null, true);
+        replyHeap.add(value.length() - before);
       }
     }
+    replyHeap.flush();
   }
 
   private void hSet(final List<Object> list) {
@@ -1791,25 +1815,5 @@ public class RedisNetworkExecutor extends Thread {
     final DatabaseInternal database = getAuthorizedDatabase(databaseName);
     final Object value = database.getGlobalVariableStore().get(key);
     return value != null ? value.toString() : null;
-  }
-
-  /**
-   * Gets the records an index maps {@code keys} to, null for a key that is not there. Only HMGET's {@code <database>.<index>} form
-   * reaches it: the RID form is answered by HMGET's own loop, which also resolves the transient keys mixed with the RIDs.
-   */
-  private List<Record> getRecordsByIndex(final String bucketName, final List<Object> keys) {
-    final List<Record> records = new ArrayList<>(keys.size());
-
-    final int pos = bucketName.indexOf(".");
-    final String databaseName = bucketName.substring(0, pos);
-    final String keyType = bucketName.substring(pos + 1);
-
-    final DatabaseInternal database = getAuthorizedDatabase(databaseName);
-
-    for (final Object key : keys) {
-      final Identifiable found = RedisIndexKeys.lookup(database, keyType, key.toString());
-      records.add(found != null ? found.asDocument() : null);
-    }
-    return records;
   }
 }
