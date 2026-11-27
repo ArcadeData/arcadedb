@@ -40,6 +40,9 @@ import java.util.Collection;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class BooleanCoercionExpression implements BooleanExpression {
+  /** The kind {@link #nonBooleanKindOf(Expression)} answers for a value known to be a list when the statement is parsed. */
+  public static final String LIST_KIND = "List";
+
   private final Expression expression;
 
   public BooleanCoercionExpression(final Expression expression) {
@@ -55,9 +58,6 @@ public class BooleanCoercionExpression implements BooleanExpression {
   public Object evaluateTernary(final Result result, final CommandContext context) {
     return toPredicate(expression.evaluate(result, context));
   }
-
-  /** The kind {@link #nonBooleanKindOf(Expression)} answers for a value known to be a list when the statement is parsed. */
-  public static final String LIST_KIND = "List";
 
   /**
    * The kind of an operand whose value is known not to be a BOOLEAN before the statement runs, or {@code null} when the operand
