@@ -98,81 +98,93 @@ public class OrderByItem {
     }
   }
 
-  public int compare(final Result a, final Result b, final CommandContext context) {
-    Object aVal = null;
-    Object bVal = null;
-
-    int result = 0;
+  /**
+   * The value {@code row} is sorted by for this item, modifier applied. {@link OrderBy#extractKeys} calls it once per row when
+   * the row enters the sort, and the sort compares the values with {@link #compareKeys} (issue #12860).
+   * <p>
+   * An alias key falls back to the row's metadata of the same name when THIS row's property is null. The comparator used to read
+   * the metadata of both rows only when both properties were null, a pairwise rule that is not transitive and could break the
+   * contract of the sort; a key extracted once per row cannot depend on the other row anyway.
+   */
+  public Object extractKey(final Result row, final CommandContext context) {
+    Object value = null;
     if (recordAttr != null) {
       // a column of the attribute's name the row carries first, a null one included, then the attribute of the row itself, as
       // the projection reads it (issue #11131: only @rid was read back, ORDER BY @type compared nulls and left the rows
       // unordered). Not @this: a whole record has no order of its own
-      if (RecordAttribute.isRowAttribute(recordAttr)) {
-        aVal = RecordAttribute.resolve(a, recordAttr);
-        bVal = RecordAttribute.resolve(b, recordAttr);
-      } else {
-        aVal = a.getProperty(recordAttr);
-        bVal = b.getProperty(recordAttr);
-      }
+      if (RecordAttribute.isRowAttribute(recordAttr))
+        value = RecordAttribute.resolve(row, recordAttr);
+      else
+        value = row.getProperty(recordAttr);
     } else if (alias != null) {
-      aVal = a.getProperty(alias);
-      bVal = b.getProperty(alias);
-      if (aVal == null && bVal == null) {
-        aVal = a.getMetadata(alias);
-        bVal = b.getMetadata(alias);
+      value = row.getProperty(alias);
+      if (value == null) {
+        value = row.getMetadata(alias);
+        // On an edge, `out` / `in` with no property of that name are its endpoints, as in the projection (issue #10684). A
+        // null here can also be a property present with a null value: the helper asks hasProperty() first and leaves that
+        // null alone, so only a name the row does not carry at all is replaced
+        if (value == null)
+          value = SuffixIdentifier.edgeEndpointIfUnshadowed(row, alias);
       }
-      // On an edge, `out` / `in` with no property of that name are its endpoints, as in the projection (issue #10684). A
-      // null here can also be a property present with a null value: the helper asks hasProperty() first and leaves that
-      // null alone, so only a name the row does not carry at all is replaced
-      if (aVal == null)
-        aVal = SuffixIdentifier.edgeEndpointIfUnshadowed(a, alias);
-      if (bVal == null)
-        bVal = SuffixIdentifier.edgeEndpointIfUnshadowed(b, alias);
-    } else if (expression != null) {
-      aVal = expression.execute(a, context);
-      bVal = expression.execute(b, context);
+    } else if (expression != null)
+      value = expression.execute(row, context);
+
+    if (modifier != null)
+      value = modifier.execute(row, value, context);
+    return value;
+  }
+
+  /**
+   * Compares two values {@link #extractKey} returned, in ascending order: nulls first, then the typed comparison, then the
+   * string fallback. The direction is applied by the caller ({@link #isDescending}).
+   *
+   * @return -1, 0 or 1
+   */
+  public int compareKeys(final Object aVal, final Object bVal) {
+    if (aVal == null)
+      return bVal == null ? 0 : -1;
+    if (bVal == null)
+      return 1;
+    // The commonest numeric keys first, with the answer BinaryComparator gives them at the end of its chain of type tests: the
+    // sort compares about 2 * log2(n) pairs per row
+    if (aVal instanceof Double aDouble && bVal instanceof Double bDouble)
+      return BinaryComparator.compareDoubles(aDouble, bDouble);
+    if (aVal instanceof Long aLong && bVal instanceof Long bLong)
+      return Long.compare(aLong, bLong);
+    if (aVal instanceof Integer anInt && bVal instanceof Integer bInt)
+      return Integer.compare(anInt, bInt);
+    // Both values are non-null. Attempt a typed comparison first: BinaryComparator also handles some
+    // non-Comparable types (e.g. Map). When the values cannot be compared directly (e.g. List,
+    // embedded document, custom or mixed types), fall back to a deterministic string comparison so
+    // ORDER BY yields a stable order instead of silently leaving the affected rows unordered.
+    int result;
+    try {
+      result = BinaryComparator.compareTo(aVal, bVal);
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.FINE,
+          "Values of type %s and %s are not directly comparable for ORDER BY, falling back to string comparison",
+          aVal.getClass().getName(), bVal.getClass().getName());
+      result = aVal.toString().compareTo(bVal.toString());
     }
-    if (modifier != null) {
-      aVal = modifier.execute(a, aVal, context);
-      bVal = modifier.execute(b, bVal, context);
-    }
-    if (aVal == null) {
-      if (bVal == null) {
-        result = 0;
-      } else {
-        result = -1;
-      }
-    } else if (bVal == null) {
-      result = 1;
-    } else {
-      // Both values are non-null. Attempt a typed comparison first: BinaryComparator also handles some
-      // non-Comparable types (e.g. Map). When the values cannot be compared directly (e.g. List,
-      // embedded document, custom or mixed types), fall back to a deterministic string comparison so
-      // ORDER BY yields a stable order instead of silently leaving the affected rows unordered.
-      try {
-        result = BinaryComparator.compareTo(aVal, bVal);
-      } catch (final Exception e) {
-        LogManager.instance().log(this, Level.FINE,
-            "Values of type %s and %s are not directly comparable for ORDER BY, falling back to string comparison",
-            aVal.getClass().getName(), bVal.getClass().getName());
-        result = aVal.toString().compareTo(bVal.toString());
-      }
-    }
-    // Determine sort direction: check parameterized direction first, then static type
-    boolean isDescending = DESC.equals(type);
+    return Integer.signum(result);
+  }
+
+  /** The sort direction: a direction parameter's value first, then the static type. */
+  public boolean isDescending(final CommandContext context) {
     if (directionParameter != null) {
       final Object dirValue = directionParameter.getValue(context.getInputParameters());
       // false = DESC (descending), true/null = ASC (ascending, default)
-      if (Boolean.FALSE.equals(dirValue)) {
-        isDescending = true;
-      } else if (dirValue instanceof String) {
-        isDescending = DESC.equalsIgnoreCase((String) dirValue);
-      }
+      if (Boolean.FALSE.equals(dirValue))
+        return true;
+      if (dirValue instanceof String)
+        return DESC.equalsIgnoreCase((String) dirValue);
     }
-    if (isDescending) {
-      result = -1 * result;
-    }
-    return result;
+    return DESC.equals(type);
+  }
+
+  /** True when the key is the value of a row's column as is, false when an expression or a modifier computes it. */
+  public boolean isColumnKey() {
+    return expression == null && modifier == null;
   }
 
   public OrderByItem copy() {

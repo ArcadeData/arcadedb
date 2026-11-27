@@ -641,6 +641,11 @@ public class ResultInternal implements Result {
     return false;
   }
 
+  /** Whether {@code name} is a column of the row's own content, not a property it reads from its record. */
+  boolean hasContentColumn(final String name) {
+    return content != null && content.containsKey(name);
+  }
+
   /**
    * Returns {@code true} when this result carries explicitly projected properties (set via
    * {@link #setProperty}), as opposed to being a bare wrapper around the backing {@link #element}.
