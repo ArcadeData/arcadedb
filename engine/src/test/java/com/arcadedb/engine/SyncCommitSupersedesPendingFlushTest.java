@@ -56,8 +56,12 @@ class SyncCommitSupersedesPendingFlushTest {
   private static final String       DATABASE_PATH  = "target/databases/" + SyncCommitSupersedesPendingFlushTest.class.getSimpleName();
   private static final String       BLOCKER_PATH   = DATABASE_PATH + "-blocker";
 
+  // Holds the flush thread until the test releases it, whatever fails: every test's finally counts it down
+  private final CountDownLatch release = new CountDownLatch(1);
+
   @AfterEach
   void tearDown() {
+    release.countDown();
     PageManager.setPageWriteFaultInjector(null);
     for (final String path : new String[] { DATABASE_PATH, BLOCKER_PATH }) {
       final DatabaseFactory factory = new DatabaseFactory(path);
@@ -77,12 +81,11 @@ class SyncCommitSupersedesPendingFlushTest {
     final Database blocker = new DatabaseFactory(BLOCKER_PATH).create();
     try {
       final CountDownLatch held = new CountDownLatch(1);
-      final CountDownLatch release = new CountDownLatch(1);
       final String blockerName = blocker.getName();
       PageManager.setPageWriteFaultInjector(pageId -> {
         if (isFlushThread() && blockerName.equals(pageId.getDatabase().getName())) {
           held.countDown();
-          awaitQuietly(release, 100);
+          awaitQuietly(release, 3_600);
         }
       });
 
@@ -105,6 +108,8 @@ class SyncCommitSupersedesPendingFlushTest {
         release.countDown();
       }
     } finally {
+      // Before the drop, which waits for the held flush thread: also when the setup failed
+      release.countDown();
       PageManager.setPageWriteFaultInjector(null);
       blocker.drop();
     }
@@ -118,12 +123,11 @@ class SyncCommitSupersedesPendingFlushTest {
   @Timeout(value = 2, unit = TimeUnit.MINUTES)
   void anInFlightCopyOfTheDictionaryPageDoesNotRevertTheSynchronousWrite() throws Exception {
     final CountDownLatch held = new CountDownLatch(1);
-    final CountDownLatch release = new CountDownLatch(1);
     PageManager.setPageWriteFaultInjector(pageId -> {
       if (isFlushThread() && pageId.getFileId() == 0 && pageId.getPageNumber() == 0 && DATABASE_PATH.endsWith(
           pageId.getDatabase().getName())) {
         held.countDown();
-        awaitQuietly(release, 100);
+        awaitQuietly(release, 3_600);
       }
     });
 
@@ -170,12 +174,11 @@ class SyncCommitSupersedesPendingFlushTest {
     final Database blocker = new DatabaseFactory(BLOCKER_PATH).create();
     try {
       final CountDownLatch held = new CountDownLatch(1);
-      final CountDownLatch release = new CountDownLatch(1);
       final String blockerName = blocker.getName();
       PageManager.setPageWriteFaultInjector(pageId -> {
         if (isFlushThread() && blockerName.equals(pageId.getDatabase().getName())) {
           held.countDown();
-          awaitQuietly(release, 100);
+          awaitQuietly(release, 3_600);
         }
       });
 
@@ -223,6 +226,8 @@ class SyncCommitSupersedesPendingFlushTest {
         assertThat(page.readInt(markerOffset)).as("the page on disk must hold the content written").isEqualTo(13441);
       }
     } finally {
+      // Before the drop, which waits for the held flush thread: also when the setup failed
+      release.countDown();
       PageManager.setPageWriteFaultInjector(null);
       blocker.drop();
     }
@@ -239,12 +244,11 @@ class SyncCommitSupersedesPendingFlushTest {
     final Database blocker = new DatabaseFactory(BLOCKER_PATH).create();
     try {
       final CountDownLatch held = new CountDownLatch(1);
-      final CountDownLatch release = new CountDownLatch(1);
       final String blockerName = blocker.getName();
       PageManager.setPageWriteFaultInjector(pageId -> {
         if (isFlushThread() && blockerName.equals(pageId.getDatabase().getName())) {
           held.countDown();
-          awaitQuietly(release, 100);
+          awaitQuietly(release, 3_600);
         }
       });
 
@@ -285,6 +289,8 @@ class SyncCommitSupersedesPendingFlushTest {
         release.countDown();
       }
     } finally {
+      // Before the drop, which waits for the held flush thread: also when the setup failed
+      release.countDown();
       PageManager.setPageWriteFaultInjector(null);
       blocker.drop();
     }
@@ -303,13 +309,12 @@ class SyncCommitSupersedesPendingFlushTest {
     final int markerOffset;
     try {
       final CountDownLatch held = new CountDownLatch(1);
-      final CountDownLatch release = new CountDownLatch(1);
       final AtomicReference<PageId> failWritesOf = new AtomicReference<>();
       final String blockerName = blocker.getName();
       PageManager.setPageWriteFaultInjector(id -> {
         if (isFlushThread() && blockerName.equals(id.getDatabase().getName())) {
           held.countDown();
-          awaitQuietly(release, 100);
+          awaitQuietly(release, 3_600);
         } else if (!isFlushThread() && id.equals(failWritesOf.get()))
           throw new IOException("injected failure of the synchronous write");
       });
@@ -351,6 +356,8 @@ class SyncCommitSupersedesPendingFlushTest {
         release.countDown();
       }
     } finally {
+      // Before the drop, which waits for the held flush thread: also when the setup failed
+      release.countDown();
       PageManager.setPageWriteFaultInjector(null);
       blocker.drop();
     }
@@ -378,12 +385,11 @@ class SyncCommitSupersedesPendingFlushTest {
     final Database blocker = new DatabaseFactory(BLOCKER_PATH).create();
     try {
       final CountDownLatch held = new CountDownLatch(1);
-      final CountDownLatch release = new CountDownLatch(1);
       final String blockerName = blocker.getName();
       PageManager.setPageWriteFaultInjector(id -> {
         if (isFlushThread() && blockerName.equals(id.getDatabase().getName())) {
           held.countDown();
-          awaitQuietly(release, 100);
+          awaitQuietly(release, 3_600);
         }
       });
       blocker.transaction(() -> blocker.getSchema().createDocumentType("Blocker"));
@@ -424,6 +430,8 @@ class SyncCommitSupersedesPendingFlushTest {
         release.countDown();
       }
     } finally {
+      // Before the drop, which waits for the held flush thread: also when the setup failed
+      release.countDown();
       PageManager.setPageWriteFaultInjector(null);
       blocker.drop();
     }
