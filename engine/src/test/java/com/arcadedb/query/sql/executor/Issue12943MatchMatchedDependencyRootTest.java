@@ -61,6 +61,14 @@ class Issue12943MatchMatchedDependencyRootTest extends TestHelper {
   }
 
   @Test
+  void theMatchedWhereInItsOwnClauseAnswersTheSame() {
+    // the second spelling of the issue: the where: of a1 on a clause of its own, merged into the same pattern by the shared alias
+    // (the merge onto the hop that binds a1 is #12903)
+    assertThat(rows("MATCH {type: V, as: a0}.out('A'){as: a1}, {as: a1, where: ($matched.a0.c = c)}.in('A'){type: W, as: a2} "
+        + "RETURN a0.id AS a0, a1.id AS a1, a2.id AS a2")).containsExactly("0,1,2", "0,1,3", "3,1,2", "3,1,3");
+  }
+
+  @Test
   void aMiddleNodeReadingBothEndsNeverAnswersWrongRows() {
     // a1 waits for a0 AND a2 through $matched: whichever end starts, its pass schedules nothing, and one root cannot bind both
     // ends before a1. Before the fix this answered no rows (the second end was walked from unbound); the planner may refuse

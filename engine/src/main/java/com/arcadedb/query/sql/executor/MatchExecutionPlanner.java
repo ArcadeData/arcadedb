@@ -641,8 +641,7 @@ public class MatchExecutionPlanner {
       // 2. Having found a starting vertex, traverse its neighbors depth-first,
       //    adding any non-visited ones with satisfied dependencies to our schedule.
       final int scheduledBefore = resultingSchedule.size();
-      // The dependency sets the start satisfies, kept to undo an empty pass. Collected only when some alias reads the start
-      // through $matched, so the common pattern allocates nothing here
+      // The dependency sets the start satisfies, to undo an empty pass: allocated only when an alias reads it through $matched
       List<Set<String>> satisfiedByStart = null;
       for (final Set<String> dependencies : remainingDependencies.values())
         if (dependencies.contains(startingNode.alias)) {
@@ -652,11 +651,8 @@ public class MatchExecutionPlanner {
         }
       updateScheduleStartingAt(startingNode, visitedNodes, visitedEdges, remainingDependencies, resultingSchedule, rootCandidates);
       if (resultingSchedule.size() == scheduledBefore) {
-        // A pass that schedules no edge (every neighbour waits for an alias bound elsewhere through $matched) has not started
-        // anything: only the first scheduled edge gets a root step, so nothing binds the node, and it must not count as visited,
-        // or an edge that reaches it later is scheduled from it as if it were bound (issue #12943). It is reached through the
-        // edge that binds it, and the dependencies it seemed to satisfy are not satisfied yet. Such a pass never recursed, so
-        // marking the start visited and releasing its alias is all it changed: undoing exactly that restores the state before it
+        // A pass that schedules no edge binds nothing (only the first scheduled edge gets a root step): left visited, the node
+        // would have a later edge walked from it unbound (issue #12943). The pass never recursed, so this undoes all it changed
         visitedNodes.remove(startingNode);
         if (satisfiedByStart != null)
           for (final Set<String> dependencies : satisfiedByStart)
