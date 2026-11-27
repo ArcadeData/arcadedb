@@ -200,7 +200,8 @@ public class MatchEdgeByIndexStep extends AbstractExecutionStep {
             throw new CommandExecutionException(
                 "Index '" + seek.indexName() + "' on type '" + seek.edgeType() + "' is no longer available: re-plan the query");
 
-          seekKeys = resolveSeekKeys(seek.keyValues(), index instanceof IndexInternal internal ? internal.getKeyTypes() : null);
+          seekKeys = resolveSeekKeys(seek.keyValues(),
+              ridTextKeyTypes(seek, index instanceof IndexInternal internal ? internal.getKeyTypes() : null));
           seekIndex = 0;
           wholeKey = !seekKeys.isEmpty() && seekKeys.getFirst().length == index.getPropertyNames().size();
           // An edge has one type, so the seeks of two types never return the same one: the set spans one type's keys
@@ -413,6 +414,28 @@ public class MatchEdgeByIndexStep extends AbstractExecutionStep {
       keys = expanded;
     }
     return keys;
+  }
+
+  /**
+   * The key types {@link RidTextKeys} reads a RID spelled as text against, column by column: the index's, except for a column the
+   * inline property map pins to such a text. The map compares through {@link InlineProperties}, which reads that text as no number,
+   * so the id the text stands for under {@code =} finds only relationships the map rejects, and a text no id encodes would refuse
+   * the statement where the scan answers no row. That column keeps the text as its key, as the scan compares it (issue #11933).
+   */
+  private Type[] ridTextKeyTypes(final EdgeIndexSeedPlanner.TypeSeek seek, final Type[] keyTypes) {
+    if (relationshipProperties == null || keyTypes == null)
+      return keyTypes;
+    Type[] result = keyTypes;
+    final String[] propertyNames = seek.propertyNames();
+    for (int i = 0; i < propertyNames.length && i < keyTypes.length; i++) {
+      final Object declared = relationshipProperties.get(propertyNames[i]);
+      if (declared != null && InlineProperties.resolve(declared, EMPTY_RESULT, context) instanceof String text && RID.is(text)) {
+        if (result == keyTypes)
+          result = keyTypes.clone();
+        result[i] = null;
+      }
+    }
+    return result;
   }
 
   private List<Object> resolveColumnValues(final Object keyValue, final Type[] keyTypes, final int column) {

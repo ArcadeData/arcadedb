@@ -31,7 +31,6 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for issue #11933: openCypher's {@code =} reads a text that spells a RID against a number as the id {@code id()}
@@ -159,14 +158,37 @@ class CypherRidTextIndexSeekIssue11933Test extends TestHelper {
   }
 
   /**
-   * A RID text whose bucket does not fit the bits {@code id()} reserves for it cannot stand for an id: the comparison of the scan
-   * refuses it, and so does the seek, rather than answering no row where the scan raises.
+   * A RID text whose bucket does not fit the bits {@code id()} reserves for it cannot stand for an id: the {@code =} of the scan
+   * refuses it, and so does the seek, rather than answering no row where the scan raises. A property map that compares through
+   * {@code InlineProperties} (the count anchor of issue #11594, a relationship's inline map) reads the text as no number and answers
+   * no row, and so do their seeks, rather than refusing the statement. An encodable text in a relationship's inline map is a key the
+   * seek keeps as text as well: the map rejects the relationship the id would find.
    */
-  @Test
-  void aRidTextNoIdEncodesIsRefusedByTheSeekAsByTheScan() {
-    for (final String label : List.of("P", "Q"))
-      assertThatThrownBy(() -> column("MATCH (p:" + label + ") WHERE p.id = '#70000:1' RETURN p.id AS v")).as(label)
-          .hasStackTraceContaining("Cannot encode RID");
+  @ParameterizedTest
+  @ValueSource(strings = {
+      "MATCH (p:{V}) WHERE p.id = '#70000:1' RETURN p.id AS v",
+      "MATCH (p:{V}) WHERE p.id IN ['#70000:1', 2] RETURN p.id AS v",
+      "MATCH (p:{V} {id: '#70000:1'}) RETURN p.id AS v",
+      "MATCH (p:{V} {id: '#70000:1'})-[:{E}]->() RETURN count(*) AS v",
+      "MATCH (p:{V})-[:{E}]->() WHERE p.id = '#70000:1' RETURN count(*) AS v",
+      "MATCH ()-[r:{E} {w: '#70000:1'}]->() RETURN r.w AS v",
+      "MATCH ()-[r:{E}]->() WHERE r.w = '#70000:1' RETURN r.w AS v",
+      "MATCH ()-[r:{E} {w: '#0:1'}]->() RETURN r.w AS v" })
+  void aRidTextNoIdEncodesAnswersAsTheScan(final String template) {
+    assertThat(outcome(template.replace("{V}", "P").replace("{E}", "R"))).as(template)
+        .isEqualTo(outcome(template.replace("{V}", "Q").replace("{E}", "S")));
+  }
+
+  /** The rows of the query, or the refusal it raises. */
+  private Object outcome(final String query) {
+    try {
+      return column(query);
+    } catch (final Exception e) {
+      Throwable cause = e;
+      while (cause.getCause() != null && !String.valueOf(cause.getMessage()).contains("Cannot encode RID"))
+        cause = cause.getCause();
+      return "refused: " + cause.getMessage();
+    }
   }
 
   /** The text stands for the id it encodes, compared as any number is: a FLOAT is not truncated to an integer first. */

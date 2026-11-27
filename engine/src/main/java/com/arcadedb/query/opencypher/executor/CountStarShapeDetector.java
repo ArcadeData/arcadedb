@@ -415,12 +415,13 @@ final class CountStarShapeDetector {
       final String[] nodeLabels, final String[] edgeTypes, final Vertex.DIRECTION[] directions,
       final VertexPredicate[] nodePredicates, final CommandContext context) {
     final PathPattern keyed = HopEdgeTrackingAnalyzer.withWhereEqualities(List.of(pathPattern), where).getFirst();
-    final UniqueKeyAnchor first = plan.stepBuilder.matchSteps.uniqueKeyAnchorOf(keyed.getNode(0), context);
+    final UniqueKeyAnchor first = plan.stepBuilder.matchSteps.uniqueKeyAnchorOf(keyed.getNode(0), pathPattern.getNode(0), context);
     if (first != null)
       return new PropagateChainOp(nodeLabels, edgeTypes, directions, first, nodePredicates);
     if (IncomingEdgeLookup.isAnyUnidirectional(db.getSchema(), edgeTypes))
       return null;
-    final UniqueKeyAnchor last = plan.stepBuilder.matchSteps.uniqueKeyAnchorOf(keyed.getNode(edgeTypes.length), context);
+    final UniqueKeyAnchor last = plan.stepBuilder.matchSteps.uniqueKeyAnchorOf(keyed.getNode(edgeTypes.length),
+        pathPattern.getNode(edgeTypes.length), context);
     if (last == null)
       return null;
     return new PropagateChainOp(reversed(nodeLabels), reversed(edgeTypes), reversedDirections(directions), last,

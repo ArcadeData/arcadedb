@@ -781,8 +781,11 @@ final class MatchStepBuilder {
    * The vertex a node pattern pins by an equality on every column of a UNIQUE index, as a key to look up when the count runs
    * (issue #11594), or null when there is no such index or a value of the key is not a literal or a parameter given a scalar
    * value. A null key is not a key: the index holds an entry per record whose key is null, while the equality matches none.
+   *
+   * @param node    the pattern node, with the equalities of the {@code WHERE} clause added to its property map
+   * @param written the node as the pattern writes it, whose own property map is compared through {@link InlineProperties}
    */
-  UniqueKeyAnchor uniqueKeyAnchorOf(final NodePattern node, final CommandContext context) {
+  UniqueKeyAnchor uniqueKeyAnchorOf(final NodePattern node, final NodePattern written, final CommandContext context) {
     final TypeIndex index = uniqueKeyIndexOf(node);
     // a document or an edge type holding the key is no vertex: the label walk matches nothing there, as a node pattern must
     if (index != null && !(database.getSchema().getType(node.getLabels().getFirst()) instanceof VertexType))
@@ -798,8 +801,12 @@ final class MatchStepBuilder {
       final Object value = InlineProperties.resolve(declared, null, context);
       if (value == null || value instanceof Collection || value instanceof Map || value.getClass().isArray())
         return null;
-      // A RID spelled as text stands for the id it encodes in a numeric column (issue #11933)
-      key[i] = RidTextKeys.keyFor(TemporalUtil.toIndexKey(value), index.getKeyTypes(), i);
+      // The = of a WHERE equality reads a RID spelled as text as the id it encodes in a numeric column (issue #11933). The pattern's
+      // own map compares through InlineProperties, which does not, so its value is sought as written: the id would find a vertex
+      // the map rejects, and a text no id encodes would refuse the count where the walk answers no row
+      final Object indexKey = TemporalUtil.toIndexKey(value);
+      final boolean fromWrittenMap = written.hasProperties() && written.getProperties().get(keys.get(i)) == declared;
+      key[i] = fromWrittenMap ? indexKey : RidTextKeys.keyFor(indexKey, index.getKeyTypes(), i);
     }
     return new UniqueKeyAnchor(index, key);
   }
