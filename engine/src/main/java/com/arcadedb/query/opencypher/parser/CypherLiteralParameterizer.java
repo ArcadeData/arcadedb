@@ -105,7 +105,8 @@ public class CypherLiteralParameterizer extends LiteralParameterizer<ParsedQuery
     return scan;
   }
 
-  private static boolean isCandidate(final Token token) {
+  /** Whether a token is a literal the scan records; the parser counts the same ones (issue #12605). */
+  static boolean isCandidate(final Token token) {
     return switch (token.getType()) {
       case Cypher25Lexer.UNSIGNED_DECIMAL_INTEGER, Cypher25Lexer.DECIMAL_DOUBLE, Cypher25Lexer.UNSIGNED_HEX_INTEGER,
            Cypher25Lexer.UNSIGNED_OCTAL_INTEGER -> true;

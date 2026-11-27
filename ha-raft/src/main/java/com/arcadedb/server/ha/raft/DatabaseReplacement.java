@@ -235,6 +235,8 @@ final class DatabaseReplacement {
         // entry this node has already applied (issue #8454). The install refuses such a copy and asks again: every
         // entry up to this floor went to the copy being replaced.
         final long floor = Math.max(gate.appliedUnderGate(), sm.lastAppliedIndex.get());
+        final ArcadeDBServer localServer = sm.server;
+        final boolean acquiring = localServer != null && !localServer.existsDatabase(dbName);
         final long servedAt = SnapshotInstaller.runRequiringSourceAppliedIndex(floor, install);
         // The install replaced the database's files, so no reservation taken against the previous copy can still hold
         // (issue #8022) - the rule applyDropDatabaseEntry already applies, here for every install path: the forced
@@ -255,6 +257,13 @@ final class DatabaseReplacement {
         // resync, the bootstrap-mismatch retry and the Ratis-initiated one alike. Success only and before the unlock,
         // for the same reasons as the boundary above; -1 when the install downloaded nothing or the leader did not say.
         gate.recordServedCopy(servedAt);
+        // A copy this node did not hold before (issue #11919): it is the incarnation the leader held at servedAt, so every
+        // entry naming the database up to there is either in it or of an incarnation a drop removed before it. The
+        // creation boundary says so durably, so that neither the drop of such an incarnation (which the #8579 skip does
+        // not cover) nor, after a restart, any of its entries reaches the acquired copy. Before the unlock, so an entry
+        // waiting on the gate reads it.
+        if (acquiring && servedAt >= 0 && localServer.existsDatabase(dbName))
+          sm.appliedIndexes.recordDatabaseCreated(servedAt + 1, dbName);
       } finally {
         gate.unlock();
       }

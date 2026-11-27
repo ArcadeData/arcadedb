@@ -286,9 +286,9 @@ class CypherConcurrentWriteTest {
     }
 
     /**
-     * A MERGE action writing two records, where the first pass judges one of them a no-op only because it read the other
-     * one stale: once the reload of the other one changes the right-hand side, that record is written too, so it must be
-     * reloaded as well before the value written to it is evaluated.
+     * A MERGE action writing two records, both read stale. The item on d is evaluated after the one on c was applied
+     * (issue #12832), so it reads the c.k the MERGE wrote, and d must be reloaded before its value is evaluated: written from
+     * the stale image, the concurrent increment of d.n would be lost.
      */
     @Test
     void multiTargetOnMatchSetReloadsATargetTheSecondPassWrites() {
@@ -305,7 +305,7 @@ class CypherConcurrentWriteTest {
 
       if (committed) {
         assertThat(readProperty("C", "c0", "k")).isEqualTo(2);
-        assertThat(readProperty("D", "d0", "n")).as("d.n = the concurrent 1 + the reloaded c.k 1").isEqualTo(2);
+        assertThat(readProperty("D", "d0", "n")).as("d.n = the concurrent 1 + the c.k the first item wrote, 2").isEqualTo(3);
       } else {
         assertThat(readProperty("C", "c0", "k")).isEqualTo(1);
         assertThat(readProperty("D", "d0", "n")).isEqualTo(1);

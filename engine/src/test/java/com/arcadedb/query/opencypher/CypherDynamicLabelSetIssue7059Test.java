@@ -224,11 +224,25 @@ class CypherDynamicLabelSetIssue7059Test extends TestHelper {
   }
 
   /**
-   * SET is a simultaneous assignment: every right-hand side reads the state the clause began with, so a label
-   * expression reading a property the same clause overwrites must still see the pre-clause value (issue #5190).
+   * A label item is evaluated after the items before it were applied and before the items after it (issue #12832), so a
+   * label expression reading a property the clause overwrites later still sees the value it had.
    */
   @Test
-  void theLabelExpressionReadsThePreClauseState() {
+  void theLabelExpressionReadsTheValueBeforeALaterItem() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:Entity {uuid: 'a', kind: 'Finding'})").close());
+
+    database.transaction(() -> database.command("opencypher",
+        "MATCH (n:Entity {uuid: 'a'}) SET n:$(n.kind), n.kind = 'Claim'").close());
+
+    final ResultSet rs = database.query("opencypher", "MATCH (n:Entity {uuid: 'a'}) RETURN labels(n) AS l, n.kind AS k");
+    final Result row = rs.next();
+    assertThat(row.<List<String>>getProperty("l")).containsExactlyInAnyOrder("Entity", "Finding");
+    assertThat(row.<String>getProperty("k")).isEqualTo("Claim");
+  }
+
+  /** ...and one reading a property an earlier item of the clause wrote sees the written value (issue #12832). */
+  @Test
+  void theLabelExpressionReadsTheValueAnEarlierItemWrote() {
     database.transaction(() -> database.command("opencypher", "CREATE (:Entity {uuid: 'a', kind: 'Finding'})").close());
 
     database.transaction(() -> database.command("opencypher",
@@ -236,7 +250,7 @@ class CypherDynamicLabelSetIssue7059Test extends TestHelper {
 
     final ResultSet rs = database.query("opencypher", "MATCH (n:Entity {uuid: 'a'}) RETURN labels(n) AS l, n.kind AS k");
     final Result row = rs.next();
-    assertThat(row.<List<String>>getProperty("l")).containsExactlyInAnyOrder("Entity", "Finding");
+    assertThat(row.<List<String>>getProperty("l")).containsExactlyInAnyOrder("Entity", "Claim");
     assertThat(row.<String>getProperty("k")).isEqualTo("Claim");
   }
 

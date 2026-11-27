@@ -45,8 +45,7 @@ import java.util.Set;
  * </ul>
  * Any other operand (a null, a fraction, NaN, a collection, a map, a record or RID, a date, a {@code byte[]}, a mix of strings
  * and numbers) has no lookup, and any other probe is answered {@link #UNKNOWN}: the caller walks the operand as before. So is
- * a pair that {@link Type#numbersEqual} does not compare by value: a {@code Short} a byte cannot hold against a {@code Byte}
- * (see {@link #narrows(Object)}), and a {@code Float} from 2^24 up (see {@link #MAX_EXACT_FLOAT}).
+ * a pair that {@link Type#numbersEqual} does not compare by value: a {@code Float} from 2^24 up (see {@link #MAX_EXACT_FLOAT}).
  */
 final class ContainsLookup {
   /** Below this size the operand is walked: the walk costs less than the hash, and nothing is remembered for it. */
@@ -70,15 +69,10 @@ final class ContainsLookup {
 
   private final boolean strings;
   private final Set<Object> keys;
-  /** Whether an item is a {@code Byte}, or a {@code Short} a byte cannot hold: see {@link #narrows(Object)}. */
-  private final boolean bytes;
-  private final boolean wideShorts;
 
-  private ContainsLookup(final boolean strings, final Set<Object> keys, final boolean bytes, final boolean wideShorts) {
+  private ContainsLookup(final boolean strings, final Set<Object> keys) {
     this.strings = strings;
     this.keys = keys;
-    this.bytes = bytes;
-    this.wideShorts = wideShorts;
   }
 
   /**
@@ -103,21 +97,17 @@ final class ContainsLookup {
     final Set<Object> keys = new HashSet<>(size * 2);
     final Object first = items.hasNext() ? items.next() : null;
     final boolean strings = first instanceof String;
-    boolean bytes = false;
-    boolean wideShorts = false;
     Object item = first;
     while (true) {
       final Object key = strings ? (item instanceof String ? item : UNKNOWN) : numberKey(item);
       if (key == UNKNOWN)
         return null;
       keys.add(key);
-      bytes |= item instanceof Byte;
-      wideShorts |= narrows(item);
       if (!items.hasNext())
         break;
       item = items.next();
     }
-    return new ContainsLookup(strings, keys, bytes, wideShorts);
+    return new ContainsLookup(strings, keys);
   }
 
   /**
@@ -129,9 +119,6 @@ final class ContainsLookup {
       return NULL_KEY;
     if (strings)
       return probe instanceof String ? probe : UNKNOWN;
-    // a Short meeting a Byte is narrowed, not compared by value; the side each stands on is not known here, so both are walked
-    if (probe instanceof Byte ? wideShorts : bytes && narrows(probe))
-      return UNKNOWN;
     return numberKey(probe);
   }
 
@@ -165,15 +152,6 @@ final class ContainsLookup {
         return f.longValue();
     }
     return UNKNOWN;
-  }
-
-  /**
-   * Whether {@code value} is a {@code Short} a byte cannot hold. {@link Type#castComparableNumber} narrows a {@code Short} on the
-   * left of {@code =} to the {@code Byte} on its right instead of widening the byte, so {@code (short) 256} equals
-   * {@code (byte) 0}: the walk answers that, and a key of the value cannot. A short a byte holds narrows to itself.
-   */
-  private static boolean narrows(final Object value) {
-    return value instanceof Short s && s.shortValue() != s.byteValue();
   }
 
   /**

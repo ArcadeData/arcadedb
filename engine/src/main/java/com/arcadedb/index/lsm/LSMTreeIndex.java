@@ -42,8 +42,10 @@ import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexFactoryHandler;
 import com.arcadedb.index.IndexInternal;
+import com.arcadedb.index.IndexReplacedException;
 import com.arcadedb.index.PendingIndexRemovals;
 import com.arcadedb.index.RangeIndex;
+import com.arcadedb.index.StaleIndexException;
 import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
@@ -65,6 +67,7 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.Map;
 import java.util.Objects;
@@ -135,9 +138,31 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   public static class LSMTreeIndexFactoryHandler implements IndexFactoryHandler {
     @Override
     public IndexInternal create(final IndexBuilder<?> builder) {
+      checkSupportedKeyTypes(builder.getIndexName(), builder.getKeyTypes());
       return new LSMTreeIndex(builder.getDatabase(), builder.getIndexName(), builder.isUnique(), builder.getFilePath(),
           ComponentFile.MODE.READ_WRITE, builder.getKeyTypes(), builder.getLsmTreePageSize(), builder.getNullStrategy());
     }
+  }
+
+  /**
+   * Refuses the key types an LSM_TREE index cannot order (issue #12753). An embedded document has no order, so
+   * {@code BinaryComparator} cannot compare two of them: the index was accepted, the first insert written and the second
+   * one failed with a {@code ClassCastException}. EMBEDDED is the only such type a declared property can hand the builder:
+   * LIST and MAP keys are compared element by element, and a {@code BY ITEM} index over a LIST of embedded documents is
+   * keyed by STRING ({@code TypeIndexBuilder.listItemKeyType}).
+   * <p>
+   * Called by the factory handler, before any file is created, as {@code HashIndexBucket.checkSupportedKeyTypes} is for HASH.
+   * The load path deliberately does not call it: an index already on disk keeps opening, so it can still be dropped. Every
+   * NEW sub-index of such an index (a bucket added to its type, a rebuild) is refused by the same check.
+   */
+  static void checkSupportedKeyTypes(final String indexName, final Type[] keyTypes) {
+    if (keyTypes == null)
+      return;
+    for (final Type keyType : keyTypes)
+      if (keyType == Type.EMBEDDED)
+        throw new IndexException("Cannot create index '" + indexName + "' of type LSM_TREE because the key type " + keyType.name()
+            + " cannot be used as an LSM_TREE index key: an embedded document has no order. Index a field of it (a nested path"
+            + " such as 'p.x') instead");
   }
 
   /**
@@ -639,10 +664,46 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     return total;
   }
 
+  /**
+   * {@code read} under the index read lock. A read that cannot reach the index's files because they were retired reads an
+   * index that a newer schema generation has replaced, as on an HA replica that applied a compaction while a query still held
+   * this instance (issue #12358). That is an {@link IndexReplacedException}, an {@link IndexException} as for an index dropped
+   * or rebuilt under a statement, which plans the statement again on the current generation, and retryable on every wire; not
+   * the {@link IllegalArgumentException} a missing or closed file is reported with, which a client takes for a bad request.
+   */
+  private IndexCursor readLive(final Callable<IndexCursor> read) {
+    try {
+      return lock.executeInReadLock(read);
+    } catch (final IllegalArgumentException e) {
+      throw replacedOrSelf(mutable, getName(), e);
+    }
+  }
+
+  /**
+   * The failure a read of {@code read} raised, as the caller should see it: an {@link IndexReplacedException} when {@code read}
+   * or its compacted sub-index lives in a file that has been retired, {@code e} itself otherwise. Shared by the cursor
+   * creation above and by {@link LSMTreeIndexCursor}, which loads its pages lazily and so can meet a file retired after it was
+   * created: on an HA replica the files a replicated compaction supersedes are deleted as soon as the generation that no
+   * longer reads them is published, while a query of the previous generation may still be iterating (issue #12358).
+   */
+  static RuntimeException replacedOrSelf(final LSMTreeIndexMutable read, final String indexName,
+      final IllegalArgumentException e) {
+    final LSMTreeIndexCompacted subIndex = read.getSubIndex();
+    if (!isRetired(read, read.getFileId()) && (subIndex == null || !isRetired(read, subIndex.getFileId())))
+      return e;
+    return new IndexReplacedException("Index '" + indexName + "' was replaced while it was read: its file is retired", e);
+  }
+
+  /** Whether file {@code fileId} has left the database, or is on its way out: a drop closes it before it unlists it. */
+  private static boolean isRetired(final LSMTreeIndexMutable read, final int fileId) {
+    final ComponentFile file = read.getDatabase().getFileManager().getFileIfExists(fileId);
+    return file == null || file.isDropped();
+  }
+
   @Override
   public IndexCursor iterator(final boolean ascendingOrder) {
     checkIsValid();
-    return lock.executeInReadLock(() -> new LSMTreeIndexCursor(mutable, ascendingOrder));
+    return readLive(() -> new LSMTreeIndexCursor(mutable, ascendingOrder));
   }
 
   @Override
@@ -651,7 +712,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     // A bound of a kind the key type cannot hold bounds no entry (issue #10541): it used to be read as "no bound" and answer every one
     if (!canReadAsKeys(fromKeys))
       return EMPTY_CURSOR;
-    return lock.executeInReadLock(() -> mutable.iterator(ascendingOrder, fromKeys, inclusive));
+    return readLive(() -> mutable.iterator(ascendingOrder, fromKeys, inclusive));
   }
 
   @Override
@@ -660,8 +721,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     checkIsValid();
     if (!canReadAsKeys(beginKeys) || !canReadAsKeys(endKeys))
       return EMPTY_CURSOR;
-    return lock.executeInReadLock(() -> mutable.range(ascendingOrder, beginKeys, beginKeysInclusive, endKeys,
-        endKeysInclusive));
+    return readLive(() -> mutable.range(ascendingOrder, beginKeys, beginKeysInclusive, endKeys, endKeysInclusive));
   }
 
   /**
@@ -674,7 +734,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
     final byte[] keyTypes = mutable.binaryKeyTypes;
     for (int i = 0; i < keys.length && i < keyTypes.length; ++i)
-      if (!Type.canBeIndexLookupKey(getDatabase(), keys[i], BinaryTypes.getClassFromType(keyTypes[i])))
+      if (!Type.canBeIndexLookupKey(getDatabase(), keys[i], keyTypes[i]))
         return false;
     return true;
   }
@@ -686,7 +746,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
     final byte[] keyTypes = mutable.binaryKeyTypes;
     for (int i = 0; i < keys.length && i < convertedKeys.length && i < keyTypes.length; ++i)
-      if (!Type.isReadAsIndexKey(keys[i], convertedKeys[i], BinaryTypes.getClassFromType(keyTypes[i])))
+      if (!Type.isReadAsIndexKey(keys[i], convertedKeys[i], keyTypes[i]))
         return false;
     return true;
   }
@@ -736,6 +796,64 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
         return withLegacyEntries;
     }
     return getConverted(convertedKeys, limit);
+  }
+
+  /**
+   * A probe of the pages of this index for the uniqueness check of ONE commit, or null when the caller must ask {@link #get} instead:
+   * while this transaction may hold pending changes of the keys (a lookup merges them), and for an index that may hold entries under
+   * the old spelling of a key ({@link #mayHoldLegacyKeys()}). See {@link KeyProbe}.
+   */
+  public KeyProbe newKeyProbe() {
+    checkIsValid();
+    if (mayHoldLegacyKeys || getDatabase().getTransaction().getStatus() == TransactionContext.STATUS.BEGUN)
+      return null;
+    return lock.executeInReadLock(() -> {
+      final LSMTreeIndexMutable snapshotOf = mutable;
+      return new KeyProbe(snapshotOf, snapshotOf.newPageSnapshot());
+    });
+  }
+
+  /**
+   * Answers, for the keys of a commit one after the other, whether this index has no entry for the key, from a snapshot of its mutable
+   * pages taken once: true is a promise that {@link #get} answers the key with nothing, false is "do not know, ask {@link #get}". It
+   * is meant for the uniqueness check of a commit, where the files of every bucket index of the type are locked until the commit ends:
+   * no other transaction adds an entry to a page of the snapshot, so a key the pages lack stays absent for the whole check. A
+   * compaction that swaps the index in the middle ends the promises (every answer after it is false).
+   * <p>
+   * Confined to the thread of the commit and to the time it holds its file locks: the snapshot keeps views of the pages and a
+   * position per page that nothing synchronizes, and a write to those pages made by the commit itself (the dangling-entry repair of
+   * the uniqueness check) leaves the snapshot stale, so the caller drops the probe after such a write.
+   * <p>
+   * Nearly every key of a commit is new, so the answer costs no cursor, no result set, and no page fetch, view or result per page
+   * and key: the probes of the next key in each page start where the last one ended, which makes a sorted batch a merge instead of
+   * a binary search per key.
+   */
+  public final class KeyProbe {
+    private final LSMTreeIndexMutable                      snapshotOf;
+    private final LSMTreeIndexMutable.MutablePagesSnapshot pages;
+
+    private KeyProbe(final LSMTreeIndexMutable snapshotOf, final LSMTreeIndexMutable.MutablePagesSnapshot pages) {
+      this.snapshotOf = snapshotOf;
+      this.pages = pages;
+    }
+
+    /**
+     * @param keys the keys as {@link #get} takes them
+     */
+    public boolean holdsNoEntryFor(final Object[] keys) {
+      checkIsValid();
+      final Object[] convertedKeys;
+      try {
+        convertedKeys = convertKeys(keys);
+      } catch (final IllegalArgumentException e) {
+        // as get(): a key the declared type cannot read equals no indexed key
+        return true;
+      }
+      if (!areReadAsKeys(keys, convertedKeys))
+        return true;
+
+      return lock.executeInReadLock(() -> mutable == snapshotOf && snapshotOf.holdsNoEntryFor(pages, convertedKeys));
+    }
   }
 
   /**
@@ -839,7 +957,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
       // the disk rows that a pending removal hides do not count towards the limit: each pending entry hides at most one row, so
       // that many more are read and the limit is applied to the merged rows below. A key-wide removal hides every row
       final int diskLimit = removals == null || removals.isKeyWide() || limit < 0 ? limit : (int) Math.min(Integer.MAX_VALUE, (long) limit + pendingEntries);
-      final IndexCursor result = lock.executeInReadLock(() -> mutable.get(convertedKeys, diskLimit));
+      final IndexCursor result = readLive(() -> mutable.get(convertedKeys, diskLimit));
 
       if (txChanges != null || removals != null) {
         if (txChanges == null)
@@ -858,7 +976,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
       return result;
     }
 
-    return lock.executeInReadLock(() -> mutable.get(convertedKeys, limit));
+    return readLive(() -> mutable.get(convertedKeys, limit));
   }
 
   /**
@@ -1366,7 +1484,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
   private void checkIsValid() {
     if (!valid)
-      throw new IndexException("Index '" + name + "' is not valid. Probably has been drop or rebuilt");
+      throw new StaleIndexException("Index '" + name + "' is not valid. Probably has been drop or rebuilt");
   }
 
   DatabaseInternal getDatabase() {

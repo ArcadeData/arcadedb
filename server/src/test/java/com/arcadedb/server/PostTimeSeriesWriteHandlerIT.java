@@ -91,6 +91,29 @@ class PostTimeSeriesWriteHandlerIT extends BaseGraphServerTest {
     });
   }
 
+  /**
+   * Issue #11875: an unknown precision was logged and read as nanoseconds, so 'precision=sec' answered 204 and stored a
+   * timestamp in seconds as one in 1970.
+   */
+  @Test
+  void anUnknownPrecisionIsRefusedAndWritesNothing() throws Exception {
+    testEachServer(serverIndex -> {
+      command(serverIndex, "CREATE TIMESERIES TYPE precisioncheck TIMESTAMP ts TAGS (host STRING) FIELDS (v DOUBLE)");
+
+      for (final String precision : new String[] { "sec", "seconds", "h", "nanoseconds" })
+        assertThat(postLineProtocol(serverIndex, "precisioncheck,host=a v=1 1700000000", precision)).as(precision).isEqualTo(400);
+
+      final JSONArray records = executeCommand(serverIndex, "sql", "SELECT FROM precisioncheck").getJSONObject("result")
+          .getJSONArray("records");
+      assertThat(records.length()).isZero();
+
+      // the accepted spellings, in any case, still write
+      for (final String precision : new String[] { "s", "S", "ms", "us", "u", "ns" })
+        assertThat(postLineProtocol(serverIndex, "precisioncheck,host=" + precision + " v=1 1700000000", precision)).as(precision)
+            .isEqualTo(204);
+    });
+  }
+
   @Test
   void unknownMeasurementTypeReturnsError() throws Exception {
     // When all samples reference measurement types that have no matching TIMESERIES TYPE,

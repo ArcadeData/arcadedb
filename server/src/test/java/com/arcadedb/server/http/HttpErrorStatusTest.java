@@ -20,6 +20,7 @@ package com.arcadedb.server.http;
 
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.InvalidArgumentException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
@@ -27,6 +28,7 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.Base64;
 import java.util.List;
+import org.assertj.core.api.AbstractStringAssert;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
@@ -344,6 +346,74 @@ class HttpErrorStatusTest {
         final int status = connection.getResponseCode();
         final String body = status < 400 ? readResponse(connection) : readError(connection);
         assertThat(status).as("HTTP status for `%s`; body: %s", sql, body).isEqualTo(expectedStatus);
+        return new JSONObject(body);
+      } finally {
+        connection.disconnect();
+      }
+    }
+  }
+
+  // Regression: #12795 eight caller mistakes answered 500
+  /**
+   * Issue #12795 over HTTP, the surface the fuzzer found it on: statement shapes that are the caller's mistake, or forms the
+   * engine refuses on purpose, answered 500. Each now answers 400 with the exception that names the kind of mistake, and
+   * {@code FROM []}, the empty target the grammar accepts, answers 200 with no rows.
+   */
+  @Nested
+  class CallerMistakes extends BaseGraphServerTest {
+
+    @Test
+    void callerMistakesAreClientErrors() throws Exception {
+      testEachServer(serverIndex -> {
+        executeCommand(serverIndex, "sql", "CREATE VERTEX TYPE P12795");
+        executeCommand(serverIndex, "sql", "CREATE PROPERTY P12795.name STRING");
+        executeCommand(serverIndex, "sql", "CREATE INDEX ON P12795 (name) FULL_TEXT");
+        executeCommand(serverIndex, "sql", "INSERT INTO P12795 SET id = 1, name = 'a b', tags = ['a'], n = 1");
+
+        expect(serverIndex, "sql", "UPDATE P12795 ADD tags = 'x' WHERE id = 1", null, CommandSemanticException.class)
+            .contains("SET tags = tags || 'x'");
+        expect(serverIndex, "sql", "SELECT FROM P12795 WHERE distinct(n) = 1", null, CommandSemanticException.class);
+        expect(serverIndex, "sql", "SELECT FROM :p", new JSONObject().put("p", 1), TypeMismatchException.class);
+        expect(serverIndex, "sql", "INSERT INTO P12795 CONTENT :p", new JSONObject().put("p", 1), TypeMismatchException.class)
+            .contains("INSERT");
+        expect(serverIndex, "sql", "SELECT expand(@this) FROM P12795", null, TypeMismatchException.class).doesNotContain("a b");
+        expect(serverIndex, "sql", "SELECT FROM P12795 WHERE SEARCH_INDEX(@type, 'a') = true", null, SchemaException.class);
+        expect(serverIndex, "opencypher", "LOAD CSV FROM null AS row RETURN row", null, InvalidArgumentException.class);
+
+        final JSONObject empty = post(serverIndex, "sql", "SELECT FROM []", null, 200);
+        assertThat(empty.getJSONArray("result").length()).isZero();
+      });
+    }
+
+    /** Asserts a 400 carrying the exception, and returns an assertion on its detail. */
+    private AbstractStringAssert<?> expect(final int serverIndex, final String language, final String command,
+        final JSONObject params, final Class<? extends Throwable> exception) throws Exception {
+      final JSONObject error = post(serverIndex, language, command, params, 400);
+      assertThat(error.getString("exception")).as(command).isEqualTo(exception.getName());
+      return assertThat(error.getString("detail")).as(command);
+    }
+
+    /** Posts a statement to the command endpoint, asserts the HTTP status, and returns the parsed body. */
+    private JSONObject post(final int serverIndex, final String language, final String command, final JSONObject params,
+        final int expectedStatus) throws Exception {
+      final HttpURLConnection connection = (HttpURLConnection) new URL(getServerHttpUrl(serverIndex, "/api/v1/command/graph"))
+          .openConnection();
+      connection.setRequestMethod("POST");
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+
+      final JSONObject payload = new JSONObject();
+      payload.put("language", language);
+      payload.put("command", command);
+      if (params != null)
+        payload.put("params", params);
+      formatPayload(connection, payload);
+      connection.connect();
+
+      try {
+        final int status = connection.getResponseCode();
+        final String body = status < 400 ? readResponse(connection) : readError(connection);
+        assertThat(status).as("HTTP status for `%s`; body: %s", command, body).isEqualTo(expectedStatus);
         return new JSONObject(body);
       } finally {
         connection.disconnect();

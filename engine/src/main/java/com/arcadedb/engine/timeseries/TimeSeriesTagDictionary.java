@@ -32,6 +32,7 @@ import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalSchema;
+import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Type;
 
 import java.io.File;
@@ -77,7 +78,10 @@ import java.util.logging.Level;
  * separately means the data pages never conflict with the dictionary tail page, and the in-RAM
  * mapping is published only after that commit succeeds, so a failed commit leaves RAM and disk
  * agreeing. The converse - a committed id whose data transaction then rolls back - leaves an unused
- * entry, which is harmless because the dictionary is append-only and ids are never reused.
+ * entry, which is harmless because the dictionary is append-only and ids are never reused. Before, and
+ * not inside, the data transaction (issue #12807): nested in it, a batch carrying a value never seen
+ * before needed one more level of nesting than any other append, and a script's {@code BEGIN} under the
+ * HTTP command handler's transaction went past the limit of 3.
  * <p>
  * <b>Steady state is free.</b> After warm-up every value is already known, so an append does a
  * lookup pass and no transaction at all.
@@ -211,6 +215,8 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
     if (mutableFormatVersion < TimeSeriesBucket.VERSION_DICTIONARY_TAGS || !hasDictionaryColumns(columns))
       return null;
 
+    // the dictionary file is named after the type
+    LocalTimeSeriesType.checkValidName(typeName);
     final String name = typeName + NAME_SUFFIX;
     final LocalSchema schema = (LocalSchema) database.getSchema();
 
@@ -556,9 +562,9 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
 
       // Route through the wrapped database so the pages are shipped to followers under HA.
       final DatabaseInternal db = database.getWrappedDatabaseInstance();
-      // See initHeaderPage(): roll back only our own transaction, never a caller's. This one usually IS nested -
-      // the ingest path calls it from inside the append transaction - which is exactly the case a failed commit
-      // used to charge to the caller (issue #7732).
+      // See initHeaderPage(): roll back only our own transaction, never a caller's. This one is nested whenever the append is
+      // reached from inside a transaction of the caller's - a script's BEGIN, the HTTP command handler's - which is exactly the
+      // case a failed commit used to charge to the caller (issue #7732).
       final OwnTransaction tx = OwnTransaction.begin(db);
       final int[] appended;
       try {

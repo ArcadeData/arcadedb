@@ -20,6 +20,7 @@ package com.arcadedb.query.facet;
 
 import com.arcadedb.engine.timeseries.TimeBucketGrid;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSQLParsingException;
 
 import java.time.DateTimeException;
 import java.time.DayOfWeek;
@@ -66,7 +67,7 @@ public final class CalendarBoundaries {
    * @param offset     added to every zone-local boundary, null for none
    * @param minMs      the smallest value to cover
    * @param maxMs      the largest value to cover
-   * @param maxBuckets the bucket cap, exceeded raises {@link CommandExecutionException}
+   * @param maxBuckets the bucket cap, exceeded raises {@link CommandSQLParsingException}
    */
   public static CalendarBoundaries calendar(final String alias, final TemporalUnit unit, final ZoneId zone, final Duration offset,
       final long minMs, final long maxMs, final int maxBuckets) {
@@ -135,8 +136,13 @@ public final class CalendarBoundaries {
       throw new CommandExecutionException("HISTOGRAM " + alias + " minimum " + minMs + " is greater than its maximum " + maxMs);
   }
 
-  private static CommandExecutionException outOfRange(final String alias) {
-    return new CommandExecutionException("HISTOGRAM " + alias + " range is out of the representable time range: use BOUNDS");
+  /**
+   * The refusal of buckets that would reach beyond the long range (numbers, epoch milliseconds) or the calendar's. Like the bucket cap it
+   * is decided by the values and the interval the query asked for, so it is the caller's to change (a client error, not a server
+   * failure). BOUNDS are no remedy: they only widen the span, they never clip it.
+   */
+  private static CommandSQLParsingException outOfRange(final String alias) {
+    return new CommandSQLParsingException("FACETS " + alias + ": the histogram buckets would reach beyond the representable range");
   }
 
   /** The index of the bucket holding the value (half-open {@code [from, to)}), -1 when it is outside every bucket. */
@@ -166,9 +172,12 @@ public final class CalendarBoundaries {
     return OffsetDateTime.ofInstant(instant, zone).toString();
   }
 
-  /** The refusal of a histogram above the bucket cap (D18), shared by the numeric histogram. */
-  static CommandExecutionException tooMany(final String alias) {
-    return new CommandExecutionException("HISTOGRAM " + alias + " would produce more than 100000 buckets: use a coarser interval or BOUNDS");
+  /**
+   * The refusal of a histogram above the bucket cap (D18), the one shared by the compiler's BOUNDS check, the time and the numeric
+   * histograms. A parsing exception (HTTP 400) even when the matched values rather than BOUNDS decide it: the interval is the caller's.
+   */
+  static CommandSQLParsingException tooMany(final String alias) {
+    return new CommandSQLParsingException("FACETS " + alias + ": the histogram would have more than " + HistogramCollector.MAX_BUCKETS + " buckets");
   }
 
   /** Walks the boundaries: the instant line for minutes and hours, the local calendar for the rest. */
