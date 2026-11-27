@@ -70,6 +70,8 @@ public class FileUtils {
   public static final String UTF8_BOM = "\uFEFF";
   private static final BigDecimal LONG_MAX = BigDecimal.valueOf(Long.MAX_VALUE);
   private static final BigDecimal LONG_MIN = BigDecimal.valueOf(Long.MIN_VALUE);
+  /** Integer digits past which a decimal size mantissa is out of the long range whatever the unit (a long has 19). */
+  private static final int        MAX_INTEGER_DIGITS = 40;
 
   /** One warning per JVM when the file store cannot replace files atomically (see {@link #publishAtomically}). */
   private static final AtomicBoolean NON_ATOMIC_MOVE_REPORTED   = new AtomicBoolean();
@@ -230,23 +232,39 @@ public class FileUtils {
    * #12991).
    */
   private static long scaled(final String mantissa, final long unit) {
-    final BigDecimal exact;
-    if (mantissa.indexOf('.') > -1) {
-      BigDecimal decimal;
+    if (mantissa.indexOf('.') < 0) {
+      // A WHOLE MANTISSA (THE COMMON CASE: "64MB", "123456789B", "50%") NEEDS NO BigDecimal: A LONG PRODUCT IS EXACT
+      final long whole = Long.parseLong(mantissa);
       try {
-        // THE DECIMAL TEXT IS PARSED DIRECTLY: GOING THROUGH A DOUBLE WOULD ROUND "9007199254740993.0" AND "0.99999999999999999"
-        decimal = new BigDecimal(mantissa.trim());
-      } catch (final NumberFormatException e) {
-        // NOT PLAIN DECIMAL TEXT (E.G. "NaN", "Infinity", "1.5f", HEX FLOAT): LET THE DOUBLE PARSER DECIDE
-        final double value = Double.parseDouble(mantissa);
-        if (!Double.isFinite(value))
-          return (long) (value * unit);
-        decimal = BigDecimal.valueOf(value);
+        return Math.multiplyExact(whole, unit);
+      } catch (final ArithmeticException e) {
+        return (whole < 0) == (unit < 0) ? Long.MAX_VALUE : Long.MIN_VALUE;
       }
-      exact = decimal;
-    } else
-      exact = BigDecimal.valueOf(Long.parseLong(mantissa));
-    return exact.multiply(BigDecimal.valueOf(unit)).min(LONG_MAX).max(LONG_MIN).longValue();
+    }
+
+    BigDecimal decimal;
+    try {
+      // THE DECIMAL TEXT IS PARSED DIRECTLY: GOING THROUGH A DOUBLE WOULD ROUND "9007199254740993.0" AND "0.99999999999999999"
+      decimal = new BigDecimal(mantissa.trim());
+    } catch (final NumberFormatException e) {
+      // NOT PLAIN DECIMAL TEXT (E.G. "1.5f", HEX FLOAT): LET THE DOUBLE PARSER DECIDE
+      final double value = Double.parseDouble(mantissa);
+      if (!Double.isFinite(value))
+        return (long) (value * unit);
+      decimal = BigDecimal.valueOf(value);
+    }
+
+    // AN EXPONENT FAR OUTSIDE THE LONG RANGE ("1.0E999999999B") IS ANSWERED FROM ITS MAGNITUDE ALONE, SO THAT NO STEP BELOW CAN
+    // BE ASKED TO EXPAND IT INTO DIGITS: THE UNIT IS AT MOST 2^40, 13 DIGITS
+    if (decimal.signum() == 0)
+      return 0;
+    final long integerDigits = (long) decimal.precision() - decimal.scale();
+    if (integerDigits > MAX_INTEGER_DIGITS)
+      return (decimal.signum() < 0) == (unit < 0) ? Long.MAX_VALUE : Long.MIN_VALUE;
+    if (integerDigits < -MAX_INTEGER_DIGITS)
+      return 0;
+
+    return decimal.multiply(BigDecimal.valueOf(unit)).min(LONG_MAX).max(LONG_MIN).longValue();
   }
 
   public static Number string2number(final String iText) {
