@@ -1896,7 +1896,7 @@ public final class GraphAlgorithms {
   private static double[] lccBuildAndIntersect(final GraphAnalyticalView.Pinned view, final String[] types, final int n,
       final WorkCheckpoint checkpoint) {
     // A type with no edges has no CSR slice: with only that one type there is nothing to merge, and the general branch below skips it
-    final boolean singleType = types.length == 1 && view.getCSRIndex(types[0]) != null;
+    final CSRAdjacencyIndex singleCsr = types.length == 1 ? view.getCSRIndex(types[0]) : null;
     // First pass: compute degree per node
     final int[] degree = new int[n];
     for (final String edgeType : types) {
@@ -1927,13 +1927,12 @@ public final class GraphAlgorithms {
       pos[i] = offsets[i];
     }
 
-    if (singleType) {
+    if (singleCsr != null) {
       // Single edge type: merge forward + backward (both already sorted) -> O(d) per node
-      final CSRAdjacencyIndex csr = view.getCSRIndex(types[0]);
-      final int[] fwdOffsets = csr.getForwardOffsets();
-      final int[] fwdNeighbors = csr.getForwardNeighbors();
-      final int[] bwdOffsets = csr.getBackwardOffsets();
-      final int[] bwdNeighbors = csr.getBackwardNeighbors();
+      final int[] fwdOffsets = singleCsr.getForwardOffsets();
+      final int[] fwdNeighbors = singleCsr.getForwardNeighbors();
+      final int[] bwdOffsets = singleCsr.getBackwardOffsets();
+      final int[] bwdNeighbors = singleCsr.getBackwardNeighbors();
       for (int u = 0; u < n; u++) {
         if ((u & PERIODIC_CHECKPOINT_MASK) == PERIODIC_CHECKPOINT_MASK)
           checkpoint.check();
