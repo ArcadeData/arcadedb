@@ -19,12 +19,17 @@
 package com.arcadedb.query.sql;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TypeMismatchException;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.parser.RecordAttribute;
+import com.arcadedb.query.sql.parser.SuffixIdentifier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -151,6 +156,14 @@ class Issue12795CallerMistakesTest extends TestHelper {
   @Test
   void aRecordAttributeEvaluatedWithNoRecordIsNull() {
     // the root of the SEARCH_INDEX(@type, ...) failure: every record attribute dereferenced the record the planner does not have
+    final String[] attributes = { "@type", "@rid", "@cat", "@in", "@out", "@this", "@props" };
+    final CommandContext context = new BasicCommandContext();
+    for (final String attribute : attributes) {
+      final RecordAttribute recordAttribute = new RecordAttribute();
+      recordAttribute.setName(attribute);
+      // the value itself, not only the absence of an NPE: null, as a property of no record is
+      assertThat(new SuffixIdentifier(recordAttribute).execute((Identifiable) null, context)).as(attribute).isNull();
+    }
     for (final String attribute : new String[] { "@type", "@rid", "@cat", "@in", "@out" })
       assertThatThrownBy(() -> drain("SELECT FROM P WHERE SEARCH_INDEX(" + attribute + ", 'a') = true")).as(attribute)
           .isNotInstanceOf(NullPointerException.class);
