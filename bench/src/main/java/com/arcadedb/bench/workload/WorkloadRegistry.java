@@ -24,7 +24,7 @@ import java.util.List;
 
 /**
  * The workloads of the suite in a fixed order: ingestion, graph-oltp, vector, fulltext, facet, timeseries, correctness,
- * protocols, issues. Workloads register here as they are added.
+ * protocols, issues, ramp. Workloads register here as they are added.
  */
 public final class WorkloadRegistry {
   private WorkloadRegistry() {
@@ -33,6 +33,6 @@ public final class WorkloadRegistry {
   public static List<Workload> all() {
     return List.of(new IngestionWorkload(), new GraphOltpWorkload(), new VectorWorkload(), new FullTextWorkload(),
         new FacetWorkload(), new TimeSeriesWorkload(), new CorrectnessWorkload(), new ProtocolsWorkload(),
-        new IssuesWorkload());
+        new IssuesWorkload(), new RampWorkload());
   }
 }

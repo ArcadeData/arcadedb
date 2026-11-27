@@ -51,7 +51,7 @@ class IssuesWorkloadTest {
         "issue-12141", "issue-11701", "issue-11871", "issue-11682", "issue-11700");
     for (final Scale scale : Scale.values())
       assertThat(workload.cases(scale)).isEqualTo(workload.cases());
-    assertThat(WorkloadRegistry.all().getLast()).isInstanceOf(IssuesWorkload.class);
+    assertThat(WorkloadRegistry.all()).hasAtLeastOneElementOfType(IssuesWorkload.class);
   }
 
   @Test

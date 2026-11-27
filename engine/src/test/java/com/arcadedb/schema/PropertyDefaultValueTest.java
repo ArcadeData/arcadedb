@@ -114,6 +114,13 @@ class PropertyDefaultValueTest extends TestHelper {
 
       assertThatThrownBy(() -> database.newDocument("Probe").save()).hasMessageContaining("Probe.ridDefault")
           .hasMessageContaining("@rid");
+
+      // not only the bare attribute: one inside a larger expression has no record to be read from either, and a planner being
+      // answered null for it (issue #12795) must not turn the default into a null stored on every record
+      final DocumentType nested = database.getSchema().createDocumentType("ProbeNested");
+      nested.createProperty("typeDefault", Type.STRING).setDefaultValue("@type.toLowerCase()");
+      assertThatThrownBy(() -> database.newDocument("ProbeNested").save()).isInstanceOf(SchemaException.class)
+          .hasMessageContaining("ProbeNested.typeDefault").hasMessageContaining("@type");
     });
   }
 

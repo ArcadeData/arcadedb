@@ -464,6 +464,10 @@ public final class BenchMain {
     // the results of the workloads already finished; the one running is added by the runner's callback
     final List<CaseResult> results = new ArrayList<>();
     for (final Workload w : selected) {
+      // a workload that measures nothing at this scale gets no server: starting and stopping a container for it costs time
+      // and records nothing
+      if (w.cases(scale).isEmpty())
+        continue;
       if (runner.hasAbandonedWorker()) {
         // the runner records every case as not started; a server started now would only compete with the stuck worker
         results.addAll(runner.run(w, new WorkloadContext(null, scale, seed, params), null, file.onCase(results)));
@@ -474,7 +478,7 @@ public final class BenchMain {
         server = serverFactory.start(image, serverCpus, memLimitGb, heap, w.serverSettings());
       } catch (final Throwable t) {
         for (final String caseName : w.cases(scale))
-          results.add(new CaseResult(w.name(), caseName, scale.name(), params, reps, warmup, List.of(), CaseResult.Status.FAILED,
+          results.add(new CaseResult(w.name(), caseName, scale.name(), params, runner.repsOf(w), runner.warmupOf(w), List.of(), CaseResult.Status.FAILED,
               "server start failed: " + t.getClass().getName() + ": " + t.getMessage()));
         file.write(results, false);
         continue;

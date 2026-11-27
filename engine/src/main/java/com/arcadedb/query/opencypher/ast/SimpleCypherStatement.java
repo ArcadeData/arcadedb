@@ -406,6 +406,11 @@ public class SimpleCypherStatement implements CypherStatement {
     return readOnly;
   }
 
+  @Override
+  public boolean hasUnconfirmedFunctionCall() {
+    return hasUnresolvedFunctionCall;
+  }
+
   /**
    * A top-level {@code CALL} of a schema-changing procedure, or one inside a {@code CALL { ... }} subquery (issue #11438).
    * Runs once per analysis of a cached statement, so it is not pre-computed.

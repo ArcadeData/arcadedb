@@ -559,6 +559,7 @@ public class TransactionContext implements Transaction {
   private       Set<String>                          registeredCallbackKeys      = null;
   // Issue #10687: work owed whichever way the transaction ends, by key, see addAfterCompletionCallbackIfAbsent()
   private       Map<String, Runnable>                afterCompletionCallbacks    = null;
+  // The thread that carries the transaction for them: the one that registered the first, or the one they were handed to since (#12805)
   private       Thread                               afterCompletionOwner        = null;
   // Issue #11937: work that reads what the transaction is about to commit, run when the commit starts, see addBeforeCommitCallbackIfAbsent()
   private       Map<String, Runnable>                beforeCommitCallbacks       = null;
@@ -1694,7 +1695,8 @@ public class TransactionContext implements Transaction {
     newRecords.resetIdentities();
 
     // Taken before reset(), which drops them, and run once it is done: the work they do is owed whatever the outcome (#10687). Only
-    // by the thread that registered them: a sweep rolling back the transaction of a dead thread runs on a thread that is in the
+    // by the thread that carries the transaction, the one that registered them or the one they were handed to since
+    // (transferToCurrentThread(), #12805): a sweep rolling back the transaction of a dead thread runs on a thread that is in the
     // middle of work of its own, and has no business refreshing on the dead thread's behalf
     final Map<String, Runnable> completion = afterCompletionCallbacks;
     final Thread completionOwner = afterCompletionOwner;
@@ -1704,11 +1706,20 @@ public class TransactionContext implements Transaction {
     reset();
 
     if (completion != null) {
-      if (completionOwner == Thread.currentThread())
-        fireOrDefer(null, false, completion);
-      else
+      if (completionOwner == Thread.currentThread()) {
+        // With the interrupt flag cleared, and handed back afterwards, as a 2nd phase is concluded (#10521): the work owed commits
+        // a transaction of its own, and a channel written by a thread with the flag set is closed under the write, for every
+        // thread of the database. A session request that failed because it was interrupted rolls back with the flag up (#12805)
+        final boolean interrupted = Thread.interrupted();
+        try {
+          fireOrDefer(null, false, completion);
+        } finally {
+          if (interrupted)
+            Thread.currentThread().interrupt();
+        }
+      } else
         LogManager.instance().log(this, Level.INFO,
-            "Dropping %d after-completion callback(s) of a transaction rolled back by another thread than the one that registered them: "
+            "Dropping %d after-completion callback(s) of a transaction rolled back by another thread than the one that carries it: "
                 + "the continuous aggregates they would have refreshed catch up at their next refresh",
             null, completion.size());
     }
@@ -1812,8 +1823,9 @@ public class TransactionContext implements Transaction {
    * restored by a {@link #rollback()} - with no transaction of this context active: work that writes has to begin a transaction of
    * its own. A statement that fails inside the transaction does not take it back: what it wrote beside the transaction stays written.
    * A conclusion that is neither a commit nor a rollback (a commit that failed past its point of no return, or whose WAL flush
-   * failed: both fence the database) drops it, and so does a rollback run by another thread than the registering one, the sweep of
-   * a dead thread. A commit runs it on the thread that concludes the commit, as it runs the after-commit callbacks. Exceptions are
+   * failed: both fence the database) drops it, and so does a rollback run by another thread than the one that carries the
+   * transaction - the registering one, or the one it was handed to with {@link #transferToCurrentThread()} - the sweep of a dead
+   * thread. A commit runs it on the thread that concludes the commit, as it runs the after-commit callbacks. Exceptions are
    * logged and do not affect the outcome of the transaction or the other callbacks; an {@link Error} is not caught, as it is not by
    * the after-commit callbacks.
    *
@@ -1829,6 +1841,19 @@ public class TransactionContext implements Transaction {
 
   public boolean hasAfterCompletionCallbackKey(final String key) {
     return afterCompletionCallbacks != null && afterCompletionCallbacks.containsKey(key);
+  }
+
+  /**
+   * Hands the after-completion callbacks registered so far to the current thread, which carries the transaction from now on: a
+   * {@link #rollback()} it runs runs them, as one by the thread that registered them does (issue #12805). For a transaction that
+   * moves between threads, the transaction of a protocol session whose every request runs on whichever worker is free: an HTTP
+   * session's {@code /rollback} runs on another worker than the {@code INSERT} that registered the refresh of a continuous aggregate
+   * as often as not. The thread calls it while it holds the session, so no other thread works on the transaction until it lets go.
+   * A rollback by a thread they were not handed to, the sweep of a dead thread's transaction, still drops them.
+   */
+  public void transferToCurrentThread() {
+    if (afterCompletionCallbacks != null)
+      afterCompletionOwner = Thread.currentThread();
   }
 
   /**

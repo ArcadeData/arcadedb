@@ -31,7 +31,12 @@ import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.NoSuchElementException;
+import java.util.Spliterator;
+import java.util.Spliterators;
 import java.util.logging.Level;
+import java.util.stream.Stream;
+import java.util.stream.StreamSupport;
 
 /**
  * The rows a {@code find} selects, read and converted to reply documents one batch at a time (issue #13052: a {@code find} used to
@@ -223,6 +228,45 @@ final class MongoFindCursor implements Cursor {
 
   synchronized boolean isClosed() {
     return closed;
+  }
+
+  /**
+   * The documents of the cursor one at a time, each read and converted when it is asked for: the rows past the last one asked for are
+   * neither read nor converted, and no document is held ahead of the one the caller is handed. The cursor is released when the last
+   * document is taken, and by {@link #close()} before.
+   */
+  Iterator<Document> documents() {
+    return new Iterator<>() {
+      private Document next;
+
+      @Override
+      public boolean hasNext() {
+        if (next != null)
+          return true;
+        if (isDrained())
+          return false;
+        final List<Document> batch = takeBatch(1, Long.MAX_VALUE);
+        if (batch.isEmpty())
+          return false;
+        next = batch.getFirst();
+        return true;
+      }
+
+      @Override
+      public Document next() {
+        if (!hasNext())
+          throw new NoSuchElementException();
+        final Document document = next;
+        next = null;
+        return document;
+      }
+    };
+  }
+
+  /** {@link #documents()} as a stream, which releases the cursor when it is closed. */
+  Stream<Document> stream() {
+    return StreamSupport.stream(Spliterators.spliteratorUnknownSize(documents(), Spliterator.ORDERED | Spliterator.NONNULL), false)
+        .onClose(this::close);
   }
 
   static Document toDocument(final Object row) {

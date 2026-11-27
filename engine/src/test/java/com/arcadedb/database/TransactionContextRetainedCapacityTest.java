@@ -64,6 +64,11 @@ class TransactionContextRetainedCapacityTest extends TestHelper {
     }
   }
 
+  private static void assertJournalTrimmed(final TransactionContext tx) {
+    assertThat(tx.getIndexChanges().recordUndoHolders()).isLessThanOrEqualTo(TransactionIndexContext.RECORD_UNDO_RETAINED);
+    assertThat(tx.getIndexChanges().recordUndoCapacity()).isLessThanOrEqualTo(TransactionIndexContext.RECORD_UNDO_RETAINED);
+  }
+
   @Test
   void aBulkStatementInACallerTransactionLeavesNoJournalHoldersBehindWhenItEnds() {
     database.begin();
@@ -72,11 +77,11 @@ class TransactionContextRetainedCapacityTest extends TestHelper {
     database.command("sql", bulkInsert(0, ROWS)).close();
 
     // The statement is over, the transaction is not: the holders it no longer needs are gone already
-    assertThat(tx.getIndexChanges().getRetainedUndoHolders()).isLessThanOrEqualTo(TransactionIndexContext.MAX_RETAINED_UNDO_HOLDERS);
+    assertJournalTrimmed(tx);
 
     database.commit();
 
-    assertThat(tx.getIndexChanges().getRetainedUndoHolders()).isLessThanOrEqualTo(TransactionIndexContext.MAX_RETAINED_UNDO_HOLDERS);
+    assertJournalTrimmed(tx);
     assertThat(tx.getNewRecordsCapacity()).isLessThanOrEqualTo(TransactionNewRecords.MAX_RETAINED_CAPACITY);
     assertThat(count()).isEqualTo(ROWS);
   }
@@ -86,7 +91,7 @@ class TransactionContextRetainedCapacityTest extends TestHelper {
     database.begin();
     final TransactionContext tx = ((DatabaseInternal) database).getTransaction();
     database.command("sql", bulkInsert(0, ROWS)).close();
-    assertThat(tx.getIndexChanges().getRetainedUndoHolders()).isLessThanOrEqualTo(TransactionIndexContext.MAX_RETAINED_UNDO_HOLDERS);
+    assertJournalTrimmed(tx);
 
     // A second bulk statement of the same transaction that fails on its last row (duplicated id 0) is taken back whole: the journal
     // grows again past what was kept, and every entry it queued is undone
@@ -103,6 +108,6 @@ class TransactionContextRetainedCapacityTest extends TestHelper {
     try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM T WHERE id = ?", ROWS)) {
       assertThat(rs.next().<Number>getProperty("c").longValue()).isZero();
     }
-    assertThat(tx.getIndexChanges().getRetainedUndoHolders()).isLessThanOrEqualTo(TransactionIndexContext.MAX_RETAINED_UNDO_HOLDERS);
+    assertJournalTrimmed(tx);
   }
 }

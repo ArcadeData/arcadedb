@@ -142,6 +142,15 @@ public class SQLFunctionDate extends SQLFunctionAbstract {
     }
   }
 
+  /**
+   * A date built from an argument depends on that argument and on the database's datetime format and zone, which stay fixed while
+   * a statement executes; with no argument, or a null one, it is the clock (issue #13523).
+   */
+  @Override
+  public boolean isConstantForArguments(final Object[] arguments) {
+    return arguments.length > 0 && arguments[0] != null;
+  }
+
   public String getSyntax() {
     return "date([<date-as-number-or-string> [, <format> | { format: '...', timezone: '...' } [, <timezone>]]])";
   }

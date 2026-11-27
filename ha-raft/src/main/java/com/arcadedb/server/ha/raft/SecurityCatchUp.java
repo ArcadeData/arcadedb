@@ -275,14 +275,15 @@ final class SecurityCatchUp implements AutoCloseable {
   /**
    * What one attempt did, as the once-per-start latch sees it (issue #8034).
    * <p>
-   * The distinction the latch needs is not success versus failure - a leader that answers "you are three
-   * documents behind, and two of them would not commit" has answered - but <b>asked</b> versus <b>did not
-   * ask</b>. Only {@link #ASKED} spends the request.
+   * The distinction the latch needs is <b>asked</b> versus <b>did not ask</b>, with one exception: a leader that
+   * answers "you are behind, and these documents would not commit" has answered, but it has not put this node back in
+   * step, so that answer is retried like a failed dial (issue #13447, see {@link #outcomeOfAnswer}). Only
+   * {@link #ASKED} spends the request.
    */
   enum Outcome {
     /**
-     * A peer answered, whether it seeded anything or reported failures. The request is spent: retrying it here
-     * would submit the same documents again.
+     * The leader answered that this node is in step, or seeded every document it was behind on. The request is
+     * spent: there is nothing left to ask for.
      */
     ASKED,
     /**
@@ -292,8 +293,9 @@ final class SecurityCatchUp implements AutoCloseable {
      */
     NOBODY_TO_ASK,
     /**
-     * The dial failed for a reason a later attempt might not hit. The latch is left alone here - {@link #run}
-     * owns it across the retry budget and releases it once the budget is spent.
+     * The dial failed for a reason a later attempt might not hit, or the leader answered with documents it could
+     * not commit (issue #13447). The latch is left alone here - {@link #run} owns it across the retry budget and
+     * releases it once the budget is spent.
      */
     TRANSIENT_FAILURE
   }
@@ -431,14 +433,24 @@ final class SecurityCatchUp implements AutoCloseable {
   }
 
   /**
-   * How an attempt that reached the leader ends. Answered, whether or not every document committed: a partial failure
-   * is the leader's report, not a transport failure, and retrying it would submit the same documents again - except for
-   * a FORCED seed (issue #7752), where submitting them again is the point. That one is this node's only way back from
-   * security files a snapshot install left stale, and leaving it to the next trigger could leave them stale for good
-   * on a quiet cluster, so it is retried like a transient failure, with the same bounded backoff.
+   * How an attempt that reached the leader ends: spent when every document this node was behind on committed (or none
+   * was), retried like a transient failure, with the same bounded backoff, when the leader reported documents it could
+   * not commit.
+   * <p>
+   * A partial failure used to spend the request unless the seed was FORCED (issue #7752), on the reasoning that it is
+   * the leader's report and retrying would submit the same documents again. But submitting them again is the point
+   * whenever they did not commit, forced or not (issue #13447): the leader has just told this node that it is out of
+   * step, nothing else asks again on a quiet cluster, and the usual cause clears by itself within seconds. During a
+   * rolling restart the capability gate (issue #7511) refuses the group and API-token entries while the NEXT peer is
+   * still booting and has not advertised its capabilities, and before this a node whose catch-up overlapped that window
+   * kept its stale groups and tokens until an operator read the log. A retry costs one round trip: it carries this
+   * node's fingerprints again, so the leader submits nothing once they match.
+   * <p>
+   * When the budget is spent the latch is released ({@link #run}), so the next leader this node observes is asked
+   * again, and the leader keeps the seed owed meanwhile ({@code MembershipSecuritySeeder.rerunOwedSeedIfDue}).
    */
-  static Outcome outcomeOfAnswer(final boolean forced, final List<String> failedSeeds) {
-    return forced && !failedSeeds.isEmpty() ? Outcome.TRANSIENT_FAILURE : Outcome.ASKED;
+  static Outcome outcomeOfAnswer(final List<String> failedSeeds) {
+    return failedSeeds.isEmpty() ? Outcome.ASKED : Outcome.TRANSIENT_FAILURE;
   }
 
   /**
@@ -497,7 +509,7 @@ final class SecurityCatchUp implements AutoCloseable {
       final boolean waitForCatchUp) {
     long backoffMs = TRANSIENT_BACKOFF_MS;
     for (int attempt = 1; ; attempt++) {
-      if (settle(token, attemptOnce(server, raft, reason, waitForCatchUp && attempt == 1)))
+      if (settle(token, attemptOnce(server, raft, reason, waitForCatchUp && attempt == 1, attempt >= TRANSIENT_ATTEMPTS)))
         return;
 
       if (attempt >= TRANSIENT_ATTEMPTS) {
@@ -525,9 +537,13 @@ final class SecurityCatchUp implements AutoCloseable {
   /**
    * One attempt, classified for {@link #settle}: did it put the question to a peer, find nobody to put it to,
    * or fail for a reason a later attempt might not hit?
+   *
+   * @param lastAttempt whether {@link #run} retries no further after this one, which decides how loudly a seed the
+   *                    leader could not commit is reported: a WARNING while this node is about to ask again, SEVERE
+   *                    once it is not (issue #13447)
    */
   private Outcome attemptOnce(final ArcadeDBServer server, final RaftHAServer raft, final String reason,
-      final boolean waitForCatchUp) {
+      final boolean waitForCatchUp, final boolean lastAttempt) {
     try {
       if (waitForCatchUp) {
         // Before the catch-up wait, not after: the point is to spread the arrivals at the leader, and the wait
@@ -604,13 +620,23 @@ final class SecurityCatchUp implements AutoCloseable {
       if (failed.isEmpty())
         LogManager.instance().log(this, Level.FINE,
             "Cluster security documents are in step after %s", reason);
-      else
-        LogManager.instance().log(this, Level.SEVERE,
+      else if (!lastAttempt)
+        LogManager.instance().log(this, Level.WARNING,
             "After %s this node asked the leader to re-seed the cluster security documents and these did not "
-                + "commit: %s. Until they do, this node serves requests against its own copy of them - which can "
-                + "still hold a user dropped, a group narrowed or a token revoked while it was away. Re-POST this "
-                + "node to %s on any member to retry", reason, String.join(", ", failed), "/api/v1/cluster/peer");
-      return outcomeOfAnswer(force, failed);
+                + "commit: %s. Until they do, this node serves requests against its own copy of them. It asks the "
+                + "leader again shortly (issue #13447)", reason, String.join(", ", failed));
+      else
+        // "Any OTHER member": this node refuses to add itself (SelfJoinNotSupportedException), so the node that logs
+        // this line is the one place the advice would not work (issue #13447).
+        LogManager.instance().log(this, Level.SEVERE,
+            "After %s this node tried %d times to have the leader re-seed the cluster security documents, and at the "
+                + "last try these did not commit: %s. Until they do, this node serves requests against its own copy of them - which can "
+                + "still hold a user dropped, a group narrowed or a token revoked while it was away. This node asks "
+                + "again at the next leader change, and the leader runs the seed again, for as long as it leads, once "
+                + "every peer advertises the security entry capabilities (issue #7511); its own log says which peer "
+                + "has not. To retry by hand, re-POST this node to %s on any OTHER member: this node itself refuses "
+                + "to add itself", reason, TRANSIENT_ATTEMPTS, String.join(", ", failed), "/api/v1/cluster/peer");
+      return outcomeOfAnswer(failed);
     } catch (final InterruptedException e) {
       // Interrupted in the jitter or in the catch-up wait, so the dial never happened. Nothing is retried on a
       // thread that is being shut down, but the request must not be recorded as made either (issue #8034).
@@ -618,7 +644,7 @@ final class SecurityCatchUp implements AutoCloseable {
       return Outcome.NOBODY_TO_ASK;
     } catch (final Exception e) {
       // Transient by assumption - an unresolvable leader, a refused connection, a timeout - so the caller
-      // retries. What is NOT retried is a leader that answered: see the return above.
+      // retries. A leader that answered with documents it could not commit is retried too: see the return above.
       LogManager.instance().log(this, Level.FINE,
           "Could not ask the leader to bring this node's security documents back in step after %s: %s", reason,
           e.getMessage());

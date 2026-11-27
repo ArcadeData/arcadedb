@@ -684,7 +684,7 @@ public class ServerControlPlane {
             "Reporting READY after waiting %dms for the leader to confirm this node's security documents, which it "
                 + "has not done since the snapshot install at index %d: %s. No snapshot carries them, so this node may "
                 + "be enforcing a user dropped, a group narrowed or a token revoked while it was away. Restart this "
-                + "node or re-POST it to /api/v1/cluster/peer on any member to ask again, or reissue the change. "
+                + "node or re-POST it to /api/v1/cluster/peer on any other member to ask again, or reissue the change. "
                 + "Readiness is not held any longer because a node the leader never answers must not stall a rolling "
                 + "restart; raise arcadedb.ha.securityConvergenceReadinessTimeout to wait longer", window, joinIndex,
             String.join(", ", unconverged));
