@@ -20,12 +20,14 @@ package com.arcadedb.function.sql.math;
 
 import com.arcadedb.function.sql.SQLAggregatedFunction;
 import com.arcadedb.schema.Type;
+import com.sun.management.ThreadMXBean;
 import org.junit.jupiter.api.Test;
 
 import java.lang.management.ManagementFactory;
 import java.math.BigDecimal;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * The cross-row fold of {@code min()}/{@code max()} allocated a pair of numbers for every row it folded, even when
@@ -82,11 +84,38 @@ class SQLFunctionMinMaxAllocationTest {
     assertThat(f.getResult()).isEqualTo(new BigDecimal("1.5"));
   }
 
+  @Test
+  void maxStillStripsTheTrailingZerosOfAPairOfDecimals() {
+    final SQLFunctionMax f = new SQLFunctionMax();
+    f.config(new Object[] { "v" });
+    f.aggregate(null, new Object[] { new BigDecimal("1.50") }, null);
+    f.aggregate(null, new Object[] { new BigDecimal("1.250") }, null);
+    assertThat(f.getResult()).isEqualTo(new BigDecimal("1.5"));
+  }
+
+  @Test
+  void minAndMaxFoldValuesOfOneClassAsBefore() {
+    final SQLFunctionMin min = new SQLFunctionMin();
+    final SQLFunctionMax max = new SQLFunctionMax();
+    min.config(new Object[] { "v" });
+    max.config(new Object[] { "v" });
+    for (final long value : new long[] { 5L, -3L, 12L, 0L }) {
+      min.aggregate(null, new Object[] { value }, null);
+      max.aggregate(null, new Object[] { value }, null);
+    }
+    assertThat(min.getResult()).isEqualTo(-3L);
+    assertThat(max.getResult()).isEqualTo(12L);
+  }
+
   /**
    * The bytes one fold of one row costs the thread that makes it: the average over {@link #MEASURED_ROUNDS} folds,
    * after the JIT has settled.
    */
   private static double bytesPerFold(final SQLAggregatedFunction fold) {
+    final ThreadMXBean threads = (ThreadMXBean) ManagementFactory.getThreadMXBean();
+    assumeTrue(threads.isThreadAllocatedMemorySupported() && threads.isThreadAllocatedMemoryEnabled(),
+        "this JVM does not count the bytes a thread allocates");
+
     // ONE PARAMETER, AND NOT ONE THAT NAMES $current: THE CROSS-ROW FORM OF THE FUNCTION
     fold.config(new Object[] { "v" });
     final Object[] row = { Double.valueOf(1.5d) };
@@ -94,7 +123,6 @@ class SQLFunctionMinMaxAllocationTest {
     for (int i = 0; i < WARMUP_ROUNDS; i++)
       fold.aggregate(null, row, null);
 
-    final com.sun.management.ThreadMXBean threads = (com.sun.management.ThreadMXBean) ManagementFactory.getThreadMXBean();
     final long threadId = Thread.currentThread().threadId();
     final long before = threads.getThreadAllocatedBytes(threadId);
     for (int i = 0; i < MEASURED_ROUNDS; i++)
