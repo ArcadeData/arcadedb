@@ -172,6 +172,28 @@ public final class SecurityHelper {
   }
 
   /**
+   * Whether the user bound to {@code database}'s context may see {@code index}: the question {@code SELECT FROM schema:indexes}
+   * asks of each of its rows, whether the type the index belongs to is readable. An index bound to no type (a manual one) is
+   * visible. For a route that names an index, or lists the indexes a caller can pick from: an index of a type the caller may not
+   * read is answered exactly as one that does not exist.
+   */
+  public static boolean isReadable(final Database database, final Index index) {
+    return canAccessIndex(database, currentUser(database), index);
+  }
+
+  /**
+   * Same as {@link #isReadable(Database, Index)} for a listing that resolved the user once with {@link #currentUser(Database)} and
+   * asks it of each index it walks. A {@code null} user (embedded usage or an internal caller) sees every index.
+   */
+  public static boolean canAccessIndex(final Database database, final SecurityDatabaseUser user, final Index index) {
+    if (user == null)
+      return true;
+
+    final String typeName = index.getTypeName();
+    return typeName == null || canAccessType(user, database.getSchema().getTypeOrNull(typeName), SecurityDatabaseUser.ACCESS.READ_RECORD);
+  }
+
+  /**
    * Non-throwing form for catalog listings (e.g. {@code SELECT FROM schema:types}, {@code schema:indexes}): whether
    * {@code type} should be visible to {@code user} at all, i.e. it grants {@code access} on at least one of the
    * type's buckets (or, for a bucket-less type, by name). A {@code null} user (no security context: embedded usage
