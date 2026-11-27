@@ -1224,9 +1224,10 @@ class CypherExpressionBuilder {
     TypePredicateBuilder.rejectDirectedPredicate(labelExprCtx);
 
     // A negation, the wildcard or a mix of '&' and '|' is evaluated as the tree it is (issue #8992).
+    final String text = labelPredicateText(ctx.expression6(), labelCtx);
     final LabelPredicate predicate = ParserUtils.buildLabelPredicate(labelExprCtx, this::parseExpression);
     if (predicate != null)
-      return new BooleanWrapperExpression(new LabelCheckExpression(leftExpr, predicate, ctx.getText()));
+      return labelPredicateOperand(new LabelCheckExpression(leftExpr, predicate, text), labelCtx);
 
     // See parseLabelCheckExpression in CypherASTBuilder: extract through the grammar so backticks
     // are stripped and a quoted label is never split on a character of its own name. This also
@@ -1237,8 +1238,52 @@ class CypherExpressionBuilder {
         LabelCheckExpression.LabelOperator.AND;
 
     // The dynamic $(expr) labels are evaluated per row with the static ones; dropped, the check was always true (issue #11776)
-    return new BooleanWrapperExpression(new LabelCheckExpression(leftExpr, labels,
-        ParserUtils.parseDynamicLabels(labelExprCtx, this::parseExpression), operator, ctx.getText()));
+    return labelPredicateOperand(new LabelCheckExpression(leftExpr, labels,
+        ParserUtils.parseDynamicLabels(labelExprCtx, this::parseExpression), operator, text), labelCtx);
+  }
+
+  /** The text of a label predicate alone, without the null or list predicate that may follow it (issue #13452). */
+  static String labelPredicateText(final Cypher25Parser.Expression6Context operand,
+      final Cypher25Parser.LabelComparisonContext labelCtx) {
+    return operand.getText() + labelCtx.labelExpression().getText();
+  }
+
+  /**
+   * The value of a label predicate, or of the null or list predicate it is the left operand of: {@code c:Chunk IS NULL},
+   * {@code c:Chunk IN [true]} (issue #13452).
+   */
+  private Expression labelPredicateOperand(final LabelCheckExpression labelCheck,
+      final Cypher25Parser.LabelComparisonContext labelCtx) {
+    final BooleanExpression applied = applyLabelPredicateComparison(labelCheck, labelCtx);
+    return new BooleanWrapperExpression(applied);
+  }
+
+  /**
+   * Applies the null or list predicate that follows a label predicate, when there is one, to the boolean of the label
+   * predicate (issue #13452). Shared by the expression path and the predicate path.
+   */
+  BooleanExpression applyLabelPredicateComparison(final LabelCheckExpression labelCheck,
+      final Cypher25Parser.LabelComparisonContext labelCtx) {
+    final Cypher25Parser.LabelPredicateComparisonContext comparison = labelCtx.labelPredicateComparison();
+    if (comparison == null)
+      return labelCheck;
+    // x IS NULL and x IS NORMALIZED are the null and the normal form predicate, never a label named NULL or NORMALIZED,
+    // so "x IS NULL IS NULL" stays the syntax error it is for every operand but a label predicate
+    final Cypher25Parser.LabelExpressionContext label = labelCtx.labelExpression();
+    final String labelText = label.labelExpression4().getText();
+    if (label.IS() != null && ("NULL".equalsIgnoreCase(labelText) || "NORMALIZED".equalsIgnoreCase(labelText))) {
+      final Token unexpected = comparison.getStart();
+      throw new CommandParsingException(
+          String.format(Locale.ROOT, "Unexpected input '%s' at line %d, column %d", unexpected.getText(), unexpected.getLine(),
+              unexpected.getCharPositionInLine() + 1));
+    }
+    final Expression operand = new BooleanWrapperExpression(labelCheck);
+    if (comparison.NULL() != null)
+      return new IsNullExpression(operand, comparison.NOT() != null);
+    // The right side is one expression, not a list literal, as for any other IN
+    final List<Expression> listItems = new ArrayList<>(1);
+    listItems.add(parseExpressionFromText(comparison.expression6()));
+    return new InExpression(operand, listItems);
   }
 
   // ============================================================================
