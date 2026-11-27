@@ -26,9 +26,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Issue #12830: a client of a binary protocol (gRPC, Bolt, Postgres, Redis, MongoDB) naming a database that does not exist was
- * answered with the engine's own message, which carries the server's absolute database directory. HTTP and the other
- * paths name the database only.
+ * Issue #12830: a gRPC or Bolt client naming a database that does not exist was answered with the engine's own message, which
+ * carries the server's absolute database directory. HTTP and the other protocols name the database only. The message is built by
+ * the lookup every wire protocol shares, so it is asserted there.
  */
 class DatabaseNotFoundHidesPathTest extends BaseGraphServerTest {
   private static final String MISSING = "Issue12830Missing";
