@@ -130,6 +130,62 @@ class Issue12921ReversedComparisonTest extends TestHelper {
     }
   }
 
+  /**
+   * The mirror is taken for whatever is on the right of a literal, not only a declared property: a schemaless property holds the
+   * class it was written with and a function call answers a value of its own, and both convert the literal as they do on the left.
+   */
+  @Test
+  void literalOnTheLeftOfASchemalessPropertyOrAFunctionCall() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Loose");
+      database.newDocument("Loose").set("id", 1).set("x", 1).save();
+      database.newDocument("Loose").set("id", 2).set("x", 5).save();
+      database.newDocument("Loose").set("id", 3).set("x", -3).save();
+      database.newDocument("Loose").set("id", 4).set("x", 10).save();
+      database.newDocument("Loose").set("id", 5).set("x", 0).save();
+    });
+
+    for (final String[] operator : OPERATORS)
+      for (final String value : new String[] { "x", "abs(x)", "x + 0" }) {
+        assertThat(rows("SELECT id FROM Loose WHERE '10' " + operator[1] + " " + value, null))
+            .as("'10' %s %s", operator[1], value)
+            .isEqualTo(rows("SELECT id FROM Loose WHERE " + value + " " + operator[0] + " '10'", null));
+        assertThat(rows("SELECT id FROM Loose WHERE :v " + operator[1] + " " + value, Map.of("v", "10")))
+            .as(":v %s %s", operator[1], value)
+            .isEqualTo(rows("SELECT id FROM Loose WHERE " + value + " " + operator[0] + " :v", Map.of("v", "10")));
+      }
+
+    // compared as numbers, not as text: "5" sorts after "10"
+    assertThat(rows("SELECT id FROM Loose WHERE '10' > x", null)).isEqualTo("[1, 2, 3, 5]");
+    assertThat(rows("SELECT id FROM Loose WHERE '10' > abs(x)", null)).isEqualTo("[1, 2, 3, 5]");
+  }
+
+  /**
+   * {@code <=>} is equality that tests the null too, so two scalars compare as {@code =} does whichever side the literal is on. A
+   * list keeps the meaning of the side it is written on: on the left any item may match, on the right it is one value.
+   */
+  @Test
+  void nullSafeEqualityWithTheLiteralOnTheLeft() {
+    for (final String typeName : new String[] { "Plain", "Indexed" }) {
+      assertThat(rows("SELECT id FROM " + typeName + " WHERE '2024-06-01 12:00:00' <=> dt", null)).isEqualTo("[3]");
+      assertThat(rows("SELECT id FROM " + typeName + " WHERE :p <=> dt", Map.of("p", "2024-06-01 12:00:00"))).isEqualTo("[3]");
+      assertThat(rows("SELECT id FROM " + typeName + " WHERE true <=> i", null)).isEqualTo(
+          rows("SELECT id FROM " + typeName + " WHERE i <=> true", null));
+      assertThat(rows("SELECT id FROM " + typeName + " WHERE '10' <=> i", null)).isEqualTo("[4]");
+      assertThat(rows("SELECT id FROM " + typeName + " WHERE null <=> i", null)).isEqualTo("[6]");
+    }
+
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Tagged");
+      database.newDocument("Tagged").set("id", 1).set("tags", List.of("a", "b")).save();
+      database.newDocument("Tagged").set("id", 2).set("tags", List.of("c")).save();
+    });
+    // the list on the left: any of its items
+    assertThat(rows("SELECT id FROM Tagged WHERE tags <=> 'a'", null)).isEqualTo("[1]");
+    // the list on the right is one value, which the string is not
+    assertThat(rows("SELECT id FROM Tagged WHERE 'a' <=> tags", null)).isEqualTo("[]");
+  }
+
   /** The ids the query answers, sorted, or the class of the exception it raised. */
   private String rows(final String sql, final Map<String, Object> params) {
     final TreeSet<Integer> ids = new TreeSet<>();

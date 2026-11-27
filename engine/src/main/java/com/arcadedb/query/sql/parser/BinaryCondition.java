@@ -86,7 +86,7 @@ public class BinaryCondition extends BooleanExpression {
     final BinaryCompareOperator mirrored = mirroredOperator();
     try {
       final DatabaseInternal database = context != null ? context.getDatabase() : null;
-      if (mirrored != null)
+      if (mirrored != null && mirrored.isMirrorableWith(leftVal, rightVal))
         // the constant operand is the one written on the left, which the mirrored operator takes as its right operand
         return mirrored.execute(database, rightVal, leftVal,
             ConstantOperandConversion.isStringToConvert(rightVal, leftVal) ? rightConversion(context) : null);
