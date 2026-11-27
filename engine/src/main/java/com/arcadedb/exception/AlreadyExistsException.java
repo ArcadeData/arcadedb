@@ -73,16 +73,34 @@ public class AlreadyExistsException extends SchemaException {
     }
   }
 
-  private final Kind kind;
+  private final Kind    kind;
+  private final boolean equivalent;
 
   public AlreadyExistsException(final Kind kind, final String message) {
+    this(kind, message, false);
+  }
+
+  /**
+   * @param equivalent whether the object holding the name is also what the request defines, the same index or constraint asked
+   *                   for twice: what Neo4j answers as an equivalent schema rule rather than as a taken name (issue #13664)
+   */
+  public AlreadyExistsException(final Kind kind, final String message, final boolean equivalent) {
     super(message);
     this.kind = kind;
+    this.equivalent = equivalent;
   }
 
   /** The kind of object that holds the name, or {@code null} when not known. */
   public Kind getKind() {
     return kind;
+  }
+
+  /**
+   * Whether the object that holds the name has the definition the request asked for (issue #13664). Only the Cypher schema
+   * statements tell; every other refusal, and one rebuilt by a client, says {@code false}.
+   */
+  public boolean isEquivalent() {
+    return equivalent;
   }
 
   /** The short client-facing label for this conflict, e.g. {@code "Type already exists"}, that no production mode conceals. */

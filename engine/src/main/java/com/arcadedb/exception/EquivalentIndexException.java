@@ -33,7 +33,33 @@ package com.arcadedb.exception;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class EquivalentIndexException extends IllegalArgumentException {
+  private final AlreadyExistsException.Kind kind;
+  private final boolean                     underAnotherName;
+
   public EquivalentIndexException(final String message) {
+    this(message, AlreadyExistsException.Kind.INDEX, false);
+  }
+
+  /**
+   * @param kind             the kind of rule the request asked for: {@link AlreadyExistsException.Kind#INDEX} or
+   *                         {@link AlreadyExistsException.Kind#CONSTRAINT}
+   * @param underAnotherName whether the equivalent rule holds another name than the one the request asked for (or would have
+   *                         derived), which Neo4j answers as {@code IndexAlreadyExists} / {@code ConstraintAlreadyExists}
+   *                         rather than as an equivalent schema rule (issue #13664)
+   */
+  public EquivalentIndexException(final String message, final AlreadyExistsException.Kind kind, final boolean underAnotherName) {
     super(message);
+    this.kind = kind;
+    this.underAnotherName = underAnotherName;
+  }
+
+  /** The kind of rule the request asked for, an index unless a constraint said otherwise. */
+  public AlreadyExistsException.Kind getKind() {
+    return kind;
+  }
+
+  /** Whether the equivalent rule is held under another name than the requested one (issue #13664). */
+  public boolean isUnderAnotherName() {
+    return underAnotherName;
   }
 }

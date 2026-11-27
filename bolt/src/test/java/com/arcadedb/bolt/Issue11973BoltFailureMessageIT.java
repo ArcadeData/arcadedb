@@ -69,15 +69,18 @@ public class Issue11973BoltFailureMessageIT extends BaseBoltServerTest {
     assertFailure("CREATE (:U11973 {x: 1})", "Neo.ClientError.Schema.ConstraintValidationFailed", "Duplicated key", "[1]");
   }
 
+  /** The same constraint asked for twice under one name is an equivalent schema rule, as in Neo4j (issue #13664). */
   @Test
   void aConstraintThatExistsSaysSo() {
     assertFailure("CREATE CONSTRAINT c11973 FOR (n:U11973) REQUIRE n.x IS UNIQUE",
-        "Neo.ClientError.Schema.ConstraintWithNameAlreadyExists", "'c11973'", "already exists");
+        "Neo.ClientError.Schema.EquivalentSchemaRuleAlreadyExists", "'c11973'", "already exists");
   }
 
+  /** An equivalent index under another name is Neo4j's IndexAlreadyExists (issue #13664). */
   @Test
   void anEquivalentIndexNamesTheIndexThatHasTheProperties() {
-    assertFailure("CREATE INDEX i2 FOR (n:A11973) ON (n.x)", "Neo.ClientError.Schema.EquivalentSchemaRuleAlreadyExists", "'i11973'");
+    assertFailure("CREATE INDEX i2 FOR (n:A11973) ON (n.x)", "Neo.ClientError.Schema.IndexAlreadyExists", "There already exists an index",
+        "'i11973'");
   }
 
   @Test

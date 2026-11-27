@@ -40,6 +40,10 @@ public final class BoltErrorCodes {
   public static final String INDEX_ALREADY_EXISTS_ERROR       = "Neo.ClientError.Schema.IndexWithNameAlreadyExists";
   public static final String CONSTRAINT_ALREADY_EXISTS_ERROR  = "Neo.ClientError.Schema.ConstraintWithNameAlreadyExists";
   public static final String SCHEMA_RULE_ALREADY_EXISTS_ERROR = "Neo.ClientError.Schema.EquivalentSchemaRuleAlreadyExists";
+  // An index or a constraint whose definition exists already under another name (issue #13664): what Neo4j answers when the
+  // name asked for is free and the rule is not. The same rule asked for twice under one name is SCHEMA_RULE_ALREADY_EXISTS_ERROR
+  public static final String INDEX_DEFINITION_ALREADY_EXISTS_ERROR      = "Neo.ClientError.Schema.IndexAlreadyExists";
+  public static final String CONSTRAINT_DEFINITION_ALREADY_EXISTS_ERROR = "Neo.ClientError.Schema.ConstraintAlreadyExists";
   // A statement that parses and is semantically valid but references a $parameter the client never bound.
   // Neo4j gives this its own title, and drivers/tools key off it to tell "your query is wrong" apart from
   // "you forgot to send a value", so it must not collapse into SyntaxError.

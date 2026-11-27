@@ -34,6 +34,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParameterMissingException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSemanticException;
+import com.arcadedb.exception.EquivalentIndexException;
 import com.arcadedb.exception.ImplicitTransactionRequiredException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryNotIdempotentException;
@@ -1082,10 +1083,12 @@ public class OpenCypherQueryEngine implements QueryEngine {
     // registration at the end are not atomic with the schema changes in between, like every multi-step DDL here: two
     // concurrent CREATE CONSTRAINT statements with one name on different types can both pass it.
     final String constraintName = ddl.getConstraintName();
-    if (CypherConstraintRegistry.findOwner(schema, constraintName) != null) {
+    final DocumentType nameOwner = CypherConstraintRegistry.findOwner(schema, constraintName);
+    if (nameOwner != null) {
       if (ddl.isIfNotExists())
         return;
-      throw new AlreadyExistsException(AlreadyExistsException.Kind.CONSTRAINT, "Constraint '" + constraintName + "' already exists");
+      throw CypherSchemaRuleConflicts.constraintNameTaken(ddl, constraintName,
+          isSameConstraint(nameOwner, constraintName, ddl));
     }
     // Indexes and constraints share one namespace, as in Neo4j: since CREATE INDEX <name> names the index (#9705), a
     // constraint taking the same name would make DROP CONSTRAINT <name> drop the index instead
@@ -1210,7 +1213,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
       b.withReplaceIfIncompatible(true);
       if (anyUndeclared)
         b.withDefaultKeyTypesForUndeclaredProperties(defaultKeyTypes);
-      final TypeIndex created = b.create();
+      final TypeIndex created = createConstraintIndex(b, ddl, schema, typeName);
       changed = !existedBefore;
       if (changed) {
         ownedIndex = created.getName();
@@ -1253,7 +1256,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
       b.withReplaceIfIncompatible(true);
       if (anyUndeclared)
         b.withDefaultKeyTypesForUndeclaredProperties(defaultKeyTypes);
-      final TypeIndex created = b.create();
+      final TypeIndex created = createConstraintIndex(b, ddl, schema, typeName);
       if (!existedBefore)
         ownedIndex = created.getName();
       for (final String propName : propertyNames) {
@@ -1301,6 +1304,57 @@ public class OpenCypherQueryEngine implements QueryEngine {
       CypherConstraintRegistry.register(constrained, recordAs, kind, propertyNames,
           new CypherConstraintRegistry.Ownership(ownedIndex, ownedMandatory, declared, previous, recordedType, recordedOfType,
               recordedDimension, ownedBounds, isTyped ? ddl.getTypedName().toString() : null));
+  }
+
+  /**
+   * Builds the unique index of a UNIQUE or KEY constraint. An equivalent index already there is refused as Neo4j refuses it
+   * (issue #13664): under the name the request asked for (or would be given), an equivalent schema rule, under another one a
+   * constraint that already exists.
+   */
+  private static TypeIndex createConstraintIndex(final TypeIndexBuilder builder, final CypherDDLStatement ddl, final Schema schema,
+      final String typeName) {
+    try {
+      return builder.create();
+    } catch (final EquivalentIndexException e) {
+      final DocumentType type = schema.getType(typeName);
+      final TypeIndex existing = CypherConstraintRegistry.uniqueIndexOver(type, ddl.getPropertyNames());
+      final String owner = existing != null ? CypherConstraintRegistry.findIndexOwner(schema, existing.getName()) : null;
+      final CypherDDLStatement.ConstraintKind existingKind = owner != null ? CypherConstraintRegistry.kindOf(type, owner) : null;
+      // a unique index no constraint recorded is listed under its generated name, as SHOW CONSTRAINTS lists it
+      final String existingName = owner != null ?
+          owner :
+          CypherConstraintRegistry.generatedName(typeName, CypherDDLStatement.ConstraintKind.UNIQUE, ddl.getPropertyNames());
+      final String requestedName = ddl.getConstraintName() != null ?
+          ddl.getConstraintName() :
+          CypherConstraintRegistry.generatedName(typeName, ddl.getConstraintKind(), ddl.getPropertyNames());
+      throw CypherSchemaRuleConflicts.equivalentConstraint(e, ddl, requestedName, existingName, existingKind);
+    }
+  }
+
+  /**
+   * Whether the constraint {@code name}, recorded on {@code owner}, requires what the statement asks for: the same type, kind,
+   * properties and, for a type constraint, the same declared type (issue #13664).
+   */
+  private static boolean isSameConstraint(final DocumentType owner, final String name, final CypherDDLStatement ddl) {
+    if (!owner.getName().equals(ddl.getLabelName()))
+      return false;
+    Type declaredType = null;
+    String declaredOfType = null;
+    int dimension = CypherTypeName.NO_DIMENSION;
+    if (ddl.getConstraintKind() == CypherDDLStatement.ConstraintKind.TYPED) {
+      final DeclaredType declared;
+      try {
+        declared = mapCypherType(ddl.getTypedName());
+      } catch (final RuntimeException e) {
+        // a type no constraint can require is no definition any constraint has
+        return false;
+      }
+      declaredType = declared.type();
+      declaredOfType = declared.ofType();
+      dimension = declared.dimension();
+    }
+    return CypherConstraintRegistry.requiresTheSame(owner, name, ddl.getConstraintKind(), ddl.getPropertyNames(), declaredType,
+        declaredOfType, dimension);
   }
 
   /** A stored value as a refusal names it: an array by its component type and length, which is what a vector type checks. */
@@ -1751,8 +1805,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
       if (taken || CypherConstraintRegistry.findOwner(schema, indexName) != null) {
         if (ddl.isIfNotExists())
           return;
-        throw new AlreadyExistsException(taken ? AlreadyExistsException.Kind.INDEX : AlreadyExistsException.Kind.CONSTRAINT,
-            "There already exists " + (taken ? "an index" : "a constraint") + " called '" + indexName + "'");
+        throw CypherSchemaRuleConflicts.indexNameTaken(schema, ddl, indexName, taken);
       }
     }
 
@@ -1795,8 +1848,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
     if (taken || CypherConstraintRegistry.findOwner(schema, indexName) != null) {
       if (ddl.isIfNotExists())
         return;
-      throw new AlreadyExistsException(taken ? AlreadyExistsException.Kind.INDEX : AlreadyExistsException.Kind.CONSTRAINT,
-          "There already exists " + (taken ? "an index" : "a constraint") + " called '" + indexName + "'");
+      throw CypherSchemaRuleConflicts.indexNameTaken(schema, ddl, indexName, taken);
     }
 
     // The OPTIONS are read for every type before anything is created, as for one type
@@ -1932,6 +1984,9 @@ public class OpenCypherQueryEngine implements QueryEngine {
         } catch (final RuntimeException dropFailure) {
           e.addSuppressed(dropFailure);
         }
+      // the equivalent index under another name is Neo4j's IndexAlreadyExists, not an equivalent schema rule (issue #13664)
+      if (e instanceof EquivalentIndexException equivalent)
+        throw CypherSchemaRuleConflicts.equivalentIndex(equivalent, ddl, typeName, Arrays.asList(propertyNames));
       throw e;
     }
 

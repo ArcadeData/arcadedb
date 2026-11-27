@@ -228,6 +228,26 @@ final class CypherConstraintRegistry {
   }
 
   /**
+   * Whether the constraint recorded on the type under {@code name} requires exactly what is described, with the equivalence
+   * {@link #findEquivalent} applies: the same name asked for twice with the same definition, which Neo4j answers as an
+   * equivalent schema rule rather than as a taken name (issue #13664).
+   */
+  static boolean requiresTheSame(final DocumentType type, final String name, final ConstraintKind kind, final List<String> properties,
+      final Type declaredType, final String declaredOfType, final int dimension) {
+    final JSONObject entry = entry(type, KEY_PREFIX + name);
+    if (entry == null || kindOf(entry) != kind || !toStrings(entry.getJSONArray("properties", new JSONArray())).equals(properties))
+      return false;
+    return kind != ConstraintKind.TYPED || sameDeclaration(entry.getJSONObject("declaredType", null), declaredType, declaredOfType,
+        dimension);
+  }
+
+  /** The kind of the constraint recorded on the type under {@code name}, or null when none is recorded there. */
+  static ConstraintKind kindOf(final DocumentType type, final String name) {
+    final JSONObject entry = entry(type, KEY_PREFIX + name);
+    return entry != null ? kindOf(entry) : null;
+  }
+
+  /**
    * The name of a type constraint on the type that requires another type of one of these properties, or null. A property
    * has one declared type, so two type constraints that disagree cannot both hold: as in Neo4j, the second is refused rather
    * than silently replacing the first.
