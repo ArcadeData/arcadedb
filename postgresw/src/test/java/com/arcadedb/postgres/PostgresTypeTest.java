@@ -1627,7 +1627,18 @@ class PostgresTypeTest {
     int length = buffer.getInt();
     byte[] data = new byte[length];
     buffer.getByteBuffer().get(data);
-    assertThat(new String(data)).isEqualTo("{true,false}");
+    assertThat(new String(data)).isEqualTo("{t,f}");
+  }
+
+  @Test
+  void serializeAsTextBooleanArrayWritesTheNullElementAndOnlyBoolArraysUseTf() {
+    // issue #12994: PostgreSQL writes a bool[] as {t,f} (a NULL element stays NULL); a Boolean inside text[] or json[] keeps its own text
+    assertThat(PostgresType.ARRAY_BOOLEAN.toText(PostgresType.ARRAY_BOOLEAN, Arrays.asList(true, null, false))).isEqualTo("{t,NULL,f}");
+    assertThat(PostgresType.ARRAY_TEXT.toText(PostgresType.ARRAY_TEXT, Arrays.asList(true, false))).isEqualTo("{true,false}");
+    assertThat(PostgresType.ARRAY_JSON.toText(PostgresType.ARRAY_JSON, Arrays.asList(true, false))).isEqualTo("{true,false}");
+    // and what is written is read back
+    final String text = PostgresType.ARRAY_BOOLEAN.toText(PostgresType.ARRAY_BOOLEAN, Arrays.asList(true, null, false));
+    assertThat((List<Object>) PostgresType.deserialize(PostgresType.ARRAY_BOOLEAN.code, 0, text.getBytes())).containsExactly(true, null, false);
   }
 
   @Test
@@ -1778,7 +1789,7 @@ class PostgresTypeTest {
     int length = buffer.getInt();
     byte[] data = new byte[length];
     buffer.getByteBuffer().get(data);
-    assertThat(new String(data)).isEqualTo("{true,false}");
+    assertThat(new String(data)).isEqualTo("{t,f}");
   }
 
   @Test
