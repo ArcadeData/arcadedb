@@ -1122,7 +1122,9 @@ public class MatchExecutionPlanner {
    * A node with none of the three is every vertex, as an unlabelled openCypher {@code MATCH (n)} is (issue #12743): the fetch
    * is the buckets of every vertex type. Buckets rather than types, because a polymorphic scan of each type would visit a
    * vertex whose type has two vertex supertypes twice. The bucket list is read from the schema at planning time, like the
-   * buckets of a {@code type:}, and a schema change invalidates the cached plan.
+   * buckets of a {@code type:}, and a schema change invalidates the cached plan. Every vertex type, not only the readable ones:
+   * the scan reads each bucket through the per-bucket gate, so a user who may not read one vertex type is refused the statement,
+   * as by {@code MATCH (n)} and {@code SELECT FROM V}, rather than answered a silent subset.
    */
   private InternalExecutionPlan createRootPlan(final String alias, final CommandContext context) {
     final String typeName = aliasTypes.get(alias);

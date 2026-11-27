@@ -132,6 +132,8 @@ class SchemaPresentationReadableWalkCensusTest {
       Map.entry("query/opencypher/executor/steps/TypeCountStep#countAllVertices", "counts each type through countType, which refuses a denied type"),
       Map.entry("query/opencypher/optimizer/statistics/StatisticsProvider#calculateAverageDegree", PLANNER),
       Map.entry("query/sql/executor/FetchFromLightweightEdgeTypeStep#init", PLANNER),
+      Map.entry("query/sql/executor/MatchExecutionPlanner#createRootPlan",
+          "the untyped MATCH root scans every vertex bucket through the per-bucket gate, which refuses a denied type as MATCH (n) does"),
       Map.entry("query/sql/parser/FindReferencesStatement#resolveTypesToScan", READ_THROUGH_GATE),
       // GREMLIN
       Map.entry("gremlin/ArcadeCountGlobalStep#processNextStart", "a traversal: the count reads every bucket through the per-bucket gate, which refuses a denied type"),
