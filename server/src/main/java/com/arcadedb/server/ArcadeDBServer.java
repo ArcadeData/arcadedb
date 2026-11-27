@@ -1530,9 +1530,21 @@ public class ArcadeDBServer {
    * refuses every write in the database itself, so a handle resolved before the restore began is refused too (issue #10689).
    * Unlike {@link #getDatabaseForRequest} this does not look at the disk first: a name that is neither open nor on disk fails in
    * the open, as it always did for these protocols.
+   * <p>
+   * A name reserved for the server's own use (see {@link #isReservedDatabaseName}) and a directory that holds no database (see
+   * {@link #holdsDatabase}) are no database for a client, whatever is registered or on disk: they are refused with
+   * {@link DatabaseNotFoundException}, as {@link #getDatabaseForRequest} does, and nothing is opened or created in them (issue
+   * #8805). Only the operator's own entry point, {@link #getDatabaseForOperator(String)}, opens a reserved name.
    */
   public ServerDatabase getDatabaseForClient(final String databaseName) {
+    checkNameIsNotReserved(databaseName);
     return getDatabase(databaseName, false, true, false, true);
+  }
+
+  /** Refuses a name reserved for the server's own use as a database a client names, whether or not an operator registered it. */
+  private static void checkNameIsNotReserved(final String databaseName) {
+    if (isReservedDatabaseName(databaseName))
+      throw new DatabaseNotFoundException("Database '" + databaseName + "' does not exist");
   }
 
   public ServerDatabase getOrCreateDatabase(final String databaseName) {
@@ -1560,6 +1572,9 @@ public class ArcadeDBServer {
     if (databaseName == null || databaseName.isBlank())
       return getDatabase(databaseName, false, false);
 
+    // BEFORE THE REGISTRY: A RESERVED NAME THAT AN OPERATOR'S STEP REGISTERED IS NOT SERVED TO A REQUEST EITHER
+    checkNameIsNotReserved(databaseName);
+
     final ServerDatabase db = databases.get(databaseName);
     if (status == STATUS.ONLINE && db != null && db.isOpen())
       return db;
@@ -1568,7 +1583,7 @@ public class ArcadeDBServer {
     // NOT WHILE IT STOPS (A DATABASE OPENED THEN WOULD BE LEFT OPEN BEHIND THE SHUTDOWN). A NAME AN OPERATOR HAS TAKEN AWAY (CLOSED,
     // BEING DROPPED, BEING RESTORED) IS REFUSED BY getDatabase UNDER databasesLock, WHERE THE OPERATOR'S OWN STEP IS SERIALISED WITH
     // THE LOAD (ISSUES #10234, #10388): A CHECK MADE HERE, WITHOUT THE LOCK, WOULD BE A SAMPLE THAT CAN GO STALE BEFORE THE OPEN
-    if (status == STATUS.ONLINE && !isReservedDatabaseName(databaseName)) {
+    if (status == STATUS.ONLINE) {
       // VALIDATED BEFORE THE NAME BECOMES A PATH: A NAME THAT LEAVES THE DATABASE DIRECTORY NEVER REACHES THE DISK CHECK, AND IS
       // ANSWERED AS IT ALWAYS WAS (NOT AVAILABLE), NOT WITH A NEW KIND OF ERROR
       if (isValidDatabaseName(databaseName)) {
@@ -2563,7 +2578,8 @@ public class ArcadeDBServer {
    * @param refuseIfClosedByCommand {@code true} for a client request (issues #10234, #10388): a database a {@code close
    *                                database} command closed, or one a restore holds, is not opened for it. Checked under
    *                                {@link #databasesLock}, where the command deregisters the database, so a request cannot
-   *                                reopen it between the two. A database being dropped is refused to every caller.
+   *                                reopen it between the two. A directory that holds no database is not opened for it either
+   *                                ({@link DatabaseNotFoundException}). A database being dropped is refused to every caller.
    */
   private ServerDatabase getDatabase(final String databaseName, final boolean createIfNotExists,
       final boolean allowLoad, final boolean underSnapshotRecovery, final boolean refuseIfClosedByCommand) {
@@ -2673,6 +2689,13 @@ public class ArcadeDBServer {
           throw new DatabaseNotAvailableException("Database '" + databaseName + "' is not available: this node became "
               + "the leader while opening a copy the last HA resync could not verify, and has not compared it with the "
               + "other servers' copies yet. Retry the request", Reason.RECOVERING);
+
+        // A client names a database that exists: a directory that holds none is not one, whatever its name, and opening it would
+        // create a database inside it (issue #8805). Only a client is held to it: the operator's steps resolve their own
+        // directories through the unflagged entry point. A name with no directory fails in the open as it always did, with the
+        // same exception.
+        if (refuseIfClosedByCommand && databaseDirectory.exists() && !holdsDatabase(databaseDirectory))
+          throw new DatabaseNotFoundException("Database '" + databaseName + "' does not exist");
 
         final DatabaseFactory factory = new DatabaseFactory(path).setAutoTransaction(true).setReplicatedNode(isHARequested());
 
