@@ -6592,7 +6592,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // refusals the table above lists as raised before the entry reached the log
     if (httpStatus >= 400 && httpStatus < 500) {
       final RuntimeException clientError = rebuildClientError(exceptionClass, exceptionArgs, detail != null ? detail : message);
-      if (clientError != null)
+      // The same rule held by construction: the leader answers a retryable refusal 503, so one that arrives under a 4xx (another
+      // build, something between the two nodes) is not made retryable here either
+      if (clientError != null && !(clientError instanceof NeedRetryException))
         return clientError;
     }
 

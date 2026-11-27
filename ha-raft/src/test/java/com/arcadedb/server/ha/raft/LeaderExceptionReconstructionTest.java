@@ -45,6 +45,7 @@ import com.arcadedb.exception.UnknownFunctionException;
 import com.arcadedb.exception.UnknownProcedureException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.exception.VertexNotFoundException;
+import com.arcadedb.exception.WALVersionGapException;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.network.binary.ReplicationQueueFullException;
 import com.arcadedb.remote.RemoteExceptionRebuilder;
@@ -707,6 +708,16 @@ class LeaderExceptionReconstructionTest {
     assertThat(RaftReplicatedDatabase.reconstructLeaderException(503, body, null)).isExactlyInstanceOf(TransactionException.class);
   }
 
+  // #12931: nor is a retryable type that only the remote table lists made retryable by a 4xx. The leader answers those 503, and
+  // this node's retry loop may replay only the refusals its own table lists
+  @Test
+  void aRetryableTypeOfTheRemoteTableAnswered4xxIsNotMadeRetryable() {
+    final RuntimeException rebuilt = RaftReplicatedDatabase.reconstructLeaderException(409,
+        clientErrorBody(WALVersionGapException.class.getName(), null, "refused"), null);
+
+    assertThat(rebuilt).isExactlyInstanceOf(TransactionException.class).isNotInstanceOf(NeedRetryException.class);
+  }
+
   // Regression for #12931: a type created by somebody else between the check and the create (two migrations through two
   // followers) is the taken name it extends, with its kind. Its own constructor takes a type name, not a message
   @Test
@@ -765,7 +776,10 @@ class LeaderExceptionReconstructionTest {
     for (final String name : names) {
       final RuntimeException rebuilt = RaftReplicatedDatabase.reconstructLeaderException(400, clientErrorBody(name, null, "boom"),
           null);
-      final Class<?> expected = FORWARDED_AS.containsKey(name) ? FORWARDED_AS.get(name) : Class.forName(name);
+      Class<?> expected = FORWARDED_AS.containsKey(name) ? FORWARDED_AS.get(name) : Class.forName(name);
+      // a retryable type this node's own table does not list is not made retryable by a 4xx: it stays the generic fallback
+      if (NeedRetryException.class.isAssignableFrom(expected) && !(rebuilt instanceof NeedRetryException))
+        expected = TransactionException.class;
       if (rebuilt.getClass() != expected)
         wrong.add(name + " came back as " + rebuilt.getClass().getName());
     }
