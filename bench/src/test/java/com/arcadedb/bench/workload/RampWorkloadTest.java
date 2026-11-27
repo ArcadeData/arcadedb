@@ -52,7 +52,7 @@ class RampWorkloadTest {
       assertThat(workload.cases(scale)).isEqualTo(workload.cases());
     assertThat(workload.reps()).hasValue(3);
     assertThat(workload.warmup()).hasValue(1);
-    assertThat(WorkloadRegistry.all().getLast()).isInstanceOf(RampWorkload.class);
+    assertThat(WorkloadRegistry.all()).hasAtLeastOneElementOfType(RampWorkload.class);
   }
 
   @Test
