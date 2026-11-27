@@ -202,6 +202,43 @@ class SQLFunctionVectorFuseTest extends TestHelper {
       assertThat(scores.get(i)).isLessThanOrEqualTo(scores.get(i - 1));
   }
 
+  /**
+   * Issue #12766: LINEAR min-max normalizes each source like {@code vector.normalizeScores}, and formed {@code max - min} in
+   * float too. Finite scores spanning more than Float.MAX_VALUE gave an infinite range, so the top row of that source scored
+   * NaN and every other row 0, whatever the other sources said.
+   */
+  @Test
+  void linearStrategyNormalizesARangeBeyondFloatMax() {
+    database.transaction(() -> {
+      final DocumentType t = database.getSchema().createDocumentType("WideScore");
+      t.createProperty("name", Type.STRING);
+      t.createProperty("s1", Type.FLOAT);
+      t.createProperty("s2", Type.FLOAT);
+      database.newDocument("WideScore").set("name", "A", "s1", 3.0e38f, "s2", 1.0f).save();
+      database.newDocument("WideScore").set("name", "B", "s1", 0.0f, "s2", 0.5f).save();
+      database.newDocument("WideScore").set("name", "C", "s1", -3.0e38f, "s2", 0.0f).save();
+    });
+
+    final List<String> names = new ArrayList<>();
+    final List<Float> scores = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", """
+        SELECT expand(`vector.fuse`(
+            (SELECT @rid, s1 AS score FROM WideScore ORDER BY s1 DESC),
+            (SELECT @rid, s2 AS score FROM WideScore ORDER BY s2 DESC),
+            { fusion: 'LINEAR' }
+        ))""")) {
+      while (rs.hasNext()) {
+        final Result row = rs.next();
+        names.add(row.getProperty("name"));
+        scores.add(((Number) row.getProperty("score")).floatValue());
+      }
+    }
+
+    // Each source normalizes to A = 1, B = 0.5, C = 0 (0.5 is exact: 3e38 is half of 6e38), so the sums are exact too
+    assertThat(names).containsExactly("A", "B", "C");
+    assertThat(scores).containsExactly(2.0f, 1.0f, 0.0f);
+  }
+
   @Test
   void dbsfStrategyNormalizesAcrossSources() {
     buildSchema();
