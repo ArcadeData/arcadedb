@@ -19,7 +19,9 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -36,6 +38,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Graph: V(id=0), W(id=1) and V(id=2), with W extending V; 0 -A-> 1, 0 -A-> 2, 1 -A-> 0 and 2 -A-> 0.
  */
 class Issue12937MatchMultiHopNodeOptionsTest extends TestHelper {
+  private String v0Rid;
   private String wRid;
   private String wBucket;
 
@@ -49,6 +52,7 @@ class Issue12937MatchMultiHopNodeOptionsTest extends TestHelper {
       final MutableVertex v0 = database.newVertex("V").set("id", 0).save();
       final MutableVertex w1 = database.newVertex("W").set("id", 1).save();
       final MutableVertex v2 = database.newVertex("V").set("id", 2).save();
+      v0Rid = v0.getIdentity().toString();
       wRid = w1.getIdentity().toString();
       v0.newEdge("A", w1).save();
       v0.newEdge("A", v2).save();
@@ -95,6 +99,61 @@ class Issue12937MatchMultiHopNodeOptionsTest extends TestHelper {
     // V is the base type: both vertices are Vs
     assertThat(rows("MATCH {type: V, as: a, where: (id = 0)}.outE('A').inV(){as: b}, {as: b, type: V} RETURN a.id AS a, b.id AS b"))
         .containsExactly("0,1", "0,2");
+  }
+
+  @Test
+  void theOptionsApplyToTheMultiItemSyntax() {
+    assertThat(rows("MATCH {type: V, as: a, where: (id = 0)}.(outE('A').inV()){as: b}, {as: b, type: W} RETURN a.id AS a, b.id AS b"))
+        .containsExactly("0,1");
+  }
+
+  @Test
+  void anOptionalHopIsFilteredToo() {
+    // the optional hop reaches 1 and 2 through two edges, two partial matches: only 1 is a W, so the other keeps its row with no b,
+    // exactly as when the type is written on the walked item
+    final List<String> merged = rows("MATCH {type: V, as: a, where: (id = 0)}.outE('A').inV(){as: b, optional: true}, {as: b, type: W} "
+        + "RETURN a.id AS a, b.id AS b");
+    assertThat(merged).containsExactly("0,1", "0,null");
+    assertThat(merged).isEqualTo(
+        rows("MATCH {type: V, as: a, where: (id = 0)}.outE('A').inV(){as: b, optional: true, type: W} RETURN a.id AS a, b.id AS b"));
+  }
+
+  @Test
+  void aBackwardWalkStillTakesTheOptionsOfTheAliasItReaches() {
+    // rooted at the RID of 0 (the cheapest alias), the planner walks the chained hop backwards to a: only W 1 points at 0
+    assertThat(rows("MATCH {as: a}.outE('A').inV(){as: b}, {as: a, type: W}, {as: b, rid: " + v0Rid + "} RETURN a.id AS a, b.id AS b"))
+        .containsExactly("1,0");
+  }
+
+  /**
+   * With more than the planner's prefetch threshold of candidates on the far side, nothing rescues a forward walk: the plain {@code out()}
+   * hop, the {@code while:} walk and the {@code .(...)} syntax have to take the type of the other occurrence themselves.
+   */
+  @Test
+  void aForwardWalkNobodyPrefetchesForTakesTheTypeOfAnotherOccurrence() {
+    database.getSchema().createEdgeType("B");
+    database.transaction(() -> {
+      final Vertex v0 = database.lookupByRID(new RID(v0Rid), true).asVertex();
+      for (int i = 0; i < 150; i++) {
+        v0.newEdge("B", database.newVertex("V").set("id", 1000 + i).save());
+        v0.newEdge("B", database.newVertex("W").set("id", 2000 + i).save());
+      }
+    });
+
+    final List<String> plain = rows("MATCH {as: a, rid: " + v0Rid + "}.out('B'){as: b}, {as: b, type: W} RETURN b.id AS b");
+    assertThat(plain).hasSize(150);
+    assertThat(plain).allMatch(id -> Integer.parseInt(id) >= 2000);
+
+    final List<String> chained = rows("MATCH {as: a, rid: " + v0Rid + "}.outE('B').inV(){as: b}, {as: b, type: W} RETURN b.id AS b");
+    assertThat(chained).isEqualTo(plain);
+
+    final List<String> multiItem = rows("MATCH {as: a, rid: " + v0Rid + "}.(outE('B').inV()){as: b}, {as: b, type: W} RETURN b.id AS b");
+    assertThat(multiItem).isEqualTo(plain);
+
+    // depth 0 is 0 itself, a V: the type of the other occurrence decides which vertices of the walk bind b
+    final List<String> recursive = rows(
+        "MATCH {as: a, rid: " + v0Rid + "}.out('B'){as: b, while: ($depth < 1)}, {as: b, type: W} RETURN b.id AS b");
+    assertThat(recursive).isEqualTo(plain);
   }
 
   private List<String> rows(final String match) {

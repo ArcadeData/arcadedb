@@ -525,8 +525,10 @@ public class MatchEdgeTraverser {
 
   /**
    * The type, bucket and RID of the node this walk reaches: the ones written on the walked item, else the ones the pattern gives the alias on
-   * another of its occurrences (the planner merges them over all of them, as the backwards walk already relies on), so a node is not
-   * accepted by a hop merely because its type, bucket or RID was written on a different occurrence of the alias (issue #12937).
+   * another of its occurrences (the planner merges them over all of them, as the backwards walk already relies on), so a type, bucket or RID
+   * written on another occurrence of the alias still rejects the nodes this hop reaches (issue #12937). The merged value is taken only for
+   * this traverser's own item: the sub-items of a {@code .(...)} item are walked with no {@link EdgeTraversal} and reach intermediate nodes,
+   * and the planner rejects occurrences that disagree, so when the walked item carries a value it is the merged one.
    */
   protected String targetClassName(final MatchPathItem item, final CommandContext iCommandContext) {
     final String own = item.getFilter().getTypeName(iCommandContext);
