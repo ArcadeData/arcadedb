@@ -82,13 +82,15 @@ class SQLFunctionConcatHeapLimitTest extends TestHelper {
   }
 
   @Test
-  void aDistinctConcatHoldsItsTextUnderTheBudget() {
+  void aDistinctConcatHoldsItsTextOnTopOfTheValuesItRemembers() {
     GlobalConfiguration.QUERY_MAX_HEAP_RAM.setValue(1L);
 
-    // EVERY id IS A DISTINCT VALUE, SO THE LONG DELIMITER IS APPENDED FOR EVERY ROW
-    assertRefused("sql", "SELECT concat(DISTINCT id, payload) AS t FROM Item");
-    assertRefused("sql", "SELECT grp, concat(DISTINCT id, payload) AS t FROM Item GROUP BY grp");
-    assertRefused("opencypher", "MATCH (i:Item) RETURN sql.concat(DISTINCT i.id, i.payload) AS t");
+    // THE 300 DISTINCT VALUES OF 2000 CHARACTERS A DISTINCT CALL REMEMBERS FIT THE BUDGET ON THEIR OWN, A CONTROL THAT KEEPS NO
+    // TEXT OF ITS OWN...
+    assertThat(drain("sql", "SELECT count(DISTINCT tag + payload.substring(0, 2000)) AS t FROM Item")).isEqualTo(1);
+    // ... WHILE THE TEXT CONCAT BUILDS FROM THEM, ON TOP OF THEM, DOES NOT
+    assertRefused("sql", "SELECT concat(DISTINCT tag, payload.substring(0, 2000)) AS t FROM Item");
+    assertRefused("sql", "SELECT grp, concat(DISTINCT tag, payload.substring(0, 2000)) AS t FROM Item GROUP BY grp");
   }
 
   @Test
@@ -119,6 +121,7 @@ class SQLFunctionConcatHeapLimitTest extends TestHelper {
     GlobalConfiguration.QUERY_MAX_HEAP_RAM.setValue(1L);
     assertRefused("opencypher", "MATCH (i:Item) RETURN sql.concat(i.payload, ',') AS t");
     assertRefused("opencypher", "MATCH (i:Item) RETURN i.grp AS g, sql.concat(i.payload, ',') AS t");
+    assertRefused("opencypher", "MATCH (i:Item) RETURN sql.concat(DISTINCT i.id, i.payload) AS t");
 
     GlobalConfiguration.QUERY_MAX_HEAP_RAM.reset();
     database.getConfiguration().setValue(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP, 100L);
