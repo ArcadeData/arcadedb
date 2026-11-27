@@ -24,7 +24,9 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSemanticException;
+import com.arcadedb.exception.CauseChain;
 import com.arcadedb.exception.ErrorCategory;
+import com.arcadedb.exception.ProcedureCallFailedException;
 import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.function.CypherBuiltinFunctions;
 import com.arcadedb.function.CypherFunctionRegistry;
@@ -429,6 +431,30 @@ class CypherFunctionResolutionTest {
       assertThat(error.getMessage()).contains("bad x");
       // the caller's condition, not a server fault
       assertThat(ErrorCategory.of(error)).isEqualTo(ErrorCategory.VALIDATION);
+    }
+
+    /**
+     * Issue #13560: the guard raises its own {@link IllegalArgumentException} subtype, which carries what Neo4j with APOC answers
+     * for the same failure (Bolt sends it), while the message and the category stay what they were on every other protocol.
+     */
+    @Test
+    void aFiredGuardCarriesTheTextNeo4jAnswers() {
+      final Throwable procedure = catchThrowable(() -> rows("CALL apoc.util.validate(true, 'bad %s', ['x']) RETURN 1 AS ok"));
+      final ProcedureCallFailedException failedProcedure = CauseChain.find(procedure, ProcedureCallFailedException.class);
+      assertThat(failedProcedure).isNotNull();
+      assertThat(failedProcedure.getMessage()).isEqualTo("bad x");
+      assertThat(failedProcedure.getNeo4jMessage()).isEqualTo(
+          "Failed to invoke procedure `apoc.util.validate`: Caused by: java.lang.RuntimeException: bad x");
+
+      final Throwable function = catchThrowable(() -> rows("RETURN apoc.util.validatePredicate(true, 'bad %s', ['y']) AS ok"));
+      final ProcedureCallFailedException failedFunction = CauseChain.find(function, ProcedureCallFailedException.class);
+      assertThat(failedFunction).isNotNull();
+      assertThat(failedFunction.getMessage()).isEqualTo("bad y");
+      assertThat(failedFunction.getNeo4jMessage()).isEqualTo(
+          "Failed to invoke function `apoc.util.validatePredicate`: Caused by: java.lang.RuntimeException: bad y");
+      assertThat(ErrorCategory.of(function)).isEqualTo(ErrorCategory.VALIDATION);
+
+      assertThat(rows("RETURN apoc.util.validatePredicate(false, 'bad', [0]) AS ok")).hasSize(1);
     }
 
     @Test
