@@ -195,7 +195,16 @@ public final class GraphQLFragments {
    *                       the name {@code T}. It is only called for a fragment that carries a type condition
    */
   public List<Selection> expand(final List<Selection> selections, final Predicate<String> typeConditions) {
-    return expand(selections, typeConditions, true);
+    return expand(selections, typeConditions, true, null);
+  }
+
+  /**
+   * As {@link #expand(List, Predicate)}, charging every selection it walks to {@code budget}, the ones it leaves out included: the
+   * walk costs the same whatever the type conditions and directives decide.
+   */
+  List<Selection> expand(final List<Selection> selections, final Predicate<String> typeConditions,
+      final IntrospectionBudget budget) {
+    return expand(selections, typeConditions, true, budget);
   }
 
   /**
@@ -205,8 +214,19 @@ public final class GraphQLFragments {
    */
   List<Selection> expand(final List<Selection> selections, final Predicate<String> typeConditions,
       final boolean evaluateDirectives) {
+    return expand(selections, typeConditions, evaluateDirectives, null);
+  }
+
+  /**
+   * @param budget the budget to charge the selections walked to, or null to walk them for free
+   */
+  private List<Selection> expand(final List<Selection> selections, final Predicate<String> typeConditions,
+      final boolean evaluateDirectives, final IntrospectionBudget budget) {
     if (selections == null)
       return null;
+
+    if (budget != null)
+      budget.charge(selections.size());
 
     boolean rewritten = false;
     for (int i = 0; i < selections.size(); i++)
@@ -219,12 +239,16 @@ public final class GraphQLFragments {
       return selections;
 
     final List<Selection> expanded = new ArrayList<>(selections.size() + 4);
-    expand(selections, typeConditions, evaluateDirectives, expanded, new HashSet<>());
+    expand(selections, typeConditions, evaluateDirectives, expanded, new HashSet<>(), budget);
     return expanded;
   }
 
+  /**
+   * @param budget the budget to charge the selections of a fragment to, or null. The selections of the list the walk starts from
+   *               are charged by the caller, the ones of the fragments it enters here
+   */
   private void expand(final List<Selection> selections, final Predicate<String> typeConditions,
-      final boolean evaluateDirectives, final List<Selection> expanded, final Set<String> spread) {
+      final boolean evaluateDirectives, final List<Selection> expanded, final Set<String> spread, final IntrospectionBudget budget) {
     for (final Selection selection : selections) {
       if (evaluateDirectives && !isIncluded(directivesOf(selection)))
         // EVALUATED BEFORE A SPREAD IS RECORDED AS VISITED, AS THE SPECIFICATION'S CollectFields DOES: A SPREAD THE
@@ -241,11 +265,17 @@ public final class GraphQLFragments {
           // EXPONENTIAL IN THEIR NESTING, AND OF A CYCLE THAT WAS NOT VALIDATED AWAY
           continue;
         final FragmentDefinition fragment = getDefinition(name);
-        if (applies(fragment.getTypeConditionName(), typeConditions) && fragment.getSelectionSet() != null)
-          expand(fragment.getSelectionSet().getSelections(), typeConditions, evaluateDirectives, expanded, spread);
+        if (applies(fragment.getTypeConditionName(), typeConditions) && fragment.getSelectionSet() != null) {
+          if (budget != null)
+            budget.charge(fragment.getSelectionSet().getSelections().size());
+          expand(fragment.getSelectionSet().getSelections(), typeConditions, evaluateDirectives, expanded, spread, budget);
+        }
       } else if (inline != null) {
-        if (applies(inline.getTypeConditionName(), typeConditions) && inline.getSelectionSet() != null)
-          expand(inline.getSelectionSet().getSelections(), typeConditions, evaluateDirectives, expanded, spread);
+        if (applies(inline.getTypeConditionName(), typeConditions) && inline.getSelectionSet() != null) {
+          if (budget != null)
+            budget.charge(inline.getSelectionSet().getSelections().size());
+          expand(inline.getSelectionSet().getSelections(), typeConditions, evaluateDirectives, expanded, spread, budget);
+        }
       } else
         expanded.add(selection);
     }

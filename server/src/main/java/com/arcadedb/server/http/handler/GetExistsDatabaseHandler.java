@@ -35,7 +35,9 @@ public class GetExistsDatabaseHandler extends AbstractServerHttpHandler {
   @Override
   public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final JSONObject payload) {
     final Deque<String> databaseName = exchange.getQueryParameters().get("database");
-    if (databaseName.isEmpty())
+    // The name is bound from the path, so a request that names no database arrives with one EMPTY name, not with none (issue #12407).
+    // Empty as ArcadeDBServer.checkDatabaseNameIsValid defines it, so a name that is a valid database name is never refused here.
+    if (databaseName.isEmpty() || databaseName.getFirst().trim().isEmpty())
       return new ExecutionResponse(400, "{ \"error\" : \"Database parameter is null\"}");
 
     final ArcadeDBServer server = httpServer.getServer();

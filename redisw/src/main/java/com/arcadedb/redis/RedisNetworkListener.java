@@ -22,6 +22,7 @@ import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
+import com.arcadedb.server.network.AcceptFailureHandler;
 import com.arcadedb.server.network.MultiAddressServerSocket;
 import com.arcadedb.server.network.PreAuthConnectionGate;
 import com.arcadedb.server.network.ServerSocketFactory;
@@ -39,6 +40,7 @@ public class RedisNetworkListener extends Thread {
   private              ClientConnected     callback;
   /** Bounds how many accepted connections can sit un-authenticated at once (issue #6412). */
   private final        PreAuthConnectionGate preAuthGate;
+  private final        AcceptFailureHandler  failureHandler = new AcceptFailureHandler("Redis wrapper");
 
   public interface ClientConnected {
     void connected();
@@ -84,25 +86,33 @@ public class RedisNetworkListener extends Thread {
           try {
             // CREATE A NEW PROTOCOL INSTANCE
             final RedisNetworkExecutor connection = new RedisNetworkExecutor(server, socket, ticket);
-            connection.start();
-          } catch (final Exception e) {
-            // The executor never started, so nothing will hand the permit back for it.
-            ticket.release();
+            startConnection(connection);
+          } catch (final Throwable e) {
+            // The executor never started, so nothing will hand the permit back for it or close its socket.
+            ticket.abandon();
             throw e;
           }
 
           if (callback != null)
             callback.connected();
 
-        } catch (final Exception e) {
+        } catch (final Throwable e) {
+          // An error is no more a reason to stop accepting than an exception is: nothing starts this thread again
           if (active)
-            LogManager.instance().log(this, Level.WARNING, "Error on client connection", e);
+            failureHandler.handle(this, "Error on client connection", e);
         }
       }
     } finally {
       if (serverSocket != null)
         serverSocket.close();
     }
+  }
+
+  /**
+   * Starts the thread that serves an accepted connection.
+   */
+  void startConnection(final RedisNetworkExecutor connection) {
+    connection.start();
   }
 
   public void close() {

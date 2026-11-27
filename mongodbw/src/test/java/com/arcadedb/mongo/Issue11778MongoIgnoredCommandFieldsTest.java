@@ -20,6 +20,7 @@ package com.arcadedb.mongo;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.index.TypeIndex;
 import com.mongodb.MongoClient;
 import com.mongodb.MongoClientOptions;
 import com.mongodb.MongoCommandException;
@@ -31,7 +32,13 @@ import com.mongodb.client.MongoDatabase;
 import com.mongodb.client.model.Collation;
 import com.mongodb.client.model.CollationStrength;
 import com.mongodb.client.model.CreateCollectionOptions;
+import com.mongodb.client.model.CreateIndexOptions;
 import com.mongodb.client.model.DeleteOptions;
+import com.mongodb.client.model.IndexModel;
+import com.mongodb.client.model.IndexOptions;
+import com.mongodb.client.model.InsertManyOptions;
+import com.mongodb.client.model.InsertOneModel;
+import com.mongodb.client.model.InsertOneOptions;
 import com.mongodb.client.model.UpdateOptions;
 import org.bson.Document;
 import org.bson.types.Decimal128;
@@ -42,6 +49,7 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -56,6 +64,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * update or delete matched nothing; a {@code hint} with a {@code max}, a {@code returnKey}, a {@code showRecordId} and a misspelled
  * field had no effect; a delete {@code limit} other than 0 or 1 meant "every match". Each is now refused naming the field, as
  * {@code createIndexes} refuses the index options it cannot honour (issue #11446).
+ * <p>
+ * Issue #12625: {@code insert} and the fields around the specifications of {@code createIndexes} were left out, and the census
+ * here could not tell, since it ranged over the tables of {@link MongoCommandFields} rather than over the commands
+ * {@link MongoDBDatabaseWrapper#handleCommand} dispatches. It now ranges over the dispatch.
  *
  * @author robfrank (ro.franchini@gmail.com)
  */
@@ -70,6 +82,8 @@ class Issue11778MongoIgnoredCommandFieldsTest extends BaseMongoServerTest {
   private MongoDatabase             mongoDatabase;
   private MongoCollection<Document> collection;
   private int                       created;
+  /** The collection the {@code insert} and the {@code createIndexes} of the census write to. */
+  private String                    writesTo = "censusAccepted";
 
   @Override
   public void setTestConfiguration() {
@@ -339,6 +353,91 @@ class Issue11778MongoIgnoredCommandFieldsTest extends BaseMongoServerTest {
   }
 
   // ---------------------------------------------------------------------------------------------------------------------------
+  // issue #12625: insert and createIndexes were dispatched and never checked
+  // ---------------------------------------------------------------------------------------------------------------------------
+
+  @Test
+  void insertRefusesAFieldItWouldIgnoreWithNothingInserted() {
+    final List<Document> documents = List.of(new Document("_id", 10).append("name", "new"));
+
+    assertUnknownField(new Document("insert", "c").append("documents", documents).append("bogusOption", true), "insert.bogusOption");
+    assertUnknownField(new Document("insert", "neverCreated").append("documents", documents).append("bogusOption", true),
+        "insert.bogusOption");
+    // a field of another command is unknown to this one
+    assertUnknownField(new Document("insert", "c").append("documents", documents).append("collation", CASE_INSENSITIVE), "insert.collation");
+    assertRefused(new Document("insert", "c").append("documents", documents).append("isTimeseriesNamespace", true), BAD_VALUE,
+        "isTimeseriesNamespace");
+    assertRefused(new Document("insert", "c").append("documents", documents).append("stmtIds", List.of(1)), BAD_VALUE, "stmtIds");
+    // the command is refused, not its first document: there is no writeErrors to read an "ok" around
+    assertThatThrownBy(() -> mongoDatabase.runCommand(new Document("insert", "c").append("documents", documents).append("ordered", false)
+        .append("bogusOption", true))).isInstanceOfSatisfying(MongoCommandException.class,
+        e -> assertThat(e.getResponse().containsKey("writeErrors")).isFalse());
+
+    assertThat(collection.countDocuments()).isEqualTo(2);
+    assertThat(serverDatabase().getSchema().existsType("neverCreated")).isFalse();
+
+    // an unsupported field that asks for its default asks for nothing
+    assertThat(mongoDatabase.runCommand(new Document("insert", "c").append("documents", documents).append("isTimeseriesNamespace", false)
+        .append("collectionUUID", null).append("bypassDocumentValidation", true).append("ordered", true)
+        .append("writeConcern", new Document("w", 1)).append("comment", "issue 12625").append("maxTimeMS", 60_000)).get("n")).isEqualTo(1);
+    assertThat(collection.countDocuments()).isEqualTo(3);
+  }
+
+  @Test
+  void createIndexesRefusesAFieldOfTheCommandItWouldIgnoreWithNothingCreated() {
+    final List<Document> indexes = List.of(new Document("key", new Document("name", 1)).append("name", "name_1"));
+
+    assertUnknownField(new Document("createIndexes", "c").append("indexes", indexes).append("bogusOption", true),
+        "createIndexes.bogusOption");
+    assertUnknownField(new Document("createIndexes", "neverCreated").append("indexes", indexes).append("bogusOption", true),
+        "createIndexes.bogusOption");
+    assertRefused(new Document("createIndexes", "c").append("indexes", indexes).append("commitQuorum", "majority"), BAD_VALUE,
+        "commitQuorum");
+    assertRefused(new Document("createIndexes", "neverCreated").append("indexes", indexes).append("commitQuorum", 2), BAD_VALUE,
+        "commitQuorum");
+    // asks for the options of a specification the plugin refuses (issue #11446) to be dropped instead
+    assertRefused(new Document("createIndexes", "c").append("indexes", indexes).append("ignoreUnknownIndexOptions", true), BAD_VALUE,
+        "ignoreUnknownIndexOptions");
+
+    assertThat(serverDatabase().getSchema().existsType("neverCreated")).isFalse();
+    assertThat(indexedProperties("c")).doesNotContain(List.of("name"));
+
+    assertOk(new Document("createIndexes", "c").append("indexes", indexes).append("ignoreUnknownIndexOptions", false)
+        .append("writeConcern", new Document("w", 1)).append("comment", "issue 12625").append("maxTimeMS", 60_000));
+    assertThat(indexedProperties("c")).contains(List.of("name"));
+  }
+
+  /** What the helpers of a driver send, the documents of an insert as a document sequence of the OP_MSG among them. */
+  @Test
+  void theDriverInsertAndCreateIndexHelpersStillWork() {
+    collection.insertMany(List.of(new Document("_id", 10).append("name", "ten"), new Document("_id", 11).append("name", "eleven")),
+        new InsertManyOptions().ordered(false).bypassDocumentValidation(true));
+    collection.insertOne(new Document("_id", 12).append("name", "twelve"), new InsertOneOptions().bypassDocumentValidation(false));
+    assertThat(collection.bulkWrite(List.of(new InsertOneModel<>(new Document("_id", 13)), new InsertOneModel<>(new Document("_id", 14))))
+        .getInsertedCount()).isEqualTo(2);
+    assertThat(collection.countDocuments()).isEqualTo(7);
+
+    assertThat(collection.createIndex(new Document("name", 1), new IndexOptions().background(true))).isEqualTo("name_1");
+    assertThat(collection.createIndexes(List.of(new IndexModel(new Document("arr", 1))), new CreateIndexOptions().maxTime(1, TimeUnit.MINUTES)))
+        .containsExactly("arr_1");
+    assertThat(indexedProperties("c")).contains(List.of("name"), List.of("arr"));
+  }
+
+  private List<List<String>> indexedProperties(final String type) {
+    final List<List<String>> properties = new ArrayList<>();
+    for (final TypeIndex index : serverDatabase().getSchema().getType(type).getAllIndexes(false))
+      properties.add(index.getPropertyNames());
+    return properties;
+  }
+
+  private void assertUnknownField(final Document command, final String path) {
+    assertThatThrownBy(() -> mongoDatabase.runCommand(command)).as("%s", command).isInstanceOfSatisfying(MongoCommandException.class, e -> {
+      assertThat(e.getErrorCode()).as("%s", command).isEqualTo(UNKNOWN_FIELD);
+      assertThat(e.getErrorMessage()).as("%s", command).contains("BSON field '" + path + "' is an unknown field");
+    });
+  }
+
+  // ---------------------------------------------------------------------------------------------------------------------------
   // the census: every field of every table, sent over the wire
   // ---------------------------------------------------------------------------------------------------------------------------
 
@@ -361,13 +460,28 @@ class Issue11778MongoIgnoredCommandFieldsTest extends BaseMongoServerTest {
     documented.put("create", List.of("create", "capped", "timeseries", "expireAfterSeconds", "clusteredIndex", "changeStreamPreAndPostImages",
         "autoIndexId", "size", "max", "storageEngine", "validator", "validationLevel", "validationAction", "indexOptionDefaults", "viewOn",
         "pipeline", "collation", "writeConcern", "encryptedFields", "comment", "$db", "lsid"));
+    documented.put("insert", List.of("insert", "documents", "ordered", "maxTimeMS", "writeConcern", "bypassDocumentValidation", "comment",
+        "$db", "lsid", "txnNumber"));
+    documented.put("createIndexes", List.of("createIndexes", "indexes", "writeConcern", "commitQuorum", "comment", "maxTimeMS", "$db",
+        "lsid"));
     return documented;
   }
 
   @Test
   void everyDocumentedFieldIsEitherAppliedOrRefusedByNameNeverUnknown() {
     final Map<String, List<String>> documented = documentedFields();
-    assertThat(MongoCommandFields.contexts()).as("the commands MongoCommandFields has a table for")
+    // the authority is the dispatch, not the tables: a command handleCommand routes and no table knows is the defect of issue #12625
+    final Set<String> dispatched = MongoDBDatabaseWrapper.commands();
+    // the scan still reaches the dispatch of MongoDBDatabaseWrapper.handleCommand
+    assertThat(dispatched).as("MongoDBDatabaseWrapper.commands(): the commands handleCommand dispatches")
+        .contains("find", "count", "aggregate", "update", "delete", "create", "insert", "createIndexes");
+    assertThat(MongoCommandFields.contexts()).as("every command handleCommand dispatches has a table in MongoCommandFields")
+        .containsAll(dispatched);
+    assertThat(commandsOf(MongoCommandFields.contexts())).as("a table of MongoCommandFields no dispatched command reads is dead")
+        .containsExactlyInAnyOrderElementsOf(dispatched);
+    assertThat(commandsOf(documented.keySet())).as("the commands this test lists the documented fields of")
+        .containsExactlyInAnyOrderElementsOf(dispatched);
+    assertThat(MongoCommandFields.contexts()).as("the commands and statements MongoCommandFields has a table for")
         .containsExactlyInAnyOrderElementsOf(documented.keySet());
     // the scan still reaches the options of the report
     assertThat(MongoCommandFields.unsupported("find")).as("MongoCommandFields: the unsupported fields of find")
@@ -438,6 +552,8 @@ class Issue11778MongoIgnoredCommandFieldsTest extends BaseMongoServerTest {
     values.put("expireAfterSeconds", 60);
     values.put("encryptedFields", new Document("fields", List.of()));
     values.put("flags", 1);
+    values.put("commitQuorum", "majority");
+    values.put("ignoreUnknownIndexOptions", true);
     return values;
   }
 
@@ -472,6 +588,12 @@ class Issue11778MongoIgnoredCommandFieldsTest extends BaseMongoServerTest {
     values.put("u", new Document("$set", new Document("x", 1)));
     values.put("multi", true);
     values.put("upsert", false);
+    // the collection is the one with() names
+    values.put("insert", "c");
+    values.put("createIndexes", "c");
+    values.put("documents", List.of(new Document("a", 1), new Document("a", 2)));
+    values.put("indexes", List.of(new Document("key", new Document("b", 1)).append("name", "b_1")));
+    values.put("v", 2);
     return values;
   }
 
@@ -481,7 +603,18 @@ class Issue11778MongoIgnoredCommandFieldsTest extends BaseMongoServerTest {
     final Map<String, Object> refused = refusedValues();
     int sent = 0;
 
-    for (final String context : MongoCommandFields.contexts()) {
+    // the commands handleCommand dispatches, and the statements of the ones that have statements
+    final Set<String> dispatched = MongoDBDatabaseWrapper.commands();
+    final List<String> contexts = new ArrayList<>(dispatched);
+    for (final String context : MongoCommandFields.contexts())
+      if (context.contains(".") && dispatched.contains(context.substring(0, context.indexOf('.'))))
+        contexts.add(context);
+    // the scan still reaches the dispatch of MongoDBDatabaseWrapper.handleCommand, the two commands of issue #12625 included
+    assertThat(contexts).as("MongoDBDatabaseWrapper.commands() and the statements of MongoCommandFields")
+        .contains("find", "insert", "createIndexes", "update.updates", "delete.deletes");
+
+    for (final String context : contexts) {
+      writesTo = "censusAccepted";
       for (final String field : MongoCommandFields.accepted(context)) {
         final String what = context + "." + field;
         if (!"create".equals(field))
@@ -489,6 +622,7 @@ class Issue11778MongoIgnoredCommandFieldsTest extends BaseMongoServerTest {
         assertThat(mongoDatabase.runCommand(with(context, field, accepted.get(field))).get("ok")).as(what).isEqualTo(1.0);
         ++sent;
       }
+      writesTo = "censusRefused";
       for (final String field : MongoCommandFields.unsupported(context)) {
         final String what = context + "." + field;
         assertThat(refused).as("a value to send for the unsupported field '%s'", what).containsKey(field);
@@ -504,8 +638,12 @@ class Issue11778MongoIgnoredCommandFieldsTest extends BaseMongoServerTest {
 
     // the scan still reaches MongoCommandFields: the fields of the report, and far more than a handful
     assertThat(sent).as("fields of MongoCommandFields sent over the wire").isGreaterThan(100);
-    // a refused command ran nothing
+    // a refused command ran nothing: no document inserted, no collection and no index created by the ones that create them
     assertThat(collection.countDocuments()).isEqualTo(2);
+    assertThat(serverDatabase().getSchema().existsType("censusRefused")).isFalse();
+    // while the accepted ones ran: every insert stored its document, every createIndexes built its index
+    assertThat(mongoDatabase.getCollection("censusAccepted").countDocuments()).isEqualTo(MongoCommandFields.accepted("insert").size());
+    assertThat(indexedProperties("censusAccepted")).contains(List.of("a"));
   }
 
   /** The generic arguments are the ones a driver adds on its own: none may be refused, on any command. */
@@ -516,9 +654,7 @@ class Issue11778MongoIgnoredCommandFieldsTest extends BaseMongoServerTest {
         "autocommit", "startTransaction", "readConcern", "writeConcern", "apiVersion", "apiStrict", "apiDeprecationErrors", "comment",
         "maxTimeMS");
 
-    for (final String context : MongoCommandFields.contexts()) {
-      if (context.contains("."))
-        continue;
+    for (final String context : MongoDBDatabaseWrapper.commands()) {
       final de.bwaldvogel.mongo.bson.Document command = new de.bwaldvogel.mongo.bson.Document(context, "c");
       for (final String argument : generic)
         command.put(argument, 1);
@@ -547,8 +683,27 @@ class Issue11778MongoIgnoredCommandFieldsTest extends BaseMongoServerTest {
       case "delete.deletes" -> new Document("delete", "c").append("deletes", List.of(deleteEntry.append(field, value)));
       // a new name each time: a refused create must not be answered "already exists" instead
       case "create" -> "create".equals(field) ? new Document("create", "census" + created++) : new Document("create", "census" + created++).append(field, value);
+      // "insert", "documents" and "createIndexes", "indexes" are the fields of the base command itself
+      case "insert" -> {
+        final Document command = new Document("insert", writesTo).append("documents", List.of(new Document("a", 1)));
+        yield "insert".equals(field) || "documents".equals(field) ? command : command.append(field, value);
+      }
+      case "createIndexes" -> {
+        final Document command = new Document("createIndexes", writesTo).append("indexes",
+            List.of(new Document("key", new Document("a", 1)).append("name", "a_1")));
+        yield "createIndexes".equals(field) || "indexes".equals(field) ? command : command.append(field, value);
+      }
       default -> throw new IllegalArgumentException(context);
     };
+  }
+
+  /** The commands among the contexts of the tables: a statement of a write ({@code update.updates}) is not one. */
+  private static Set<String> commandsOf(final Set<String> contexts) {
+    final Set<String> commands = new HashSet<>();
+    for (final String context : contexts)
+      if (!context.contains("."))
+        commands.add(context);
+    return commands;
   }
 
   private void assertOk(final Document command) {

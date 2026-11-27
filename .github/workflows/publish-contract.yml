@@ -6,11 +6,17 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to publish contract artifacts for (e.g. 26.9.1)"
+        description: "Release tag to publish contract artifacts for (e.g. 26.9.1). Dispatch from main: the attestation's signer identity must be refs/heads/main, any other ref is refused"
         required: true
 
 permissions:
   contents: read
+
+# One run per tag at a time: two overlapping runs would each replace the assets, and `attest-contract` could then
+# attest the other run's upload. A second run for the tag waits instead of cancelling the first mid-upload.
+concurrency:
+  group: publish-contract-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
 
 jobs:
   publish:
@@ -24,7 +30,18 @@ jobs:
     env:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
       ROOT_PASSWORD: contractfetch
+      # Where mvn-release.yml pushed the JVM image: arcadedata, or a fork's scratch namespace during a rehearsal.
+      DOCKER_NAMESPACE: ${{ vars.DOCKER_NAMESPACE || 'arcadedata' }}
     steps:
+      # A manual recovery is dispatched from main (`tag` selects the release). From any other branch `attest-contract`
+      # would sign with that branch's identity, which every verifier rejects, after this job had already replaced the
+      # release's assets: the release would end up with contract files and no provenance anyone accepts.
+      - name: Refuse a dispatch from a ref other than main
+        if: ${{ github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main' }}
+        run: |
+          echo "::error::dispatch publish-contract.yml from main (got ${GITHUB_REF}); 'tag' selects the release" >&2
+          exit 1
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.release.tag_name || inputs.tag }}
@@ -33,7 +50,7 @@ jobs:
         run: |
           docker run -d --name arcadedb-contract -p 127.0.0.1:2480:2480 \
             -e ARCADEDB_SETTINGS="-Darcadedb.server.rootPassword=$ROOT_PASSWORD" \
-            "arcadedata/arcadedb:$TAG"
+            "${DOCKER_NAMESPACE}/arcadedb:$TAG"
 
       - name: Wait for readiness
         run: |
@@ -83,3 +100,46 @@ jobs:
       - name: Stop the server
         if: always()
         run: docker rm -f arcadedb-contract || true
+
+  # Separate job on purpose: the publish job builds and runs code from the tag, and a job that runs such code must
+  # never hold id-token or attestations, or that code could mint a certificate that matches our signer identity.
+  # This job has no checkout and runs nothing but gh, sha256sum and the pinned attest action.
+  attest-contract:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    defaults:
+      run:
+        shell: bash
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      # Attest what is actually on the release, not a local copy, so the provenance subject is the published bytes.
+      - name: Download the published contract files
+        run: |
+          mkdir contract
+          cd contract
+          gh release download "$TAG" --pattern "arcadedb-openapi-$TAG.json"
+          gh release download "$TAG" --pattern "arcadedb-openapi-$TAG.json.sha256"
+          gh release download "$TAG" --pattern "arcadedb-server-$TAG.proto"
+          gh release download "$TAG" --pattern "arcadedb-server-$TAG.proto.sha256"
+
+      # A corrupted or swapped asset would otherwise get a valid attestation.
+      - name: Verify the files against their checksums
+        run: |
+          cd contract
+          sha256sum -c "arcadedb-openapi-$TAG.json.sha256"
+          sha256sum -c "arcadedb-server-$TAG.proto.sha256"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            contract/arcadedb-openapi-${{ github.event.release.tag_name || inputs.tag }}.json
+            contract/arcadedb-server-${{ github.event.release.tag_name || inputs.tag }}.proto

@@ -1851,4 +1851,89 @@ class BucketChunkChainTest {
       return recordPositionInPage == 0 ? 0 : page.readNumber(recordPositionInPage);
     }
   }
+
+  /**
+   * Issue #12370: the walk of a multi-page record keeps each chunk until it assembles the record into a buffer of its exact
+   * size. A chunk is kept as the view of its page only when it fills at least half of the array that view holds: a view of a
+   * small chunk would keep its whole page reachable until the walk ends, even once the page cache has evicted the page.
+   */
+  // #12370
+  @Nested
+  class MultiPageRecordKeepsItsChunks extends TestHelper {
+    private static final int PAGE = 65_536;
+
+    @Test
+    void aChunkFillingLittleOfItsPageIsCopiedOut() {
+      final byte[] page = pageOfDistinctBytes();
+      final Binary view = new Binary(page).slice(1_000, 100);
+
+      final Binary kept = LocalBucket.keptChunk(view);
+
+      assertThat(kept).isNotSameAs(view);
+      assertThat(kept.getContent()).hasSize(100);
+      assertThat(kept.toByteArray()).isEqualTo(Arrays.copyOfRange(page, 1_000, 1_100));
+    }
+
+    @Test
+    void aChunkFillingAtLeastHalfOfItsPageIsKeptAsItsView() {
+      final Binary half = new Binary(pageOfDistinctBytes()).slice(0, PAGE / 2);
+      final Binary ownArray = new Binary(new byte[100]);
+
+      assertThat(LocalBucket.keptChunk(half)).isSameAs(half);
+      assertThat(LocalBucket.keptChunk(ownArray)).as("a view that is already a copy of its chunk").isSameAs(ownArray);
+    }
+
+    @Test
+    void aRecordOfSeveralPagesReadsBackWhole() {
+      readsBackWholeIntoAnExactBuffer(270_000);
+    }
+
+    /**
+     * The regression test of the defect itself: the buffer a multi-page record is assembled into holds the record and nothing
+     * else. Appended chunk by chunk to a buffer that grows by half at each overflow, it ended with the spare capacity of its
+     * last growth, and the read had allocated and copied the record about three times over on the way there.
+     */
+    @Test
+    void aRecordOfSeveralPagesIsAssembledIntoABufferOfItsExactSize() {
+      // NOT A MULTIPLE OF THE ALLOCATION CHUNK, SO NO GROWTH LANDS ON THE EXACT SIZE BY CHANCE
+      readsBackWholeIntoAnExactBuffer(270_001);
+    }
+
+    @Test
+    void aRecordOfManyChunksGrowsTheKeptChunksAndReadsBackWhole() {
+      // MORE CHUNKS THAN THE EIGHT THE WALK KEEPS ROOM FOR AT FIRST
+      readsBackWholeIntoAnExactBuffer(800_003);
+    }
+
+    private void readsBackWholeIntoAnExactBuffer(final int payloadLength) {
+      final StringBuilder payload = new StringBuilder(payloadLength + 16);
+      for (int i = 0; payload.length() < payloadLength; i++)
+        payload.append(i).append(',');
+      payload.setLength(payloadLength);
+      final String expected = payload.toString();
+
+      database.getSchema().createDocumentType("Big", 1);
+      final RID[] rid = new RID[1];
+      database.transaction(() -> rid[0] = database.newDocument("Big").set("payload", expected).save().getIdentity());
+
+      database.transaction(() -> {
+        final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(rid[0].getBucketId());
+        final Binary record = bucket.getRecord(rid[0]);
+
+        assertThat(record.size()).as("the record spans pages, so it was read as a chunk chain").isGreaterThan(payloadLength);
+        assertThat(record.getContentSize()).as("the buffer is the size of the record, with no spare capacity")
+            .isEqualTo(record.size());
+        assertThat(record.position()).isZero();
+
+        assertThat(database.lookupByRID(rid[0], true).asDocument().getString("payload")).isEqualTo(expected);
+      });
+    }
+
+    private static byte[] pageOfDistinctBytes() {
+      final byte[] page = new byte[PAGE];
+      for (int i = 0; i < page.length; i++)
+        page[i] = (byte) (i * 31);
+      return page;
+    }
+  }
 }

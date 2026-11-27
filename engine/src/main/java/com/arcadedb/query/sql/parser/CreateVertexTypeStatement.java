@@ -20,6 +20,7 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
@@ -31,6 +32,11 @@ public class CreateVertexTypeStatement extends CreateTypeAbstractStatement {
   @Override
   protected String commandType() {
     return "create vertex type";
+  }
+
+  @Override
+  protected byte newTypeRecordKind() {
+    return Vertex.RECORD_TYPE;
   }
 
   @Override

@@ -26,6 +26,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import com.arcadedb.query.sql.parser.Expression;
+import com.arcadedb.query.sql.parser.SuffixIdentifier;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
@@ -186,7 +187,8 @@ public abstract class AbstractProperty implements Property {
 
     final Database database = owner.getSchema().getEmbedded().getDatabase();
     try {
-      final Object result = current.expression().execute((Record) null, new BasicCommandContext().setDatabase(database));
+      // A record attribute has no record to be read from here and must fail, not answer the null it answers a planner
+      final Object result = current.expression().execute((Record) null, new DefaultValueContext().setDatabase(database));
       return Type.convert(database, result, type.javaDefaultType);
     } catch (Exception e) {
       // Reported, not swallowed: the expression was accepted at DDL time because it parses, so a failure here is a real
@@ -199,6 +201,18 @@ public abstract class AbstractProperty implements Property {
   }
 
   /**
+   * The context a default value is evaluated in. It answers {@link SuffixIdentifier#RECORD_ATTRIBUTE_NEEDS_RECORD}, so a
+   * record attribute in the default is refused instead of read as null. Answered by the class and not stored with
+   * {@code setCachedValue}, which would allocate a map for every record created.
+   */
+  private static final class DefaultValueContext extends BasicCommandContext {
+    @Override
+    protected Object getCachedValueFromParentHierarchy(final String key) {
+      return SuffixIdentifier.RECORD_ATTRIBUTE_NEEDS_RECORD.equals(key) ? Boolean.TRUE : super.getCachedValueFromParentHierarchy(key);
+    }
+  }
+
+  /**
    * Compiles a default value into the SQL {@link Expression} that {@link #getDefaultValue()} evaluates on every record
    * create, rejecting - at DDL time, once - the shapes that could only ever produce garbage (issue #6134):
    * <ul>
@@ -207,6 +221,9 @@ public abstract class AbstractProperty implements Property {
    * <li>a bare identifier, which is a field reference: the default expression is always evaluated against a
    * {@code null} record, so it can never resolve and silently yielded {@code null} forever. {@code DEFAULT active} is
    * the obvious thing to type for a literal, and has to be written {@code DEFAULT 'active'}.</li>
+   * <li>a default written as literals alone that cannot be converted to the property's type ({@code INTEGER DEFAULT 'dflt'},
+   * {@code DATE DEFAULT 'notadate'}), which failed every record create of the type (issue #12040). A default that calls a
+   * function is evaluated per record, and stays a per-record question.</li>
    * </ul>
    * While the schema is still hydrating from {@code schema.json} this never throws: an existing database whose schema
    * already holds an invalid default must still open. Such a default is logged as a warning and left uncompiled, which
@@ -225,6 +242,8 @@ public abstract class AbstractProperty implements Property {
 
     Expression compiled = null;
     String reason = null;
+    // set when the default compiles but its value cannot be converted: the load path words its warning for that case
+    boolean unconvertible = false;
     try {
       compiled = new SQLAntlrParser(database).parseExpression(text);
       if (compiled.isBaseIdentifier())
@@ -233,6 +252,18 @@ public abstract class AbstractProperty implements Property {
     } catch (Exception e) {
       // A cause with no message contributes nothing, so it is left off rather than rendered as a trailing ": null".
       reason = "it cannot be parsed as an SQL expression" + (e.getMessage() == null ? "" : ": " + e.getMessage());
+    }
+
+    // A default written as literals alone ('dflt', 42, null, arithmetic over them) has the one value every record would get, so it is
+    // converted to the property's type now: one that cannot be converted used to fail every record create of the type with a 500
+    // (issue #12040). A default calling a function (sysdate()) is evaluated per record and stays a per-record question.
+    if (reason == null && compiled.isLiteral()) {
+      try {
+        requireConvertible(compiled, database);
+      } catch (final Exception e) {
+        unconvertible = true;
+        reason = "it cannot be converted to the property type " + type + (e.getMessage() == null ? "" : ": " + e.getMessage());
+      }
     }
 
     if (reason == null)
@@ -250,12 +281,29 @@ public abstract class AbstractProperty implements Property {
     // Schema load: never block the database from opening over a default an earlier release accepted.
     LogManager.instance().log(this, Level.WARNING, message + (compiled == null ?
         ". Every new record will keep receiving the expression's own source text as its value" :
-        ". Every new record will keep leaving the property unset"));
+        unconvertible ?
+            ". Every new record of the type will keep being refused until the default is changed with ALTER PROPERTY" :
+            ". Every new record will keep leaving the property unset"));
 
     // Lenient path only - the strict one threw above - and `compiled` carries the outcome of the two rejection kinds:
     // a bare identifier compiled, and keeping it preserves the null it has always evaluated to; an unparseable one is
     // null here, which is what makes getDefaultValue() fall back to the source text.
     return compiled;
+  }
+
+  /**
+   * Evaluates a literal default and converts the value the way a record create does, so a value the property cannot hold is
+   * found now and not on every record (issue #12040). A record create converts it twice: {@link #getDefaultValue()} to the
+   * default class of the type, then the record's {@code set()} to the class the property is stored as, which is also where the
+   * {@code OF} type of a collection applies ({@code MutableDocument.convertValueToSchemaType}). Both are asked here, in that
+   * order, with the same calls.
+   *
+   * @throws RuntimeException the one a record create would raise
+   */
+  private void requireConvertible(final Expression literal, final Database database) {
+    final Object value = Type.convert(database, literal.execute((Record) null, new BasicCommandContext().setDatabase(database)),
+        type.javaDefaultType);
+    Type.convert(database, value, type.getJavaImplementation(database), this);
   }
 
   /**

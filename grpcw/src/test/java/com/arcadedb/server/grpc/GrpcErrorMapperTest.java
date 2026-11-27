@@ -18,19 +18,28 @@
  */
 package com.arcadedb.server.grpc;
 
+import com.arcadedb.database.RID;
+import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.ArithmeticErrorException;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSemanticException;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.exception.DatabaseNotFoundException;
+import com.arcadedb.exception.DatabaseOperationInProgressException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.exception.TypeAlreadyExistsException;
+import com.arcadedb.exception.UnknownFunctionException;
+import com.arcadedb.exception.ValidationException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
+import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.HAServerPlugin;
+import com.arcadedb.server.ServerControlPlane;
 import io.grpc.Metadata;
 import io.grpc.Status;
 import io.grpc.StatusException;
@@ -40,9 +49,12 @@ import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.List;
 import java.util.concurrent.ExecutionException;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * Unit tests for the server-side exception -> gRPC Status mapping (issue #5043). No server needed.
@@ -441,5 +453,298 @@ class GrpcErrorMapperTest {
     assertThat(se.getStatus().getDescription()).contains("10.0.0.7:2480");
     assertThat(callerTrailers.get(Metadata.Key.of("caller-own-trailer", Metadata.ASCII_STRING_MARSHALLER)))
         .isEqualTo("kept");
+  }
+
+  /*
+   * A leader-only refusal names the leader wherever it is raised (issue #6183). Until now only
+   * {@code graphBatchLoad} built the redirect trailers, by hand; an engine-raised refusal - a schema change the
+   * replicated database rejects on a follower - reached the client as a bare retryable conflict, so a caller could
+   * not tell "the leader is unknown, wait for the election" from "the leader is known and nobody told you".
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  // Regression: #6183
+  @Test
+  @DisplayName("A leader refusal maps to FAILED_PRECONDITION, not the ABORTED its NeedRetryException ancestry implies")
+  void leaderRefusalIsNotRetryableAsIs() {
+    final StatusRuntimeException sre = GrpcErrorMapper.toStatusRuntimeException(
+        new ServerIsNotTheLeaderException("schema changes must run on the leader", null), "ExecuteCommand",
+        ha("localhost:50051", "localhost:2480"));
+
+    // ABORTED would invite the caller to retry the same call against the same follower, forever.
+    assertThat(sre.getStatus().getCode()).isEqualTo(Status.Code.FAILED_PRECONDITION);
+    assertThat(sre.getTrailers().get(GrpcErrorMapper.EXCEPTION_CLASS_KEY))
+        .isEqualTo(ServerIsNotTheLeaderException.class.getName());
+  }
+
+  // Regression: #6183
+  @Test
+  @DisplayName("Both leader addresses are advertised, and the dialable one is the one the message names")
+  void bothAddressesAreAdvertised() {
+    final StatusRuntimeException sre = GrpcErrorMapper.toStatusRuntimeException(
+        new ServerIsNotTheLeaderException("schema changes must run on the leader", null), "ExecuteCommand",
+        ha("db0:50051", "db0:2480"));
+
+    final Metadata trailers = sre.getTrailers();
+    assertThat(trailers.get(LeaderRedirectProtocol.LEADER_GRPC_ADDRESS)).isEqualTo("db0:50051");
+    assertThat(trailers.get(LeaderRedirectProtocol.LEADER_HTTP_ADDRESS)).isEqualTo("db0:2480");
+    assertThat(sre.getStatus().getDescription())
+        .startsWith("ExecuteCommand: schema changes must run on the leader")
+        .contains("'db0:50051' (gRPC address)");
+  }
+
+  // Regression: #6183
+  @Test
+  @DisplayName("With no resolvable gRPC address the HTTP one is named, with the port caveat")
+  void httpAddressIsTheFallback() {
+    final StatusRuntimeException sre = GrpcErrorMapper.toStatusRuntimeException(
+        new ServerIsNotTheLeaderException("schema changes must run on the leader", null), "ExecuteCommand",
+        ha(null, "db0:2480"));
+
+    final Metadata trailers = sre.getTrailers();
+    assertThat(trailers.get(LeaderRedirectProtocol.LEADER_GRPC_ADDRESS)).isNull();
+    assertThat(trailers.get(LeaderRedirectProtocol.LEADER_HTTP_ADDRESS)).isEqualTo("db0:2480");
+    assertThat(sre.getStatus().getDescription()).contains("'db0:2480' (HTTP address; use its gRPC port)");
+  }
+
+  // Regression: #6183
+  @Test
+  @DisplayName("A refusal raised mid-election names nothing and says so")
+  void anUnknownLeaderIsReportedAsUnknown() {
+    final StatusRuntimeException sre = GrpcErrorMapper.toStatusRuntimeException(
+        new ServerIsNotTheLeaderException("schema changes must run on the leader", null), "ExecuteCommand",
+        ha(null, null));
+
+    final Metadata trailers = sre.getTrailers();
+    assertThat(trailers.get(LeaderRedirectProtocol.LEADER_GRPC_ADDRESS)).isNull();
+    assertThat(trailers.get(LeaderRedirectProtocol.LEADER_HTTP_ADDRESS)).isNull();
+    assertThat(sre.getStatus().getDescription()).contains("The leader is currently unknown");
+  }
+
+  // Regression: #6183
+  /**
+   * The ambiguity guard of issue #6183 answers null rather than an address that may be this very node's. The
+   * refusal must then degrade to the HTTP address, never to "the leader is unknown" - it is known, only not
+   * dialable over gRPC.
+   */
+  @Test
+  @DisplayName("A suppressed routing table degrades to the HTTP address, not to an unknown leader")
+  void aSuppressedRoutingTableStillNamesTheLeader() {
+    final HAServerPlugin ha = mock(HAServerPlugin.class);
+    when(ha.getRoutingTable(HAServerPlugin.ROUTING_PROTOCOL.GRPC)).thenReturn(null);
+    when(ha.getLeaderAddress()).thenReturn("db0:2480");
+    when(ha.getLeaderForRefusal()).thenCallRealMethod();
+
+    final StatusRuntimeException sre = GrpcErrorMapper.toStatusRuntimeException(
+        new ServerIsNotTheLeaderException("schema changes must run on the leader", null), "ExecuteCommand", ha);
+
+    assertThat(sre.getTrailers().get(LeaderRedirectProtocol.LEADER_HTTP_ADDRESS)).isEqualTo("db0:2480");
+    assertThat(sre.getStatus().getDescription()).doesNotContain("currently unknown");
+  }
+
+  // Regression: #6183
+  /**
+   * The engine builds the refusal with the leader's HTTP address already in it. Where no plugin is in reach the
+   * mapper still has that much to report, rather than dropping it on the floor.
+   */
+  @Test
+  @DisplayName("Without an HA plugin the address the exception carries is still advertised")
+  void theExceptionsOwnAddressIsTheLastResort() {
+    final StatusRuntimeException sre = GrpcErrorMapper.toStatusRuntimeException(
+        new ServerIsNotTheLeaderException("schema changes must run on the leader", "db0:2480"), "ExecuteCommand");
+
+    assertThat(sre.getStatus().getCode()).isEqualTo(Status.Code.FAILED_PRECONDITION);
+    assertThat(sre.getTrailers().get(LeaderRedirectProtocol.LEADER_HTTP_ADDRESS)).isEqualTo("db0:2480");
+  }
+
+  // Regression: #6183
+  /** A blank address is what "resolved to nothing" looks like coming out of the cluster; it is not an address. */
+  @Test
+  @DisplayName("Blank addresses are treated as absent")
+  void blankAddressesAreNotAdvertised() {
+    final StatusRuntimeException sre = GrpcErrorMapper.toStatusRuntimeException(
+        new ServerIsNotTheLeaderException("schema changes must run on the leader", "  "), "ExecuteCommand",
+        ha("  ", ""));
+
+    final Metadata trailers = sre.getTrailers();
+    assertThat(trailers.get(LeaderRedirectProtocol.LEADER_GRPC_ADDRESS)).isNull();
+    assertThat(trailers.get(LeaderRedirectProtocol.LEADER_HTTP_ADDRESS)).isNull();
+    assertThat(sre.getStatus().getDescription()).contains("The leader is currently unknown");
+  }
+
+  private static HAServerPlugin ha(final String grpcWriter, final String httpLeader) {
+    final HAServerPlugin ha = mock(HAServerPlugin.class);
+    when(ha.getRoutingTable(HAServerPlugin.ROUTING_PROTOCOL.GRPC)).thenReturn(
+        new HAServerPlugin.RoutingTable(HAServerPlugin.ROUTING_PROTOCOL.GRPC, grpcWriter, List.of()));
+    when(ha.getLeaderAddress()).thenReturn(httpLeader);
+    // The leader as a refusal names it (issue #10066) is a default method of the interface, which a mock does not run
+    when(ha.getLeaderForRefusal()).thenCallRealMethod();
+    return ha;
+  }
+
+  /*
+   * A SQL {@code BACKUP DATABASE} or {@code IMPORT DATABASE} refused by the per-database maintenance slot reaches a
+   * gRPC client as {@code ABORTED}, not {@code INTERNAL} (issue #7443).
+   * <p>
+   * The two gRPC surfaces answer it through different code. The admin service's own RPCs - {@code TriggerBackup},
+   * {@code RestoreBackup}, {@code RestoreDatabase}, {@code ImportDatabase} - go through
+   * {@code ArcadeDbGrpcAdminService.toStatusException}; a SQL statement goes through {@code ExecuteCommand} on the
+   * other service and so through {@link GrpcErrorMapper}. Both now match the engine's
+   * {@link DatabaseOperationInProgressException}, which is what makes the two agree: the request is well formed and
+   * authorized, and retrying once the other operation finishes is the fix.
+   *
+   * @author Roberto Franchini (r.franchini@arcadedata.com)
+   */
+  // Regression: #7443
+  @Test
+  void aRefusedSqlMaintenanceStatementMapsToAbortedRatherThanInternal() {
+    final StatusRuntimeException sre = GrpcErrorMapper.toStatusRuntimeException(
+        new DatabaseOperationInProgressException("Cannot back up database 'db': a restore of it is already in progress"),
+        "ExecuteCommand");
+
+    assertThat(sre.getStatus().getCode()).isEqualTo(Status.Code.ABORTED);
+    assertThat(sre.getStatus().getDescription()).contains("a restore of it is already in progress");
+    assertThat(sre.getTrailers().get(GrpcErrorMapper.EXCEPTION_CLASS_KEY))
+        .isEqualTo(DatabaseOperationInProgressException.class.getName());
+  }
+
+  // Regression: #7443
+  /**
+   * The server's own control-plane refusal is the same refusal, and it keeps the {@code ABORTED} it has had since
+   * #7384 now that its type extends the engine's - on this mapper too, not only on the admin service's.
+   */
+  @Test
+  void theServersOwnRefusalKeepsTheSameStatusThroughTheSameArm() {
+    final StatusRuntimeException sre = GrpcErrorMapper.toStatusRuntimeException(
+        new ServerControlPlane.OperationInProgressException(
+            "Cannot restore database 'db': a backup of it is already in progress"),
+        "RestoreDatabase");
+
+    assertThat(sre.getStatus().getCode()).isEqualTo(Status.Code.ABORTED);
+  }
+
+  /*
+   * Issue #7760 on the gRPC transport: production mode replaces the {@code arcadedb-dup-keys} trailer's value with the same
+   * placeholder HTTP uses (the key values are stored data) and keeps the class and index-name trailers, the same decision the HTTP
+   * {@code exceptionArgs} takes ({@code HttpErrorStatusMappingTest.DuplicatedKeyConcealment}).
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  private static final String SECRET = "alice@example.com";
+
+  private static DuplicatedKeyException duplicate() {
+    return new DuplicatedKeyException("User[email]", "[" + SECRET + "]", new RID(3, 7));
+  }
+
+  // Regression: #7760
+  @Test
+  void productionModeReplacesTheKeysTrailerAndKeepsTheIndex() {
+    final StatusRuntimeException sre = GrpcErrorMapper.toStatusRuntimeException(duplicate(), "ExecuteCommand", null, true);
+
+    assertThat(sre.getStatus().getCode()).isEqualTo(Status.Code.ALREADY_EXISTS);
+    assertThat(new String(Base64.getDecoder().decode(sre.getTrailers().get(GrpcErrorMapper.DUP_KEYS_KEY)), StandardCharsets.UTF_8))
+        .isEqualTo(ArcadeDBServer.CONCEALED_DUPLICATED_KEYS);
+    assertThat(sre.getStatus().getDescription()).doesNotContain(SECRET);
+    assertThat(sre.getTrailers().get(GrpcErrorMapper.EXCEPTION_CLASS_KEY)).isEqualTo(DuplicatedKeyException.class.getName());
+    assertThat(new String(Base64.getDecoder().decode(sre.getTrailers().get(GrpcErrorMapper.DUP_INDEX_KEY)), StandardCharsets.UTF_8))
+        .isEqualTo("User[email]");
+  }
+
+  // Regression: #7760
+  @Test
+  void developmentModeKeepsTheKeysTrailer() {
+    final StatusRuntimeException sre = GrpcErrorMapper.toStatusRuntimeException(duplicate(), "ExecuteCommand", null, false);
+
+    assertThat(new String(Base64.getDecoder().decode(sre.getTrailers().get(GrpcErrorMapper.DUP_KEYS_KEY)), StandardCharsets.UTF_8))
+        .isEqualTo("[" + SECRET + "]");
+  }
+
+  /*
+   * Issue #10153 on the gRPC data plane: a {@code CREATE} on a taken name was {@code INTERNAL} (a {@code CommandExecutionException})
+   * or {@code NOT_FOUND} (a {@code SchemaException} - the opposite of what happened). It is {@code ALREADY_EXISTS} now, named in the
+   * class trailer as a {@link SchemaException}, its supertype, so a client that predates {@link AlreadyExistsException} rebuilds a
+   * SchemaException rather than reading the status as a duplicate key, and with the kind in a trailer of its own.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  // Regression: #10153
+  @Test
+  void aTakenNameIsAlreadyExistsWithTheKindTrailer() {
+    final StatusRuntimeException sre = GrpcErrorMapper.toStatusRuntimeException(
+        new AlreadyExistsException(AlreadyExistsException.Kind.PROPERTY, "Property 'V.p' already exists"), "Command failed");
+
+    assertThat(sre.getStatus().getCode()).isEqualTo(Status.Code.ALREADY_EXISTS);
+    final Metadata trailers = sre.getTrailers();
+    assertThat(trailers.get(GrpcErrorMapper.EXCEPTION_CLASS_KEY)).isEqualTo(SchemaException.class.getName());
+    assertThat(trailers.get(GrpcErrorMapper.ALREADY_EXISTS_KIND_KEY)).isEqualTo("PROPERTY");
+    assertThat(trailers.get(GrpcErrorMapper.DUP_INDEX_KEY)).as("not a duplicate key").isNull();
+    assertThat(sre.getStatus().getDescription()).contains("Property 'V.p' already exists");
+  }
+
+  // Regression: #10153
+  @Test
+  void aWrappedTakenNameIsNamedAsTheConflictNotAsTheWrapper() {
+    final StatusRuntimeException sre = GrpcErrorMapper.toStatusRuntimeException(
+        new CommandExecutionException("Error on executing the script", new TypeAlreadyExistsException("V")), null);
+
+    assertThat(sre.getStatus().getCode()).isEqualTo(Status.Code.ALREADY_EXISTS);
+    assertThat(sre.getTrailers().get(GrpcErrorMapper.EXCEPTION_CLASS_KEY)).isEqualTo(SchemaException.class.getName());
+    assertThat(sre.getTrailers().get(GrpcErrorMapper.ALREADY_EXISTS_KIND_KEY)).isEqualTo("TYPE");
+  }
+
+  // Regression: #10153
+  @Test
+  void productionModeKeepsTheLabelOfTheConflict() {
+    final StatusRuntimeException sre = GrpcErrorMapper.toStatusRuntimeException(
+        new AlreadyExistsException(AlreadyExistsException.Kind.MATERIALIZED_VIEW, "Materialized view 'secret_name' already exists"),
+        null, null, true);
+
+    assertThat(sre.getStatus().getDescription()).isEqualTo("Materialized view already exists");
+  }
+
+  // Regression: #10153
+  @Test
+  void aMissingTypeStaysNotFound() {
+    final StatusRuntimeException sre = GrpcErrorMapper.toStatusRuntimeException(new SchemaException("Type 'X' was not found"), null);
+
+    assertThat(sre.getStatus().getCode()).isEqualTo(Status.Code.NOT_FOUND);
+    assertThat(sre.getTrailers().get(GrpcErrorMapper.ALREADY_EXISTS_KIND_KEY)).isNull();
+  }
+
+  /*
+   * Issue #11314 on gRPC: a value a declared constraint refuses carries the constraint in a trailer, as a taken name carries the
+   * kind of object holding it (#10153), so the client rebuilds the {@link ValidationException} with its kind; and a call of an
+   * unknown SQL function is the caller's {@code INVALID_ARGUMENT}, where it was the {@code INTERNAL} of a server fault.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  // Regression: #11314
+  @Test
+  void aViolatedConstraintIsInvalidArgumentWithTheKindTrailer() {
+    final StatusRuntimeException sre = GrpcErrorMapper.toStatusRuntimeException(new CommandExecutionException("Error on executing",
+        new ValidationException(ValidationException.Kind.NOT_NULL, "The property 'T.p' cannot be null")), "Command failed");
+
+    assertThat(sre.getStatus().getCode()).isEqualTo(Status.Code.INVALID_ARGUMENT);
+    assertThat(sre.getTrailers().get(GrpcErrorMapper.EXCEPTION_CLASS_KEY)).isEqualTo(ValidationException.class.getName());
+    assertThat(sre.getTrailers().get(GrpcErrorMapper.VALIDATION_KIND_KEY)).isEqualTo("NOT_NULL");
+  }
+
+  // Regression: #11314
+  @Test
+  void aRefusalOfNoDeclaredConstraintCarriesNoKind() {
+    final StatusRuntimeException sre = GrpcErrorMapper.toStatusRuntimeException(new ValidationException("refused"), null);
+
+    assertThat(sre.getStatus().getCode()).isEqualTo(Status.Code.INVALID_ARGUMENT);
+    assertThat(sre.getTrailers().get(GrpcErrorMapper.VALIDATION_KIND_KEY)).isNull();
+  }
+
+  // Regression: #11314
+  @Test
+  void anUnknownFunctionIsInvalidArgument() {
+    final StatusRuntimeException sre = GrpcErrorMapper.toStatusRuntimeException(
+        new UnknownFunctionException("foo", "Unknown function name 'foo'"), null);
+
+    assertThat(sre.getStatus().getCode()).isEqualTo(Status.Code.INVALID_ARGUMENT);
+    assertThat(sre.getTrailers().get(GrpcErrorMapper.EXCEPTION_CLASS_KEY)).isEqualTo(UnknownFunctionException.class.getName());
   }
 }

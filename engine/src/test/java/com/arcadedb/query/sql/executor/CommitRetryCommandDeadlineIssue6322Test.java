@@ -22,7 +22,10 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.exception.ErrorCategory;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.exception.TransactionException;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import org.junit.jupiter.api.AfterEach;
@@ -201,6 +204,37 @@ class CommitRetryCommandDeadlineIssue6322Test extends TestHelper {
 
     assertThat(rows).isEqualTo(0);
     assertThat(ATTEMPTS.get()).isEqualTo(3);
+  }
+
+  /**
+   * Issue #13251: an attempt that committed part of its work (a {@code BATCH} boundary) before the deadline passed reports the
+   * deadline without the conflict as its cause, because the error classification finds a {@code NeedRetryException} anywhere
+   * along the chain and tells the client to retry, which would apply the committed batches again.
+   */
+  @Test
+  void anExpiredDeadlineAfterAPartialCommitIsNotReportedAsRetryable() {
+    database.transaction(() -> {
+      for (int i = 0; i < 25; i++)
+        database.newDocument("Attempt").set("n", 0).save();
+    });
+    database.getConfiguration().setValue(GlobalConfiguration.COMMAND_TIMEOUT, 300L);
+    burnMillis = 900;
+
+    assertThatThrownBy(() -> database.command("sqlscript", """
+        BEGIN;
+        UPDATE Attempt SET n = n + 1 BATCH 10;
+        SELECT boom6322();
+        COMMIT RETRY 10;
+        """))
+        .isInstanceOf(TimeoutException.class)
+        .hasMessageContaining(GlobalConfiguration.COMMAND_TIMEOUT.getKey())
+        .satisfies(e -> {
+          assertThat(ErrorCategory.of(e)).isEqualTo(ErrorCategory.TIMEOUT);
+          assertThat(e.getCause()).isInstanceOf(TransactionException.class).isNotInstanceOf(NeedRetryException.class);
+          assertThat(e.getCause().getSuppressed()).hasAtLeastOneElementOfType(ConcurrentModificationException.class);
+        });
+
+    assertThat(ATTEMPTS.get()).isEqualTo(1);
   }
 
   private static String script(final int retries) {
