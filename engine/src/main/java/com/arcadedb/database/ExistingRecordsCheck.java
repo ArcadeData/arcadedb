@@ -123,6 +123,27 @@ public final class ExistingRecordsCheck {
    * the type.
    */
   public static void requireDeclaration(final Database db, final DocumentType type, final Property property) {
+    requireDeclaration(db, type, property, "Cannot create property '" + type.getName() + "." + property.getName() + "'",
+        "Fix or delete the non-conforming records first");
+  }
+
+  /**
+   * The declaration a rename moves to the new name, held to what the records store under it (issue #12930). A rename relabels the
+   * schema and leaves every value under the old name (#7589), so a MANDATORY property of a type with records, or a constraint a
+   * value already stored under the new name breaks, would leave records violating it, each of them refused at its next update.
+   *
+   * @param renamed the property as it would be after the rename, carrying the new name and every constraint of the old one. Asked
+   *                before the rename changes anything, so it must be a copy that did not register the new name in the dictionary
+   *                (a commit of its own that a refusal would leave behind, issues #12958, #13092)
+   */
+  public static void requireRename(final Database db, final DocumentType type, final String oldName, final Property renamed) {
+    requireDeclaration(db, type, renamed, "Cannot rename property '" + type.getName() + "." + oldName + "' to '" + renamed.getName() + "'",
+        "A rename leaves the values under '" + oldName + "': copy them first (UPDATE `" + type.getName() + "` SET `" + renamed.getName()
+            + "` = `" + oldName + "`), or fix or delete the non-conforming records");
+  }
+
+  private static void requireDeclaration(final Database db, final DocumentType type, final Property property, final String refused,
+      final String remedy) {
     final DocumentValidator.StoredValueConstraints constraints = DocumentValidator.StoredValueConstraints.of(db, property);
     // Nothing a stored record holds can violate this declaration (e.g. a plain LINK with no flags): skip the full read
     if (!property.isMandatory() && !property.isNotNull() && !constraints.canBeViolatedOn(property))
@@ -135,11 +156,11 @@ public final class ExistingRecordsCheck {
       final DocumentValidator.ExistenceConstraint unmet = DocumentValidator.unmetExistenceConstraint(document, property);
       if (unmet != null)
         throw new ValidationException(kindOf(unmet),
-            createRefusal(type, property, document, DocumentValidator.describeUnmetExistenceConstraint(document, property)));
+            refusal(refused, document, DocumentValidator.describeUnmetExistenceConstraint(document, property), remedy));
       try {
         DocumentValidator.validateStoredValue(document, property, constraints);
       } catch (final ValidationException e) {
-        throw new ValidationException(e.getKind(), createRefusal(type, property, document, e.getMessage()), e);
+        throw new ValidationException(e.getKind(), refusal(refused, document, e.getMessage(), remedy), e);
       }
     }
   }
@@ -299,10 +320,8 @@ public final class ExistingRecordsCheck {
         + " violates the properties it would inherit, " + reason + ". Fix or delete the non-conforming records first";
   }
 
-  private static String createRefusal(final DocumentType type, final Property property, final Document document,
-      final String reason) {
-    return "Cannot create property '" + type.getName() + "." + property.getName() + "': record " + document.getIdentity()
-        + " violates it, " + reason + ". Fix or delete the non-conforming records first";
+  private static String refusal(final String refused, final Document document, final String reason, final String remedy) {
+    return refused + ": record " + document.getIdentity() + " violates it, " + reason + ". " + remedy;
   }
 
   private static ValidationException.Kind kindOf(final DocumentValidator.ExistenceConstraint unmet) {
