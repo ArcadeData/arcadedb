@@ -19,8 +19,12 @@
 package com.arcadedb.server.grpc;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Database;
 import com.arcadedb.exception.QueryTerminatedException;
+import com.arcadedb.graph.GraphBatch;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.RunningQuery;
+import com.arcadedb.query.sql.executor.ResultSet;
 import io.grpc.CallOptions;
 import io.grpc.Channel;
 import io.grpc.ClientCall;
@@ -33,6 +37,7 @@ import io.grpc.Metadata;
 import io.grpc.MethodDescriptor;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
+import io.grpc.stub.ServerCallStreamObserver;
 import io.grpc.stub.StreamObserver;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -42,6 +47,7 @@ import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiConsumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -253,6 +259,153 @@ public class GrpcStreamingLoadRunningQueryIT extends BaseGrpcServerTest {
     assertThat(next.error.get()).isNull();
     assertThat(next.last.get().getVerticesCreated()).isEqualTo(1);
     awaitNotListed("GraphBatchLoad");
+  }
+
+  // Regression: #13163
+  /**
+   * Issue #13163: the edges a terminated load had already flushed were committed, counted on the trailer, and reachable from no
+   * vertex: the batch was dropped with neither their incoming side connected nor the head pointers of their vertices written. The
+   * termination now only closes the call, and the batch is dropped on the call's own thread, which finishes those edges and does
+   * not write the one still buffered.
+   */
+  @Test
+  void aTerminatedGraphBatchLoadKeepsTheEdgesItFlushedWhole() throws Exception {
+    final Database db = getServer(0).getDatabaseForOperator(getDatabaseName());
+    db.command("sql", "CREATE VERTEX TYPE Node13163 IF NOT EXISTS");
+    db.command("sql", "CREATE EDGE TYPE Link13163 IF NOT EXISTS");
+
+    final Outcome<GraphBatchResult> outcome = new Outcome<>();
+    final StreamObserver<GraphBatchChunk> stream = asyncStub.graphBatchLoad(outcome);
+    final GraphBatchChunk.Builder chunk = GraphBatchChunk.newBuilder().setDatabase(getDatabaseName()).setCredentials(credentials())
+        .setOptions(GraphBatchOptions.newBuilder().setBatchSize(2));
+    for (int i = 0; i < 4; i++)
+      chunk.addRecords(vertex("Node13163", "e" + i));
+    // The buffer of two is full at the second edge: both are written, the third stays buffered while the load waits
+    chunk.addRecords(edge("Link13163", "e0", "e1")).addRecords(edge("Link13163", "e1", "e2")).addRecords(edge("Link13163", "e2", "e3"));
+    stream.onNext(chunk.build());
+
+    final RunningQuery entry = awaitListed("GraphBatchLoad");
+    await().atMost(Duration.ofSeconds(30)).until(() -> count("Link13163") == 2);
+    entry.terminate("root");
+    final StatusRuntimeException error = outcome.assertTerminated();
+    assertThat(error.getTrailers().get(GraphBatchProtocol.RESULT_TRAILER).getEdgesCreated())
+        .as("the two flushed edges, not the buffered one").isEqualTo(2);
+    // The entry goes once the batch was dropped and the flushed edges finished
+    assertThat(entry.awaitEnd(30_000)).isTrue();
+
+    assertThat(count("Link13163")).as("the buffered edge was not written").isEqualTo(2);
+    db.transaction(() -> {
+      assertThat(degree(db, "e0", Vertex.DIRECTION.OUT)).as("e0 -> e1 reachable from e0").isEqualTo(1);
+      assertThat(degree(db, "e1", Vertex.DIRECTION.IN)).as("e0 -> e1 reachable from e1").isEqualTo(1);
+      assertThat(degree(db, "e1", Vertex.DIRECTION.OUT)).as("e1 -> e2 reachable from e1").isEqualTo(1);
+      assertThat(degree(db, "e2", Vertex.DIRECTION.IN)).as("e1 -> e2 reachable from e2").isEqualTo(1);
+      assertThat(degree(db, "e2", Vertex.DIRECTION.OUT)).as("the buffered e2 -> e3 was dropped").isZero();
+    });
+    awaitNotListed("GraphBatchLoad");
+  }
+
+  /**
+   * Issue #13163: a termination between two chunks only closes the call, and the batch is dropped by the call's next
+   * callback. When the client has already half-closed and the status never reaches it, the transport reports no close: the
+   * half-close is the last callback of the call, and it must drop the batch, or the database keeps its single-batch slot
+   * taken and the edges the load flushed stay unreachable.
+   */
+  @Test
+  void aLoadTerminatedBetweenChunksIsDroppedByTheHalfCloseWhenNoCloseIsReported() throws Exception {
+    assertTheTerminatedLoadIsDroppedBy("HalfClosed13163", (request, call) -> request.onCompleted());
+  }
+
+  /** The same when the call is reported cancelled instead: the status could not be delivered, and nothing else follows. */
+  @Test
+  void aLoadTerminatedBetweenChunksIsDroppedByTheCancellationWhenNoCloseIsReported() throws Exception {
+    assertTheTerminatedLoadIsDroppedBy("Cancelled13163", (request, call) -> call.cancelHandler.run());
+  }
+
+  private void assertTheTerminatedLoadIsDroppedBy(final String suffix,
+      final BiConsumer<StreamObserver<GraphBatchChunk>, CallWithoutCloseHandler> lastCallback) throws Exception {
+    final String node = "Node" + suffix;
+    final String link = "Link" + suffix;
+    final Database db = getServer(0).getDatabaseForOperator(getDatabaseName());
+    db.command("sql", "CREATE VERTEX TYPE " + node + " IF NOT EXISTS");
+    db.command("sql", "CREATE EDGE TYPE " + link + " IF NOT EXISTS");
+
+    // Driven directly, on this thread: the callbacks of the call are the test's to choose, and no close is ever reported
+    final ArcadeDbGrpcService service = new ArcadeDbGrpcService(getDatabaseName(), getServer(0));
+    try {
+      final CallWithoutCloseHandler call = new CallWithoutCloseHandler();
+      final StreamObserver<GraphBatchChunk> request = service.graphBatchLoad(call);
+      final GraphBatchChunk.Builder chunk = GraphBatchChunk.newBuilder().setDatabase(getDatabaseName()).setCredentials(credentials())
+          .setOptions(GraphBatchOptions.newBuilder().setBatchSize(2));
+      for (int i = 0; i < 4; i++)
+        chunk.addRecords(vertex(node, "e" + i));
+      // The buffer of two is full at the second edge: both are written, the third stays buffered while the load waits
+      chunk.addRecords(edge(link, "e0", "e1")).addRecords(edge(link, "e1", "e2")).addRecords(edge(link, "e2", "e3"));
+      request.onNext(chunk.build());
+      assertThat(call.error.get()).as("the chunk was accepted").isNull();
+      assertThat(count(link)).isEqualTo(2);
+
+      final RunningQuery entry = findListed("GraphBatchLoad");
+      assertThat(entry).as("the load is listed").isNotNull();
+      entry.terminate("root");
+      assertThat(call.error.get()).as("the termination closed the call").isNotNull();
+
+      lastCallback.accept(request, call);
+
+      // The batch was given back: the database takes the next one
+      try (final GraphBatch next = db.batch().build()) {
+        assertThat(next).isNotNull();
+      }
+      assertThat(entry.awaitEnd(30_000)).isTrue();
+
+      assertThat(count(link)).as("the buffered edge was not written").isEqualTo(2);
+      db.transaction(() -> {
+        assertThat(degree(db, node, link, "e0", Vertex.DIRECTION.OUT)).as("e0 -> e1 reachable from e0").isEqualTo(1);
+        assertThat(degree(db, node, link, "e1", Vertex.DIRECTION.IN)).as("e0 -> e1 reachable from e1").isEqualTo(1);
+        assertThat(degree(db, node, link, "e1", Vertex.DIRECTION.OUT)).as("e1 -> e2 reachable from e1").isEqualTo(1);
+        assertThat(degree(db, node, link, "e2", Vertex.DIRECTION.IN)).as("e1 -> e2 reachable from e2").isEqualTo(1);
+        assertThat(degree(db, node, link, "e2", Vertex.DIRECTION.OUT)).as("the buffered e2 -> e3 was dropped").isZero();
+      });
+    } finally {
+      service.close();
+    }
+  }
+
+  /**
+   * The server side of a call that takes no close handler, as the abstract observer does by default, and whose other
+   * callbacks are run by the test: the cancel handler is kept for it.
+   */
+  private static final class CallWithoutCloseHandler extends ServerCallStreamObserver<GraphBatchResult> {
+    final AtomicReference<Throwable> error         = new AtomicReference<>();
+    Runnable                         cancelHandler = () -> {
+    };
+
+    @Override public void onNext(final GraphBatchResult value) { }
+    @Override public void onError(final Throwable t) { error.compareAndSet(null, t); }
+    @Override public void onCompleted() { }
+
+    @Override public boolean isCancelled() { return false; }
+    @Override public void setOnCancelHandler(final Runnable onCancelHandler) { cancelHandler = onCancelHandler; }
+    @Override public void setCompression(final String compression) { }
+    @Override public boolean isReady() { return true; }
+    @Override public void setOnReadyHandler(final Runnable onReadyHandler) { }
+    @Override public void request(final int count) { }
+    @Override public void setMessageCompression(final boolean enable) { }
+    @Override public void disableAutoInboundFlowControl() { }
+  }
+
+  private static long degree(final Database db, final String name, final Vertex.DIRECTION direction) {
+    return degree(db, "Node13163", "Link13163", name, direction);
+  }
+
+  private static long degree(final Database db, final String node, final String link, final String name,
+      final Vertex.DIRECTION direction) {
+    try (final ResultSet rs = db.query("sql", "SELECT FROM " + node + " WHERE name = ?", name)) {
+      return rs.next().getVertex().orElseThrow().countEdges(direction, link);
+    }
+  }
+
+  private static GraphBatchRecord edge(final String type, final String from, final String to) {
+    return GraphBatchRecord.newBuilder().setKind(GraphBatchRecord.Kind.EDGE).setTypeName(type).setFromRef(from).setToRef(to).build();
   }
 
   @Test

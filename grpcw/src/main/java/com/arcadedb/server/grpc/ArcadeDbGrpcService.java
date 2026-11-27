@@ -3465,27 +3465,33 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     // Issue #9875: listed by "list queries" from the first chunk to the end of the stream, and stopped by "terminate query"
     final StreamingLoadEntry entry = new StreamingLoadEntry(runningQueries(), "GraphBatchLoad");
-    // Ends a terminated load: the batch is dropped like after any other failure - what it flushed stays committed, and
-    // the trailers say how much - and the entry goes. Idempotent: whatever runs it next finds no batch left, and the
-    // synchronized observer drops a second terminal call. Never under a
-    // running chunk (the termination listener runs it only between two), so it reads the stream's state safely
+    // Ends a terminated load: the batch is dropped like after any other failure - what it flushed stays committed and is
+    // finished into whole edges by abandon() (issue #13163), the trailers say how much - and the entry goes. Idempotent:
+    // whatever runs it next finds no batch left, and the synchronized observer drops a second terminal call. Runs on a
+    // thread of the call's own (a chunk, the half-close, the close, cancel or error callback), never under a running chunk's binding, so the
+    // commits of abandon() are not refused as part of the terminated statement
     final Runnable endTerminated = () -> {
       errorSent[0] = true;
       final GraphBatch abandoned = batchRef.getAndSet(null);
       try {
         if (abandoned != null)
           abandoned.abandon();
-        out.onError(graphBatchLoadError(entry.terminated(
-                "what it flushed before the termination stays committed (see the result trailer), the rest was dropped"),
-            partialCommitTrailer(abandoned, counts, tempIdMap, startedAt), ha(), conceal));
+        out.onError(terminatedLoadError(entry, abandoned, counts, tempIdMap, startedAt, conceal));
       } finally {
         entry.close();
       }
     };
 
+    // A load terminated between two chunks only had its call closed by the terminating thread (see entry.open below): the
+    // batch is dropped by whichever callback of the call comes next, and the close handler is only one of them. The status
+    // of a call the client has already half-closed may never reach it, and then the transport reports a cancellation
+    // and no close; a batch left behind there would keep the database's single-batch slot and its relaxed settings until
+    // the restart (the #5666 class of leak)
     call.setOnCancelHandler(() -> {
       cancelled.set(true);
       out.markTerminated();
+      if (entry.isTerminated())
+        endTerminated.run();
     });
     setOnCloseHandler(call, () -> {
       if (entry.isTerminated())
@@ -3508,6 +3514,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         // Bound for the chunk: the commits of the flushes it triggers obey a termination, and the termination listener
         // leaves a running chunk alone
         final StreamingLoadEntry.Bound bound = entry.enter();
+        Exception failure = null;
         try {
           // Terminated between the check above and the lock: the finally below ends the load
           if (entry.isTerminated())
@@ -3571,8 +3578,15 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             batchRef.set(batch);
 
             // Once the database has authenticated the caller: the entry names who runs the load, and where
+            // Between two chunks the termination only closes the call: abandon() writes what the batch flushed (issue
+            // #13163), which must not block the terminating thread nor run inside a transaction it may hold. The close
+            // handler drops the batch on the call's thread as soon as the transport reports the call closed, and the
+            // entry stays listed until then. The trailer is the same either way: abandon() writes no edge of its own
             entry.open(db.getName(), resolvedUsername(chunk.getCredentials()), null, () -> "GraphBatchLoad",
-                () -> entry.runIfIdle(endTerminated));
+                () -> entry.runIfIdle(() -> {
+                  errorSent[0] = true;
+                  out.onError(terminatedLoadError(entry, batchRef.get(), counts, tempIdMap, startedAt, conceal));
+                }));
           }
 
           // Process records in this chunk
@@ -3608,21 +3622,25 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           }
         } catch (final Exception e) {
           errorSent[0] = true;
-          // Null batchRef so onCompleted skips processing; skip closeQuietly to avoid blocking the
-          // gRPC thread via async.waitCompletion() (buffered edges have no open transaction). The batch
-          // still has to hand its slot back, or one failed load would stop the database batching for good.
-          final GraphBatch abandoned = batchRef.getAndSet(null);
-          if (abandoned != null)
-            abandoned.abandon();
-          // What the batch already flushed is committed and stays committed: report it on the trailers so the
-          // caller can reconcile instead of re-sending a load that is partly in the database already. The
-          // abandoned batch is still the one holding the flushed-edge count, and abandon() drops what was
-          // buffered without touching what it had already committed.
-          final Metadata trailers = partialCommitTrailer(abandoned, counts, tempIdMap, startedAt);
-          out.onError(graphBatchLoadError(e, trailers, ha(), conceal));
-          return;
+          // Handled below, once the chunk's binding is closed
+          failure = e;
         } finally {
           bound.close();
+          if (failure != null) {
+            // Null batchRef so onCompleted skips processing. The batch is abandoned rather than closed, so the edges
+            // still buffered are dropped and not written by a load that failed; abandon() still finishes the edges
+            // an earlier flush committed (issue #13163), and hands the slot back, or one failed load would stop the
+            // database batching for good. After the binding is closed: on a terminated load the commits of that
+            // finishing pass would otherwise be refused as part of the terminated statement.
+            final GraphBatch abandoned = batchRef.getAndSet(null);
+            if (abandoned != null)
+              abandoned.abandon();
+            // What the batch already flushed is committed and stays committed: report it on the trailers so the
+            // caller can reconcile instead of re-sending a load that is partly in the database already. The
+            // abandoned batch is still the one holding the flushed-edge count, and abandon() writes no edge of its own.
+            final Metadata trailers = partialCommitTrailer(abandoned, counts, tempIdMap, startedAt);
+            out.onError(graphBatchLoadError(failure, trailers, ha(), conceal));
+          }
           // Requested while the chunk ran: the load ends here. endTerminated sets errorSent, so no chunk is asked for below
           if (entry.isTerminated())
             endTerminated.run();
@@ -3646,6 +3664,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       @Override
       public void onCompleted() {
         if (errorSent[0]) {
+          // Terminated between two chunks: the terminating thread closed the call and left the batch to the call's own
+          // thread, and this half-close may be the last callback that reaches it (no close is reported for a status the
+          // transport could not deliver). After a failed chunk there is no batch left and this drops nothing
+          if (entry.isTerminated())
+            endTerminated.run();
           entry.close();
           return;
         }
@@ -4485,6 +4508,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         .addAllUnreadableValues(report.unreadableValues())
         .setExecutionTimeMs(System.currentTimeMillis() - startedAt)
         .build();
+  }
+
+  /** What the client of a terminated {@code graphBatchLoad} is told, with the partial-commit counters of {@code batch} on the trailers. */
+  private StatusException terminatedLoadError(final StreamingLoadEntry entry, final GraphBatch batch, final long[] counts,
+      final Map<String, RID> tempIdMap, final long startedAt, final boolean conceal) {
+    return graphBatchLoadError(entry.terminated(
+            "what it flushed before the termination stays committed (see the result trailer), the rest was dropped"),
+        partialCommitTrailer(batch, counts, tempIdMap, startedAt), ha(), conceal);
   }
 
   /**
