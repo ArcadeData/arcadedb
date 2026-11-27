@@ -136,7 +136,6 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
       private TypeIndex index = null;
       /** The index is declared on a supertype, so its cursor carries records that are not of {@link #label}. */
       private boolean inheritedIndex = false;
-      /** The type of each column of {@link #index}, for the key a RID spelled as text is sought with (issue #11933). */
       private List<Object[]> seekKeys = null; // one key per value to seek (IN-list expands to N keys)
       private int seekIndex = 0;
       private boolean wholeKey = false;        // the key covers every index property: single-entry lookup

@@ -31,6 +31,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for issue #11933: openCypher's {@code =} reads a text that spells a RID against a number as the id {@code id()}
@@ -53,10 +54,14 @@ class CypherRidTextIndexSeekIssue11933Test extends TestHelper {
       database.command("sql", "CREATE VERTEX TYPE " + vertex);
       database.command("sql", "CREATE EDGE TYPE " + types[1]);
       database.command("sql", "CREATE PROPERTY " + types[1] + ".w LONG");
-      for (final String property : List.of("id LONG", "g LONG", "f DOUBLE", "i INTEGER", "s STRING", "a LONG", "b LONG"))
+      for (final String property : List.of("id LONG", "g LONG", "f DOUBLE", "i INTEGER", "s STRING", "a LONG", "b LONG", "d DECIMAL",
+          "sh SHORT", "bt BYTE"))
         database.command("sql", "CREATE PROPERTY " + vertex + "." + property);
     }
     database.command("sql", "CREATE INDEX ON P (id) UNIQUE");
+    database.command("sql", "CREATE INDEX ON P (d) NOTUNIQUE");
+    database.command("sql", "CREATE INDEX ON P (sh) NOTUNIQUE");
+    database.command("sql", "CREATE INDEX ON P (bt) NOTUNIQUE");
     database.command("sql", "CREATE INDEX ON P (g) NOTUNIQUE");
     database.command("sql", "CREATE INDEX ON P (f) NOTUNIQUE");
     database.command("sql", "CREATE INDEX ON P (i) NOTUNIQUE");
@@ -66,7 +71,8 @@ class CypherRidTextIndexSeekIssue11933Test extends TestHelper {
     database.transaction(() -> {
       for (final String[] types : new String[][] { { "P", "R" }, { "Q", "S" } }) {
         for (int n = 0; n < VERTICES; n++)
-          database.command("opencypher", "CREATE (:" + types[0] + " {id: $n, g: $g, f: $f, i: $n, s: $s, a: $a, b: $b})",
+          database.command("opencypher",
+              "CREATE (:" + types[0] + " {id: $n, g: $g, f: $f, i: $n, s: $s, a: $a, b: $b, d: $n, sh: $g, bt: $n})",
               Map.of("n", n, "g", n % 10, "f", n * 0.5, "s", n == 7 ? "#0:1" : "s" + n, "a", n % 4, "b", n % 3)).close();
         database.command("opencypher",
             "MATCH (x:" + types[0] + "), (y:" + types[0] + ") WHERE y.id = x.id + 1 CREATE (x)-[:" + types[1] + " {w: x.id}]->(y)")
@@ -89,6 +95,9 @@ class CypherRidTextIndexSeekIssue11933Test extends TestHelper {
       "MATCH (p:{V}) WHERE p.i = '#0:2' RETURN p.id AS v",
       "MATCH (p:{V}) WHERE p.f = '#0:1' RETURN p.id AS v",
       "MATCH (p:{V}) WHERE p.s = '#0:1' RETURN p.id AS v",
+      "MATCH (p:{V}) WHERE p.d = '#0:1' RETURN p.id AS v",
+      "MATCH (p:{V}) WHERE p.sh = '#0:2' RETURN p.id AS v",
+      "MATCH (p:{V}) WHERE p.bt IN ['#0:1', '#0:3'] RETURN p.id AS v",
       "MATCH (p:{V}) WHERE p.a = '#0:1' AND p.b = '#0:2' RETURN p.id AS v",
       "MATCH (p:{V}) WHERE p.a = '#0:1' RETURN p.id AS v",
       "MATCH (p:{V}) WHERE p.id = '#0:1' OR p.g = '#0:2' RETURN p.id AS v",
@@ -136,6 +145,30 @@ class CypherRidTextIndexSeekIssue11933Test extends TestHelper {
     }
   }
 
+  /**
+   * A pattern over several labels, or none, seeks each indexed type on its own (issue #12522): a RID spelled as text is not a key of
+   * a numeric index there, so the walk answers those types, with the same reading of {@code =} as the scan of {@code Q}.
+   */
+  @Test
+  void aPatternOverSeveralLabelsAnswersAsTheScan() {
+    assertThat(column("MATCH (p:P|Q) WHERE p.id = '#0:1' RETURN p.id AS v")).containsExactly(1L, 1L);
+    assertThat(column("MATCH (p) WHERE p.id = '#0:1' RETURN p.id AS v")).containsExactly(1L, 1L);
+    assertThat(column("MATCH (p:P|Q) WHERE p.id IN ['#0:1', '#0:2'] RETURN p.id AS v")).containsExactly(1L, 1L, 2L, 2L);
+    assertThat(column("MATCH (p) WHERE p.id IN $ids RETURN p.id AS v")).containsExactly(1L, 1L, 2L, 2L, 3L, 3L);
+    assertThat(column("MATCH (p) WHERE p.g = '#0:1' RETURN p.id AS v")).hasSize(8);
+  }
+
+  /**
+   * A RID text whose bucket does not fit the bits {@code id()} reserves for it cannot stand for an id: the comparison of the scan
+   * refuses it, and so does the seek, rather than answering no row where the scan raises.
+   */
+  @Test
+  void aRidTextNoIdEncodesIsRefusedByTheSeekAsByTheScan() {
+    for (final String label : List.of("P", "Q"))
+      assertThatThrownBy(() -> column("MATCH (p:" + label + ") WHERE p.id = '#70000:1' RETURN p.id AS v")).as(label)
+          .hasStackTraceContaining("Cannot encode RID");
+  }
+
   /** The text stands for the id it encodes, compared as any number is: a FLOAT is not truncated to an integer first. */
   @Test
   void aFloatIsComparedWithTheIdAsANumber() {
@@ -158,6 +191,7 @@ class CypherRidTextIndexSeekIssue11933Test extends TestHelper {
     }
   }
 
+  @SuppressWarnings("unchecked")
   private List<Object> column(final String query) {
     final List<Object> values = new ArrayList<>();
     try (final ResultSet rs = database.query("opencypher", query, PARAMS)) {
