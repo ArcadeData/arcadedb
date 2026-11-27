@@ -19,7 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.MutableVertex;
 import org.junit.jupiter.api.Test;
 
@@ -71,6 +71,13 @@ class Issue12945MatchPathAliasReverseWalkTest extends TestHelper {
   }
 
   @Test
+  void aMaxDepthHopWalkedFromItsTargetReportsThePathToo() {
+    final String match = "MATCH {type: V, as: a}.out('A'){type: V, as: b, where: (id = 3), maxDepth: 2, pathAlias: p} RETURN a.id AS a, b.id AS b, p";
+    assertThat(explain(match)).contains("<----");
+    assertThat(rows(match)).containsExactly("1,3,[2, 3]", "2,3,[3]", "3,3,[]");
+  }
+
+  @Test
   void theDepthAliasIsTheSameFromEitherEnd() {
     assertThat(rows("MATCH {type: V, as: a}.in('A'){type: V, as: b, where: (id < 1), while: ($depth < 3), depthAlias: d} RETURN a.id AS a, b.id AS b, d"))
         .containsExactly("0,0,0", "1,0,1", "2,0,2", "3,0,3");
@@ -94,8 +101,11 @@ class Issue12945MatchPathAliasReverseWalkTest extends TestHelper {
           final Object value = row.getProperty(name);
           if (value instanceof List<?> list) {
             final List<Integer> ids = new ArrayList<>();
-            for (final Object item : list)
-              ids.add(database.lookupByRID(((Identifiable) item).getIdentity(), true).asVertex().getInteger("id"));
+            for (final Object item : list) {
+              // A FORWARD WALK REPORTS THE RIDS OF THE VERTICES IT CROSSED: A REVERSE WALK MUST NOT MIX A RECORD INTO THEM
+              assertThat(item).as("every element of the path is a RID, whichever end the walk started from").isInstanceOf(RID.class);
+              ids.add(database.lookupByRID((RID) item, true).asVertex().getInteger("id"));
+            }
             sb.append(ids);
           } else
             sb.append(value);
