@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
@@ -416,7 +417,7 @@ class DictionaryCompactorTest extends TestHelper {
     // round 1: the merge drops 2_400 rows; brand (0.6) and tags (0.6) are compacted
     deleteBrands(0, 1_200);
     FacetOracle.awaitCaughtUp(database);
-    manager().maintainForTesting(bucketId());
+    maintainAlone();
     assertThat(stats.mergeCount(TYPE)).isEqualTo(1);
     assertThat(stats.dictionaryCompactions(TYPE, "brand")).isEqualTo(1);
     assertThat(stats.dictionaryCompactions(TYPE, "tags")).isEqualTo(1);
@@ -425,7 +426,7 @@ class DictionaryCompactorTest extends TestHelper {
     // round 2, same minute: one record of every surviving brand deleted, tags reach 0.5 again, but the property was checked just now
     deleteOnePerBrand(1_200, 2_000, 0);
     FacetOracle.awaitCaughtUp(database);
-    manager().maintainForTesting(bucketId());
+    maintainAlone();
     assertThat(stats.mergeCount(TYPE)).isEqualTo(2);
     assertThat(DictionaryCompactor.deadOrdinalRatio(projection(), "tags")).isEqualTo(0.5);
     assertThat(stats.dictionaryCompactions(TYPE, "tags")).isEqualTo(1);
@@ -434,7 +435,7 @@ class DictionaryCompactorTest extends TestHelper {
     now[0] += TEN_MINUTES;
     deleteOnePerBrand(1_200, 1_600, 1);
     FacetOracle.awaitCaughtUp(database);
-    manager().maintainForTesting(bucketId());
+    maintainAlone();
     assertThat(stats.mergeCount(TYPE)).isEqualTo(3);
     assertThat(stats.dictionaryCompactions(TYPE, "tags")).isEqualTo(2);
     assertThat(stats.dictionaryOrdinalsReclaimed(TYPE, "tags")).isEqualTo(2_400 + 1_200);
@@ -485,6 +486,21 @@ class DictionaryCompactorTest extends TestHelper {
       for (int b = from; b < to; b++)
         database.deleteRecord(database.lookupByRID(byBrand.get(b).get(copy), true));
     });
+  }
+
+  /**
+   * One maintenance pass of the bucket with no job of the background pool beside it (#12763). A pool job holding the projection's
+   * maintenance slot (the first rank view rebuild: the frozen clock still lets the tick queue it) makes the flush of the pass skip, and
+   * the merge with it, or makes the compaction after the merge skip, which no later pass retries without a new merge that drops rows.
+   * So the apply passes, which are what queue the pool's jobs, are held (the running one is waited for) and the jobs they queued already
+   * are waited for: the pass is then the only maintenance of the projection.
+   */
+  private void maintainAlone() throws Exception {
+    try (final AutoCloseable ignored = manager().suspendApply()) {
+      Awaitility.await("the maintenance jobs the background pool queued end").atMost(HANG_MS, TimeUnit.MILLISECONDS)
+          .pollInterval(5, TimeUnit.MILLISECONDS).until(manager()::isMaintenanceIdleForTesting);
+      manager().maintainForTesting(bucketId());
+    }
   }
 
   /** Applies, flushes (dead sets persisted) and merges every segment into one, dropping the dead rows. */

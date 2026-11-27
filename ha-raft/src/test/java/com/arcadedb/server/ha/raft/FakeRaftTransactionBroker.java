@@ -114,9 +114,13 @@ public class FakeRaftTransactionBroker extends RaftTransactionBroker {
   public void replicateSchema(final String dbName, final String schemaJson, final Map<Integer, String> filesToAdd,
       final Map<Integer, String> filesToRemove, final List<byte[]> walEntries, final List<Map<Integer, Integer>> bucketDeltas,
       final List<RaftLogEntryCodec.TsSealedBlob> sealedFileBlobs, final List<RaftLogEntryCodec.TsSealedChunk> sealedFileChunks,
-      final SchemaDelta.Payload schemaDelta, final Map<Integer, String> filesToRename) {
+      final SchemaDelta.Payload schemaDelta, final Map<Integer, String> filesToRename, final Runnable onEntryCommitted) {
     call("replicateSchema", () -> null, dbName, schemaJson, filesToAdd, filesToRemove, walEntries, bucketDeltas,
-        sealedFileBlobs, sealedFileChunks, schemaDelta, filesToRename);
+        sealedFileBlobs, sealedFileChunks, schemaDelta, filesToRename, onEntryCommitted);
+    // An answer that returned is an entry that committed: a test that refuses a later entry of a split change runs the
+    // callback itself from its answer before it throws (issue #13437)
+    if (onEntryCommitted != null)
+      onEntryCommitted.run();
   }
 
   @Override
@@ -126,8 +130,10 @@ public class FakeRaftTransactionBroker extends RaftTransactionBroker {
 
   @Override
   public void replicateSchemaInstalment(final String dbName, final Map<Integer, String> filesToAdd,
-      final List<byte[]> walEntries, final List<Map<Integer, Integer>> bucketDeltas) {
-    call("replicateSchemaInstalment", () -> null, dbName, filesToAdd, walEntries, bucketDeltas);
+      final List<byte[]> walEntries, final List<Map<Integer, Integer>> bucketDeltas, final Runnable onEntryCommitted) {
+    call("replicateSchemaInstalment", () -> null, dbName, filesToAdd, walEntries, bucketDeltas, onEntryCommitted);
+    if (onEntryCommitted != null)
+      onEntryCommitted.run();
   }
 
   @Override

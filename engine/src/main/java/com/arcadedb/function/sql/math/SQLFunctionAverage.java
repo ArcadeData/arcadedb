@@ -173,4 +173,10 @@ public class SQLFunctionAverage extends SQLAggregatedFunction {
     // ALL OTHER NUMERIC TYPES AVERAGE AS A DOUBLE SO INTEGER/LONG SUMS ARE NOT TRUNCATED (e.g. avg(1, 2) -> 1.5).
     return iSum.doubleValue() / iTotal;
   }
+
+  /** Pure over its rows and arguments (issue #6190): a statement that holds the call keeps its execution plan. */
+  @Override
+  public boolean isDeterministic() {
+    return true;
+  }
 }

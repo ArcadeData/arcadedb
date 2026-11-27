@@ -104,6 +104,8 @@
         <maven-clean-plugin.version>3.5.0</maven-clean-plugin.version>
         <maven-dependency-plugin.version>3.11.0</maven-dependency-plugin.version>
         <maven-central-publishing-plugin.version>0.12.0</maven-central-publishing-plugin.version>
+        <cyclonedx-maven-plugin.version>2.9.3</cyclonedx-maven-plugin.version>
+        <exec-maven-plugin.version>3.6.4</exec-maven-plugin.version>
         <license-maven-plugin.version>5.1.2</license-maven-plugin.version>
         <maven-install-plugin.version>3.2.0</maven-install-plugin.version>
         <maven-enforcer-plugin.version>3.7.0</maven-enforcer-plugin.version>
@@ -830,6 +832,34 @@
                                 <id>attach-javadocs</id>
                                 <goals>
                                     <goal>jar</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <!-- Per-module CycloneDX SBOM, attached with classifier "cyclonedx" so it is GPG-signed and
+                             bundled by central-publishing like any other artifact. Without it, consumers of a
+                             published module cannot see its transitive dependencies without resolving them again. -->
+                        <groupId>org.cyclonedx</groupId>
+                        <artifactId>cyclonedx-maven-plugin</artifactId>
+                        <version>${cyclonedx-maven-plugin.version}</version>
+                        <configuration>
+                            <projectType>library</projectType>
+                            <schemaVersion>1.6</schemaVersion>
+                            <outputFormat>all</outputFormat>
+                            <includeTestScope>false</includeTestScope>
+                            <includeProvidedScope>false</includeProvidedScope>
+                            <includeSystemScope>false</includeSystemScope>
+                            <includeLicenseText>false</includeLicenseText>
+                            <skipNotDeployed>false</skipNotDeployed>
+                            <outputName>${project.build.finalName}-cyclonedx</outputName>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <id>make-sbom</id>
+                                <phase>package</phase>
+                                <goals>
+                                    <goal>makeBom</goal>
                                 </goals>
                             </execution>
                         </executions>

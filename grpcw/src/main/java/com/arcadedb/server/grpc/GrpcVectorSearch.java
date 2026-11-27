@@ -42,7 +42,7 @@ final class GrpcVectorSearch {
   private GrpcVectorSearch() {
   }
 
-  static VectorSearchResponse search(final Database database, final VectorSearchRequest request) {
+  static VectorSearchResponse search(final Database database, final VectorSearchRequest request, final GrpcEncodingBudget budget) {
     final JSONObject args = new JSONObject()
         .put("indexName", request.getIndexName())
         .put("queryVector", floats(request.getQueryVectorList()))
@@ -65,11 +65,12 @@ final class GrpcVectorSearch {
         .setCandidateLimit(result.getInt("candidateLimit", 0))
         .setTruncated(result.getBoolean("truncated", false))
         .setCount(result.getInt("count", 0))
-        .addAllResults(hits(result))
+        .addAllResults(hits(result, budget))
         .build();
   }
 
-  static HybridSearchResponse hybridSearch(final Database database, final HybridSearchRequest request) {
+  static HybridSearchResponse hybridSearch(final Database database, final HybridSearchRequest request,
+      final GrpcEncodingBudget budget) {
     final JSONObject args = new JSONObject()
         .put("vectorIndexName", request.getVectorIndexName())
         .put("queryVector", floats(request.getQueryVectorList()))
@@ -117,17 +118,18 @@ final class GrpcVectorSearch {
         .setFusionStrategy(result.getString("fusionStrategy", ""))
         .setTruncated(result.getBoolean("truncated", false))
         .setCount(result.getInt("count", 0))
-        .addAllResults(hits(result));
+        .addAllResults(hits(result, budget));
 
     final JSONObject legs = result.getJSONObject("legs", null);
     if (legs != null)
       for (final String leg : legs.keySet())
-        builder.putLegs(leg, GrpcTypeConverter.toGrpcValue(legs.get(leg)));
+        builder.putLegs(leg, GrpcTypeConverter.toGrpcValue(legs.get(leg), budget));
 
     return builder.build();
   }
 
-  static FullTextSearchResponse fullTextSearch(final Database database, final FullTextSearchRequest request) {
+  static FullTextSearchResponse fullTextSearch(final Database database, final FullTextSearchRequest request,
+      final GrpcEncodingBudget budget) {
     final JSONObject args = new JSONObject().put("queryText", request.getQueryText());
     if (!request.getIndexName().isEmpty())
       args.put("indexName", request.getIndexName());
@@ -144,7 +146,7 @@ final class GrpcVectorSearch {
         .setIndexName(result.getString("indexName", ""))
         .setSimilarity(result.getString("similarity", ""))
         .setCount(result.getInt("count", 0))
-        .addAllResults(hits(result))
+        .addAllResults(hits(result, budget))
         .build();
   }
 
@@ -154,7 +156,7 @@ final class GrpcVectorSearch {
    * them is present per hit and a client has to be able to tell "absent" from "zero" - a cosine distance of 0.0
    * is the best possible hit, not a missing one.
    */
-  private static List<SearchHit> hits(final JSONObject result) {
+  private static List<SearchHit> hits(final JSONObject result, final GrpcEncodingBudget budget) {
     final JSONArray results = result.getJSONArray("results", new JSONArray());
     final List<SearchHit> converted = new ArrayList<>(results.length());
     for (int i = 0; i < results.length(); i++) {
@@ -191,7 +193,7 @@ final class GrpcVectorSearch {
         if (typeName instanceof final String type)
           record.setType(type);
         for (final String property : properties.keySet())
-          record.putProperties(property, GrpcTypeConverter.toGrpcValue(properties.get(property)));
+          record.putProperties(property, GrpcTypeConverter.toGrpcValue(properties.get(property), budget));
         builder.setRecord(record);
       }
 
