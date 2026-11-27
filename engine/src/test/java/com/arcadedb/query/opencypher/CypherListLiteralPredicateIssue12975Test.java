@@ -85,6 +85,48 @@ class CypherListLiteralPredicateIssue12975Test extends TestHelper {
     assertRefused("MATCH (n:Node) WHERE none(x IN [1] WHERE [1, 2]) RETURN n.id");
     assertRefused("MATCH (n:Node) RETURN [x IN [1] WHERE [1, 2] | x] AS r");
     assertRefused("MATCH (n:Node) RETURN [(n)-->(m) WHERE [1, 2] | m] AS r");
+    assertRefused("RETURN allReduce(acc = 0, x IN [1, 2] | acc + x, [1, 2]) AS r");
+  }
+
+  /** Parentheses around the literal change nothing: the predicate is still a list literal. */
+  @Test
+  void aParenthesisedListLiteralIsRefused() {
+    assertRefused("MATCH (n:Node) WHERE ([1, 2]) RETURN n.id");
+    assertRefused("MATCH (n:Node) WHERE (([1, 2])) RETURN n.id");
+    assertRefused("MATCH (n:Node WHERE ([1, 2])) RETURN n.id");
+    assertRefused("MATCH (n:Node) RETURN CASE WHEN ([1, 2]) THEN 1 ELSE 0 END AS r");
+    assertRefused("MATCH (n:Node) RETURN [x IN [1] WHERE ([1, 2]) | x] AS r");
+    assertRefused("MATCH (n:Node) WHERE none(x IN [1] WHERE ([1, 2])) RETURN n.id");
+  }
+
+  /**
+   * A {@code +} with a list literal on either side is a list whatever the other side is, so its type is known when the
+   * statement is parsed, and the operand check of #11760 already refuses it under a logical operator. It had the two answers
+   * of the bare literal: true in a WHERE (the concatenation is never empty) and refused under AND.
+   */
+  @Test
+  void aConcatenationWithAListLiteralIsRefused() {
+    // already refused under a logical operator
+    assertRefused("MATCH (n:Node) WHERE ([1] + n.l) AND true RETURN n.id");
+    assertRefused("MATCH (n:Node) WHERE [1] + n.l RETURN n.id");
+    assertRefused("MATCH (n:Node) WHERE n.l + [1] RETURN n.id");
+    assertRefused("MATCH (n:Node) WHERE ([1] + n.l) RETURN n.id");
+    assertRefused("MATCH (n:Node) WITH n WHERE [1] + n.l RETURN n.id");
+    assertRefused("MATCH (n:Node WHERE [1] + n.l) RETURN n.id");
+    assertRefused("MATCH (n:Node) RETURN CASE WHEN [1] + n.l THEN 1 ELSE 0 END AS r");
+    assertRefused("MATCH (n:Node) RETURN [x IN [1] WHERE [1] + n.l | x] AS r");
+    assertRefused("MATCH (n:Node) WHERE none(x IN [1] WHERE n.l + [x]) RETURN n.id");
+  }
+
+  /**
+   * A {@code +} of two values read from properties may be a list concatenation or a sum: its type is known only when the
+   * statement runs, so it is taken by whether it is empty, in a WHERE as under a logical operator.
+   */
+  @Test
+  void aConcatenationOfPropertiesIsTrueWhenNotEmpty() {
+    assertThat(ids("MATCH (n:Node) WHERE n.l + n.l RETURN n.id AS id ORDER BY id")).containsExactly(1L, 3L);
+    assertThat(ids("MATCH (n:Node) WHERE (n.l + n.l) AND true RETURN n.id AS id ORDER BY id")).containsExactly(1L, 3L);
+    assertThat(ids("MATCH (n:Node) RETURN CASE WHEN n.l + n.l THEN n.id ELSE 0 END AS id ORDER BY id")).containsExactly(0L, 1L, 3L);
   }
 
   /**

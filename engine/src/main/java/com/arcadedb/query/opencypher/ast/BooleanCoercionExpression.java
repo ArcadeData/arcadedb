@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
-import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -57,33 +56,8 @@ public class BooleanCoercionExpression implements BooleanExpression {
     return toPredicate(expression.evaluate(result, context));
   }
 
-  /**
-   * Refuses a list literal used as a predicate, in every predicate position.
-   * <p>
-   * A list cannot be coerced to a boolean when its type is known when the statement is parsed: the reference implementation
-   * refuses it ({@code Coercion of list to boolean is not allowed. Please use NOT isEmpty(...) instead}), and the engine
-   * refuses the same literal under AND/OR/NOT/XOR since issue #11760. The runtime coercion of {@link #toPredicate(Object)},
-   * on the other hand, takes a list as true when it is not empty - the coercion a list <b>read from a property</b> gets, and
-   * the one the reference implementation accepts too, since the type of a property is not known when the statement is
-   * parsed. Without this refusal the same literal was true in a bare WHERE and refused under a logical operator.
-   *
-   * @param operand the expression in the predicate position
-   */
-  public static void refuseListLiteral(final Expression operand) {
-    if (operand instanceof ListExpression)
-      throw new CommandParsingException("InvalidArgumentType: Expected Boolean but got List");
-  }
-
-  /**
-   * {@link #refuseListLiteral(Expression)} for a predicate parsed as a {@link BooleanExpression}: the value it holds is the
-   * one the coercion adapts, so a list literal is the one it wraps.
-   *
-   * @param operand the predicate
-   */
-  public static void refuseListLiteral(final BooleanExpression operand) {
-    if (operand instanceof BooleanCoercionExpression coercion)
-      refuseListLiteral(coercion.getExpression());
-  }
+  /** The kind {@link #nonBooleanKindOf(Expression)} answers for a value known to be a list when the statement is parsed. */
+  public static final String LIST_KIND = "List";
 
   /**
    * The kind of an operand whose value is known not to be a BOOLEAN before the statement runs, or {@code null} when the operand
@@ -98,12 +72,12 @@ public class BooleanCoercionExpression implements BooleanExpression {
       case LiteralExpression literal -> literal.getValue() == null || literal.getValue() instanceof Boolean ?
           null :
           literal.getValue().getClass().getSimpleName();
-      case ListExpression ignored -> "List";
+      case ListExpression ignored -> LIST_KIND;
       case MapExpression ignored -> "Map";
       case ArithmeticExpression arithmetic -> {
         if (arithmetic.getOperator() != ArithmeticExpression.Operator.ADD)
           yield "Number";
-        yield arithmetic.getLeft() instanceof ListExpression || arithmetic.getRight() instanceof ListExpression ? "List" : null;
+        yield arithmetic.getLeft() instanceof ListExpression || arithmetic.getRight() instanceof ListExpression ? LIST_KIND : null;
       }
       case null, default -> null;
     };

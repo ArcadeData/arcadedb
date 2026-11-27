@@ -981,7 +981,7 @@ class CypherExpressionBuilder {
     for (final Cypher25Parser.CaseAlternativeContext altCtx : ctx.caseAlternative()) {
       final Expression whenExpr = parseExpression(altCtx.expression(0)); // First expression is WHEN
       // A list literal cannot be coerced to a boolean (issue #12975)
-      BooleanCoercionExpression.refuseListLiteral(whenExpr);
+      BooleanOperandValidator.refuseListPredicate(whenExpr);
       final Expression thenExpr = parseExpression(altCtx.expression(1)); // Second expression is THEN
       alternatives.add(new CaseAlternative(whenExpr, thenExpr));
     }
@@ -1403,7 +1403,7 @@ class CypherExpressionBuilder {
     if (ctx.whereExp != null) {
       whereExpression = parseExpression(ctx.whereExp);
       // A list literal cannot be coerced to a boolean (issue #12975)
-      BooleanCoercionExpression.refuseListLiteral(whereExpression);
+      BooleanOperandValidator.refuseListPredicate(whereExpression);
     }
 
     // Optional mapping expression after |
@@ -1437,7 +1437,7 @@ class CypherExpressionBuilder {
     if (ctx.whereExp != null) {
       whereExpression = parseExpression(ctx.whereExp);
       // A list literal cannot be coerced to a boolean (issue #12975)
-      BooleanCoercionExpression.refuseListLiteral(whereExpression);
+      BooleanOperandValidator.refuseListPredicate(whereExpression);
     }
 
     // Required mapping expression after |
@@ -1475,7 +1475,7 @@ class CypherExpressionBuilder {
     if (ctx.whereExp != null) {
       whereExpression = parseExpression(ctx.whereExp);
       // A list literal cannot be coerced to a boolean (issue #12975)
-      BooleanCoercionExpression.refuseListLiteral(whereExpression);
+      BooleanOperandValidator.refuseListPredicate(whereExpression);
     }
 
     return new ListPredicateExpression(predicateType, variable, listExpression, whereExpression, ctx.getText());
@@ -1527,7 +1527,7 @@ class CypherExpressionBuilder {
       final Expression reduceExpression = parseExpression(expressions.get(2));
       final Expression predicateExpression = parseExpression(expressions.get(3));
       // A list literal cannot be coerced to a boolean (issue #12975)
-      BooleanCoercionExpression.refuseListLiteral(predicateExpression);
+      BooleanOperandValidator.refuseListPredicate(predicateExpression);
 
       return new AllReduceExpression(accumulatorVariable, initialValue, iteratorVariable,
           listExpression, reduceExpression, predicateExpression, ctx.getText());

@@ -174,7 +174,7 @@ final class BooleanExpressionBuilder {
     // A list literal cannot be coerced to a boolean: the reference implementation refuses it, and the engine refuses the
     // same literal under AND/OR/NOT/XOR since issue #11760. Without this the same literal was true here and refused there
     // (issue #12975)
-    BooleanCoercionExpression.refuseListLiteral(parsed);
+    BooleanOperandValidator.refuseListPredicate(parsed);
     return parsed;
   }
 
