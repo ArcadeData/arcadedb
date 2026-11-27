@@ -40,6 +40,9 @@ public class UpdateItem extends SimpleNode {
   public static final int OPERATOR_STARASSIGN  = 3;
   public static final int OPERATOR_SLASHASSIGN = 4;
 
+  // what compoundNewValue answers for a NULL += / -=: there is nothing to add, so the target is not written
+  private static final Object LEAVE_AS_IS = new Object();
+
   public Identifier left;
   public Modifier   leftModifier;
   public int        operator;
@@ -130,19 +133,9 @@ public class UpdateItem extends SimpleNode {
     } else {
       // SET m.k += v / SET l[0] *= v: combine with the nested target's current value, as the top-level arm does,
       // instead of writing the bare right-hand value into it (issue #12916)
-      final Object newValue;
-      switch (operator) {
-      case OPERATOR_PLUSASSIGN, OPERATOR_MINUSASSIGN -> {
-        // a NULL increment leaves the target as it is
-        if (MathExpression.extractScalarFromResultSet(rightValue) == null)
-          return;
-        newValue = calculateNewValue(doc, context, rightValue,
-            operator == OPERATOR_PLUSASSIGN ? MathExpression.Operator.PLUS : MathExpression.Operator.MINUS);
-      }
-      case OPERATOR_SLASHASSIGN -> newValue = calculateNewValue(doc, context, rightValue, MathExpression.Operator.SLASH);
-      case OPERATOR_STARASSIGN -> newValue = calculateNewValue(doc, context, rightValue, MathExpression.Operator.STAR);
-      default -> newValue = rightValue;
-      }
+      final Object newValue = operator == OPERATOR_EQ ? rightValue : compoundNewValue(doc, context, rightValue);
+      if (newValue == LEAVE_AS_IS)
+        return;
       final Object val = doc.getProperty(left.getStringValue());
       leftModifier.setValue(doc, val, newValue, context);
       // SET m.k = v / SET l[0] = v reach into the Map or List the record already holds and write into it, without
@@ -163,11 +156,9 @@ public class UpdateItem extends SimpleNode {
   }
 
   public void applyOperation(final ResultInternal doc, final Identifier attrName, final Object rightValue, final CommandContext context) {
-    switch (operator) {
-    case OPERATOR_EQ:
-      Object newValue = extractFromResult(rightValue);
-      newValue = convertToPropertyType(doc, attrName, newValue);
-      final String propName = attrName.getStringValue();
+    final String propName = attrName.getStringValue();
+    if (operator == OPERATOR_EQ) {
+      final Object newValue = convertToPropertyType(doc, attrName, extractFromResult(rightValue));
       // Skip the write when the value is unchanged to avoid a needless MVCC version bump (which would
       // make concurrent updaters of this record fail with ConcurrentModificationException).
       // A missing property must always be written, even when the new value is null: getProperty() returns null both
@@ -175,22 +166,30 @@ public class UpdateItem extends SimpleNode {
       // record without x would be wrongly skipped, leaving x undefined instead of defined-with-null.
       if (!doc.hasProperty(propName) || !valuesEqual(doc.getProperty(propName), newValue))
         doc.setProperty(propName, newValue);
-      break;
-    case OPERATOR_MINUSASSIGN:
-    case OPERATOR_PLUSASSIGN:
-      // A NULL increment is nothing to add: the field is left as it is, absent included, and the record is not rewritten
-      if (MathExpression.extractScalarFromResultSet(rightValue) == null)
-        break;
-      doc.setProperty(attrName.getStringValue(), calculateNewValue(doc, context, rightValue,
-          operator == OPERATOR_PLUSASSIGN ? MathExpression.Operator.PLUS : MathExpression.Operator.MINUS));
-      break;
-    case OPERATOR_SLASHASSIGN:
-      doc.setProperty(attrName.getStringValue(), calculateNewValue(doc, context, rightValue, MathExpression.Operator.SLASH));
-      break;
-    case OPERATOR_STARASSIGN:
-      doc.setProperty(attrName.getStringValue(), calculateNewValue(doc, context, rightValue, MathExpression.Operator.STAR));
-      break;
+      return;
     }
+
+    final Object newValue = compoundNewValue(doc, context, rightValue);
+    // A NULL increment is nothing to add: the field is left as it is, absent included, and the record is not rewritten
+    if (newValue != LEAVE_AS_IS)
+      doc.setProperty(propName, newValue);
+  }
+
+  /**
+   * The value {@code +=}, {@code -=}, {@code *=} or {@code /=} writes into the target, top-level property or nested
+   * ({@code m.k}, {@code l[0]}) alike, or {@link #LEAVE_AS_IS} for a NULL {@code +=}/{@code -=}, which leaves the target as
+   * it is. The single place that maps the compound operator to its arithmetic, so both kinds of target always agree
+   * (issue #12916: the nested one used to write the bare right-hand value).
+   */
+  private Object compoundNewValue(final ResultInternal doc, final CommandContext context, final Object rightValue) {
+    return switch (operator) {
+      case OPERATOR_PLUSASSIGN, OPERATOR_MINUSASSIGN -> MathExpression.extractScalarFromResultSet(rightValue) == null ?
+          LEAVE_AS_IS :
+          calculateNewValue(doc, context, rightValue, operator == OPERATOR_PLUSASSIGN ? MathExpression.Operator.PLUS : MathExpression.Operator.MINUS);
+      case OPERATOR_SLASHASSIGN -> calculateNewValue(doc, context, rightValue, MathExpression.Operator.SLASH);
+      case OPERATOR_STARASSIGN -> calculateNewValue(doc, context, rightValue, MathExpression.Operator.STAR);
+      default -> throw new IllegalArgumentException("Operator '" + operator + "' not supported in update");
+    };
   }
 
   private static boolean valuesEqual(final Object a, final Object b) {

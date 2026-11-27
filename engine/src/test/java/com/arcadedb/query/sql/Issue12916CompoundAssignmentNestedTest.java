@@ -26,6 +26,8 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -57,6 +59,17 @@ class Issue12916CompoundAssignmentNestedTest extends TestHelper {
   }
 
   @Test
+  void nestedTargetFollowsTheTopLevelCounterRules() {
+    // a NULL increment leaves the nested target as it is, as it does a top-level one
+    assertThat(((Map<?, ?>) run("m.a += null").get("m")).get("a")).isEqualTo(1);
+    assertThat(run("l[0] -= null").get("l")).isEqualTo(List.of(10, 20));
+    assertThat(run("x += null").get("x")).isEqualTo(10);
+    // a missing key starts from nothing: += sets the operand, -= its negative
+    assertThat(((Map<?, ?>) run("m.z += 4").get("m")).get("z")).isEqualTo(4);
+    assertThat(((Map<?, ?>) run("m.z -= 4").get("m")).get("z")).isEqualTo(-4);
+  }
+
+  @Test
   void compoundEqualsLongFormOnEveryTarget() {
     final List<String> mismatches = new ArrayList<>();
     int compared = 0;
@@ -66,7 +79,8 @@ class Issue12916CompoundAssignmentNestedTest extends TestHelper {
           final Object compound = outcome(target + " " + op + "= " + value);
           final Object longForm = outcome(target + " = " + target + " " + op + " " + value);
           ++compared;
-          if (!String.valueOf(compound).equals(String.valueOf(longForm)))
+          // by value, not by string form, so an Integer 2 against a Long 2 is a mismatch too
+          if (!Objects.equals(compound, longForm))
             mismatches.add(target + " " + op + "= " + value + ": " + compound + " vs " + longForm);
         }
     assertThat(compared).isEqualTo(OPERATORS.length * TARGETS.length * VALUES.length);
@@ -82,14 +96,14 @@ class Issue12916CompoundAssignmentNestedTest extends TestHelper {
   }
 
   private Map<String, Object> run(final String set) {
-    final Map<String, Object>[] state = new Map[1];
+    final AtomicReference<Map<String, Object>> state = new AtomicReference<>();
     database.transaction(() -> {
       database.command("sql", "DELETE FROM C");
       database.command("sql", "INSERT INTO C CONTENT {\"x\": 10, \"l\": [10, 20], \"m\": {\"a\": 1, \"b\": [1, 2], \"c\": {\"d\": 7}}}");
       database.command("sql", "UPDATE C SET " + set);
       final Result r = database.query("sql", "SELECT x, l, m FROM C").next();
-      state[0] = r.toMap();
+      state.set(r.toMap());
     });
-    return state[0];
+    return state.get();
   }
 }
