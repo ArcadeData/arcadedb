@@ -568,8 +568,7 @@ public class ShortestPathStep extends AbstractExecutionStep {
 
     private List<Object> advance() {
       while (true) {
-        List<Object> path;
-        while ((path = search.next()) != null) {
+        for (List<Object> path = search.next(); path != null; path = search.next()) {
           if (!passes(evalRow, path, context))
             continue;
           foundAtThisLength = true;
