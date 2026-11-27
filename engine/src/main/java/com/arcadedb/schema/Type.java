@@ -2385,6 +2385,24 @@ public enum Type {
     return false;
   }
 
+  /**
+   * Whether {@link #castComparableNumber(Number, Number)} would leave both of its operands exactly as they are: two
+   * numbers of one class, and not a pair of {@link BigDecimal}s (a pair of decimals is stripped of its trailing zeros,
+   * so the cast is not the identity for it).
+   * <p>
+   * The cast answers a fresh pair of numbers on every call, so a caller that folds a value into a running one asks
+   * this first: the fold of a column of one numeric type - what a typed column holds - is the case where the pair
+   * says nothing, and an aggregation over a million rows allocated a million pairs to say it.
+   *
+   * @param left  the first operand
+   * @param right the second operand
+   *
+   * @return {@code true} when the cast would change neither operand
+   */
+  public static boolean castComparableNumberIsIdentity(final Number left, final Number right) {
+    return left.getClass() == right.getClass() && !(left instanceof BigDecimal);
+  }
+
   public static Number[] castComparableNumber(Number left, Number right) {
     // CHECK FOR CONVERSION
     if (left instanceof Short) {
