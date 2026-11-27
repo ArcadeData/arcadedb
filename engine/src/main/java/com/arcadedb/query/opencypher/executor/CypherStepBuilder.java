@@ -1495,9 +1495,13 @@ final class CypherStepBuilder {
                 matchVariables.add(targetVar);
               }
 
-              // Now add the ShortestPathStep to compute the path
+              // Now add the ShortestPathStep to compute the path; a WHERE conjunct on the path variable restricts the search
+              // (issue #13574)
+              final WhereClause pathWhere = matchClause.hasWhereClause() ? matchClause.getWhereClause() :
+                  statement.getWhereClause();
               final ShortestPathStep shortestStep = new ShortestPathStep(sourceVar, targetVar, pathVariable,
-                  shortestPathPattern, context);
+                  shortestPathPattern, FilterPushdown.extractShortestPathPredicate(pathWhere, pathVariable,
+                  legacyBoundVariables, matchVariables), context);
               if (currentStep != null) {
                 shortestStep.setPrevious(currentStep);
               }

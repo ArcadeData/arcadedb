@@ -85,6 +85,38 @@ final class FilterPushdown {
   }
 
   /**
+   * The top-level conjuncts of a MATCH clause's WHERE that read the path variable of a {@code shortestPath()} /
+   * {@code allShortestPaths()} pattern and otherwise only variables bound before its step, ANDed together, or {@code null} when
+   * there is none (issue #13574). Such a predicate restricts the paths the search may answer, as in Neo4j: the step answers the
+   * shortest path that satisfies it, where a filter after the step could only reject the one path the search found first.
+   * <p>
+   * The conjuncts stay in the clause's filter too: the step evaluates them on the row it answers, so the filter re-checks a
+   * predicate that already holds there, and a conjunct this extraction misses is still decided after the step.
+   *
+   * @param pathVariable   the path variable the shortestPath() pattern binds, or {@code null} when it binds none
+   * @param boundVariables variables bound in previous MATCH clauses
+   * @param matchVariables variables bound earlier in the current MATCH clause, the pattern's endpoints included
+   */
+  static BooleanExpression extractShortestPathPredicate(final WhereClause whereClause, final String pathVariable,
+      final Set<String> boundVariables, final Set<String> matchVariables) {
+    if (pathVariable == null || pathVariable.isEmpty() || whereClause == null || whereClause.getConditionExpression() == null)
+      return null;
+
+    final Set<String> available = new HashSet<>(boundVariables);
+    available.addAll(matchVariables);
+    available.add(pathVariable);
+
+    BooleanExpression result = null;
+    for (final BooleanExpression conjunct : WhereClause.conjuncts(whereClause.getConditionExpression())) {
+      final Set<String> vars = WhereClause.collectVariables(conjunct);
+      if (!vars.contains(pathVariable) || !available.containsAll(vars))
+        continue;
+      result = result == null ? conjunct : new LogicalExpression(LogicalExpression.Operator.AND, result, conjunct);
+    }
+    return result;
+  }
+
+  /**
    * Records the conjuncts the node step decides on every row it passes on, and returns the step. Only what the step actually kept
    * is recorded: an {@code id(var) = X} it enforces through its id lookup instead is left to the clause's filter, as before.
    */
