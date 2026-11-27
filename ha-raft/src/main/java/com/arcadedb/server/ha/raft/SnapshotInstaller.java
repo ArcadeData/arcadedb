@@ -54,7 +54,9 @@ import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.DirectoryStream;
+import java.nio.file.DirectoryNotEmptyException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -69,6 +71,7 @@ import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BiFunction;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
@@ -198,6 +201,26 @@ public final class SnapshotInstaller {
    * production.
    */
   static volatile Consumer<String> swapProgressForTesting = null;
+
+  /**
+   * Test-only hook that rewrites each listing {@link #listEntries} took of a directory before the swap, the rollback or
+   * the restore acts on it, given the directory and the listing. A test drops entries from it to model a network
+   * filesystem whose directory walk skips entries (issue #13618), or adds one to model a stale entry. {@code null} in
+   * production.
+   */
+  static volatile BiFunction<Path, List<Path>, List<Path>> directoryListingForTesting = null;
+
+  /**
+   * How many passes in a row {@link #drainDirectory} accepts that list entries and move or delete none of them (every
+   * entry listed was already gone: a stale listing) before it gives up rather than loop.
+   */
+  private static final int MAX_IDLE_DRAIN_PASSES = 5;
+
+  /** The most passes {@link #drainDirectory} makes over one directory, a guard against a directory that keeps filling. */
+  private static final int MAX_DRAIN_PASSES = 100;
+
+  /** How many mismatching names {@link #installedFileMismatches} describes before it summarizes the rest as a count. */
+  private static final int MAX_MISMATCHES_DESCRIBED = 20;
 
   // Reserved staging directory prefix for acquiring a database the node has NEVER seen (issue #4727).
   // A new-database acquire downloads into databases/.acquire-<name>/ and publishes with a single atomic
@@ -738,7 +761,7 @@ public final class SnapshotInstaller {
 
       // Checked BEFORE the reopen: opening may legitimately rewrite files (the engine rewrites schema.json when it
       // had to fall back to schema.prev.json), and what must be compared is what the swap installed.
-      final String mismatch = expectedFiles != null ? firstInstalledFileMismatch(expectedFiles, dbPath) : null;
+      final String mismatch = expectedFiles != null ? installedFileMismatches(expectedFiles, dbPath) : null;
       if (mismatch != null) {
         LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
             "Installed snapshot for '%s' does not match what the leader sent (%s); rolling back to the previous local copy",
@@ -850,20 +873,37 @@ public final class SnapshotInstaller {
     return expected;
   }
 
-  /** The first file of {@code expected} that is missing from {@code dbPath} or has another size, described; null when all match. */
-  static String firstInstalledFileMismatch(final Map<String, Long> expected, final Path dbPath) {
-    for (final Map.Entry<String, Long> entry : expected.entrySet()) {
-      final Path file = dbPath.resolve(entry.getKey());
-      final long size;
+  /**
+   * The files of {@code expected} that are missing from {@code dbPath} or have another size, described; null when all
+   * match. Every mismatch is counted and the first {@link #MAX_MISMATCHES_DESCRIBED}, in name order, are named with the
+   * reason (the I/O error of a file that cannot be read, not only "missing"): a single name said nothing about whether one
+   * file or a whole page of a directory listing was lost (issue #13618).
+   */
+  static String installedFileMismatches(final Map<String, Long> expected, final Path dbPath) {
+    final List<String> described = new ArrayList<>();
+    int mismatches = 0;
+    for (final String name : new TreeSet<>(expected.keySet())) {
+      final long expectedSize = expected.get(name);
+      String problem;
       try {
-        size = Files.size(file);
+        final long size = Files.size(dbPath.resolve(name));
+        problem = size != expectedSize ? "'" + name + "' is " + size + " bytes instead of " + expectedSize : null;
+      } catch (final NoSuchFileException e) {
+        problem = "'" + name + "' is missing";
       } catch (final IOException e) {
-        return "'" + entry.getKey() + "' is missing";
+        problem = "'" + name + "' cannot be read (" + e.getClass().getSimpleName() + ": " + e.getMessage() + ")";
       }
-      if (size != entry.getValue())
-        return "'" + entry.getKey() + "' is " + size + " bytes instead of " + entry.getValue();
+      if (problem == null)
+        continue;
+      if (++mismatches <= MAX_MISMATCHES_DESCRIBED)
+        described.add(problem);
     }
-    return null;
+    if (mismatches == 0)
+      return null;
+    if (mismatches == 1)
+      return described.getFirst();
+    return mismatches + " of " + expected.size() + " files do not match: " + String.join(", ", described)
+        + (mismatches > described.size() ? ", and " + (mismatches - described.size()) + " more" : "");
   }
 
   /**
@@ -1447,16 +1487,14 @@ public final class SnapshotInstaller {
    * marker on failure so {@link #recoverPendingSnapshotSwaps} restores the backup on the next startup.
    */
   private static void clearLiveDatabaseFiles(final Path dbPath) throws IOException {
-    try (final DirectoryStream<Path> stream = Files.newDirectoryStream(dbPath)) {
-      for (final Path entry : stream) {
-        if (isSnapshotMachineryEntryName(entry.getFileName().toString()))
-          continue;
-        if (Files.isDirectory(entry))
-          FileUtils.deleteRecursively(entry.toFile());
-        else
-          Files.delete(entry);
-      }
-    }
+    // Drained, not walked once (issue #13618): a snapshot file a single walk missed (a dictionary of another version,
+    // say) stayed live next to the restored originals, and the engine refused the directory as two files on one id.
+    drainDirectory(dbPath, SnapshotInstaller::isLiveDatabaseEntry, entry -> {
+      if (Files.isDirectory(entry, LinkOption.NOFOLLOW_LINKS))
+        FileUtils.deleteRecursively(entry.toFile());
+      else
+        Files.delete(entry);
+    });
   }
 
   /**
@@ -1974,7 +2012,7 @@ public final class SnapshotInstaller {
     // that opens can still hold zero-length page files or a schema.json that fell back to schema.prev.json (#11200).
     // An install that predates the manifest has nothing to compare with, and keeps the proof of the open alone.
     final Map<String, Long> expected = readInstalledFilesManifest(dbDir);
-    final String mismatch = expected != null ? firstInstalledFileMismatch(expected, dbDir) : null;
+    final String mismatch = expected != null ? installedFileMismatches(expected, dbDir) : null;
     if (mismatch == null && snapshotOpens(dbDir))
       return;
 
@@ -2912,37 +2950,37 @@ public final class SnapshotInstaller {
     boolean liveMovedToBackup = phase == SwapPhase.INSTALLING;
     try {
       if (!liveMovedToBackup) {
-        // Only BACKING_UP may move originals. INSTALLING's live files belong to the new snapshot.
-        try (final DirectoryStream<Path> stream = Files.newDirectoryStream(dbDir)) {
-          for (final Path entry : stream) {
-            if (isSnapshotMachineryEntryName(entry.getFileName().toString()))
-              continue;
-            Files.move(entry, backupDir.resolve(entry.getFileName().toString()), StandardCopyOption.REPLACE_EXISTING);
-            snapshotSwapProgress("BACKING_UP:" + entry.getFileName());
-          }
-        }
+        // Only BACKING_UP may move originals. INSTALLING's live files belong to the new snapshot. Drained, not walked once:
+        // an original a single walk missed would stay live under the snapshot's files (issue #13618).
+        final int backedUp = drainDirectory(dbDir, SnapshotInstaller::isLiveDatabaseEntry, entry -> {
+          Files.move(entry, backupDir.resolve(entry.getFileName().toString()), StandardCopyOption.REPLACE_EXISTING);
+          snapshotSwapProgress("BACKING_UP:" + entry.getFileName());
+        });
+        HALog.log(SnapshotInstaller.class, HALog.BASIC, "Snapshot swap of %s: moved %d live entries to the backup", dbDir,
+            backedUp);
         fsyncDirectory(backupDir);
         fsyncDirectory(dbDir);
         writeSwapPhase(dbDir, SwapPhase.INSTALLING);
         liveMovedToBackup = true;
       }
 
-      // Phase 2: move new snapshot files to the live dir (skip the .snapshot-complete marker).
-      try (final DirectoryStream<Path> stream = Files.newDirectoryStream(newDir)) {
-        for (final Path entry : stream) {
-          final String name = entry.getFileName().toString();
-          if (SNAPSHOT_COMPLETE_FILE.equals(name))
-            continue;
-          Files.move(entry, dbDir.resolve(name), StandardCopyOption.REPLACE_EXISTING);
-          snapshotSwapProgress("INSTALLING:" + entry.getFileName());
-        }
-      }
+      // Phase 2: move new snapshot files to the live dir (skip the .snapshot-complete marker), until a fresh listing of
+      // the staging finds none left (issue #13618).
+      final int installed = drainDirectory(newDir, entry -> !SNAPSHOT_COMPLETE_FILE.equals(entry.getFileName().toString()),
+          entry -> {
+            Files.move(entry, dbDir.resolve(entry.getFileName().toString()), StandardCopyOption.REPLACE_EXISTING);
+            snapshotSwapProgress("INSTALLING:" + entry.getFileName());
+          });
+      HALog.log(SnapshotInstaller.class, HALog.BASIC, "Snapshot swap of %s: installed %d staged entries", dbDir, installed);
 
       // Make the rename directory entries durable before the caller deletes the retained backup. The
       // file data itself was already fsynced at extraction time; this fsync persists the directory
       // entries that now point at it, so a crash after the backup is gone cannot lose the swap (#4830).
       fsyncDirectory(dbDir);
       fsyncDirectory(newDir);
+      // The drain above is what lets INSTALLED mean "nothing is left in the staging". Whether the live files are exactly
+      // what the leader sent is then checked against the manifest by every caller (swapAndReopen,
+      // rollBackUnlessSnapshotOpens) before the retained backup can be deleted (#11200, #11223).
       writeSwapPhase(dbDir, SwapPhase.INSTALLED);
     } catch (final IOException e) {
       // Log the root cause FIRST, before any restore step can throw and mask it.
@@ -2964,8 +3002,14 @@ public final class SnapshotInstaller {
       throw new IOException("Snapshot swap failed for " + dbDir, e);
     }
 
-    // Remove the now-empty .snapshot-new directory
-    deleteDirectoryIfExists(newDir);
+    // Remove the now-empty .snapshot-new directory, never recursively (issue #13618). Every snapshot file is live and
+    // INSTALLED is published, so one left behind is not the swap's to fail on: the staging stays for the recovery that
+    // completes the install (completeSwapRecovery) once the installed copy has been validated.
+    try {
+      deleteDrainedDirectory(newDir, SNAPSHOT_COMPLETE_FILE);
+    } catch (final IOException e) {
+      LogManager.instance().log(SnapshotInstaller.class, Level.WARNING, "%s", null, e.getMessage());
+    }
   }
 
   /**
@@ -2977,20 +3021,20 @@ public final class SnapshotInstaller {
    * and the backup that remains plainly still holds the thing that identifies the database.
    */
   private static void restoreBackup(final Path dbDir, final Path backupDir) throws IOException {
-    try (final DirectoryStream<Path> stream = Files.newDirectoryStream(backupDir,
-        entry -> !isSchemaFileName(entry.getFileName().toString()))) {
-      for (final Path entry : stream)
-        moveBackToLiveDirectory(dbDir, entry);
-    }
+    // Drained, not walked once (issue #13618): a backup entry a single walk missed used to be deleted with the backup.
+    final int restored = drainDirectory(backupDir, entry -> !isSchemaFileName(entry.getFileName().toString()),
+        entry -> moveBackToLiveDirectory(dbDir, entry));
     for (final String schemaFile : SCHEMA_FILES_RESTORED_LAST) {
       final Path entry = backupDir.resolve(schemaFile);
       if (Files.exists(entry))
         moveBackToLiveDirectory(dbDir, entry);
     }
+    HALog.log(SnapshotInstaller.class, HALog.BASIC, "Snapshot rollback of %s: moved %d backup entries back", dbDir, restored);
     // Persist the restored directory entries before the backup is deleted so a crash during rollback
     // recovery cannot lose the originals we just moved back (issue #4830).
     fsyncDirectory(dbDir);
-    deleteDirectoryIfExists(backupDir);
+    // Never recursively: a backup that still holds an original is kept, with the swap state, for the next recovery.
+    deleteDrainedDirectory(backupDir);
   }
 
   /** {@link ColumnarStore#prepareForSnapshotInstall} for the live install path, whose failure handling expects an unchecked exception. */
@@ -3086,6 +3130,97 @@ public final class SnapshotInstaller {
   private static void deleteDirectoryIfExists(final Path dir) throws IOException {
     if (Files.isDirectory(dir))
       FileUtils.deleteRecursively(dir.toFile());
+  }
+
+  /** What {@link #drainDirectory} does to one entry: move it away or delete it. */
+  @FunctionalInterface
+  private interface EntryAction {
+    void apply(Path entry) throws IOException;
+  }
+
+  /**
+   * The entries of {@code dir} that {@code filter} accepts, fully collected, with the directory stream closed before the
+   * caller moves or deletes any of them (issue #13618). Renaming or deleting the entries of a directory while its stream
+   * is still being read is what a network filesystem cannot be trusted with: an NFS readdir resumes from a cookie, and an
+   * entry removed under the walk can make it skip entries that were never touched.
+   */
+  private static List<Path> listEntries(final Path dir, final DirectoryStream.Filter<Path> filter) throws IOException {
+    final List<Path> entries = new ArrayList<>();
+    try (final DirectoryStream<Path> stream = Files.newDirectoryStream(dir, filter)) {
+      for (final Path entry : stream)
+        entries.add(entry);
+    }
+    final BiFunction<Path, List<Path>, List<Path>> hook = directoryListingForTesting;
+    return hook != null ? hook.apply(dir, entries) : entries;
+  }
+
+  /**
+   * Applies {@code action} to every entry of {@code dir} that {@code filter} accepts, and lists the directory again after
+   * each pass until a fresh listing finds none (issue #13618). One pass over a listing is not proof that the directory
+   * is drained: on NFS a listing taken while entries move can miss some, and the swap used to treat the source as empty
+   * after one pass, then delete it recursively with the entries it had missed.
+   * <p>
+   * A listed entry that is gone by the time it is acted on (a stale listing) is skipped, never a failure: it was moved or
+   * deleted already. A pass that acts on nothing at all is allowed {@link #MAX_IDLE_DRAIN_PASSES} times in a row, and
+   * {@link #MAX_DRAIN_PASSES} passes in total, before the drain fails rather than loops.
+   *
+   * @return how many entries were moved or deleted
+   */
+  private static int drainDirectory(final Path dir, final DirectoryStream.Filter<Path> filter, final EntryAction action)
+      throws IOException {
+    int total = 0;
+    int idlePasses = 0;
+    for (int pass = 1; ; pass++) {
+      final List<Path> entries = listEntries(dir, filter);
+      if (entries.isEmpty())
+        return total;
+      if (pass > MAX_DRAIN_PASSES)
+        throw new IOException("Cannot drain " + dir + ": " + entries.size() + " entries still listed after " + MAX_DRAIN_PASSES
+            + " passes (first: '" + entries.getFirst().getFileName() + "')");
+
+      int acted = 0;
+      for (final Path entry : entries) {
+        try {
+          action.apply(entry);
+          acted++;
+        } catch (final NoSuchFileException e) {
+          // The source of a move or a delete is gone: the listing was stale. Anything else (a missing target directory) rethrows.
+          if (Files.exists(entry, LinkOption.NOFOLLOW_LINKS))
+            throw e;
+        }
+      }
+      total += acted;
+      if (acted > 0)
+        idlePasses = 0;
+      else if (++idlePasses >= MAX_IDLE_DRAIN_PASSES)
+        throw new IOException("Cannot drain " + dir + ": " + entries.size() + " listed entries no longer exist after "
+            + idlePasses + " fresh listings (first: '" + entries.getFirst().getFileName() + "')");
+      if (pass > 1 || entries.size() != acted)
+        LogManager.instance().log(SnapshotInstaller.class, Level.INFO,
+            "Pass %d over %s acted on %d of %d listed entries; listing it again until none is left", null, pass, dir, acted,
+            entries.size());
+    }
+  }
+
+  /**
+   * Removes a directory the swap or the restore has just drained: the {@code markers} it may still hold are deleted, then
+   * the directory itself with a non-recursive {@link Files#delete}, so a directory that still holds an entry the drain
+   * did not see is refused with an {@link IOException} instead of being deleted with that entry (issue #13618). The
+   * server, not a listing, decides whether a directory is empty. A no-op when {@code dir} does not exist.
+   */
+  private static void deleteDrainedDirectory(final Path dir, final String... markers) throws IOException {
+    if (!Files.isDirectory(dir, LinkOption.NOFOLLOW_LINKS))
+      return;
+    for (final String marker : markers)
+      Files.deleteIfExists(dir.resolve(marker));
+    try {
+      Files.delete(dir);
+    } catch (final DirectoryNotEmptyException e) {
+      final List<Path> left = listEntries(dir, entry -> true);
+      throw new IOException("Refusing to delete " + dir + ": it still holds " + left.size() + " entries after it was drained "
+          + "(first: " + (left.isEmpty() ? "none listed" : "'" + left.getFirst().getFileName() + "'")
+          + "); keeping it and the swap state for the next recovery", e);
+    }
   }
 
   private static void deleteDirectoryContents(final Path dir) throws IOException {
