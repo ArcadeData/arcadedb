@@ -180,12 +180,17 @@ which the weeknight S lane (close to its 240-minute budget once every phase 2 wo
 
 **HA** (`ha`, project 5). Three server containers on one Docker network (`ContainersTestTemplate` HA settings), the server
 cores split in three cpusets, the client on its own cores. On one host the network is a loopback bridge: the numbers track
-the engine's replication cost, not a real network, and the dashboard page says so.
+the engine's replication cost, not a real network, and the dashboard page says so. The cpuset split lives in the bench, not
+in perf-infra: the bench resolves the server cpuset as for every other workload and pins each node to its own contiguous
+third of it, so perf-infra needs no change. On a host with fewer server CPUs than nodes, every node gets the whole set and
+the run file records the cpusets as shared.
 - `write-throughput`: records/s and p95 through the leader at 1 and 8 writers.
 - `replication-lag`: p50/p95/max ms from a commit on the leader to its visibility on each follower.
 - **Write ledger:** every acknowledged write is looked up on every node at the end; an answer like
   `DatabaseIsReopeningException` counts as unknown (it may have landed), reported as a metric; a missing acknowledged write
   fails the case. **Digest:** a content digest per type compared across nodes; a difference fails the case.
+- HA runs at S on weeknights: the dispatched S run on perf-01 took about 6 minutes per variant (13 minutes for JVM and
+  native together), well under the 25 minutes that would have moved it to M and up like the ramp.
 
 **Mixed phase, hybrid retrieval, soak** (project 6).
 - `mixed`: ingest, search, compaction, DDL, time-series inserts and vector churn at once; per operation p99 and the longest
@@ -205,7 +210,7 @@ the engine's replication cost, not a real network, and the dashboard page says s
 | 2 | time series, wire protocols, correctness, filtered BM25 | arcadedb (bench) | 1 |
 | 3 | issue scenarios | arcadedb (bench) | 1 |
 | 4 | open-loop ramp | arcadedb (bench) | 1 |
-| 5 | HA | arcadedb (bench), perf-infra (cpusets) | 1 |
+| 5 | HA | arcadedb (bench) | 1 |
 | 6 | mixed phase, hybrid retrieval, soak | arcadedb (bench), perf-infra (soak on Saturday) | 2, 5 |
 
 Each project gets its own plan and PR (or one PR per workload in project 2); a workload is added to the schedule by the PR
