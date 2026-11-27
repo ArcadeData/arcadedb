@@ -49,7 +49,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * every vertex before every document): the links are resolved once the whole file is read, and the work of that step grows with the
  * number of links, not with its square.
  *
- * @author Luca Garulli (l.garulli@arcadedata.com)
+ * @author lvca (l.garulli@arcadedata.com)
  */
 class JsonlImportManyForwardLinksTest {
   private static final String SOURCE_PATH = "target/databases/jsonl-many-links-source";
