@@ -66,6 +66,37 @@ class Issue12871LightweightEdgePropertyWritesTest extends TestHelper {
   }
 
   @Test
+  void aContentOfMetadataOnlyCreatesTheEdge() {
+    // metadata names are skipped by every record's content, so this content writes nothing, like an empty one
+    database.transaction(() -> database.command("sql",
+        "create edge K from (select from P where k = 1) to (select from P where k = 2) content {\"@type\": \"K\", \"@cat\": \"e\"}")
+        .close());
+
+    assertThat(edgeCount()).isEqualTo(1);
+  }
+
+  @Test
+  void aContentThatRepointsTheEdgeIsRefused() {
+    database.transaction(() -> {
+      final MutableEdge created = database.lookupByRID(vertex(1), true).asVertex().modify().newEdge("K", vertex(2));
+      assertTheRefusal(catchThrowable(() -> created.fromMap(Map.of("@in", vertex(1)))));
+      assertTheRefusal(catchThrowable(() -> created.set(Map.of("@type", "K", "x", 1))));
+    });
+  }
+
+  @Test
+  void aNullContentWritesNothing() {
+    database.transaction(() -> {
+      final MutableEdge created = database.lookupByRID(vertex(1), true).asVertex().modify().newEdge("K", vertex(2));
+      assertThat(created.set((Map<String, Object>) null)).isSameAs(created);
+      assertThat(created.fromMap(null)).isSameAs(created);
+      assertThat(created.fromJSON(null)).isSameAs(created);
+      created.merge(null);
+    });
+    assertThat(edgeCount()).isEqualTo(1);
+  }
+
+  @Test
   void aContentWithAPropertyIsRefused() {
     assertRefused("sql", "create edge K from (select from P where k = 1) to (select from P where k = 2) content {\"x\": 1}");
     assertThat(edgeCount()).isZero();
