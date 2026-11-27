@@ -55,6 +55,26 @@ class Issue12834AsStringNumberListTest extends TestHelper {
     assertThat(value("SELECT ids.asString() AS v FROM E")).isEqualTo("[1234567890123456, 2]");
   }
 
+  @Test
+  void aStoredPrimitiveArrayOfDoublesKeepsEveryDigit() {
+    database.command("sql", "CREATE DOCUMENT TYPE G");
+    database.command("sql", "CREATE PROPERTY G.d ARRAY_OF_DOUBLES");
+    database.transaction(() -> database.command("sql", "INSERT INTO G SET d = [0.1234567890123, 2.5]"));
+
+    assertThat(value("SELECT d.asString() AS v FROM G")).isEqualTo("[0.1234567890123, 2.5]");
+  }
+
+  /** A list of Floats without a format renders its natural form, which is the text the COMPACT vector layout gives. */
+  @Test
+  void aStoredListOfFloatsRendersLikeTheCompactVectorLayout() {
+    database.command("sql", "CREATE DOCUMENT TYPE F");
+    database.command("sql", "CREATE PROPERTY F.l LIST OF FLOAT");
+    database.transaction(() -> database.command("sql", "INSERT INTO F SET l = [0.5, 0.1, 3.0]"));
+
+    assertThat(value("SELECT l.asString() AS v FROM F")).isEqualTo(value("SELECT l.asString('COMPACT') AS v FROM F"));
+    assertThat(value("SELECT l.asString() AS v FROM F")).isEqualTo("[0.5, 0.1, 3.0]");
+  }
+
   /** The vector use of the method is unchanged: floats, and any list with an explicit vector format. */
   @Test
   void vectorsAreStillFormatted() {

@@ -28,10 +28,10 @@ import java.util.List;
 /**
  * Converts a value to its string representation.
  * <p>
- * A vector (a {@code float[]}, or a collection whose elements are all {@link Float}) is rendered with the same
- * formats as the {@code vector.toString()} SQL function via {@link VectorUtils#formatVector}, and so is any array or collection
- * of numbers when a format argument asks for one. An optional format argument selects the layout: COMPACT (default), PRETTY,
- * PYTHON, MATLAB, JULIA, NUMPY. Example: {@code embedding.asString('PYTHON')}. Every other value, a list of integers, longs
+ * A vector (a {@code float[]}) is rendered with the same formats as the {@code vector.toString()} SQL function via
+ * {@link VectorUtils#formatVector}, and so is any array or list of numbers when a format argument asks for one (a list of
+ * {@link Float} without a format takes its natural form, which is the same text as the COMPACT layout). An optional format
+ * argument selects the layout: COMPACT (default), PRETTY, PYTHON, MATLAB, JULIA, NUMPY. Example: {@code embedding.asString('PYTHON')}. Every other value, a list of integers, longs
  * or doubles included, falls back to its natural string form: the vector formatter converts to {@code float}, which would
  * change the numbers (issue #12834).
  *
@@ -54,10 +54,12 @@ public class SQLMethodAsString extends AbstractSQLMethod {
     if (value instanceof byte[] bytes)
       return new String(bytes);
 
-    // Render vectors using the shared vector formatter, which holds floats: only a float[], a collection of Floats or a caller
-    // that asked for a vector format get there. A list of integers, longs or doubles has no float form that is the same
-    // numbers, and 1234567890123456 must not come back as 1.234568E15 (issue #12834).
-    if (value instanceof float[] || isCollectionOfFloats(value) || asksForVectorFormat(params) && isArrayOrList(value)) {
+    // Render vectors using the shared vector formatter, which holds floats: only a float[] or a caller that asked for a vector
+    // format get there. A list of integers, longs or doubles has no float form that is the same numbers, and 1234567890123456
+    // must not come back as 1.234568E15 (issue #12834). Without a format, the natural form below of a list or array of Floats
+    // is byte-identical to the COMPACT layout, so it needs no special case; a float[] keeps the formatter, which renders it
+    // without boxing every element.
+    if (value instanceof float[] || (asksForVectorFormat(params) && isArrayOrList(value))) {
       try {
         final float[] vector = VectorUtils.toFloatArray(value);
         final VectorUtils.StringFormat format = parseFormat(params);
@@ -82,29 +84,8 @@ public class SQLMethodAsString extends AbstractSQLMethod {
   }
 
   private static boolean isArrayOrList(final Object value) {
-    return value instanceof float[] || value instanceof double[] || value instanceof int[] || value instanceof long[]
-        || value instanceof Object[] || value instanceof List;
-  }
-
-  /** A non-empty list or object array whose every element is a {@link Float}: a vector, which the float formatter renders exactly. */
-  private static boolean isCollectionOfFloats(final Object value) {
-    if (value instanceof List<?> list) {
-      if (list.isEmpty())
-        return false;
-      for (final Object element : list)
-        if (!(element instanceof Float))
-          return false;
-      return true;
-    }
-    if (value instanceof Object[] array) {
-      if (array.length == 0)
-        return false;
-      for (final Object element : array)
-        if (!(element instanceof Float))
-          return false;
-      return true;
-    }
-    return false;
+    return value instanceof double[] || value instanceof int[] || value instanceof long[] || value instanceof Object[]
+        || value instanceof List;
   }
 
   private static VectorUtils.StringFormat parseFormat(final Object[] params) {
