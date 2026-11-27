@@ -47,20 +47,19 @@ public final class CallerUser {
    */
   public static <T> Callable<T> bind(final DatabaseInternal database, final Callable<T> task) {
     final String databasePath = database.getDatabasePath();
-    final Thread caller = Thread.currentThread();
     final DatabaseContext.DatabaseContextTL callerContext = DatabaseContext.INSTANCE.getContextIfExists(databasePath);
     final SecurityDatabaseUser user = callerContext != null ? callerContext.getCurrentUser() : null;
 
     return () -> {
-      if (Thread.currentThread() == caller)
-        // A POOL THAT RUNS THE TASK ON THE SUBMITTING THREAD (SATURATED): THE USER IS ALREADY BOUND, AND SO IS ITS TRANSACTION
-        return task.call();
-
+      // A THREAD THAT ALREADY HAS ITS CONTEXT KEEPS IT, TRANSACTION INCLUDED: A POOL THAT RUNS THE TASK ON THE SUBMITTING THREAD
+      // (SATURATED) ENDS HERE, WITH THE SAME USER BOUND AS BEFORE
       DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(databasePath);
       if (context == null) {
         if (user == null)
           // NOTHING BOUND ON THIS THREAD, NOTHING TO BIND
           return task.call();
+        // A FIRST USE OF THE DATABASE ON THIS THREAD: THE CONTEXT STAYS WITH THE THREAD AFTER THE TASK, LIKE THE ONE ANY DATABASE
+        // CALL MAKES, AND ONLY THE USER IS TAKEN OFF IT
         context = DatabaseContext.INSTANCE.init(database);
       }
 

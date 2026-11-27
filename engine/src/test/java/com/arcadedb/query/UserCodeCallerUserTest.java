@@ -103,7 +103,7 @@ class UserCodeCallerUserTest {
         .hasStackTraceContaining("is not allowed to");
 
     bindUser(null);
-    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM Restricted")) {
+    try (final ResultSet rs = database.query("sql", "SELECT count(@rid) AS c FROM Restricted")) {
       assertThat(rs.next().<Number>getProperty("c").intValue()).isEqualTo(1);
     }
   }

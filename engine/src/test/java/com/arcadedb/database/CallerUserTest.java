@@ -107,6 +107,19 @@ class CallerUserTest extends TestHelper {
     }
   }
 
+  @Test
+  void aTaskRunByTheThreadThatHandedItOverRunsAsTheUserBoundWhenItWasHandedOver() throws Exception {
+    bind(user("caller"));
+    final Callable<String> task = CallerUser.bind((DatabaseInternal) database, () -> userNameOnThisThread());
+    bind(null);
+    try {
+      assertThat(task.call()).isEqualTo("caller");
+      assertThat(userNameOnThisThread()).as("the thread gets back the user it had").isNull();
+    } finally {
+      bind(null);
+    }
+  }
+
   private String userNameOnThisThread() {
     return database.getCurrentUserName();
   }
