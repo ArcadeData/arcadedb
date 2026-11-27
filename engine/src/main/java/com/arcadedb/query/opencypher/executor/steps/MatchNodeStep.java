@@ -21,7 +21,6 @@ package com.arcadedb.query.opencypher.executor.steps;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
-import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
@@ -35,6 +34,7 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.Labels;
+import com.arcadedb.query.opencypher.executor.DistinctKeySeek;
 import com.arcadedb.query.opencypher.executor.PartitionPruning;
 import com.arcadedb.query.opencypher.executor.RidTextKeys;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
@@ -56,18 +56,15 @@ import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
-import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.security.SecurityHelper;
-import com.arcadedb.utility.RidHashSet;
 import com.arcadedb.utility.ScanPressureReporter;
 
 import java.util.ArrayList;
@@ -1311,7 +1308,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
     }
     Iterator<Identifiable> result = found.iterator();
     if (rest != null) {
-      final DistinctKeySeek tail = new DistinctKeySeek(index, List.of(), rest, 0, false);
+      final DistinctKeySeek tail = new DistinctKeySeek(context, "MatchNodeStep", index, List.of(), rest, 0, false);
       openSeek = tail;
       result = new HeadThenTail(result, tail);
     }
@@ -1539,125 +1536,20 @@ public class MatchNodeStep extends AbstractExecutionStep {
       return null;
     }
 
-    final Set<Object> distinct = new LinkedHashSet<>();
-    for (final Object element : elements) {
-      if (element == null)
-        continue;
-      if (element instanceof Collection<?> || element instanceof Map<?, ?> || element.getClass().isArray())
-        return null;
-      distinct.add(RidTextKeys.keyFor(TemporalUtil.toIndexKey(element), keyTypes, 0));
-    }
-
-    final List<Object[]> keys = new ArrayList<>(distinct.size());
-    for (final Object key : distinct)
-      keys.add(new Object[] { key });
-    return keys;
+    return DistinctKeySeek.keysOf(elements, keyTypes);
   }
 
   /**
-   * Every record the keys select, each once. Up to {@link ConsistentKeyLookup#MAX_ENTRIES} entries are read whole against
-   * one committed state; past that the keys are sought one at a time as the caller pulls, so a LIMIT stops the seek early,
-   * as in {@code NodeIndexSeek}. Null when a concurrent DDL dropped or rebuilt the index before the first cursor opened,
-   * for the scan to answer; once records have been returned, such a failure surfaces as it does on the optimizer path.
+   * Every record the keys select, each once ({@link DistinctKeySeek#open}). Null when a concurrent DDL dropped or rebuilt the
+   * index before the first cursor opened, for the scan to answer.
    */
   private Iterator<Identifiable> seekKeys(final TypeIndex index, final String label, final List<Object[]> keys) {
-    final IndexInternal[] subIndexes = index.getIndexesOnBuckets();
-    final IndexCursor first;
-    final int nextKey;
-    try {
-      final IndexCursor consistent = ConsistentKeyLookup.lookupCursor(context.getDatabase(), index, keys);
-      first = consistent != null ? consistent : index.get(keys.getFirst());
-      nextKey = consistent != null ? keys.size() : 1;
-      if (!index.isUnchangedSince(subIndexes)) {
-        first.close();
-        return null;
-      }
-    } catch (final IndexException e) {
+    final DistinctKeySeek distinct = DistinctKeySeek.open(context, "MatchNodeStep", index, keys);
+    if (distinct == null)
       return null;
-    } catch (final IllegalArgumentException e) {
-      if (TypeIndex.isStaleRead(index, e) || !index.isReadyForQueries())
-        return null;
-      throw e;
-    }
     // A new seek is only opened once the one before it is drained, so there is never more than one to close
-    final DistinctKeySeek distinct = new DistinctKeySeek(index, keys, first, nextKey, true);
     openSeek = distinct;
     return Labels.isInheritedIndex(index, label) ? Labels.filterByLabel(distinct, context.getDatabase(), label) : distinct;
-  }
-
-  /**
-   * Streams the records of the seek keys, opening the next key's cursor only when the current one is drained and
-   * returning each RID once. The RIDs remembered are charged to the heap budget all queries share, as in
-   * {@code NodeIndexSeek}.
-   */
-  private final class DistinctKeySeek implements Iterator<Identifiable> {
-    private final TypeIndex          index;
-    private final List<Object[]>     keys;
-    private final WorkGuard          guard         = WorkGuard.forCommandDeadline(context);
-    private final OperationHeapLimit seenHeapLimit = OperationHeapLimit.of(context, "record addresses", "MatchNodeStep");
-    private       RidHashSet         seen;
-    private       IndexCursor        cursor;
-    private       int                nextKey;
-    private       Identifiable       next;
-
-    /** @param dedupe false for one range whose entries are distinct already: nothing is remembered then */
-    private DistinctKeySeek(final TypeIndex index, final List<Object[]> keys, final IndexCursor first, final int nextKey,
-        final boolean dedupe) {
-      this.index = index;
-      this.keys = keys;
-      this.cursor = first;
-      this.nextKey = nextKey;
-      this.seen = dedupe ? new RidHashSet() : null;
-    }
-
-    @Override
-    public boolean hasNext() {
-      while (next == null && cursor != null) {
-        guard.check();
-        if (cursor.hasNext()) {
-          final Identifiable identifiable = cursor.next();
-          if (seen == null) {
-            if (identifiable != null)
-              next = identifiable;
-          } else if (seen.add(identifiable.getIdentity())) {
-            seenHeapLimit.charge(RidHashSet.BYTES_PER_ENTRY);
-            next = identifiable;
-          }
-        } else {
-          cursor.close();
-          cursor = nextKey < keys.size() ? index.get(keys.get(nextKey++)) : null;
-          if (cursor == null)
-            releaseSeen();
-        }
-      }
-      return next != null;
-    }
-
-    /** Gives back the cursor and the heap the RIDs seen hold, whether the seek is drained or abandoned. Safe to call twice. */
-    private void close() {
-      if (cursor != null) {
-        cursor.close();
-        cursor = null;
-      }
-      next = null;
-      releaseSeen();
-    }
-
-    private void releaseSeen() {
-      if (seen != null) {
-        seen = null;
-        seenHeapLimit.release();
-      }
-    }
-
-    @Override
-    public Identifiable next() {
-      if (!hasNext())
-        throw new NoSuchElementException();
-      final Identifiable result = next;
-      next = null;
-      return result;
-    }
   }
 
   /**
