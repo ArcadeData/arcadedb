@@ -3019,13 +3019,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // #11590: only reached when a before-read listener is registered. The listener is the application, so its reads inside an
     // edge-append window are recorded as the application's (see TransactionContext#suspendEdgeAppend())
     final TransactionContext tx = database.getTransactionIfExists();
-    final int edgeAppend = tx != null ? tx.suspendEdgeAppend() : 0;
+    final int edgeAppend = tx != null ? tx.suspendEdgeAppend() : -1;
     try {
       if (!databaseEvents.onBeforeRead(rid))
         return false;
       return typeEvents == null || typeEvents.fireBeforeRead(rid);
     } finally {
-      if (edgeAppend > 0)
+      if (edgeAppend >= 0)
         tx.resumeEdgeAppend(edgeAppend);
     }
   }

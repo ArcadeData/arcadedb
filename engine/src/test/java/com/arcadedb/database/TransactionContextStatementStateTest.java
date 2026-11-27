@@ -108,6 +108,12 @@ class TransactionContextStatementStateTest {
     // Issue #12483: the type of the last new relationship asked whether it has an exact-key index, a cache of that answer. The commit
     // reads the relationships it marks from newRecords, which a statement taken back truncates
     CLASSIFICATION.put("lastNewEdgeType", NOT_STATEMENT_STATE);
+    // Issue #13225: the reads a MERGE existence probe holds back, and the probes a listener callback suspended. The probe window closes in
+    // a finally inside the statement that opened it (the held-back reads are then recorded or dropped, the arrays emptied), so nothing of
+    // them outlives that statement, taken back or not
+    CLASSIFICATION.put("probeReadTargets", NOT_STATEMENT_STATE);
+    CLASSIFICATION.put("probeReadKinds", NOT_STATEMENT_STATE);
+    CLASSIFICATION.put("suspendedProbes", NOT_STATEMENT_STATE);
     // Issue #12612: the values the second write of a record a restore creates gave its READONLY properties, filled only inside a
     // readonly deferral, which the restore opens around its own saves and no statement opens. A value a write taken back left could only
     // allow the value that write completed the record with, never a value nobody was allowed to write

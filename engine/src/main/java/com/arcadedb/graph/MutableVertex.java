@@ -20,11 +20,13 @@ package com.arcadedb.graph;
 
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.Transaction;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.VertexType;
@@ -136,9 +138,25 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
     return this;
   }
 
+  private void recordHeadRead(final int bit) {
+    // one volatile read outside a MERGE probe, the common case: the transaction is looked up only while some probe is open
+    if (TransactionContext.isAnyMergeProbeOpen()) {
+      final TransactionContext tx = ((DatabaseInternal) database).getTransactionIfExists();
+      // a MERGE existence probe: recorded, or dropped, when the probe ends
+      if (tx != null && tx.deferProbeHeadFlagRead(this, bit == OUT_HEAD_READ))
+        return;
+    }
+    edgeListHeadsRead |= bit;
+  }
+
+  /** Records the read of a head that a MERGE probe held back and its transaction then decided to keep. */
+  public void markEdgeListHeadRead(final boolean out) {
+    edgeListHeadsRead |= out ? OUT_HEAD_READ : IN_HEAD_READ;
+  }
+
   /** The head of the outgoing list, read by a traversal: recorded, see {@link #isEdgeListHeadRead(boolean)}. */
   public RID getOutEdgesHeadChunk() {
-    edgeListHeadsRead |= OUT_HEAD_READ;
+    recordHeadRead(OUT_HEAD_READ);
     if (readFromOwnImage)
       ImmutableVertex.recordEdgeListHeadReadFromOwnImage(database, rid, true);
     return outEdges;
@@ -146,7 +164,7 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
 
   /** The head of the incoming list, read by a traversal: recorded, see {@link #isEdgeListHeadRead(boolean)}. */
   public RID getInEdgesHeadChunk() {
-    edgeListHeadsRead |= IN_HEAD_READ;
+    recordHeadRead(IN_HEAD_READ);
     if (readFromOwnImage)
       ImmutableVertex.recordEdgeListHeadReadFromOwnImage(database, rid, false);
     return inEdges;
