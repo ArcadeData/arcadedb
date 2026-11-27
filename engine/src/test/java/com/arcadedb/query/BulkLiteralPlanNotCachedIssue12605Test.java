@@ -21,12 +21,18 @@ package com.arcadedb.query;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.opencypher.query.CypherPlanCache;
+import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.SqlAstInspector;
+import com.arcadedb.query.sql.parser.DeleteStatement;
 import com.arcadedb.query.sql.parser.ExecutionPlanCache;
+import com.arcadedb.query.sql.parser.SelectStatement;
 import com.arcadedb.query.sql.parser.Statement;
+import com.arcadedb.query.sql.parser.UpdateStatement;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.StringJoiner;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -133,6 +139,68 @@ class BulkLiteralPlanNotCachedIssue12605Test extends TestHelper {
     }
     final Statement small = ((DatabaseInternal) database).getStatementCache().get("SELECT FROM T WHERE k IN " + list(100, 0));
     assertThat(small.isExcludedFromPlanCache()).as("a text under the limit").isFalse();
+  }
+
+  @Test
+  void everyNestedStatementOfABulkTextIsMarkedAsItIsBuilt() {
+    // the literals can be in any nested statement, and the planners plan each of them on its own: the builder marks every
+    // SELECT, UPDATE and DELETE where it creates it, so none depends on a walk of the finished tree
+    final String values = list(BULK, 0);
+    final String[] bulk = { //
+        "SELECT $ids.size() AS n FROM T LET $ids = (SELECT FROM T WHERE k IN " + values + ") LIMIT 1", //
+        "SELECT FROM (SELECT FROM T WHERE k IN " + values + ") WHERE k >= 0", //
+        "SELECT FROM T WHERE k IN (SELECT k FROM T WHERE k IN " + values + ")", //
+        "INSERT INTO T FROM SELECT FROM T WHERE k IN " + values, //
+        "UPDATE T SET z = 1 WHERE k IN (SELECT k FROM T WHERE k IN " + values + ")", //
+        "DELETE FROM T WHERE k IN (SELECT k FROM T WHERE k IN " + values + ")" };
+    for (final String text : bulk)
+      assertThat(unmarkedNestedStatements(new SQLAntlrParser(database).parse(text))).as(text.substring(0, 40)).isZero();
+
+    final List<Statement> script = new SQLAntlrParser(database).parseScript(
+        "LET $a = SELECT FROM T WHERE k IN " + values + ";\nIF ($a.size() > 0) {\n  DELETE FROM T WHERE k = 1;\n}\nUPDATE T SET z = 3;");
+    assertThat(script).hasSize(3);
+    // the LET holds the list, the IF block holds none: the literals are counted over the script, so both are kept out
+    assertThat(unmarkedNestedStatements(script.get(0))).as("the SELECT of a script LET").isZero();
+    assertThat(unmarkedNestedStatements(script.get(1))).as("the DELETE of a script IF block").isZero();
+    assertThat(script.get(2).isExcludedFromPlanCache()).as("the UPDATE of a bulk script").isTrue();
+  }
+
+  @Test
+  void aBulkSubqueryLeavesNoPlanInTheCache() {
+    try (final ResultSet rs = database.query("sql", "SELECT FROM (SELECT FROM T WHERE k IN " + list(BULK, 0) + ") WHERE k >= 0")) {
+      assertThat(rs.stream().count()).isEqualTo(RECORDS);
+    }
+    assertThat(plans().size()).as("the FROM subquery of a bulk SELECT").isZero();
+
+    try (final ResultSet rs = database.query("sql", "SELECT FROM T WHERE k IN (SELECT k FROM T WHERE k IN " + list(BULK, 0) + ")")) {
+      assertThat(rs.stream().count()).isEqualTo(RECORDS);
+    }
+    assertThat(plans().size()).as("the WHERE subquery of a bulk SELECT").isZero();
+
+    database.transaction(() -> database.command("sql", "INSERT INTO T FROM SELECT FROM T WHERE k IN " + list(BULK, 0)).close());
+    assertThat(plans().size()).as("the source of a bulk INSERT").isZero();
+    assertThat(countT()).isEqualTo(RECORDS * 2);
+  }
+
+  /**
+   * Checks every SELECT, UPDATE and DELETE nested in a statement parsed from a bulk text is kept out of the plan cache, and
+   * that the statement holds at least one: the walk still reaches the nested statements.
+   */
+  private static int unmarkedNestedStatements(final Statement root) {
+    assertThat(root.isExcludedFromPlanCache()).as("root: %s", root.getClass().getSimpleName()).isTrue();
+    final int[] nested = { 0 };
+    final int[] unmarked = { 0 };
+    final boolean complete = SqlAstInspector.forEachNestedStatement(root, (statement, enclosing) -> {
+      if (statement instanceof SelectStatement || statement instanceof UpdateStatement || statement instanceof DeleteStatement) {
+        nested[0]++;
+        if (!statement.isExcludedFromPlanCache())
+          unmarked[0]++;
+      }
+      return true;
+    });
+    assertThat(complete).as("the fields of the tree are readable").isTrue();
+    assertThat(nested[0]).as("the walk still reaches the nested statements of %s", root.getClass().getSimpleName()).isPositive();
+    return unmarked[0];
   }
 
   @Test

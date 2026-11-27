@@ -133,13 +133,16 @@ public record SQLAntlrParser(Database database) {
       }
 
       // Build AST
-      final SQLASTBuilder builder = new SQLASTBuilder();
+      // The parser has read the whole text (the rule ends in EOF), so every token is in the stream: a bulk text is known before
+      // the tree is built, and the builder keeps each statement it creates out of the plan cache (issue #12605)
+      final boolean bulk = holdsMoreLiteralsThanAShape(tokens);
+      final SQLASTBuilder builder = new SQLASTBuilder(bulk);
       final Statement stmt = (Statement) builder.visit(parseTree);
 
       // Set original statement text (used for caching and error messages)
       if (stmt != null) {
         stmt.originalStatementAsString = sqlText;
-        if (holdsMoreLiteralsThanAShape(tokens))
+        if (bulk)
           stmt.excludeFromPlanCache();
       }
 
@@ -198,15 +201,15 @@ public record SQLAntlrParser(Database database) {
       }
 
       // Build AST
-      final SQLASTBuilder builder = new SQLASTBuilder();
+      // A script is parsed on every execution, never through the statement cache, so the plan cache is the only one its
+      // statements can reach. The literals are counted over the whole script, so a bulk script keeps all of its statements out,
+      // nested ones included, as the builder creates them (issue #12605)
+      final boolean bulk = holdsMoreLiteralsThanAShape(tokens);
+      final SQLASTBuilder builder = new SQLASTBuilder(bulk);
       final List<Statement> statements = (List<Statement>) builder.visit(parseTree);
 
       // Set original statement text for each statement
       if (statements != null) {
-        // A script is parsed on every execution, never through the statement cache, so the plan cache is the only one its
-        // statements can reach. The literals are counted over the whole script, so a bulk script keeps all of its statements out
-        // (issue #12605)
-        final boolean bulk = holdsMoreLiteralsThanAShape(tokens);
         for (final Statement stmt : statements) {
           // For now, set the entire script as the original text
           // TODO: Track individual statement positions
