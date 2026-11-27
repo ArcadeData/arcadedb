@@ -57,6 +57,11 @@ class CypherRowBufferHeapLimitTest extends TestHelper {
   private static final String PROFILE_SCAN   = "PROFILE MATCH (n:N) RETURN n.id AS id";
   private static final String PROFILE_BIG    = "PROFILE MATCH (p:P) RETURN p.name AS name";
   private static final String SCAN_IN_BATCH  = "MATCH (n:N) CALL { WITH n RETURN n.id AS v } IN TRANSACTIONS OF %d ROWS RETURN v";
+  private static final String WRITE_IN_BATCH =
+      "MATCH (p:P) CALL { WITH p CREATE (:W {k: p.id}) RETURN p.name AS nm } IN TRANSACTIONS OF %d ROWS RETURN nm";
+  // THE ROWS A BATCH COLLECTS FIT THE BUDGET, BUT THEY AND THE ROWS RESERVED TO SERVE THEM DO NOT. MEASURED: 450 AND 700 ROWS ARE
+  // REFUSED WHEN THE ANSWERS ARE RESERVED, 1000 ROWS ALREADY WHILE THEY ARE COLLECTED
+  private static final int    WRITE_BATCH    = 600;
   private static final String BIG_IN_BATCH   =
       "MATCH (p:P) CALL { WITH p RETURN p.name AS nm } IN TRANSACTIONS OF %d ROWS RETURN nm";
 
@@ -64,6 +69,7 @@ class CypherRowBufferHeapLimitTest extends TestHelper {
   protected void beginTest() {
     database.getSchema().createVertexType("N");
     database.getSchema().createVertexType("P");
+    database.getSchema().createVertexType("W");
     database.transaction(() -> {
       for (int i = 0; i < ROWS; i++)
         database.newVertex("N").set("id", i).save();
@@ -153,6 +159,27 @@ class CypherRowBufferHeapLimitTest extends TestHelper {
   }
 
   @Test
+  void theOuterRowsOfABatchCountWithTheRowsItsBodiesAnswered() {
+    // Five outer rows and five answers are ten rows held: within the limit. Six and six are twelve
+    assertThat(drain(SCAN_IN_BATCH.formatted(5))).isEqualTo(ROWS);
+    assertThatThrownBy(() -> drain(SCAN_IN_BATCH.formatted(6))).isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining(LIMIT_SETTING);
+  }
+
+  @Test
+  void aBatchWhoseAnswersOutgrowTheHeapBudgetIsRefusedBeforeItCommits() {
+    QueryHeapBudgetTestSupport.awaitNoReservationLeft();
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP, -1L);
+    GlobalConfiguration.QUERY_MAX_HEAP_RAM.setValue(BUDGET_MB);
+
+    // What the batch collects fits the budget, what it then holds to serve does not: the writes of the batch are not committed
+    assertThatThrownBy(() -> drainCommand(WRITE_IN_BATCH.formatted(WRITE_BATCH))).isInstanceOf(HeapLimitExceededException.class)
+        .hasMessageContaining("CALL subquery batch");
+    assertThat(database.query("opencypher", "MATCH (w:W) RETURN count(w) AS c").next().<Number>getProperty("c").longValue()).isZero();
+    assertThat(QueryHeapBudget.getReservedBytes()).isZero();
+  }
+
+  @Test
   void aBatchThatOutgrowsTheHeapBudgetIsRefusedAndGivesItsHeapBack() {
     QueryHeapBudgetTestSupport.awaitNoReservationLeft();
     database.getConfiguration().setValue(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP, -1L);
@@ -185,6 +212,17 @@ class CypherRowBufferHeapLimitTest extends TestHelper {
       assertThat(rs.hasNext()).isTrue();
     }
     assertThat(probe.hints).containsExactly(AbstractExecutionStep.DEFAULT_FETCH_RECORDS_PER_PULL);
+  }
+
+  private long drainCommand(final String query) {
+    long rows = 0;
+    try (final ResultSet rs = database.command("opencypher", query)) {
+      while (rs.hasNext()) {
+        rs.next();
+        ++rows;
+      }
+    }
+    return rows;
   }
 
   private long drain(final String query) {

@@ -399,7 +399,10 @@ public class SubqueryStep extends AbstractExecutionStep {
         // instead of reporting the end, or every later batch is silently skipped (issue #10886)
         while (bufferIndex >= buffer.size()) {
           if (finished) {
-            // Every row was served: the batch's heap goes back even if the consumer keeps the result set open
+            // Every row was served: the batch's heap goes back even if the consumer keeps the result set open, so the rows are
+            // dropped with it
+            buffer.clear();
+            bufferIndex = 0;
             servedHeapLimit.release();
             return false;
           }
@@ -420,10 +423,24 @@ public class SubqueryStep extends AbstractExecutionStep {
         return liveRow(buffer.get(bufferIndex++), context);
       }
 
-      /** Keeps a row of the batch to serve, counted against the element cap and the heap budget until the batch is served. */
+      /**
+       * Keeps a row of a batch that did not commit to serve, counted against the element cap and the heap budget until the batch is
+       * served. The rows of a batch that committed are reserved before its commit instead, see {@link #reserveServed}.
+       */
       private void serve(final Result row) {
         buffer.add(row);
         servedHeapLimit.add(buffer.size(), row);
+      }
+
+      /**
+       * Reserves the heap of the rows a batch is about to serve, before its transaction commits: a refusal is then a failure of the
+       * batch, undone with the rest of the statement, and not one raised after the writes of the batch are durable. The merged rows
+       * hold what the batch collected, so that is what is reserved for them.
+       */
+      private void reserveServed(final long rows, final long bytes) {
+        servedHeapLimit.check(rows);
+        servedHeapLimit.charge(bytes);
+        servedHeapLimit.settle();
       }
 
       private void fetchMore() {
@@ -485,6 +502,7 @@ public class SubqueryStep extends AbstractExecutionStep {
 
         // Execute the batch in its own transaction
         long innerRows = 0L;
+        long servedRows = 0L;
         final List<List<Result>> innerResultsPerRow = new ArrayList<>(batch.size());
         final String transactionId = String.valueOf(++batchNumber);
         committedWrites = commitStatementWrites(committedWrites);
@@ -503,14 +521,17 @@ public class SubqueryStep extends AbstractExecutionStep {
                 rowCount++;
 
               reloadCommittedRecords(outerRow, committedWrites);
-              final List<Result> innerResults = executeInnerQuery(outerRow, context, innerRows);
+              // The outer rows of the batch are held while their bodies answer, so they count with the rows already answered
+              final List<Result> innerResults = executeInnerQuery(outerRow, context, batch.size() + innerRows);
               innerRows += innerResults.size();
+              servedRows += innerResults.isEmpty() ? (subqueryClause.isOptional() ? 1 : 0) : innerResults.size();
               innerResultsPerRow.add(innerResults);
             } finally {
               if (context.isProfiling())
                 cost += System.nanoTime() - begin;
             }
           }
+          reserveServed(servedRows, collectedHeapLimit.getChargedBytes());
           if (innerMayWrite) {
             // What this batch wrote is a version ahead, once it commits, of the copies the outer rows not run yet hold
             final TransactionContext tx = database.getTransactionIfExists();
@@ -549,6 +570,8 @@ public class SubqueryStep extends AbstractExecutionStep {
             broken = true;
           final Map<String, Object> status = status(true, false, transactionId,
               e.getMessage() != null ? e.getMessage() : e.getClass().getName());
+          // The rows reserved for the batch's answers are not produced: the rows of the failed batch are counted instead
+          servedHeapLimit.release();
           for (final Result outerRow : batch) {
             refreshOuterBindings(outerRow, context);
             serve(rowOfUncommittedBatch(outerRow, statusVariable, status));
@@ -573,18 +596,19 @@ public class SubqueryStep extends AbstractExecutionStep {
               final ResultInternal row = withReturnedColumnsNull(outerRow);
               if (committedStatus != null)
                 row.setProperty(statusVariable, committedStatus);
-              serve(row);
+              buffer.add(row);
             }
           } else {
             for (final Result innerRow : innerResults) {
               final ResultInternal merged = mergeResults(outerRow, innerRow);
               if (committedStatus != null)
                 merged.setProperty(statusVariable, committedStatus);
-              serve(merged);
+              buffer.add(merged);
             }
           }
         }
-        // The outer rows and what the bodies answered for them are not read again: only the merged rows are held from here
+        // The outer rows and what the bodies answered for them are not read again: only the merged rows are held from here, and
+        // their heap was reserved before the commit
         collectedHeapLimit.release();
 
         // If no more input, mark finished
