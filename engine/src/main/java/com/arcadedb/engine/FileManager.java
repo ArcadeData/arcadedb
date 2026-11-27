@@ -611,8 +611,19 @@ public class FileManager {
     return stats;
   }
 
+  /**
+   * A snapshot of the file table, indexed by file id. A slot that holds no file is {@code null}: the one of a dropped file, and
+   * the one {@link #newFileId()} reserved for a component that has not opened its file yet or never did (it failed to open it,
+   * issue #11593). The placeholder of a reserved slot is never handed out, so every entry is a file with a name or {@code null}.
+   */
   public synchronized List<ComponentFile> getFiles() {
-    return Collections.unmodifiableList(new ArrayList<>(files));
+    final int size = files.size();
+    final ComponentFile[] snapshot = new ComponentFile[size];
+    for (int i = 0; i < size; i++) {
+      final ComponentFile file = files.get(i);
+      snapshot[i] = file == RESERVED_SLOT ? null : file;
+    }
+    return Collections.unmodifiableList(Arrays.asList(snapshot));
   }
 
   /**
@@ -839,14 +850,10 @@ public class FileManager {
   }
 
   /**
-   * Whether {@code file} is the placeholder {@link #newFileId()} puts in the slot it reserves, rather than a file. A slot stays
-   * reserved, with no file behind it, when the component that asked for it fails to open its file - the loser of two
-   * transactions creating the same super-node stripe bucket at once (issue #11593).
+   * Reserves the next file id. The slot holds a placeholder until the component opens its file, and stays reserved, with no
+   * file behind it, when the component that asked for it fails to open its file - the loser of two transactions creating the
+   * same super-node stripe bucket at once (issue #11593). {@link #getFiles()} lists such a slot as empty.
    */
-  public static boolean isReservedSlot(final ComponentFile file) {
-    return file == RESERVED_SLOT;
-  }
-
   public synchronized int newFileId() {
 //    // LOOK FOR AN HOLE
 //    for (int i = 0; i < files.size(); ++i) {
