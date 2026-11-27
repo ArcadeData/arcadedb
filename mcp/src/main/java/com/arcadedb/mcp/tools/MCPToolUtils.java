@@ -35,6 +35,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.mcp.MCPConfiguration;
+import com.arcadedb.mcp.MCPRefusalException;
 import com.arcadedb.mcp.MCPPermissions;
 import com.arcadedb.mcp.MCPScopedDatabaseUser;
 import com.arcadedb.server.security.DatabaseUserContext;
@@ -78,7 +79,7 @@ public class MCPToolUtils {
   public static QueryEngine analyzableQueryEngine(final Database database, final String language) {
     final QueryEngine engine = database.getQueryEngine(language);
     if (engine.analysisEvaluatesQuery())
-      throw new SecurityException("Language '" + language + "' is not available through MCP: it cannot be checked without running it");
+      throw new MCPRefusalException("Language '" + language + "' is not available through MCP: it cannot be checked without running it");
     return engine;
   }
 
@@ -100,7 +101,7 @@ public class MCPToolUtils {
         || !server.isDatabaseAvailable(databaseName))
       throw unknownDatabase(server, user, databaseName, config, requireRead);
     if (requireRead && !permissions.isAllowReads())
-      throw new SecurityException("Read operations are not allowed by MCP configuration");
+      throw new MCPRefusalException("Read operations are not allowed by MCP configuration");
 
     final ServerDatabase database = server.getDatabaseForClient(databaseName);
     bindCurrentUser(database, user, permissions);
@@ -155,7 +156,7 @@ public class MCPToolUtils {
    */
   public static void checkServerAdmin(final ServerSecurityUser user, final String operation) {
     if (user == null || !"root".equals(user.getName()))
-      throw new SecurityException("Only the root user is authorized to execute the server administration operation '"
+      throw new MCPRefusalException("Only the root user is authorized to execute the server administration operation '"
           + operation + "'");
   }
 

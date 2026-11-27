@@ -103,7 +103,7 @@ class GrpcValueEncoderParityTest {
       });
 
       final FullTextSearchResponse response = GrpcVectorSearch.fullTextSearch(database,
-          FullTextSearchRequest.newBuilder().setQueryText("graph").setTypeName("Article").build());
+          FullTextSearchRequest.newBuilder().setQueryText("graph").setTypeName("Article").build(), GrpcEncodingBudget.ofDefault());
 
       assertThat(response.getResultsCount()).isEqualTo(1);
       final GrpcValue tags = response.getResults(0).getRecord().getPropertiesOrThrow("tags");
@@ -128,7 +128,7 @@ class GrpcValueEncoderParityTest {
    * a measurement.
    * <p>
    * This drives the REAL accumulator into the REAL encoder, the same composition the RPC performs
-   * ({@code toSampleValue(result.getValue(timestamp, r))}), so it pins the contract rather than the mapper in
+   * ({@code toSampleValue(result.getWireValue(timestamp, r))}), so it pins the contract rather than the mapper in
    * isolation, and without needing a bound gRPC port.
    *
    * @see <a href="https://github.com/ArcadeData/arcadedb/issues/7694">issue #7694</a>
@@ -146,7 +146,7 @@ class GrpcValueEncoderParityTest {
   private static List<GrpcValue> encode(final MultiColumnAggregationResult result) {
     final TimeSeriesBucket.Builder bucket = TimeSeriesBucket.newBuilder().setTimestamp(BUCKET);
     for (int r = 0; r < 3; r++)
-      bucket.addValues(GrpcTimeSeriesSupport.toSampleValue(result.getValue(BUCKET, r)));
+      bucket.addValues(GrpcTimeSeriesSupport.toSampleValue(result.getWireValue(BUCKET, r)));
     return bucket.build().getValuesList();
   }
 

@@ -411,7 +411,7 @@ public class PostGrafanaQueryHandler extends AbstractObservabilityHandler {
       for (int r = 0; r < requests.size(); r++)
         // NOT put(double): an absent MIN/MAX answers NaN, which that overload rewrites to 0 - and a dashboard
         // draws a dip to zero instead of the gap the data actually has.
-        putSampleValue(aggColumns[r], aggResult.getValue(ts, r));
+        putSampleValue(aggColumns[r], aggResult.getWireValue(ts, r));
     }
 
     final JSONArray valuesArray = new JSONArray();

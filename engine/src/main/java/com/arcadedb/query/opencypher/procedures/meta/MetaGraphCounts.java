@@ -19,13 +19,20 @@
 package com.arcadedb.query.opencypher.procedures.meta;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityHelper;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -38,7 +45,9 @@ import java.util.TreeMap;
  * The counts {@code meta.stats} and {@code meta.graph} report, as APOC reads them from Neo4j's count store: nodes per
  * label, relationships per type, per (start label, type), per (type, end label), and which (start label, type, end
  * label) combinations occur. ArcadeDB keeps no per-label relationship counts, so the relationships of each readable type
- * are scanned once; their endpoints' labels come from the endpoint RIDs' buckets, without loading the nodes.
+ * are scanned once; their endpoints' labels come from the endpoint RIDs' buckets, without loading the nodes. The
+ * relationships of a LIGHTWEIGHT edge type have no record to scan: they are read from the outgoing edge lists of the
+ * vertices, in one more walk that only a database declaring such a type pays.
  * <p>
  * The scan reads the two endpoints of each relationship and nothing else (the properties are decoded only for the sample
  * of {@code meta.stats}' {@code propertyKeyCount}), and counts per pair of endpoint buckets, so what it allocates grows
@@ -82,27 +91,113 @@ final class MetaGraphCounts {
         labels.merge(label, count, Long::sum);
     }
 
+    final Map<String, Map<Long, long[]>> lightweightPairs = scanLightweightRelationships(database, metaLabels, guard);
+
     for (final EdgeType type : metaLabels.edgeTypes()) {
       guard.check();
       final String typeName = type.getName();
-      final long count = database.countType(typeName, false);
-      relCount += count;
+      final long records = database.countType(typeName, false);
       if (collectPropertyKeys)
         propertyKeys.addAll(type.getPolymorphicPropertyNames());
+
+      // relationships per (start bucket, end bucket), the key packs both ids: the lightweight ones the walk of the vertices
+      // found, then the records of the type
+      Map<Long, long[]> pairs = lightweightPairs.get(typeName);
+      long count = records;
+      if (pairs != null)
+        for (final long[] counter : pairs.values())
+          count += counter[0];
       if (count == 0L)
         continue;
+
+      relCount += count;
       relTypes.put(typeName, count);
-      scanRelationships(database, metaLabels, typeName, count, collectPropertyKeys, guard);
+      if (pairs == null)
+        pairs = new HashMap<>();
+      if (records > 0L)
+        scanRelationships(database, typeName, records, collectPropertyKeys, guard, pairs);
+      foldPairs(metaLabels, typeName, pairs);
     }
   }
 
-  private void scanRelationships(final Database database, final MetaLabels metaLabels, final String typeName, final long count,
-      final boolean collectPropertyKeys, final WorkGuard guard) {
+  /**
+   * The relationships that have no record: a LIGHTWEIGHT edge type stores each of its edges as an entry of the two vertices'
+   * edge lists only, so the count of its records is 0 by construction and a scan of them finds nothing (issue #12597). They are
+   * read where they are: one walk of the vertices the caller may read, then the entries without a record (a negative position)
+   * in the outgoing list of each, which holds every edge exactly once whichever way the type is declared. A relationship
+   * leaving a node the caller may not read is therefore not counted, the rule the SQL scan of such a type applies.
+   * <p>
+   * The walk is paid only when a readable edge type is declared LIGHTWEIGHT, and costs the vertices plus the outgoing
+   * entries of the lightweight types. A lightweight relationship carries no property, so there is no key to sample.
+   *
+   * @return relationships per (start bucket, end bucket) by edge type name, for the readable types that have some
+   */
+  private static Map<String, Map<Long, long[]>> scanLightweightRelationships(final Database database, final MetaLabels metaLabels,
+      final WorkGuard guard) {
+    final List<String> lightweightTypes = new ArrayList<>();
+    for (final EdgeType type : metaLabels.edgeTypes())
+      if (type.isLightweight())
+        lightweightTypes.add(type.getName());
+    if (lightweightTypes.isEmpty())
+      return Map.of();
+
+    final String[] typeNames = lightweightTypes.toArray(new String[0]);
+    final DatabaseInternal internal = (DatabaseInternal) database;
+    final Map<String, Map<Long, long[]>> pairsByType = new HashMap<>();
+
+    // the entries of a type share the bucket of their RID: the type is resolved once per run of entries of the same bucket
+    int lastEdgeBucket = -1;
+    Map<Long, long[]> lastPairs = null;
+    int visited = 0;
+
+    for (final VertexType vertexType : metaLabels.vertexTypes())
+      // own buckets only (a subtype is a vertex type of its own), and one at a time: a type is readable as soon as one of its
+      // buckets is, and opening another one would fail the whole call
+      for (final Bucket bucket : vertexType.getBuckets(false)) {
+        if (!SecurityHelper.canAccessFile(internal, bucket.getFileId(), SecurityDatabaseUser.ACCESS.READ_RECORD))
+          continue;
+
+        final long startBucket = (long) bucket.getFileId() << 32;
+        final Iterator<Record> vertices = bucket.iterator();
+        while (vertices.hasNext()) {
+          guard.checkPeriodically(visited++);
+          if (!(vertices.next() instanceof Vertex vertex))
+            continue;
+
+          for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.OUT, typeNames)) {
+            guard.checkPeriodically(visited++);
+            final RID edgeRid = edge.getIdentity();
+            // an entry with a record is counted by the scan of the records of its type
+            if (edgeRid.getPosition() >= 0L)
+              continue;
+
+            final int edgeBucket = edgeRid.getBucketId();
+            if (edgeBucket != lastEdgeBucket) {
+              lastEdgeBucket = edgeBucket;
+              // by the entry's own type, not the one asked for: the list answers the subtypes of a type too, and one of them
+              // may be a type the caller cannot read
+              final DocumentType edgeType = database.getSchema().getTypeByBucketId(edgeBucket);
+              lastPairs = edgeType != null && metaLabels.isReadableEdgeType(edgeType.getName()) ?
+                  pairsByType.computeIfAbsent(edgeType.getName(), k -> new HashMap<>()) :
+                  null;
+            }
+            if (lastPairs != null)
+              ++lastPairs.computeIfAbsent(startBucket | (edge.getIn().getBucketId() & 0xFFFFFFFFL), k -> new long[1])[0];
+          }
+        }
+      }
+    return pairsByType;
+  }
+
+  /**
+   * Counts the records of the type {@code typeName} into {@code pairs}, per (start bucket, end bucket).
+   */
+  private void scanRelationships(final Database database, final String typeName, final long count,
+      final boolean collectPropertyKeys, final WorkGuard guard, final Map<Long, long[]> pairs) {
     final long skip = collectPropertyKeys ? MetaConfig.DEFAULT.skipFor(count) : 1L;
 
-    // relationships per (start bucket, end bucket): the key packs both ids, the counter is created once per distinct pair, and
-    // the last pair is kept because the relationships of a bucket mostly connect the same two types
-    final Map<Long, long[]> pairs = new HashMap<>();
+    // the counter is created once per distinct pair, and the last pair is kept because the relationships of a bucket mostly
+    // connect the same two types
     long lastKey = 0L;
     long[] lastCounter = null;
 
@@ -120,7 +215,12 @@ final class MetaGraphCounts {
       }
       ++lastCounter[0];
     }
+  }
 
+  /**
+   * Turns the relationships of {@code typeName} per pair of endpoint buckets into the counts per label.
+   */
+  private void foldPairs(final MetaLabels metaLabels, final String typeName, final Map<Long, long[]> pairs) {
     final Map<String, Long> out = outCounts.computeIfAbsent(typeName, k -> new TreeMap<>());
     final Map<String, Long> in = inCounts.computeIfAbsent(typeName, k -> new TreeMap<>());
     final Map<String, Map<String, Long>> startToEnds = between.computeIfAbsent(typeName, k -> new TreeMap<>());

@@ -155,4 +155,10 @@ public class SQLFunctionSum extends SQLAggregatedFunction {
     // as the time-series push-down.
     return durationSum != null ? durationSum : sum.get();
   }
+
+  /** Pure over its rows and arguments (issue #6190): a statement that holds the call keeps its execution plan. */
+  @Override
+  public boolean isDeterministic() {
+    return true;
+  }
 }
