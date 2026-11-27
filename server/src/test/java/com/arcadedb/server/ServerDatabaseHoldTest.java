@@ -36,6 +36,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.OS;
 
 import java.io.File;
 import java.lang.reflect.InvocationTargetException;
@@ -55,6 +56,8 @@ import java.util.concurrent.TimeoutException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * A database an operator holds - closed by {@code close database}, reserved by a restore, being dropped - is neither served
@@ -199,6 +202,43 @@ class ServerDatabaseHoldTest {
       } finally {
         dropIfPresent(server, NAME);
       }
+    }
+
+    // Regression: #12865 a drop that could not delete the files returned normally and the server deregistered the database
+    @Test
+    void aDropThatCannotDeleteTheFilesFailsAndKeepsTheDatabase() throws Exception {
+      assumeFalse(OS.WINDOWS.isCurrentOs(), "a read-only directory is POSIX only");
+      final ArcadeDBServer server = getServer(0);
+      final ServerDatabase created = server.createDatabase(NAME, ComponentFile.MODE.READ_WRITE);
+      created.getSchema().createDocumentType("Doc");
+      created.transaction(() -> created.newDocument("Doc").set("k", 1).save());
+      final File directory = new File(created.getDatabasePath());
+
+      directory.setWritable(false);
+      final boolean readOnly = !directory.canWrite();
+      if (!readOnly) {
+        directory.setWritable(true);
+        dropIfPresent(server, NAME);
+      }
+      assumeTrue(readOnly, "the directory cannot be made read-only here (running as root?)");
+      try {
+        // The real LocalDatabase.drop(): the delete removes nothing, and the server's own failure handler reports it and rethrows
+        assertThatThrownBy(() -> server.dropLocalDatabase(created.getEmbedded(), NAME)).isInstanceOf(DatabaseOperationException.class)
+            .hasMessageContaining("its files could not be deleted");
+      } finally {
+        directory.setWritable(true);
+      }
+
+      try {
+        // The database was not deregistered as dropped: its files are there and a request opens it again, data included
+        assertThat(server.existsDatabase(NAME)).isTrue();
+        final ServerDatabase reopened = server.getDatabaseForRequest(NAME);
+        assertThat(reopened.isOpen()).isTrue();
+        assertThat(reopened.countType("Doc", false)).isEqualTo(1);
+      } finally {
+        dropIfPresent(server, NAME);
+      }
+      assertThat(directory).doesNotExist();
     }
 
     @Test

@@ -499,16 +499,40 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       if (afterDropCloseHook != null)
         afterDropCloseHook.accept(this);
 
+      final File databaseDirectory = new File(databasePath);
       executeInWriteLock(() -> {
-        FileUtils.deleteRecursively(new File(databasePath));
+        FileUtils.deleteRecursively(databaseDirectory);
         return null;
       });
+
+      // THE DELETE ONLY LOGS WHAT IT COULD NOT REMOVE (ISSUE #12865): A DROP THAT LEFT FILES BEHIND MUST NOT REPORT SUCCESS, OR THE
+      // CALLER IS TOLD THE DATABASE IS GONE WHILE create() OF THE PATH IS REFUSED AS "ALREADY EXISTS" AND open() BRINGS THE DATA
+      // BACK. CHECKED WHILE THE PATH IS STILL HELD IN THE REGISTRY, SO NO create() CAN PUT NEW FILES THERE IN BETWEEN. AN EMPTY
+      // DIRECTORY LEFT BEHIND (A MOUNT POINT, A PARENT THAT REFUSES THE UNLINK) HOLDS NO DATABASE AND IS NOT A FAILURE
+      final String[] leftOver = databaseDirectory.list();
+      if (leftOver != null && leftOver.length > 0)
+        throw new DatabaseOperationException(
+            "Database '" + databasePath + "' was closed but its files could not be deleted: " + describeLeftOverFiles(leftOver));
     } finally {
       // WHATEVER BECAME OF THE DELETE: NOTHING IS LEFT TO KEEP THE PATH FOR. A DROP THAT LOST THE CLOSING CAS TO A CONCURRENT
       // close() HAS NOTHING TO UNREGISTER, THAT CLOSE DID IT
       if (registrationKept)
         unregisterClosedInstance();
     }
+  }
+
+  private static String describeLeftOverFiles(final String[] leftOver) {
+    Arrays.sort(leftOver);
+    final int listed = Math.min(leftOver.length, 10);
+    final StringBuilder buffer = new StringBuilder();
+    for (int i = 0; i < listed; i++) {
+      if (i > 0)
+        buffer.append(", ");
+      buffer.append(leftOver[i]);
+    }
+    if (leftOver.length > listed)
+      buffer.append(" and ").append(leftOver.length - listed).append(" more");
+    return buffer.toString();
   }
 
   /**
