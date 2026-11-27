@@ -128,12 +128,17 @@ class SchemaPresentationReadableWalkCensusTest {
       Map.entry("query/opencypher/Labels#matchingVertexTypes", PLANNER),
       Map.entry("query/opencypher/executor/HopEdgeTrackingAnalyzer#labelsAreTypeDisjoint", PLANNER),
       Map.entry("query/opencypher/executor/CountStarShapeDetector$PairJoinStatistics#vertices", PLANNER),
+      Map.entry("query/opencypher/executor/MatchStepBuilder#isTypeScanCheaperThanWalk",
+          "query planning: sums the vertices of every vertex type into a cost estimate that picks a plan, answers no caller "
+              + "(issue #11874)"),
       Map.entry("query/opencypher/executor/operators/GAVEdgeRef#trackedEdgeTypes", PLANNER),
       Map.entry("query/opencypher/executor/steps/PairHashJoinOp#executeOLTP", PLANNER),
       Map.entry("query/opencypher/executor/steps/PartitionedTriangleOp#executeOLTP", PLANNER),
       Map.entry("query/opencypher/executor/steps/TypeCountStep#countAllVertices", "counts each type through countType, which refuses a denied type"),
       Map.entry("query/opencypher/optimizer/statistics/StatisticsProvider#calculateAverageDegree", PLANNER),
       Map.entry("query/sql/executor/FetchFromLightweightEdgeTypeStep#init", PLANNER),
+      Map.entry("query/sql/executor/MatchExecutionPlanner#createRootPlan",
+          "the untyped MATCH root scans every vertex bucket through the per-bucket gate, which refuses a denied type as MATCH (n) does"),
       Map.entry("query/sql/parser/FindReferencesStatement#resolveTypesToScan", READ_THROUGH_GATE),
       // GREMLIN
       Map.entry("gremlin/ArcadeCountGlobalStep#processNextStart", "a traversal: the count reads every bucket through the per-bucket gate, which refuses a denied type"),

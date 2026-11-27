@@ -100,7 +100,7 @@ class ImporterRefusedCommitTest {
 
     assertThatThrownBy(importer::load).hasStackTraceContaining("issue 11208: refused commit");
 
-    assertThat(refusals).isEqualTo(1);
+    assertThat(refusals).as("both records land in the one batch whose commit is refused").isEqualTo(2);
     assertNothingLeftOnTheThread();
     assertThat(countOf("Document")).isZero();
   }

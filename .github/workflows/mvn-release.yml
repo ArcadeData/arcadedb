@@ -1,16 +1,18 @@
-# Release in six jobs, so nothing leaves the building before the release passed the vulnerability gate and the
+# Release in seven jobs, so nothing leaves the building before the release passed the vulnerability gate and the
 # jars are on Maven Central, and no job that runs a build holds `id-token: write`.
 #
 # Before the split, one `mvn deploy -Pdocker` pushed the Docker images from the `deploy` phase of `package`, while
 # central-publishing-maven-plugin uploads its bundle only at the end of the reactor. A Central failure then left a
 # Docker image (and its `latest` tag) for a release whose jars did not exist.
 #
+#   credentials checks, in parallel with `preflight`, that the GPG key, the Central token, the Docker Hub token and the
+#               release tag are all ready (.github/scripts/check-release-credentials.sh). Publishes nothing.
 #   preflight   builds the release exactly as `central` will and scans its SBOMs and the JVM image of each platform
 #               the release publishes (package/pom.xml `docker-maven-plugin.platform`) with grype. Fails on a
 #               CRITICAL vulnerability that has a fix and is not marked not_affected in vex/arcadedb.openvex.json.
 #               Publishes nothing.
-#   central     runs only once `preflight` passed. Deploys to Maven Central and waits until Sonatype reports the
-#               deployment PUBLISHED. No Docker, nothing pushed to git.
+#   central     runs only once `preflight` and `credentials` passed. Deploys to Maven Central and waits until
+#               Sonatype reports the deployment PUBLISHED. No Docker, nothing pushed to git.
 #   attest      runs once `central` succeeded: build provenance for the jars, archives and SBOMs, and the SBOM
 #               attestations of the two distributions, over the files `central` uploaded.
 #   docker      runs only once `central` and `attest` succeeded: builds the same release version again with
@@ -152,8 +154,37 @@ jobs:
           path: package/target/scan/*.json
           if-no-files-found: ignore
 
+  # The credentials of every later job, checked before `preflight`'s build finishes: a wrong passphrase, an expired
+  # Central token or a read-only Docker Hub token would otherwise surface in `central` or, worse, in `docker` after the
+  # jars are already on Central. Publishes nothing. A rehearsal skips Central and the keyservers (it never publishes
+  # and signs with a test key) and checks push on its own DOCKER_NAMESPACE.
+  credentials:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - name: Check release credentials
+        run: .github/scripts/check-release-credentials.sh "${RELEASE_VERSION}"
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+          RELEASE_GPG_FINGERPRINT: ${{ vars.RELEASE_GPG_FINGERPRINT }}
+          SKIP_CENTRAL: ${{ inputs.rehearsal }}
+          CENTRAL_USERNAME: ${{ !inputs.rehearsal && secrets.MAVEN_CENTRAL_USERNAME || '' }}
+          CENTRAL_PASSWORD: ${{ !inputs.rehearsal && secrets.MAVEN_CENTRAL_PASSWORD || '' }}
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+          DOCKER_REPOSITORY: ${{ vars.DOCKER_NAMESPACE || 'arcadedata' }}/arcadedb
+          GITHUB_TOKEN: ${{ github.token }}
+
   central:
-    needs: preflight
+    needs: [ preflight, credentials ]
     runs-on: ubuntu-latest
     permissions:
       contents: read

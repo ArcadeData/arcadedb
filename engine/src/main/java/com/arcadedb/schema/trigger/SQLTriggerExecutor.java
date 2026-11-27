@@ -23,10 +23,13 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.Trigger;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -38,12 +41,31 @@ import java.util.logging.Level;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class SQLTriggerExecutor implements TriggerExecutor {
-  private final String triggerName;
-  private final String sql;
+  private final String  triggerName;
+  private final Trigger trigger;
 
-  public SQLTriggerExecutor(final String triggerName, final String sql) {
-    this.triggerName = triggerName;
-    this.sql = sql;
+  /**
+   * The body is read from {@code trigger} at every execution, not copied here: a rename of a type the body names rewrites it in
+   * place (issue #12941), and the listener holding this executor stays registered across the rename.
+   */
+  public SQLTriggerExecutor(final Trigger trigger) {
+    this.triggerName = trigger.getName();
+    this.trigger = trigger;
+  }
+
+  /**
+   * Refuses a body that does not parse, where the trigger is created (issue #12904): accepted, it failed every later write on
+   * the type. Parsed through the statement cache the trigger's own execution looks up, so the check costs nothing at the first
+   * firing.
+   *
+   * @throws CommandSQLParsingException when the body is not a valid SQL statement
+   */
+  public static void checkSyntax(final DatabaseInternal database, final String triggerName, final String sql) {
+    try {
+      database.getStatementCache().getParameterized(sql);
+    } catch (final CommandParsingException e) {
+      throw new CommandSQLParsingException("SQL trigger '" + triggerName + "' does not parse: " + e.getMessage(), e, sql);
+    }
   }
 
   @Override
@@ -60,7 +82,8 @@ public class SQLTriggerExecutor implements TriggerExecutor {
         bindings.put("$oldRecord", oldRecord);
       }
 
-      return consume(database, sqlEngine(database).command(sql, new ContextConfiguration(), bindings, bindings));
+      final String sql = trigger.getActionCode();
+      return consume(database, sql, sqlEngine(database).command(sql, new ContextConfiguration(), bindings, bindings));
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error executing SQL trigger '%s': %s", e, triggerName, e.getMessage());
       throw new TriggerExecutionException("SQL trigger '" + triggerName + "' failed: " + e.getMessage(), e);
@@ -80,7 +103,8 @@ public class SQLTriggerExecutor implements TriggerExecutor {
       bindings.put("rid", rid);
       bindings.put("$rid", rid);
 
-      return consume(database, sqlEngine(database).command(sql, new ContextConfiguration(), bindings, bindings));
+      final String sql = trigger.getActionCode();
+      return consume(database, sql, sqlEngine(database).command(sql, new ContextConfiguration(), bindings, bindings));
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error executing SQL trigger '%s': %s", e, triggerName, e.getMessage());
       throw new TriggerExecutionException("SQL trigger '" + triggerName + "' failed: " + e.getMessage(), e);
@@ -129,7 +153,7 @@ public class SQLTriggerExecutor implements TriggerExecutor {
    * silently skip a veto its single real column asked for. They are metadata about how the row was found, not a
    * column the body projected, so they take no part in deciding whether the row is a single-value answer.
    */
-  private boolean consume(final Database database, final ResultSet result) {
+  private boolean consume(final Database database, final String sql, final ResultSet result) {
     try (result) {
       Result first = null;
       long count = 0;

@@ -30,6 +30,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.CreateEdgeExecutionPlanner;
 import com.arcadedb.query.sql.executor.InsertExecutionPlan;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import com.arcadedb.query.OperationType;
 import com.arcadedb.utility.CollectionUtils;
@@ -111,7 +112,7 @@ public class CreateEdgeStatement extends Statement {
           throw e;
 
         // An interrupted thread (a terminated command, a shutdown) stops retrying: the conflict is the answer it gets
-        if (!pauseBeforeRetry(database, attempt))
+        if (!pauseBeforeRetry(database, attempt, context))
           throw e;
       } catch (final RuntimeException | Error e) {
         rollbackImplicitTransaction(database, implicitTransaction);
@@ -128,17 +129,20 @@ public class CreateEdgeStatement extends Statement {
 
   /**
    * Sleeps {@code WAIT} ms, or the configured jittered backoff without that clause. Returns false when the thread is
-   * interrupted, before or during the pause, with the interrupt flag kept: the caller then stops retrying.
+   * interrupted, before or during the pause, with the interrupt flag kept: the caller then stops retrying. The pause is taken
+   * in slices that check the command, so it ends with a {@code QueryTerminatedException} or a {@code TimeoutException} when the
+   * statement is terminated or the command deadline passes.
    */
-  private boolean pauseBeforeRetry(final Database database, final int attempt) {
+  private boolean pauseBeforeRetry(final Database database, final int attempt, final CommandContext context) {
     if (Thread.currentThread().isInterrupted())
       return false;
-    if (wait < 0)
-      RetryBackoff.sleep(attempt, database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRY_DELAY_BASE),
-          database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRY_DELAY));
-    else if (wait > 0)
+    final long pause = wait < 0 ?
+        RetryBackoff.delayMs(attempt, database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRY_DELAY_BASE),
+            database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRY_DELAY)) :
+        wait;
+    if (pause > 0)
       try {
-        Thread.sleep(wait);
+        WorkGuard.forCommandDeadline(context).sleep(pause);
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
       }

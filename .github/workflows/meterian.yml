@@ -55,7 +55,7 @@ jobs:
         # Meterian's own failures ("We were not able to successfully analyse this project", seen on a PR scan on
         # 2026-11-03) into exit 0, so an outage there is not a red X here. Security keeps the default minimum of 90
         # and licensing 95.
-        uses: MeterianHQ/meterian-github-action@9603528ad7eb3e76e7181d8d721bba25665a403d # v1.0.18
+        uses: MeterianHQ/meterian-github-action@4ca1db711dfb80dab40a700fc448d7695ba22127 # v1.0.19
         with:
           # The e2e-go, e2e-js and e2e-python harnesses are excluded: they drive a server under test from CI and ship in
           # no ArcadeDB distribution, yet they declare their client drivers as runtime dependencies, which Meterian then
@@ -82,7 +82,7 @@ jobs:
         continue-on-error: true
         if: success() || failure()
         run: .github/scripts/filter-meterian-sarif.py report.sarif
-      - uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+      - uses: github/codeql-action/upload-sarif@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
         # continue-on-error: a pull request from a FORK gets a read-only token no matter what
         # `security-events: write` says, so this upload cannot succeed there - and it, not the scan, would then turn
         # the job red on exactly the PRs external contributors and Dependabot open. Uploading

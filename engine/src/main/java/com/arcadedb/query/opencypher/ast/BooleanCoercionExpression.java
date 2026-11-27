@@ -40,6 +40,9 @@ import java.util.Collection;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class BooleanCoercionExpression implements BooleanExpression {
+  /** The kind {@link #nonBooleanKindOf(Expression)} answers for a value known to be a list when the statement is parsed. */
+  public static final String LIST_KIND = "List";
+
   private final Expression expression;
 
   public BooleanCoercionExpression(final Expression expression) {
@@ -69,12 +72,12 @@ public class BooleanCoercionExpression implements BooleanExpression {
       case LiteralExpression literal -> literal.getValue() == null || literal.getValue() instanceof Boolean ?
           null :
           literal.getValue().getClass().getSimpleName();
-      case ListExpression ignored -> "List";
+      case ListExpression ignored -> LIST_KIND;
       case MapExpression ignored -> "Map";
       case ArithmeticExpression arithmetic -> {
         if (arithmetic.getOperator() != ArithmeticExpression.Operator.ADD)
           yield "Number";
-        yield arithmetic.getLeft() instanceof ListExpression || arithmetic.getRight() instanceof ListExpression ? "List" : null;
+        yield arithmetic.getLeft() instanceof ListExpression || arithmetic.getRight() instanceof ListExpression ? LIST_KIND : null;
       }
       case null, default -> null;
     };

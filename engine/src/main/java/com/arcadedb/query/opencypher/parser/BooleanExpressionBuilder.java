@@ -132,16 +132,52 @@ final class BooleanExpressionBuilder {
   }
 
   /**
-   * Returns true when the given pattern expression is the argument of a function-style
-   * {@code exists(pattern)} predicate. Such a pattern is a boolean existence check, not a projected
-   * path, so it is permitted in contexts (e.g. RETURN) where a bare pattern would be rejected.
+   * Returns true when the given pattern expression is the whole single argument of a function-style
+   * {@code exists(pattern)} predicate, wrapping parentheses aside. Such a pattern is a boolean existence check, not a
+   * projected path, so it is permitted in contexts (RETURN, WITH, LET, a SET value) where a bare pattern is rejected.
+   * A pattern that is only a part of the argument ({@code exists([(n)-->()])}, {@code exists(coalesce((n)-->()))}) is
+   * not: {@code exists()} then tests the value of the surrounding expression, and lowering the call to the pattern
+   * predicate would silently drop that expression (issue #13466).
    */
-  boolean isArgumentOfExistsFunction(final ParseTree node) {
-    for (ParseTree p = node.getParent(); p != null; p = p.getParent()) {
-      if (p instanceof Cypher25Parser.FunctionInvocationContext funcCtx)
-        return "exists".equalsIgnoreCase(functionName(funcCtx));
+  static boolean isArgumentOfExistsFunction(final Cypher25Parser.PatternExpressionContext pattern) {
+    return existsFunctionOf(pattern) != null;
+  }
+
+  /**
+   * The function-style {@code exists()} call the given pattern expression is the whole single argument of, wrapping
+   * parentheses aside, or null when there is none.
+   */
+  static Cypher25Parser.FunctionInvocationContext existsFunctionOf(final Cypher25Parser.PatternExpressionContext pattern) {
+    ParserRuleContext node = pattern;
+    for (ParserRuleContext parent = node.getParent(); !isBooleanOperator(parent) && isBooleanPassThrough(parent);
+        parent = node.getParent())
+      node = parent;
+    if (!(node.getParent() instanceof Cypher25Parser.FunctionArgumentContext argument))
+      return null;
+    final Cypher25Parser.FunctionInvocationContext function = functionOf(argument);
+    return function != null && function.DISTINCT() == null && function.functionArgument().size() == 1
+        && "exists".equalsIgnoreCase(functionName(function)) ? function : null;
+  }
+
+  /**
+   * Recursively finds a pattern expression that is NOT the whole argument of a function-style {@code exists(pattern)}
+   * predicate: a bare pattern that would project a path. A pattern that is the argument of {@code exists()} is a boolean
+   * check, so it is skipped and the search goes on: every pattern of the expression is looked at, not only the first.
+   * The subquery expressions {@code EXISTS}, {@code COUNT} and {@code COLLECT} are skipped, as
+   * {@link #rejectNonBooleanPatternExpressions} does: the patterns of their body are checked when the body is built.
+   */
+  static Cypher25Parser.PatternExpressionContext findBarePatternExpression(final ParseTree node) {
+    if (node instanceof Cypher25Parser.ExistsExpressionContext || node instanceof Cypher25Parser.CountExpressionContext
+        || node instanceof Cypher25Parser.CollectExpressionContext)
+      return null;
+    if (node instanceof Cypher25Parser.PatternExpressionContext pattern)
+      return isArgumentOfExistsFunction(pattern) ? null : pattern;
+    for (int i = 0; i < node.getChildCount(); i++) {
+      final Cypher25Parser.PatternExpressionContext found = findBarePatternExpression(node.getChild(i));
+      if (found != null)
+        return found;
     }
-    return false;
+    return null;
   }
 
   /**
@@ -170,7 +206,12 @@ final class BooleanExpressionBuilder {
    */
   BooleanExpression parsePredicate(final Cypher25Parser.ExpressionContext ctx) {
     rejectNonBooleanPatternExpressions(ctx);
-    return parseBooleanExpression(ctx);
+    final BooleanExpression parsed = parseBooleanExpression(ctx);
+    // A list literal cannot be coerced to a boolean: the reference implementation refuses it, and the engine refuses the
+    // same literal under AND/OR/NOT/XOR since issue #11760. Without this the same literal was true here and refused there
+    // (issue #12975)
+    BooleanOperandValidator.refuseListPredicate(parsed);
+    return parsed;
   }
 
   /**

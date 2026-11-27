@@ -138,6 +138,15 @@ public class Backup {
     return this;
   }
 
+  /**
+   * A check the backup runs before every chunk it reads and between two archive entries: when it throws, the backup ends with
+   * that exception, removing its partial archive. {@code null}, the default, runs none.
+   */
+  public Backup setAbortCheck(final Runnable abortCheck) {
+    settings.abortCheck = abortCheck;
+    return this;
+  }
+
   protected void openDatabase() {
     if (database != null && database.isOpen())
       return;
