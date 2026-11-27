@@ -204,8 +204,40 @@ class PostgresBindMessageBoundsIT extends PostgresWireProtocolTestBase {
     assertServerStillServesANewClient();
   }
 
-  @Test
-  void aResultFormatCountThatDoesNotFitIsRefusedAfterAParameterThatFailed() throws Exception {
+  /** The message ends inside the string, and the bytes the connection has not sent yet belong to no message. */
+  @ParameterizedTest(name = "{0}")
+  @ValueSource(strings = { "bind portal name", "bind statement name", "parse statement name", "parse query" })
+  void aStringThatIsNotTerminatedBeforeTheEndOfTheMessageIsRefused(final String string) throws Exception {
+    try (final Socket socket = connectedSocket()) {
+      final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+      final DataInputStream in = new DataInputStream(socket.getInputStream());
+      authenticate(out, in);
+
+      final ByteArrayOutputStream body = new ByteArrayOutputStream();
+      final char type = string.startsWith("bind") ? 'B' : 'P';
+      switch (string) {
+      case "bind portal name", "parse statement name" -> body.writeBytes("a".getBytes(StandardCharsets.UTF_8));
+      case "bind statement name" -> {
+        writeCString(body, "a");
+        body.writeBytes("b".getBytes(StandardCharsets.UTF_8));
+      }
+      default -> {
+        writeCString(body, "a");
+        body.writeBytes("SELECT 1".getBytes(StandardCharsets.UTF_8));
+      }
+      }
+      out.write(framed(type, body.toByteArray()));
+      out.flush();
+
+      assertRefusedAndClosed(in, SQLSTATE_PROTOCOL);
+    }
+
+    assertServerStillServesANewClient();
+  }
+
+  @ParameterizedTest(name = "{0}")
+  @ValueSource(strings = { "a result format count that claims codes it does not hold", "a byte after the result format count" })
+  void aMessageThatDoesNotFitItsLengthIsRefusedAfterAParameterThatFailed(final String shape) throws Exception {
     try (final Socket socket = connectedSocket()) {
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
@@ -214,12 +246,17 @@ class PostgresBindMessageBoundsIT extends PostgresWireProtocolTestBase {
       sendParseWithTypes(out, "", "SELECT $1", UNSUPPORTED_TYPE);
       readWireMessage(in); // ParseComplete
 
-      // The parameter fails to convert, so the rest of the message is skipped: its result format count claims codes it does not hold
+      // The parameter fails to convert, so the rest of the message is skipped, and what is skipped has to fit the message
       final ByteArrayOutputStream body = bindHeader(0, 1);
       final byte[] value = "1".getBytes(StandardCharsets.UTF_8);
       writeInt(body, value.length);
       body.write(value);
-      writeShort(body, 30_000);
+      if (shape.startsWith("a result"))
+        writeShort(body, 30_000);
+      else {
+        writeShort(body, 0);
+        body.write(0);
+      }
       sendRawBind(out, body.toByteArray());
 
       assertRefusedAndClosed(in, null);

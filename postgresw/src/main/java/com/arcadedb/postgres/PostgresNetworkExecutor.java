@@ -3534,12 +3534,20 @@ public class PostgresNetworkExecutor extends Thread {
     long bytesLeft = messageBodyLength;
     try {
       // BIND
-      final String portalName = readString();
+      final String portalName = readString(bytesLeft);
+      if (portalName == null) {
+        refuseMessageAndClose("bind message is shorter than its contents");
+        return;
+      }
       bytesLeft -= lastStringBytes;
-      final String sourcePreparedStatement = readString();
+      final String sourcePreparedStatement = readString(bytesLeft);
+      if (sourcePreparedStatement == null) {
+        refuseMessageAndClose("bind message is shorter than its contents");
+        return;
+      }
       bytesLeft -= lastStringBytes;
       if (bytesLeft < BIND_MIN_FIELDS_LENGTH) {
-        // The names ran past the message, or left no room for the three counts that follow them
+        // The names left no room for the three counts that follow them
         refuseMessageAndClose("bind message is shorter than its contents");
         return;
       }
@@ -3786,6 +3794,11 @@ public class PostgresNetworkExecutor extends Thread {
       boolean drainedCleanly = true;
       try {
         for (int i = paramsConsumed; i < totalParamValues; i++) {
+          if (bytesLeft < 4) {
+            // The message ends before the length of this value
+            drainedCleanly = false;
+            break;
+          }
           final long sz = channel.readUnsignedInt();
           bytesLeft -= 4;
           if (sz == NULL_PARAM_LENGTH)
@@ -3802,13 +3815,18 @@ public class PostgresNetworkExecutor extends Thread {
             channel.getDataInput().skipNBytes(sz);
         }
         if (drainedCleanly && !resultFormatSectionRead) {
-          final int resultFormatCount = channel.readUnsignedShort();
-          bytesLeft -= 2;
-          if (resultFormatCount * 2L > bytesLeft)
-            // The codes are not all in this message: waiting for them would wait on the next one
+          if (bytesLeft < 2)
+            // The message ends before the result format count
             drainedCleanly = false;
-          else
-            channel.getDataInput().skipNBytes(resultFormatCount * 2L);
+          else {
+            final int resultFormatCount = channel.readUnsignedShort();
+            bytesLeft -= 2;
+            if (resultFormatCount * 2L != bytesLeft)
+              // The codes are the last field and take what is left of the message: waiting for more would wait on the next message
+              drainedCleanly = false;
+            else
+              channel.getDataInput().skipNBytes(resultFormatCount * 2L);
+          }
         }
       } catch (final Exception ignored) {
         // If even the drain fails the channel is unrecoverable; the error response below
@@ -3865,8 +3883,19 @@ public class PostgresNetworkExecutor extends Thread {
   private void parseCommand(final long messageBodyLength) {
     try {
       // PARSE
-      final String portalName = readString();
+      final String portalName = readString(messageBodyLength);
+      if (portalName == null) {
+        refuseMessageAndClose("parse message is shorter than its contents");
+        return;
+      }
       long bytesLeft = messageBodyLength - lastStringBytes;
+
+      final String statementTextAsSent = readString(bytesLeft);
+      if (statementTextAsSent == null) {
+        refuseMessageAndClose("parse message is shorter than its contents");
+        return;
+      }
+      bytesLeft -= lastStringBytes;
 
       // Normalized HERE, once, for every branch below and for everything that reads portal.query later (issue
       // #8245): PostgresTransactionStatement.parse() matches whole tokens up to the end of the text, and
@@ -3876,10 +3905,9 @@ public class PostgresNetworkExecutor extends Thread {
       // Execute while the protocol's own block state - explicitTransactionStarted, errorInTransaction, the
       // ReadyForQuery status byte - never moved, so a statement pipelined after a failure inside the block still
       // ran and was committed. The same normalization queryCommand() applies to its own text.
-      final String statementText = normalizeStatementText(readString());
-      bytesLeft -= lastStringBytes;
+      final String statementText = normalizeStatementText(statementTextAsSent);
       if (bytesLeft < 2) {
-        // The strings ran past the message, or left no room for the count of parameter types
+        // The strings left no room for the count of parameter types
         refuseMessageAndClose("parse message is shorter than its contents");
         return;
       }
@@ -5203,8 +5231,19 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   private String readString() throws IOException {
+    return readString(Long.MAX_VALUE);
+  }
+
+  /**
+   * Reads a null-terminated string out of at most {@code limit} bytes, the ones a message has left.
+   *
+   * @return the string, or null when those bytes end before its terminator: nothing is read past them
+   */
+  private String readString(final long limit) throws IOException {
     int len = 0;
     for (; len < buffer.length; len++) {
+      if (len >= limit)
+        return null;
       final int b = readNextByte();
       if (b == 0) {
         lastStringBytes = len + 1;
