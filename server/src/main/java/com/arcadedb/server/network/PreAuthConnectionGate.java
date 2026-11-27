@@ -273,7 +273,8 @@ public class PreAuthConnectionGate {
       }
       return ticket;
     } catch (final Throwable e) {
-      // nobody receives the ticket, so nobody can hand the permit back or close the socket
+      // nobody receives the ticket, so nobody can hand the permit back or close the socket. The try block throws no checked
+      // exception, so the rethrow below (precise rethrow of the caught type) leaves the signature of this method unchanged
       if (ticket != null)
         ticket.abandon();
       else {

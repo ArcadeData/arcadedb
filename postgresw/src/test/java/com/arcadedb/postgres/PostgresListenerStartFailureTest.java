@@ -41,11 +41,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * A connection whose serving thread cannot be started is closed, its
- * pre-authentication permit goes back, and the listener goes on accepting: the accept thread must outlive a failure that
- * belongs to one connection.
+ * A connection whose serving thread cannot be started is closed, its pre-authentication permit goes back, and the listener
+ * goes on accepting: the accept thread must outlive a failure that belongs to one connection.
  *
- * @author lvca (l.garulli@arcadedata.com)
+ * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class PostgresListenerStartFailureTest {
   /** Set by a test to make the next start fail: true with an Error, false with a RuntimeException. */

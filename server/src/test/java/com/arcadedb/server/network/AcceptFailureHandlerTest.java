@@ -28,7 +28,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * What an accept loop does with a failure of the work of one accepted connection: an error pauses it and is logged at a
  * bounded rate, an exception is only logged, and neither ends the loop.
  *
- * @author lvca (l.garulli@arcadedata.com)
+ * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class AcceptFailureHandlerTest {
 

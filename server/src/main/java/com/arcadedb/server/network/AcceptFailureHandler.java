@@ -30,9 +30,13 @@ import java.util.logging.Level;
  * {@link #LOG_INTERVAL_MS}, saying how many were held back, and the loop pauses {@link #PAUSE_MS} so that a condition that
  * lasts is not retried in a hot loop.
  * <p>
+ * A persistent {@link Error}, an {@link OutOfMemoryError} included, therefore keeps the loop alive on purpose: the listener
+ * goes on accepting and dropping connections at the bounded rate above, and serves again by itself once the condition
+ * clears.
+ * <p>
  * One instance per listener, used by its accept thread only.
  *
- * @author lvca (l.garulli@arcadedata.com)
+ * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public final class AcceptFailureHandler {
   /** The pause after an error, so that a failure that persists is retried at a bounded rate. */
