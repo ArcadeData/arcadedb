@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.event.AfterRecordReadListener;
 import com.arcadedb.exception.HeapLimitExceededException;
 import com.arcadedb.query.sql.executor.QueryHeapBudget;
+import com.arcadedb.query.sql.executor.QueryHeapTracker;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import de.bwaldvogel.mongo.bson.Document;
@@ -191,6 +192,29 @@ class MongoBufferedResultsTest {
     wrapper.killCursors(List.of(id), killed, notFound);
     assertThat(killed).hasSize(1);
     assertThat(QueryHeapBudget.getReservedBytes()).as("closing the cursor gives it back").isLessThanOrEqualTo(baseline);
+  }
+
+  @Test
+  void aBoundedSortChargesTheRowsItKeepsWhenBetterOnesTakeThePlaceOfTheFirst() {
+    cap(-1L);
+    // the rows grow with their key: the first ones a descending sort holds are the smallest, the ones it ends with the largest
+    database.command("sql", "CREATE DOCUMENT TYPE Growing BUCKETS 1");
+    database.transaction(() -> {
+      for (int k = 1; k <= 20; k++)
+        database.newDocument("Growing").set("k", k).set("payload", "g".repeat(k * 20_000)).save();
+    });
+    final long baseline = QueryHeapBudget.getReservedBytes();
+
+    final Document reply = find(
+        new Document("find", "Growing").append("sort", new Document("k", -1)).append("limit", 3).append("batchSize", 1));
+    assertThat(ksOf(firstBatch(reply))).containsExactly(20);
+    final long id = cursorId(reply);
+    assertThat(id).as("two rows are left to ask for").isNotZero();
+    assertThat(QueryHeapBudget.getReservedBytes()).as("the three largest rows are held, not the three first ones").isGreaterThanOrEqualTo(
+        baseline + QueryHeapTracker.MIN_CHUNK_BYTES);
+
+    wrapper.killCursors(List.of(id), new ArrayList<>(), new ArrayList<>());
+    assertThat(QueryHeapBudget.getReservedBytes()).isLessThanOrEqualTo(baseline);
   }
 
   @Test

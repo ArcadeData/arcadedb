@@ -769,16 +769,20 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
     if (numberToReturn > 0) {
       final int kept = (int) Math.min(Integer.MAX_VALUE, (long) skip + numberToReturn);
       final MongoSortOrder.TopEntries<Object> top = new MongoSortOrder.TopEntries<>(sortOrder, kept);
+      // every row is estimated: a row that leaves gives back what it was charged, whatever its size
+      heap.estimateEachElement();
       long position = 0;
+      long held = 0;
       while (rows.hasNext()) {
         final Object row = rows.next();
         final Object[] keys = sortOrder.keyOf(MongoDBToSqlTranslator.toMatchDocument(propertiesOf(row), sortOrder.properties()));
         if (top.accepts(keys)) {
-          // a row that takes the place of another keeps the count: only the rows that make the buffer grow are charged
-          final boolean grows = top.size() < kept;
-          top.offer(new MongoSortOrder.Entry<>(keys, position, row));
-          if (grows)
-            heap.add(top.size(), row);
+          final MongoSortOrder.Entry<Object> evicted = top.offer(new MongoSortOrder.Entry<>(keys, position, row));
+          if (evicted == null)
+            heap.add(++held, row);
+          else if (evicted.value != row)
+            // the buffer keeps what it held, with a better row in the place of the worst: the charge follows the rows it retains
+            heap.replace(evicted.value, row);
         }
         ++position;
       }

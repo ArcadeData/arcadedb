@@ -296,15 +296,12 @@ final class MongoSortOrder implements Comparator<Object[]> {
       return heap.size() < limit || sortOrder.compare(keys, heap.peek().keys) < 0;
     }
 
-    void offer(final Entry<T> entry) {
+    /**
+     * @return the entry the offered one took the place of, or {@code null} when the buffer had room for it
+     */
+    Entry<T> offer(final Entry<T> entry) {
       heap.add(entry);
-      if (heap.size() > limit)
-        heap.poll();
-    }
-
-    /** How many entries are held. */
-    int size() {
-      return heap.size();
+      return heap.size() > limit ? heap.poll() : null;
     }
 
     List<Entry<T>> sorted() {

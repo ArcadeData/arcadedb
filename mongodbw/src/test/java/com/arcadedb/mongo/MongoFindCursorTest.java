@@ -244,7 +244,7 @@ class MongoFindCursorTest {
   }
 
   @Test
-  void theDocumentsAreReadABatchAtATimeAndTheCursorIsReleasedWithTheLastOne() {
+  void theDocumentsAreReadWhenAskedForAndTheCursorIsReleasedWithTheLastOne() {
     final Source source = new Source(1_000);
     final MongoFindCursor cursor = new MongoFindCursor(source, source, 10, 0, null);
 
@@ -253,7 +253,7 @@ class MongoFindCursorTest {
       assertThat(documents.hasNext()).isTrue();
       assertThat(documents.next().get("n")).isEqualTo(expected);
     }
-    assertThat(source.pulled.get()).as("5 documents asked for: the skip and one batch, not the rows").isEqualTo(10 + MongoFindCursor.ITERATION_BATCH);
+    assertThat(source.pulled.get()).as("5 documents asked for: the skipped rows and those 5, no row ahead").isEqualTo(15);
     assertThat(source.closed.get()).isZero();
 
     int count = 5;
@@ -273,7 +273,7 @@ class MongoFindCursorTest {
 
     try (final Stream<Document> stream = cursor.stream()) {
       assertThat(stream.limit(3).map(d -> d.get("n")).toList()).containsExactly(0, 1, 2);
-      assertThat(source.pulled.get()).as("a limit stops the reading at the batch").isEqualTo(MongoFindCursor.ITERATION_BATCH);
+      assertThat(source.pulled.get()).as("a limit stops the reading at the documents it takes").isBetween(3, 4);
       assertThat(source.closed.get()).isZero();
     }
     assertThat(source.closed.get()).as("closing the stream releases the rows").isEqualTo(1);

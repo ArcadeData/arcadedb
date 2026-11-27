@@ -58,8 +58,6 @@ final class MongoFindCursor implements Cursor {
   static final int  DEFAULT_FIRST_BATCH = 101;
   /** What mongod keeps a batch under (BSONObjMaxUserSize): the reply is held in memory whole, and a driver refuses one past 48 MB. */
   static final long MAX_BATCH_BYTES     = 16L * 1024 * 1024;
-  /** The documents {@link #documents()} reads from the cursor at once. */
-  static final int  ITERATION_BATCH     = 128;
 
   private final Iterator<?>    rows;
   private final AutoCloseable  resource;
@@ -233,25 +231,24 @@ final class MongoFindCursor implements Cursor {
   }
 
   /**
-   * The documents of the cursor one at a time, read from it {@link #ITERATION_BATCH} at a time as they are asked for: the rows past
-   * the last one asked for are neither read nor converted. The cursor is released when the last document is taken, and by
-   * {@link #close()} before.
+   * The documents of the cursor one at a time, each read and converted when it is asked for: the rows past the last one asked for are
+   * neither read nor converted, and no document is held ahead of the one the caller is handed. The cursor is released when the last
+   * document is taken, and by {@link #close()} before.
    */
   Iterator<Document> documents() {
     return new Iterator<>() {
-      private List<Document> batch = Collections.emptyList();
-      private int            position;
+      private Document next;
 
       @Override
       public boolean hasNext() {
-        while (position >= batch.size()) {
-          if (isDrained())
-            return false;
-          batch = takeBatch(ITERATION_BATCH, Long.MAX_VALUE);
-          position = 0;
-          if (batch.isEmpty())
-            return false;
-        }
+        if (next != null)
+          return true;
+        if (isDrained())
+          return false;
+        final List<Document> batch = takeBatch(1, Long.MAX_VALUE);
+        if (batch.isEmpty())
+          return false;
+        next = batch.getFirst();
         return true;
       }
 
@@ -259,7 +256,9 @@ final class MongoFindCursor implements Cursor {
       public Document next() {
         if (!hasNext())
           throw new NoSuchElementException();
-        return batch.get(position++);
+        final Document document = next;
+        next = null;
+        return document;
       }
     };
   }
