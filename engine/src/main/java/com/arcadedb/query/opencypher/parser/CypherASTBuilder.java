@@ -208,6 +208,8 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     final List<Expression> conditions = new ArrayList<>(ctx.whenBranch().size());
     final List<CypherStatement> branches = new ArrayList<>(ctx.whenBranch().size());
     for (final Cypher25Parser.WhenBranchContext branch : ctx.whenBranch()) {
+      // The condition is a boolean position: a pattern used as anything else in it is refused as in a WHERE (issue #12657)
+      BooleanExpressionBuilder.rejectNonBooleanPatternExpressions(branch.expression());
       final Expression condition = expressionBuilder.parseExpression(branch.expression());
       final CypherReferencedVariables referenced = CypherReferencedVariables.of(condition);
       // Fail closed: a condition whose variables cannot all be listed (a subquery body, a pattern) would otherwise be
@@ -545,7 +547,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
           }
         } else {
           // Other expression types as base - parse as expression
-          final Expression targetExpr = expressionBuilder.parseExpressionFromText(baseExpr1);
+          final Expression targetExpr = parseTargetExpression(baseExpr1);
           items.add(new SetClause.SetItem(targetExpr, propertyName.toString(), valueExpr));
         }
       } else if (itemCtx instanceof Cypher25Parser.SetDynamicPropContext dynCtx) {
@@ -559,7 +561,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         if (baseExpr1.variable() != null) {
           items.add(new SetClause.SetItem(baseExpr1.variable().getText(), null, keyExpr, valueExpr));
         } else {
-          final Expression targetExpr = expressionBuilder.parseExpressionFromText(baseExpr1);
+          final Expression targetExpr = parseTargetExpression(baseExpr1);
           items.add(new SetClause.SetItem(null, targetExpr, keyExpr, valueExpr));
         }
       } else if (itemCtx instanceof Cypher25Parser.SetPropsContext propsCtx) {
@@ -707,7 +709,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       return null;
     if (baseExpr1.parenthesizedExpression() != null)
       return parseClauseExpression(baseExpr1.parenthesizedExpression().expression());
-    return expressionBuilder.parseExpressionFromText(baseExpr1);
+    return parseTargetExpression(baseExpr1);
   }
 
   @Override
@@ -1058,6 +1060,15 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
   private Expression parseClauseExpression(final Cypher25Parser.ExpressionContext ctx) {
     BooleanExpressionBuilder.rejectNonBooleanPatternExpressions(ctx);
     return expressionBuilder.parseExpression(ctx);
+  }
+
+  /**
+   * Parses the base of a SET or REMOVE property target that is neither a variable nor a parenthesis (a function call, a
+   * list, a CASE: {@code SET head([(p)-->()]).v = 1}), with the same refusal as {@link #parseClauseExpression}.
+   */
+  private Expression parseTargetExpression(final Cypher25Parser.Expression1Context ctx) {
+    BooleanExpressionBuilder.rejectNonBooleanPatternExpressions(ctx);
+    return expressionBuilder.parseExpressionFromText(ctx);
   }
 
   public WhereClause visitWhereClause(final Cypher25Parser.WhereClauseContext ctx) {

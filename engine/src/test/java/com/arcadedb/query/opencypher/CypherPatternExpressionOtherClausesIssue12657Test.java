@@ -86,6 +86,11 @@ class CypherPatternExpressionOtherClausesIssue12657Test extends TestHelper {
           "MATCH (p:P) SET p:$(toString((p)-->()))",//
           "MATCH (p:P) SET ((p)-->()).v = 1",//
           "MATCH (p:P) REMOVE ((p)-->()).v",//
+          // a target that is neither a variable nor a parenthesis
+          "MATCH (p:P) SET head([(p)-->()]).v = 1",//
+          "MATCH (p:P) SET head([(p)-->()])['v'] = 1",//
+          "MATCH (p:P) REMOVE head([(p)-->()]).v",//
+          "MATCH (p:P) REMOVE head([(p)-->()])['v']",//
           "MATCH (p:P) CALL (p) { SET p.v = 1 } IN TRANSACTIONS OF toInteger((p)-->()) ROWS"))
         softly.assertThatThrownBy(() -> rows(statement)).as(statement).isInstanceOf(CommandParsingException.class)
             .hasMessageContaining("contexts that evaluate to a boolean");
@@ -104,6 +109,14 @@ class CypherPatternExpressionOtherClausesIssue12657Test extends TestHelper {
         softly.assertThatThrownBy(() -> rows(statement)).as(statement).isInstanceOf(CommandParsingException.class)
             .hasMessageContaining("inside the function size()").hasMessageContaining("COUNT {}");
     });
+  }
+
+  /** The condition of a conditional query is a boolean position: a pattern used as a value in it is refused as in a WHERE. */
+  @Test
+  void conditionOfAConditionalQueryIsChecked() {
+    assertRefused("WHEN size(()-->()) > 0 THEN RETURN 1 AS n ELSE RETURN 2 AS n", "COUNT {}");
+    assertRefused("WHEN toString(()-->()) = 'true' THEN RETURN 1 AS n ELSE RETURN 2 AS n",
+        "contexts that evaluate to a boolean");
   }
 
   /** A pattern expression in a boolean position of the clause expression keeps answering. */
