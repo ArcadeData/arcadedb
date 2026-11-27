@@ -51,6 +51,8 @@ public class ClusterAuthSessionResolver {
   static final int  MAX_CONCURRENT_LOOKUPS = 16;
   static final long REFUSAL_CACHE_TTL_MS   = 5_000L;
   static final int  REFUSAL_CACHE_MAX      = 4_096;
+  /** The issuer is asked once more when a session was removed while its answer was on the way. */
+  static final int  MAX_LOOKUP_ATTEMPTS    = 2;
 
   private final ArcadeDBServer                server;
   private final HttpAuthSessionManager        sessions;
@@ -64,7 +66,9 @@ public class ClusterAuthSessionResolver {
 
   /**
    * Called on a token this node does not hold. Asks the issuer the token names and, when it vouches for the
-   * session, installs a local copy.
+   * session, installs a local copy. A copy is installed only if no session of the principal, and not the token itself,
+   * was removed on this node while the issuer was being asked: the answer was given before that removal. The issuer is
+   * then asked once more, and the token is refused (without being remembered as refused) when that happens again.
    *
    * @return the local copy, or {@code null} when the token is not honoured here: it names no issuer, names this
    * node (which does not hold it, so it expired), names a node that is not a member, the issuer refused it or
@@ -99,41 +103,55 @@ public class ClusterAuthSessionResolver {
     if (!mayDial)
       return null;
 
-    if (!inFlight.tryAcquire()) {
-      count("saturated");
-      LogManager.instance().log(this, Level.FINE,
-          "Refused to resolve authentication token issued by '%s': %d lookups already in flight", issuer,
-          MAX_CONCURRENT_LOOKUPS);
-      return null;
-    }
-    final HAServerPlugin.PeerAuthSession peerSession;
-    try {
-      peerSession = ha.lookupAuthSession(issuer, token);
-    } catch (final IOException e) {
-      count("unreachable");
-      recordRefusal(token);
-      LogManager.instance().log(this, Level.FINE, "Cannot ask node '%s' about an authentication token: %s", issuer,
-          e.getMessage());
-      return null;
-    } finally {
-      inFlight.release();
-    }
+    // The issuer's answer is given before whatever this node does while waiting for it. When a session was removed in the
+    // meantime (the principal's, or this token) the answer is not installed, and the issuer is asked once more: its second
+    // answer reflects the removal, or says the session is still valid.
+    for (int attempt = 1; attempt <= MAX_LOOKUP_ATTEMPTS; attempt++) {
+      if (!inFlight.tryAcquire()) {
+        count("saturated");
+        LogManager.instance().log(this, Level.FINE,
+            "Refused to resolve authentication token issued by '%s': %d lookups already in flight", issuer,
+            MAX_CONCURRENT_LOOKUPS);
+        return null;
+      }
+      // Started before the issuer is asked, closed once the answer is used
+      try (final HttpAuthSessionManager.PeerLookup lookup = sessions.beginPeerLookup(token)) {
+        final HAServerPlugin.PeerAuthSession peerSession;
+        try {
+          peerSession = ha.lookupAuthSession(issuer, token);
+        } catch (final IOException e) {
+          count("unreachable");
+          recordRefusal(token);
+          LogManager.instance().log(this, Level.FINE, "Cannot ask node '%s' about an authentication token: %s", issuer,
+              e.getMessage());
+          return null;
+        } finally {
+          inFlight.release();
+        }
 
-    if (peerSession == null) {
-      count("refused");
-      recordRefusal(token);
-      return null;
+        if (peerSession == null) {
+          count("refused");
+          recordRefusal(token);
+          return null;
+        }
+        // Re-resolved from the live users map, like the bearer branch does for a local session: the issuer vouches
+        // for the principal's name, this node decides what that principal may do today.
+        final ServerSecurityUser user = server.getSecurity().getUser(peerSession.userName());
+        if (user == null) {
+          count("refused");
+          recordRefusal(token);
+          return null;
+        }
+        final HttpAuthSession copy = sessions.addRemoteSession(token, user, peerSession.createdAt(), issuer, lookup);
+        if (copy != null || !lookup.isRevoked()) {
+          count("resolved");
+          return copy;
+        }
+        count("changed_while_asking");
+      }
     }
-    // Re-resolved from the live users map, like the bearer branch does for a local session: the issuer vouches
-    // for the principal's name, this node decides what that principal may do today.
-    final ServerSecurityUser user = server.getSecurity().getUser(peerSession.userName());
-    if (user == null) {
-      count("refused");
-      recordRefusal(token);
-      return null;
-    }
-    count("resolved");
-    return sessions.addRemoteSession(token, user, peerSession.createdAt(), issuer);
+    // Not remembered as refused: the token may be valid, and the next request asks again
+    return null;
   }
 
   /**
@@ -187,8 +205,9 @@ public class ClusterAuthSessionResolver {
       sessions.removeSession(session.token);
       return false;
     }
-    session.confirm();
-    return true;
+    // Confirmed only while this very copy is still held: a removal that ran while the issuer was being asked took it out
+    // of the map, and the issuer's answer, given before that, must not serve the request with it.
+    return sessions.confirmIfHeld(session);
   }
 
   /**
