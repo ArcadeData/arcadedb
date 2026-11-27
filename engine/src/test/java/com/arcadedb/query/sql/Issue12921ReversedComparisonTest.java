@@ -179,9 +179,17 @@ class Issue12921ReversedComparisonTest extends TestHelper {
       database.command("sql", "CREATE DOCUMENT TYPE Tagged");
       database.newDocument("Tagged").set("id", 1).set("tags", List.of("a", "b")).save();
       database.newDocument("Tagged").set("id", 2).set("tags", List.of("c")).save();
+      database.newDocument("Tagged").set("id", 3).set("tags", List.of("a")).save();
     });
+    // "=" and "<>" read a list alike on either side, so the mirror leaves them answering what the property-first form answers
+    for (final String operator : new String[] { "=", "<>" }) {
+      assertThat(rows("SELECT id FROM Tagged WHERE 'a' " + operator + " tags", null)).as("'a' %s tags", operator)
+          .isEqualTo(rows("SELECT id FROM Tagged WHERE tags " + operator + " 'a'", null));
+      assertThat(rows("SELECT id FROM Tagged WHERE ['a'] " + operator + " tags", null)).as("['a'] %s tags", operator)
+          .isEqualTo(rows("SELECT id FROM Tagged WHERE tags " + operator + " ['a']", null));
+    }
     // the list on the left: any of its items
-    assertThat(rows("SELECT id FROM Tagged WHERE tags <=> 'a'", null)).isEqualTo("[1]");
+    assertThat(rows("SELECT id FROM Tagged WHERE tags <=> 'a'", null)).isEqualTo("[1, 3]");
     // the list on the right is one value, which the string is not
     assertThat(rows("SELECT id FROM Tagged WHERE 'a' <=> tags", null)).isEqualTo("[]");
   }

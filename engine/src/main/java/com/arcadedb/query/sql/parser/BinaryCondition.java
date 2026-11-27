@@ -41,8 +41,9 @@ public class BinaryCondition extends BooleanExpression {
   public Expression            left;
   public BinaryCompareOperator operator;
   public Expression            right;
-  // see mirroredOperator(); one immutable holder, so a plan shared between threads never reads a half-written decision
-  private volatile Mirror      mirror;
+  // see mirroredOperator(); one immutable holder, so a plan shared between threads never reads a half-written decision. A cache
+  // derived from left/operator/right, which the AST walkers reach on their own: transient, so they do not walk it
+  private transient volatile Mirror mirror;
 
   /** The operator {@link #mirroredOperator()} decided for these operands, {@code mirrored} being null when not mirrored. */
   private record Mirror(Expression left, BinaryCompareOperator operator, Expression right, BinaryCompareOperator mirrored) {
