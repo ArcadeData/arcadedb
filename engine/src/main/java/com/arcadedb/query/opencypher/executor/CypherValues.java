@@ -23,6 +23,7 @@ import com.arcadedb.exception.InvalidPropertyTypeException;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 
+import java.math.BigInteger;
 import java.util.List;
 import java.util.Map;
 import java.util.StringJoiner;
@@ -69,9 +70,13 @@ public final class CypherValues {
     return false;
   }
 
-  /** Whether the number is an INTEGER of some width, as opposed to a FLOAT or a decimal: the two kinds Cypher tells apart. */
+  /**
+   * Whether the number is an INTEGER of some width, as opposed to a FLOAT or a decimal: the two kinds Cypher tells apart.
+   * A {@code BigInteger} is an integer too, as {@code InlineProperties} counts it.
+   */
   private static boolean isWholeKind(final Number number) {
-    return number instanceof Long || number instanceof Integer || number instanceof Short || number instanceof Byte;
+    return number instanceof Long || number instanceof Integer || number instanceof Short || number instanceof Byte
+        || number instanceof BigInteger;
   }
 
   /**

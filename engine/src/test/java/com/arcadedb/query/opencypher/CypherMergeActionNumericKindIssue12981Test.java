@@ -20,10 +20,13 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.event.AfterRecordUpdateListener;
+import com.arcadedb.query.opencypher.executor.CypherValues;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -90,6 +93,22 @@ class CypherMergeActionNumericKindIssue12981Test extends TestHelper {
     run("MATCH (n:T) SET n.x = 1");
     run("MATCH (n:T) SET n.x = 1.0");
     assertThat(single("MATCH (n:T) RETURN valueType(n.x) AS t").<String>getProperty("t")).isEqualTo(afterMerge);
+  }
+
+  /** The kinds the no-op decision tells apart: every width of an integer is one kind, a float or a decimal the other. */
+  @Test
+  void equalValuesComparesNumbersWithinOneKind() {
+    assertThat(CypherValues.equalValues(1, 1L)).isTrue();
+    assertThat(CypherValues.equalValues((short) 1, BigInteger.ONE)).isTrue();
+    assertThat(CypherValues.equalValues(BigInteger.ONE, 1L)).isTrue();
+    assertThat(CypherValues.equalValues(1.0f, 1.0d)).isTrue();
+    assertThat(CypherValues.equalValues(BigDecimal.ONE, 1.0d)).isTrue();
+
+    assertThat(CypherValues.equalValues(1L, 1.0d)).isFalse();
+    assertThat(CypherValues.equalValues(1.0d, 1L)).isFalse();
+    assertThat(CypherValues.equalValues(BigInteger.ONE, 1.0d)).isFalse();
+    assertThat(CypherValues.equalValues(1, BigDecimal.ONE)).isFalse();
+    assertThat(CypherValues.equalValues(0.0d, -0.0d)).as("#9618 still holds").isFalse();
   }
 
   /**
