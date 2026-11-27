@@ -342,6 +342,55 @@ class LightweightEdgeTypeTest extends TestHelper {
     assertThat(count("select count(*) as c from Follows")).isEqualTo(1);
   }
 
+  /**
+   * Issue #12133: {@code IF NOT EXISTS} on an edge that exists returns that edge, as on a regular type, instead of failing
+   * with an internal error because a lightweight edge has no record to modify.
+   */
+  @Test
+  void sqlCreateEdgeIfNotExistsReturnsTheExistingLightweightEdge() {
+    database.command("sql", "create edge type Follows lightweight").close();
+
+    final RID a = newVertex(0);
+    final RID b = newVertex(1);
+    final RID c = newVertex(2);
+    final String statement = "create edge Follows from " + a + " to " + b + " if not exists";
+
+    database.transaction(() -> database.command("sql", statement).close());
+
+    database.transaction(() -> {
+      try (final ResultSet rs = database.command("sql", statement)) {
+        final Edge edge = rs.next().getEdge().get();
+        assertThat(edge).isInstanceOf(LightEdge.class);
+        assertThat(edge.getOut()).isEqualTo(a);
+        assertThat(edge.getIn()).isEqualTo(b);
+        // the very edge stored in the vertices, not a new one
+        assertThat(edge.getIdentity()).isEqualTo(
+            database.lookupByRID(a, true).asVertex().getEdges(Vertex.DIRECTION.OUT, "Follows").iterator().next().getIdentity());
+        assertThat(rs.hasNext()).isFalse();
+      }
+    });
+    assertThat(count("select count(@rid) as c from Follows")).isEqualTo(1);
+
+    // with a SET, the existing edge is returned untouched, as IF NOT EXISTS does for a record-backed edge
+    database.transaction(() -> {
+      try (final ResultSet rs = database.command("sql", statement + " set w = 1")) {
+        assertThat(rs.next().getEdge().get().getIn()).isEqualTo(b);
+      }
+    });
+    assertThat(count("select count(@rid) as c from Follows")).isEqualTo(1);
+
+    // one existing and one missing target: the existing edge is returned, the missing one created
+    database.transaction(() -> {
+      try (final ResultSet rs = database.command("sql",
+          "create edge Follows from " + a + " to [" + b + ", " + c + "] if not exists")) {
+        assertThat(rs.stream().count()).isEqualTo(2);
+      }
+    });
+    assertThat(count("select count(@rid) as c from Follows")).isEqualTo(2);
+    database.transaction(
+        () -> assertThat(database.lookupByRID(a, true).asVertex().countEdges(Vertex.DIRECTION.OUT, "Follows")).isEqualTo(2));
+  }
+
   @Test
   void alterTypeTogglesTheFlags() {
     database.command("sql", "create edge type Follows").close();

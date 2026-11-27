@@ -38,6 +38,7 @@ import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.json.JSONObject;
@@ -131,6 +132,28 @@ class RaftReplicatedDatabaseTest {
     assertThat(results).hasSize(2);
     assertThat((int) results.get(0).getProperty("value")).isEqualTo(42);
     assertThat((String) results.get(1).getProperty("value")).isEqualTo("hello");
+  }
+
+  /**
+   * Issue #12519: a row rebuilt from the leader's JSON is plain data whatever it stood for there, so the gRPC service cannot tell
+   * the record it was (its {@code @type} column) from a local projection with a column of that name, except by the mark this
+   * method puts on every row it builds.
+   */
+  @Test
+  void parseResultSetFromJsonMarksEveryRowItBuilds() {
+    final String json = "{\"result\":[{\"@rid\":\"#1:0\",\"@type\":\"P\",\"@cat\":\"v\",\"name\":\"a\"},{\"name\":\"b\"},42]}";
+
+    final ResultSet rs = RaftReplicatedDatabase.parseResultSetFromJson(json);
+    final List<Result> results = new ArrayList<>();
+    while (rs.hasNext())
+      results.add(rs.next());
+
+    assertThat(results).hasSize(3);
+    for (final Result result : results) {
+      assertThat(result.isElement()).isFalse();
+      assertThat(result.getMetadata(ResultInternal.FORWARDED_ROW_METADATA)).isEqualTo(Boolean.TRUE);
+    }
+    assertThat((String) results.get(0).getProperty("@type")).isEqualTo("P");
   }
 
   // reconstructLeaderException tests

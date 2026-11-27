@@ -26,6 +26,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.logging.Level;
+import java.util.regex.Pattern;
 
 /**
  * Parser for InfluxDB Line Protocol.
@@ -36,6 +37,8 @@ import java.util.logging.Level;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class LineProtocolParser {
+
+  private static final Pattern LINE_END = Pattern.compile("\r\n|\r|\n");
 
   public enum Precision {
     NANOSECONDS(1_000_000L, 1L),
@@ -54,9 +57,16 @@ public class LineProtocolParser {
     public long toMillis(final long value) {
       // Narrow first (sub-millisecond units divide down), then multiply with an exact check so a very
       // large seconds-precision timestamp throws instead of silently wrapping to a negative ms epoch.
-      return Math.multiplyExact(value / divisor, multiplier);
+      // floorDiv, not '/': an instant before 1970 with a sub-millisecond part belongs to the millisecond that
+      // contains it, and truncation toward zero moved it forward - -1 ns into 0 ms, the next bucket (issue #11985).
+      return Math.multiplyExact(Math.floorDiv(value, divisor), multiplier);
     }
 
+    /**
+     * @throws IllegalArgumentException for a precision that is none of ns, us (u), ms and s in any case. Read as nanoseconds, as it
+     *                                  used to be after a WARNING, it stored a timestamp in seconds as one in 1970 behind a 204
+     *                                  (issue #11875). An absent or empty precision is nanoseconds, as InfluxDB reads it
+     */
     public static Precision fromString(final String s) {
       if (s == null || s.isEmpty())
         return NANOSECONDS;
@@ -65,11 +75,7 @@ public class LineProtocolParser {
         case "us", "u" -> MICROSECONDS;
         case "ms" -> MILLISECONDS;
         case "s" -> SECONDS;
-        default -> {
-          LogManager.instance().log(Precision.class, Level.WARNING,
-              "Unrecognized precision '%s'; defaulting to nanoseconds", null, s);
-          yield NANOSECONDS;
-        }
+        default -> throw new IllegalArgumentException("Unsupported precision '" + s + "': use ns, us (or u), ms or s");
       };
     }
   }
@@ -126,10 +132,11 @@ public class LineProtocolParser {
     if (text == null || text.isEmpty())
       return samples;
 
-    // Use \R (any line terminator) to handle Unix (\n), Windows (\r\n), and classic Mac (\r)
-    final String[] lines = text.split("\\R");
+    // Only \n, \r\n and \r end a line, as in InfluxDB: Java's \R also matches U+000B, U+000C, U+0085, U+2028 and U+2029, which are
+    // ordinary characters of a tag value or a quoted string and must not cut the line in two (issue #12672)
+    final String[] lines = LINE_END.split(text);
     for (int i = 0; i < lines.length; i++) {
-      final String line = lines[i].trim();
+      final String line = stripPadding(lines[i]);
       if (line.isEmpty() || line.startsWith("#"))
         continue;
 
@@ -145,6 +152,25 @@ public class LineProtocolParser {
       }
     }
     return samples;
+  }
+
+  /**
+   * Removes the spaces and tabs around a line. {@code String.trim()} is not used on purpose: it removes every character up to
+   * U+0020, so a measurement starting with U+000B, U+000C or any other control character lost it and the sample was stored
+   * under the name of another series (issue #12672).
+   */
+  private static String stripPadding(final String line) {
+    int start = 0;
+    int end = line.length();
+    while (start < end && isPadding(line.charAt(start)))
+      start++;
+    while (end > start && isPadding(line.charAt(end - 1)))
+      end--;
+    return start == 0 && end == line.length() ? line : line.substring(start, end);
+  }
+
+  private static boolean isPadding(final char c) {
+    return c == ' ' || c == '\t';
   }
 
   /**

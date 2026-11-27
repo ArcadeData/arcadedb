@@ -937,11 +937,14 @@ class CypherExpressionBuilder {
     final boolean distinct = ctx.DISTINCT() != null;
     final List<Expression> arguments = new ArrayList<>();
 
-    // Function-style pattern predicate: exists((a)-[:R]->(b)) -> pattern existence check.
+    // Function-style pattern predicate: exists((a)-[:R]->(b)) -> pattern existence check. Only when the pattern is the
+    // whole argument of THIS call: one found deeper (exists([(a)-->()]), or the argument of an exists() nested in this
+    // one) belongs to a larger expression, and returning the pattern predicate alone would silently drop that expression
+    // (issue #13466).
     if (!distinct && "exists".equalsIgnoreCase(functionName) && ctx.functionArgument().size() == 1) {
       final Cypher25Parser.ExpressionContext argExpr = ctx.functionArgument(0).expression();
       final Cypher25Parser.PatternExpressionContext patternExpr = ParseTreeSearch.findPatternExpressionRecursive(argExpr);
-      if (patternExpr != null)
+      if (patternExpr != null && BooleanExpressionBuilder.existsFunctionOf(patternExpr) == ctx)
         return parsePatternPredicate(patternExpr);
     }
 

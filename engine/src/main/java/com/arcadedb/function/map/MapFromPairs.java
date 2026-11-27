@@ -61,14 +61,11 @@ public class MapFromPairs extends AbstractMapFunction {
 
     final Map<String, Object> result = new LinkedHashMap<>();
 
+    // As in APOC, a pair holding only a key maps it to null
     for (final Object pair : pairs) {
       final List<Object> p = CypherFunctionHelper.asListOrNull(pair);
-      if (p != null && p.size() >= 2) {
-        final Object key = p.get(0);
-        if (key != null) {
-          result.put(key.toString(), p.get(1));
-        }
-      }
+      if (p != null && !p.isEmpty() && p.get(0) != null)
+        result.put(p.get(0).toString(), p.size() > 1 ? p.get(1) : null);
     }
 
     return result;

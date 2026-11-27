@@ -23,7 +23,6 @@ import com.arcadedb.function.sql.geo.GeoUtils;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 import org.locationtech.spatial4j.shape.Shape;
-import org.locationtech.spatial4j.shape.SpatialRelation;
 
 /**
  * Base of the SQL methods that answer a spatial relation between the value they are applied to and a shape passed as
@@ -48,9 +47,9 @@ public abstract class AbstractSQLGeoRelationMethod extends AbstractSQLMethod {
   }
 
   /**
-   * Whether the relation OF THE VALUE to the parameter shape satisfies this method.
+   * Whether THE VALUE {@code value} and the parameter shape {@code shape} satisfy this method.
    */
-  protected abstract boolean matches(SpatialRelation relation);
+  protected abstract boolean matches(Shape value, Shape shape);
 
   @Override
   public Object execute(final Object value, final Identifiable currentRecord, final CommandContext context,
@@ -78,6 +77,6 @@ public abstract class AbstractSQLGeoRelationMethod extends AbstractSQLMethod {
     if (target == null)
       return null;
 
-    return matches(target.relate(shape));
+    return matches(target, shape);
   }
 }

@@ -18,12 +18,21 @@
  */
 package com.arcadedb.bench.runner;
 
+import org.HdrHistogram.Histogram;
+
+import java.nio.ByteBuffer;
 import java.util.Arrays;
+import java.util.Base64;
+import java.util.zip.DataFormatException;
 
 /**
- * Records latency samples in nanoseconds in a growable primitive array, sorted once on the first read.
+ * Records latency samples in nanoseconds in a growable primitive array, sorted once on the first read. Every sample counts as
+ * {@link Progress} for the stall watchdog.
  */
 public final class LatencyRecorder {
+  private static final long HIGHEST_TRACKABLE_MICROS = 3_600_000_000L;
+  private static final int  SIGNIFICANT_DIGITS       = 3;
+
   private long[]  samples;
   private int     count;
   private boolean sorted = true;
@@ -37,6 +46,21 @@ public final class LatencyRecorder {
       samples = Arrays.copyOf(samples, count + (count >> 1) + 1);
     samples[count++] = nanos;
     sorted = false;
+    Progress.advance();
+  }
+
+  /**
+   * Appends every sample of {@code other}, which is left as it was. The samples are not counted as {@link Progress} again: they
+   * were when {@code other} recorded them.
+   */
+  public void addAll(final LatencyRecorder other) {
+    if (other.count == 0)
+      return;
+    if (count + other.count > samples.length)
+      samples = Arrays.copyOf(samples, count + other.count);
+    System.arraycopy(other.samples, 0, samples, count, other.count);
+    count += other.count;
+    sorted = false;
   }
 
   /**
@@ -49,8 +73,19 @@ public final class LatencyRecorder {
       Arrays.sort(samples, 0, count);
       sorted = true;
     }
+    return percentileOfSorted(samples, count, p);
+  }
+
+  /**
+   * Nearest-rank percentile, p in (0, 100], of the first {@code count} entries of {@code sorted}, which must be in ascending
+   * order. Returns 0 when {@code count} is 0. For a caller that gathers its samples itself (and counts its own
+   * {@link Progress}).
+   */
+  public static long percentileOfSorted(final long[] sorted, final int count, final double p) {
+    if (count == 0)
+      return 0L;
     final int rank = (int) Math.ceil(p / 100.0 * count);
-    return samples[Math.min(Math.max(rank, 1), count) - 1];
+    return sorted[Math.min(Math.max(rank, 1), count) - 1];
   }
 
   /**
@@ -65,5 +100,29 @@ public final class LatencyRecorder {
 
   public int count() {
     return count;
+  }
+
+  /**
+   * The samples as an HdrHistogram in microseconds (3 significant digits, up to 1 hour, larger samples clamped), compressed and
+   * base64 encoded.
+   */
+  public String encodedHistogram() {
+    final Histogram histogram = new Histogram(HIGHEST_TRACKABLE_MICROS, SIGNIFICANT_DIGITS);
+    for (int i = 0; i < count; i++)
+      histogram.recordValue(Math.min(samples[i] / 1000L, HIGHEST_TRACKABLE_MICROS));
+    final ByteBuffer buffer = ByteBuffer.allocate(histogram.getNeededByteBufferCapacity());
+    final int length = histogram.encodeIntoCompressedByteBuffer(buffer);
+    final byte[] bytes = new byte[length];
+    buffer.rewind();
+    buffer.get(bytes);
+    return Base64.getEncoder().encodeToString(bytes);
+  }
+
+  public static Histogram decode(final String encoded) {
+    try {
+      return Histogram.decodeFromCompressedByteBuffer(ByteBuffer.wrap(Base64.getDecoder().decode(encoded)), 0L);
+    } catch (final DataFormatException e) {
+      throw new IllegalArgumentException("not a latency histogram: " + e.getMessage(), e);
+    }
   }
 }

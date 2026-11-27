@@ -28,8 +28,12 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.OptionalInt;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -54,7 +58,7 @@ class BenchRunnerTest {
     }
 
     @Override
-    public void prepare(final WorkloadContext ctx, final String caseName) {
+    public void prepare(final WorkloadContext ctx, final String caseName) throws Exception {
     }
 
     @Override
@@ -65,6 +69,78 @@ class BenchRunnerTest {
     static Measurement m(final double v) {
       return new Measurement(List.of(new Metric("t", "ms", Metric.Better.LOWER, v, new double[] { v })));
     }
+  }
+
+  @Test
+  void histogramsOnePerMeasuredRep() {
+    final Fake w = new Fake() {
+      @Override
+      public List<String> cases() {
+        return List.of("a");
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) {
+        final LatencyRecorder recorder = new LatencyRecorder(16);
+        recorder.record(1_000_000L);
+        return Measurement.of(m(1).perRep(), recorder);
+      }
+    };
+    final List<CaseResult> results = new BenchRunner(3, 2, Duration.ofSeconds(10)).run(w, CTX, null, l -> {
+    });
+    assertThat(results.get(0).histograms().length()).isEqualTo(3);
+  }
+
+  @Test
+  void runsTheCasesOfTheContextScale() {
+    final Fake w = new Fake() {
+      @Override
+      public List<String> cases() {
+        return List.of("a", "b");
+      }
+
+      @Override
+      public List<String> cases(final Scale scale) {
+        return scale == Scale.S ? List.of("b") : cases();
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) {
+        return m(1);
+      }
+    };
+    final BenchRunner runner = new BenchRunner(1, 0, Duration.ofSeconds(10));
+    assertThat(runner.run(w, new WorkloadContext(null, Scale.S, 1L, new JSONObject()), null, l -> {
+    })).extracting(CaseResult::caseName).containsExactly("b");
+    assertThat(runner.run(w, CTX, null, l -> {
+    })).extracting(CaseResult::caseName).containsExactly("a", "b");
+  }
+
+  @Test
+  void onCaseSeesEveryCaseInOrder() {
+    final Fake w = new Fake() {
+      @Override
+      public List<String> cases() {
+        return List.of("a", "b", "c");
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) {
+        if (caseName.equals("b"))
+          throw new IllegalStateException("boom");
+        return m(1);
+      }
+    };
+    final List<List<CaseResult>> seen = new ArrayList<>();
+    final List<CaseResult> results = new BenchRunner(1, 0, Duration.ofSeconds(10)).run(w, CTX, null, seen::add);
+    assertThat(seen).hasSize(3);
+    assertThat(seen.get(0)).extracting(CaseResult::caseName).containsExactly("a");
+    final List<CaseResult> last = seen.get(2);
+    assertThat(last).extracting(CaseResult::caseName).containsExactly("a", "b", "c");
+    assertThat(last).extracting(CaseResult::status)
+        .containsExactly(CaseResult.Status.OK, CaseResult.Status.FAILED, CaseResult.Status.OK);
+    assertThat(last).isEqualTo(results);
+    assertThatThrownBy(() -> last.add(results.get(0))).isInstanceOf(UnsupportedOperationException.class);
   }
 
   @Test
@@ -87,6 +163,119 @@ class BenchRunnerTest {
     assertThat(r.metrics().get(0).values()).containsExactly(3, 4, 5);
     assertThat(r.metrics().get(0).median()).isEqualTo(4.0);
     assertThat(r.scale()).isEqualTo("XS");
+  }
+
+  @Test
+  void aWorkloadsOwnRepsAndWarmupWin() {
+    final Fake declaring = new Fake() {
+      @Override
+      public List<String> cases() {
+        return List.of("a");
+      }
+
+      @Override
+      public OptionalInt reps() {
+        return OptionalInt.of(3);
+      }
+
+      @Override
+      public OptionalInt warmup() {
+        return OptionalInt.of(1);
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) {
+        return m(calls.incrementAndGet());
+      }
+    };
+    final Fake silent = new Fake() {
+      @Override
+      public List<String> cases() {
+        return List.of("a");
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) {
+        return m(calls.incrementAndGet());
+      }
+    };
+    final BenchRunner runner = new BenchRunner(5, 2, Duration.ofSeconds(10));
+
+    final CaseResult own = runner.run(declaring, CTX, n -> true).get(0);
+    assertThat(declaring.calls.get()).isEqualTo(4);
+    assertThat(own.status()).isEqualTo(CaseResult.Status.OK);
+    assertThat(own.metrics().get(0).values()).containsExactly(2, 3, 4);
+    // the run file records the repetitions the case really ran, not the run's
+    assertThat(own.reps()).isEqualTo(3);
+    assertThat(own.warmup()).isEqualTo(1);
+    assertThat(own.toJSON().getInt("reps")).isEqualTo(3);
+    assertThat(own.toJSON().getInt("warmup")).isEqualTo(1);
+
+    final CaseResult run = runner.run(silent, CTX, n -> true).get(0);
+    assertThat(silent.calls.get()).isEqualTo(7);
+    assertThat(run.metrics().get(0).values()).containsExactly(3, 4, 5, 6, 7);
+    assertThat(run.reps()).isEqualTo(5);
+    assertThat(run.warmup()).isEqualTo(2);
+  }
+
+  @Test
+  void anInvalidDeclaredRepetitionFailsTheCase() {
+    for (final int[] declared : new int[][] { { 0, 1 }, { 3, -1 } }) {
+      final Fake w = new Fake() {
+        @Override
+        public List<String> cases() {
+          return List.of("a");
+        }
+
+        @Override
+        public OptionalInt reps() {
+          return OptionalInt.of(declared[0]);
+        }
+
+        @Override
+        public OptionalInt warmup() {
+          return OptionalInt.of(declared[1]);
+        }
+
+        @Override
+        public Measurement measure(final WorkloadContext ctx, final String caseName) {
+          return m(calls.incrementAndGet());
+        }
+      };
+      final CaseResult r = new BenchRunner(5, 2, Duration.ofSeconds(10)).run(w, CTX, n -> true).get(0);
+      assertThat(r.status()).isEqualTo(CaseResult.Status.FAILED);
+      assertThat(r.error()).contains(declared[0] < 1 ? "declares reps 0, must be at least 1" : "declares warmup -1, must not be negative");
+      assertThat(w.calls.get()).isZero();
+    }
+  }
+
+  @Test
+  void aFailedCaseRecordsTheWorkloadsOwnReps() {
+    final Fake w = new Fake() {
+      @Override
+      public List<String> cases() {
+        return List.of("a");
+      }
+
+      @Override
+      public OptionalInt reps() {
+        return OptionalInt.of(3);
+      }
+
+      @Override
+      public OptionalInt warmup() {
+        return OptionalInt.of(1);
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) {
+        throw new IllegalStateException("boom");
+      }
+    };
+    final CaseResult r = new BenchRunner(5, 2, Duration.ofSeconds(10)).run(w, CTX, n -> true).get(0);
+    assertThat(r.status()).isEqualTo(CaseResult.Status.FAILED);
+    assertThat(r.reps()).isEqualTo(3);
+    assertThat(r.warmup()).isEqualTo(1);
   }
 
   @Test
@@ -370,5 +559,562 @@ class BenchRunnerTest {
     assertThat(results.get(0).status()).isEqualTo(CaseResult.Status.FAILED);
     assertThat(results.get(0).error()).contains("not started").contains("'a'");
     assertThat(next.calls.get()).isZero();
+  }
+
+  // #12839: a case of 2 warm-ups + 5 reps + a data load timed out as a whole although no single build came near the cap
+  @Test
+  void theTimeoutAppliesToEachStepNotToTheWholeCase() {
+    final Fake w = new Fake() {
+      @Override
+      public List<String> cases() {
+        return List.of("a");
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) throws Exception {
+        Thread.sleep(600);
+        return m(calls.incrementAndGet());
+      }
+    };
+    // 6 steps of 600 ms = 3.6 s in total, each one far under the 2 s step timeout
+    final List<CaseResult> results = new BenchRunner(5, 1, Duration.ofSeconds(2)).run(w, CTX, n -> true);
+    assertThat(results.get(0).status()).isEqualTo(CaseResult.Status.OK);
+    assertThat(results.get(0).metrics().get(0).values()).hasSize(5);
+  }
+
+  @Test
+  void aSlowRepetitionTimesOutAndIsNamed() {
+    final Fake w = new Fake() {
+      @Override
+      public List<String> cases() {
+        return List.of("a");
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) throws Exception {
+        if (calls.incrementAndGet() == 4) // warm-up 1, then reps 1..3
+          Thread.sleep(5_000);
+        return m(1);
+      }
+    };
+    final List<CaseResult> results = new BenchRunner(3, 1, Duration.ofMillis(300)).run(w, CTX, n -> true);
+    assertThat(results.get(0).status()).isEqualTo(CaseResult.Status.TIMEOUT);
+    assertThat(results.get(0).error()).contains("rep 3/3").contains("300 ms");
+  }
+
+  @Test
+  void prepareIsBoundedByItsOwnTimeoutNotByTheStepTimeout() {
+    final Fake w = new Fake() {
+      @Override
+      public List<String> cases() {
+        return List.of("a");
+      }
+
+      @Override
+      public void prepare(final WorkloadContext ctx, final String caseName) throws Exception {
+        Thread.sleep(600); // a data load longer than one repetition may take
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) {
+        return m(1);
+      }
+    };
+    final List<CaseResult> results = new BenchRunner(1, 0, Duration.ofMillis(200), Duration.ofSeconds(5), Duration.ZERO,
+        Duration.ofSeconds(5)).run(w, CTX, n -> true);
+    assertThat(results.get(0).status()).isEqualTo(CaseResult.Status.OK);
+  }
+
+  @Test
+  void aSlowPrepareTimesOutAndIsNamed() {
+    final Fake w = new Fake() {
+      @Override
+      public List<String> cases() {
+        return List.of("a");
+      }
+
+      @Override
+      public void prepare(final WorkloadContext ctx, final String caseName) throws Exception {
+        Thread.sleep(5_000);
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) {
+        calls.incrementAndGet();
+        return m(1);
+      }
+    };
+    final List<CaseResult> results = new BenchRunner(1, 0, Duration.ofSeconds(10), Duration.ofMillis(200), Duration.ZERO,
+        Duration.ofSeconds(5)).run(w, CTX, n -> true);
+    assertThat(results.get(0).status()).isEqualTo(CaseResult.Status.TIMEOUT);
+    assertThat(results.get(0).error()).contains("prepare").contains("200 ms");
+    assertThat(w.calls.get()).isZero();
+  }
+
+  @Test
+  void theCaseCapEndsACaseWhoseStepsEachFit() {
+    final Fake w = new Fake() {
+      @Override
+      public List<String> cases() {
+        return List.of("a");
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) throws Exception {
+        calls.incrementAndGet();
+        Thread.sleep(300);
+        return m(1);
+      }
+    };
+    final List<CaseResult> results = new BenchRunner(20, 0, Duration.ofSeconds(10), Duration.ofSeconds(10), Duration.ofSeconds(1),
+        Duration.ofSeconds(5)).run(w, CTX, n -> true);
+    assertThat(results.get(0).status()).isEqualTo(CaseResult.Status.TIMEOUT);
+    assertThat(results.get(0).error()).contains("case exceeded 1000 ms");
+    assertThat(w.calls.get()).isLessThan(20);
+  }
+
+  @Test
+  void aNegativeCaseCapIsRefused() {
+    assertThatThrownBy(() -> new BenchRunner(1, 0, Duration.ofSeconds(1), Duration.ofSeconds(1), Duration.ofSeconds(-1)))
+        .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("case timeout");
+  }
+
+  /** A runner whose clocks move by the given amounts between the start and the end of a case. */
+  private static List<CaseResult> runWithClockMoves(final long wallMillis, final long monoNanos, final boolean fail) {
+    final Fake w = new Fake() {
+      @Override
+      public List<String> cases() {
+        return List.of("a");
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) {
+        if (fail)
+          throw new IllegalStateException("boom");
+        return m(1);
+      }
+    };
+    final AtomicLong wall = new AtomicLong(1_000_000L);
+    final AtomicLong mono = new AtomicLong(0L);
+    final AtomicInteger wallReads = new AtomicInteger();
+    final AtomicInteger monoReads = new AtomicInteger();
+    // the first read is the case start, the second the case end
+    final BenchRunner.ClockPair clocks = new BenchRunner.ClockPair(
+        () -> wallReads.getAndIncrement() == 0 ? wall.get() : wall.addAndGet(wallMillis),
+        () -> monoReads.getAndIncrement() == 0 ? mono.get() : mono.addAndGet(monoNanos));
+    return new BenchRunner(1, 0, Duration.ofSeconds(10), Duration.ofSeconds(10), Duration.ZERO, Duration.ofSeconds(5), clocks)
+        .run(w, CTX, null);
+  }
+
+  @Test
+  void clockJumpMarksHostNotQuiet() {
+    final CaseResult r = runWithClockMoves(5_000, 1_000_000_000L, false).get(0);
+    assertThat(r.notes().getString("hostNotQuiet", "")).contains("4000 ms");
+  }
+
+  @Test
+  void smallDriftIsQuiet() {
+    final CaseResult r = runWithClockMoves(1_900, 1_000_000_000L, false).get(0);
+    assertThat(r.notes().has("hostNotQuiet")).isFalse();
+  }
+
+  @Test
+  void noteDoesNotChangeStatus() {
+    assertThat(runWithClockMoves(5_000, 1_000_000_000L, false).get(0).status()).isEqualTo(CaseResult.Status.OK);
+  }
+
+  @Test
+  void theNoteIsAddedToAFailedCaseToo() {
+    final CaseResult r = runWithClockMoves(5_000, 1_000_000_000L, true).get(0);
+    assertThat(r.status()).isEqualTo(CaseResult.Status.FAILED);
+    assertThat(r.notes().has("hostNotQuiet")).isTrue();
+  }
+
+  /** A guard answering {@link #deathReason()} from a script, one entry per call (null = alive), and counting restarts. */
+  private static final class ScriptedGuard implements ServerGuard {
+    final List<String>     reasons;
+    final AtomicInteger    checks   = new AtomicInteger();
+    final AtomicInteger    restarts = new AtomicInteger();
+    final WorkloadContext  fresh    = new WorkloadContext(null, Scale.XS, 1L, new JSONObject().put("fresh", true));
+    RuntimeException       restartFailure;
+    // the check is cut short by an interrupt of the run, as a probe sleeping between attempts would be
+    boolean                interruptOnCheck;
+
+    ScriptedGuard(final String... reasons) {
+      this.reasons = Arrays.asList(reasons);
+    }
+
+    @Override
+    public String deathReason() {
+      final int i = checks.getAndIncrement();
+      if (interruptOnCheck)
+        Thread.currentThread().interrupt();
+      return i < reasons.size() ? reasons.get(i) : null;
+    }
+
+    @Override
+    public WorkloadContext restart() {
+      restarts.incrementAndGet();
+      if (restartFailure != null)
+        throw restartFailure;
+      return fresh;
+    }
+
+    @Override
+    public boolean threadDump(final int n) {
+      return false;
+    }
+  }
+
+  /** Cases a, b, c, d; the named ones fail, the others pass; the context each measured case saw is recorded. */
+  private static final class Recording extends Fake {
+    final List<WorkloadContext> seenCtx = new ArrayList<>();
+    final List<String>          failing;
+
+    Recording(final String... failing) {
+      this.failing = List.of(failing);
+    }
+
+    @Override
+    public List<String> cases() {
+      return List.of("a", "b", "c", "d");
+    }
+
+    @Override
+    public Measurement measure(final WorkloadContext ctx, final String caseName) {
+      seenCtx.add(ctx);
+      if (failing.contains(caseName))
+        throw new IllegalStateException("connection refused");
+      return m(1);
+    }
+  }
+
+  @Test
+  void deadServerIsRestartedBeforeNextCase() {
+    final Recording w = new Recording();
+    // alive before b, dead before c
+    final ScriptedGuard guard = new ScriptedGuard(null, "OOMKilled");
+    final List<List<CaseResult>> seen = new ArrayList<>();
+    final List<CaseResult> results = new BenchRunner(1, 0, Duration.ofSeconds(10)).run(w, CTX, guard, null, seen::add);
+
+    assertThat(guard.restarts.get()).isEqualTo(1);
+    // the check runs before every case after the first
+    assertThat(guard.checks.get()).isEqualTo(3);
+    assertThat(results).extracting(CaseResult::status).containsOnly(CaseResult.Status.OK);
+    assertThat(results.get(2).notes().getBoolean("serverRestarted", false)).isTrue();
+    assertThat(results.get(3).notes().has("serverRestarted")).isFalse();
+    // c and d run against the restarted server's context
+    assertThat(w.seenCtx.get(1)).isSameAs(CTX);
+    assertThat(w.seenCtx.get(2)).isSameAs(guard.fresh);
+    assertThat(w.seenCtx.get(3)).isSameAs(guard.fresh);
+    // the amendment of b is handed over too: a, b, b amended, c, d
+    assertThat(seen).hasSize(5);
+    assertThat(seen.get(2)).hasSize(2);
+    assertThat(seen.get(2).get(1).notes().getString("serverDied", "")).isEqualTo("OOMKilled");
+    assertThat(seen.get(4)).isEqualTo(results);
+  }
+
+  @Test
+  void failedCaseCarriesTheDeathReason() {
+    final Recording w = new Recording("a");
+    final ScriptedGuard guard = new ScriptedGuard("exit code 137");
+    final List<CaseResult> results = new BenchRunner(1, 0, Duration.ofSeconds(10)).run(w, CTX, guard, null, done -> {
+    });
+
+    final CaseResult a = results.get(0);
+    assertThat(a.status()).isEqualTo(CaseResult.Status.FAILED);
+    assertThat(a.error()).startsWith("server died: exit code 137; ").contains("connection refused");
+    assertThat(results.get(1).notes().getBoolean("serverRestarted", false)).isTrue();
+    assertThat(results.get(1).status()).isEqualTo(CaseResult.Status.OK);
+  }
+
+  @Test
+  void timedOutCaseCarriesTheDeathReason() {
+    final Fake w = new Fake() {
+      @Override
+      public List<String> cases() {
+        return List.of("a", "b");
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) throws Exception {
+        if (caseName.equals("a"))
+          Thread.sleep(60_000);
+        return m(1);
+      }
+    };
+    final ScriptedGuard guard = new ScriptedGuard("OOMKilled");
+    final List<CaseResult> results = new BenchRunner(1, 0, Duration.ofMillis(200)).run(w, CTX, guard, null, done -> {
+    });
+    assertThat(results.get(0).status()).isEqualTo(CaseResult.Status.TIMEOUT);
+    assertThat(results.get(0).error()).startsWith("server died: OOMKilled; ");
+  }
+
+  @Test
+  void okCaseKeepsStatusAndGetsServerDiedNote() {
+    final Recording w = new Recording();
+    final ScriptedGuard guard = new ScriptedGuard("not answering /api/v1/ready");
+    final List<CaseResult> results = new BenchRunner(1, 0, Duration.ofSeconds(10)).run(w, CTX, guard, null, done -> {
+    });
+
+    final CaseResult a = results.get(0);
+    assertThat(a.status()).isEqualTo(CaseResult.Status.OK);
+    assertThat(a.error()).isNull();
+    assertThat(a.notes().getString("serverDied", "")).isEqualTo("not answering /api/v1/ready");
+    assertThat(a.metrics()).hasSize(1);
+  }
+
+  @Test
+  void secondDeathStopsTheWorkload() {
+    final Recording w = new Recording();
+    // dead before b, alive before c, dead before d
+    final ScriptedGuard guard = new ScriptedGuard("OOMKilled", null, "OOMKilled");
+    final List<CaseResult> results = new BenchRunner(1, 0, Duration.ofSeconds(10)).run(w, CTX, guard, null, done -> {
+    });
+
+    assertThat(guard.restarts.get()).isEqualTo(1);
+    assertThat(results.get(2).notes().getString("serverDied", "")).isEqualTo("OOMKilled");
+    final CaseResult d = results.get(3);
+    assertThat(d.status()).isEqualTo(CaseResult.Status.FAILED);
+    assertThat(d.error()).isEqualTo("not started: server died twice");
+    // d never ran
+    assertThat(w.seenCtx).hasSize(3);
+  }
+
+  @Test
+  void secondDeathFailsEveryRemainingCase() {
+    final Recording w = new Recording();
+    final ScriptedGuard guard = new ScriptedGuard("OOMKilled", "OOMKilled");
+    final List<CaseResult> results = new BenchRunner(1, 0, Duration.ofSeconds(10)).run(w, CTX, guard, null, done -> {
+    });
+
+    assertThat(results.subList(2, 4)).allSatisfy(r -> {
+      assertThat(r.status()).isEqualTo(CaseResult.Status.FAILED);
+      assertThat(r.error()).isEqualTo("not started: server died twice");
+    });
+    // no check once the workload is stopped
+    assertThat(guard.checks.get()).isEqualTo(2);
+    assertThat(w.seenCtx).hasSize(2);
+  }
+
+  @Test
+  void restartFailureFailsTheRest() {
+    final Recording w = new Recording();
+    final ScriptedGuard guard = new ScriptedGuard(null, "OOMKilled");
+    guard.restartFailure = new IllegalStateException("no docker");
+    final List<CaseResult> results = new BenchRunner(1, 0, Duration.ofSeconds(10)).run(w, CTX, guard, null, done -> {
+    });
+
+    assertThat(results).hasSize(4);
+    assertThat(results.get(1).notes().getString("serverDied", "")).isEqualTo("OOMKilled");
+    assertThat(results.subList(2, 4)).allSatisfy(r -> {
+      assertThat(r.status()).isEqualTo(CaseResult.Status.FAILED);
+      assertThat(r.error()).isEqualTo("server restart failed: java.lang.IllegalStateException: no docker");
+    });
+    assertThat(guard.restarts.get()).isEqualTo(1);
+    assertThat(w.seenCtx).hasSize(2);
+  }
+
+  @Test
+  void anInterruptedLivenessCheckIsNoDeath() {
+    final Recording w = new Recording();
+    // the liveness probe is cut short by an interrupt of the run: its failure says nothing about the server
+    final ScriptedGuard scripted = new ScriptedGuard("not answering /api/v1/ready");
+    scripted.interruptOnCheck = true;
+    final ServerGuard guard = scripted;
+    final List<CaseResult> results;
+    try {
+      results = new BenchRunner(1, 0, Duration.ofSeconds(10)).run(w, CTX, guard, null, done -> {
+      });
+    } finally {
+      Thread.interrupted();
+    }
+
+    assertThat(scripted.restarts.get()).isZero();
+    assertThat(results).hasSize(4);
+    assertThat(results.get(0).status()).isEqualTo(CaseResult.Status.OK);
+    assertThat(results.get(0).notes().has("serverDied")).isFalse();
+    assertThat(results.subList(1, 4)).allSatisfy(r -> {
+      assertThat(r.status()).isEqualTo(CaseResult.Status.FAILED);
+      assertThat(r.error()).isEqualTo("not started: the run was interrupted");
+      assertThat(r.notes().has("serverRestarted")).isFalse();
+    });
+    assertThat(w.seenCtx).hasSize(1);
+  }
+
+  @Test
+  void aFailedTeardownKeepsTheHistograms() {
+    final Fake w = new Fake() {
+      @Override
+      public List<String> cases() {
+        return List.of("a");
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) {
+        final LatencyRecorder recorder = new LatencyRecorder(16);
+        recorder.record(1_000_000L);
+        return Measurement.of(m(1).perRep(), recorder);
+      }
+
+      @Override
+      public void teardown(final WorkloadContext ctx) {
+        throw new IllegalStateException("drop failed");
+      }
+    };
+    final CaseResult r = new BenchRunner(2, 0, Duration.ofSeconds(10)).run(w, CTX, null, l -> {
+    }).getFirst();
+    assertThat(r.status()).isEqualTo(CaseResult.Status.FAILED);
+    assertThat(r.error()).isEqualTo("teardown: java.lang.IllegalStateException: drop failed");
+    assertThat(r.metrics()).hasSize(1);
+    assertThat(r.histograms().length()).isEqualTo(2);
+  }
+
+  @Test
+  void aWorkerThatMovesFromStepToStepIsNotStalled() {
+    // every repetition sits in the same sleep, so the stack never changes; each new repetition is progress all the same
+    final Fake w = new Fake() {
+      @Override
+      public List<String> cases() {
+        return List.of("a");
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) throws Exception {
+        Thread.sleep(100);
+        return m(1);
+      }
+    };
+    final BenchRunner runner = new BenchRunner(15, 0, Duration.ofSeconds(30));
+    runner.stallTiming(Duration.ofMillis(20), Duration.ofSeconds(1));
+    final DumpingGuard guard = new DumpingGuard();
+    final CaseResult r = runner.run(w, CTX, guard, null, l -> {
+    }).getFirst();
+    assertThat(guard.dumps).isEmpty();
+    assertThat(r.notes().has("stallDumps")).isFalse();
+    assertThat(r.notes().has("stallsWithoutDump")).isFalse();
+  }
+
+  @Test
+  void aNullGuardMeansNoCheck() {
+    final Recording w = new Recording();
+    final List<CaseResult> results = new BenchRunner(1, 0, Duration.ofSeconds(10)).run(w, CTX, null, null, done -> {
+    });
+    assertThat(results).extracting(CaseResult::status).containsOnly(CaseResult.Status.OK);
+    assertThat(results).allSatisfy(r -> assertThat(r.notes().has("serverRestarted")).isFalse());
+  }
+
+  /** A guard whose server never dies and whose every thread dump succeeds, recording the dump numbers asked for. */
+  private static final class DumpingGuard implements ServerGuard {
+    final List<Integer> dumps = new ArrayList<>();
+    final boolean       succeeds;
+
+    DumpingGuard() {
+      this(true);
+    }
+
+    /** {@code succeeds} false: a native image, which never takes a dump. */
+    DumpingGuard(final boolean succeeds) {
+      this.succeeds = succeeds;
+    }
+
+    @Override
+    public String deathReason() {
+      return null;
+    }
+
+    @Override
+    public WorkloadContext restart() {
+      throw new AssertionError("no restart expected");
+    }
+
+    @Override
+    public synchronized boolean threadDump(final int n) {
+      dumps.add(n);
+      return succeeds;
+    }
+  }
+
+  /** Cases whose name starts with "stall" sit in one sleep (an unchanging stack) well past the test's stall threshold. */
+  private static final class Stalling extends Fake {
+    final List<String> cases;
+
+    Stalling(final String... cases) {
+      this.cases = List.of(cases);
+    }
+
+    @Override
+    public List<String> cases() {
+      return cases;
+    }
+
+    @Override
+    public Measurement measure(final WorkloadContext ctx, final String caseName) throws Exception {
+      if (caseName.startsWith("stall"))
+        Thread.sleep(1_500);
+      return m(1);
+    }
+  }
+
+  private static BenchRunner stallRunner() {
+    final BenchRunner runner = new BenchRunner(1, 0, Duration.ofSeconds(30));
+    runner.stallTiming(Duration.ofMillis(20), Duration.ofMillis(200));
+    return runner;
+  }
+
+  private static boolean watchdogThreadAlive() {
+    return Thread.getAllStackTraces().keySet().stream().anyMatch(t -> t.getName().equals(BenchRunner.WATCHDOG_THREAD) && t.isAlive());
+  }
+
+  @Test
+  void stalledCaseGetsAThreadDumpAndANote() {
+    final DumpingGuard guard = new DumpingGuard();
+    final List<CaseResult> results = stallRunner().run(new Stalling("quick", "stall-1"), CTX, guard, null, r -> {
+    });
+
+    assertThat(guard.dumps).containsExactly(1);
+    assertThat(results.get(0).notes().has("stallDumps")).isFalse();
+    assertThat(results.get(1).notes().getInt("stallDumps", 0)).isEqualTo(1);
+    assertThat(results).extracting(CaseResult::status).containsOnly(CaseResult.Status.OK);
+    // the watchdog of a case never outlives it
+    assertThat(watchdogThreadAlive()).isFalse();
+  }
+
+  @Test
+  void dumpBudgetIsSharedAcrossWorkloads() {
+    final DumpingGuard guard = new DumpingGuard();
+    final BenchRunner runner = stallRunner();
+    final List<CaseResult> first = runner.run(new Stalling("stall-1", "stall-2"), CTX, guard, null, r -> {
+    });
+    final List<CaseResult> second = runner.run(new Stalling("stall-3", "stall-4"), CTX, guard, null, r -> {
+    });
+
+    assertThat(guard.dumps).containsExactly(1, 2, 3);
+    assertThat(first).allSatisfy(r -> assertThat(r.notes().getInt("stallDumps", 0)).isEqualTo(1));
+    assertThat(second.get(0).notes().getInt("stallDumps", 0)).isEqualTo(1);
+    assertThat(second.get(1).notes().has("stallDumps")).isFalse();
+    // the 4th stall is past the budget: still recorded, as a stall without a dump
+    assertThat(second.get(1).notes().getInt("stallsWithoutDump", 0)).isEqualTo(1);
+    assertThat(first).allSatisfy(r -> assertThat(r.notes().has("stallsWithoutDump")).isFalse());
+    assertThat(second.get(0).notes().has("stallsWithoutDump")).isFalse();
+  }
+
+  @Test
+  void stallWithoutADumpIsStillNoted() {
+    final DumpingGuard guard = new DumpingGuard(false);
+    final List<CaseResult> results = stallRunner().run(new Stalling("quick", "stall-1"), CTX, guard, null, r -> {
+    });
+
+    assertThat(guard.dumps).containsExactly(1);
+    assertThat(results.get(1).notes().getInt("stallsWithoutDump", 0)).isEqualTo(1);
+    assertThat(results.get(1).notes().has("stallDumps")).isFalse();
+    assertThat(results.get(0).notes().has("stallsWithoutDump")).isFalse();
+  }
+
+  @Test
+  void noGuardMeansNoWatchdog() {
+    final List<CaseResult> results = stallRunner().run(new Stalling("stall-1"), CTX, null, null, r -> {
+    });
+    assertThat(results.getFirst().notes().has("stallDumps")).isFalse();
   }
 }

@@ -49,6 +49,10 @@ public class ExecutionPlanCache {
    * millisecond-granular comparison this replaces, although it was planned against the new schema.
    */
   private volatile long                               invalidationEpoch = 0;
+  // how many plans were taken from the cache and how many were stored, so a test can tell a statement planned once from one
+  // planned every time. Diagnostic only: updated under the lock get() and put() already hold, nothing reads them on a query path
+  private long                                        hits;
+  private long                                        puts;
 
   /**
    * @param size the size of the cache
@@ -93,6 +97,7 @@ public class ExecutionPlanCache {
     if (result != null) {
       map.put(statement, result);
       result = result.copy(context);
+      hits++;
     }
 
     return result;
@@ -120,6 +125,17 @@ public class ExecutionPlanCache {
     InternalExecutionPlan internal = (InternalExecutionPlan) plan;
     internal = internal.copy(null);
     map.put(statement, internal);
+    puts++;
+  }
+
+  /** How many times a plan was taken from the cache since it was created. */
+  public synchronized long getHitCount() {
+    return hits;
+  }
+
+  /** How many plans were stored in the cache since it was created: a statement planned once adds one, however often it runs. */
+  public synchronized long getPutCount() {
+    return puts;
   }
 
   public synchronized void invalidate() {

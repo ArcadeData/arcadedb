@@ -21,6 +21,7 @@ package com.arcadedb.remote;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.exception.RecordNotFoundException;
@@ -151,6 +152,11 @@ public class RemoteMutableEdge extends MutableEdge {
   @Override
   protected Object convertValueToSchemaType(final String name, final Object value, final DocumentType type) {
     return value;
+  }
+
+  @Override
+  protected MutableEmbeddedDocument createEmbeddedDocument(final String embeddedTypeName, final String propertyName) {
+    return RemoteMutableDocument.embeddedDocument(remoteDatabase, this, embeddedTypeName, propertyName);
   }
 
   @Override

@@ -764,7 +764,7 @@ class ContinuousAggregateIngestRefreshTest extends TestHelper {
 
     assertThat(sourceRows()).containsEntry(0L, 51.0);
     assertConverged();
-    assertThat(aggregate().getInvalidation()).isNull();
+    assertThat(aggregate().hasInvalidation()).isFalse();
   }
 
   // #10708
