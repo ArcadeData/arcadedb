@@ -103,6 +103,7 @@ public class MatchRootFilterStep extends AbstractExecutionStep {
     final long begin = context.isProfiling() ? System.nanoTime() : 0;
     final Object previousMatch = context.getVariable(CURRENT_MATCH_VARIABLE);
     context.setVariable(CURRENT_MATCH_VARIABLE, candidate.isElement() ? candidate.toElement() : candidate);
+    // $current IS LEFT ON THE ROW, AS FilterStep AND THE FETCH STEPS LEAVE IT: EVERY STEP THAT READS IT SETS IT FIRST
     context.setVariable("current", candidate);
     try {
       return whereClause.matchesFilters(candidate, context);
