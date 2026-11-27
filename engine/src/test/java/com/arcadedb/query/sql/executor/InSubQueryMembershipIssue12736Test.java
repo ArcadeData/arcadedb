@@ -46,7 +46,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class InSubQueryMembershipIssue12736Test extends TestHelper {
 
-  /** Rows of L besides 'a' and 'c': with them the sub-query is well past the size below which its rows are scanned. */
+  /**
+   * Rows of L besides 'a' and 'c', and the padding of T and SM: with them the sub-query is well past the size below which its
+   * rows are scanned (32, {@code InCondition.ROWS_PROBE_MIN_SIZE}).
+   */
   private static final int LARGE_PADDING_ROWS = 40;
 
   @Override
@@ -68,7 +71,8 @@ class InSubQueryMembershipIssue12736Test extends TestHelper {
     database.getSchema().createDocumentType("SM");
     database.getSchema().createDocumentType("T").createProperty("tags", Type.LIST);
 
-    // Enough rows for the sub-query to be probed rather than scanned: S, SN, SM and T above stay below that size
+    // Enough rows for the sub-query to be probed rather than scanned: S and SN above stay below that size, SM and T are padded
+    // past it below, so the probe has to decline their rows (mixed kinds, collections) and leave them to the scan
     final DocumentType l = database.getSchema().createDocumentType("L");
     l.createProperty("lname", Type.STRING);
     l.createProperty("lnull", Type.STRING);
@@ -103,6 +107,12 @@ class InSubQueryMembershipIssue12736Test extends TestHelper {
       database.command("sql", "INSERT INTO SM SET v = 3");
 
       database.command("sql", "INSERT INTO T SET tags = ['a', 'b']");
+
+      // Padding that matches no outer row: the answers stay those of the rows above
+      for (int i = 0; i < LARGE_PADDING_ROWS; i++) {
+        database.newDocument("SM").set("v", "pad" + i).save();
+        database.newDocument("T").set("tags", List.of("pad" + i, "pad" + (i + 1))).save();
+      }
     });
   }
 
@@ -217,6 +227,13 @@ class InSubQueryMembershipIssue12736Test extends TestHelper {
         .containsExactly(1, 3);
     assertThat(ids("SELECT id FROM P WHERE name NOT IN (SELECT sname FROM S WHERE slong = $parent.$current.num)"))
         .containsExactly(2, 4, 5, 6);
+
+    // The same over rows past the probe size: every outer row is handed a different list, so the list of row 1 ('a' and the
+    // padding) must not answer row 3 ('c' and the padding)
+    final String correlated = "(SELECT lname FROM L WHERE llong = $parent.$current.num OR llong >= 1000)";
+    assertThat(ids("SELECT id FROM P WHERE name IN " + correlated)).containsExactly(1, 3);
+    // Row 5 has a NULL name against a non-empty list: UNKNOWN, so NOT IN leaves it out
+    assertThat(ids("SELECT id FROM P WHERE name NOT IN " + correlated)).containsExactly(2, 4, 6);
   }
 
   @Test
@@ -243,11 +260,24 @@ class InSubQueryMembershipIssue12736Test extends TestHelper {
     final int[] reads = new int[1];
     final List<Result> rows = new ArrayList<>();
     for (int i = 0; i < 50; i++)
+      // Not the exact ResultInternal class, so every read of the row goes through one of the methods counted here
       rows.add(new ResultInternal(Map.of("sname", "v" + i)) {
+        @Override
+        public boolean isElement() {
+          reads[0]++;
+          return super.isElement();
+        }
+
         @Override
         public Set<String> getPropertyNames() {
           reads[0]++;
           return super.getPropertyNames();
+        }
+
+        @Override
+        public <T> T getProperty(final String name) {
+          reads[0]++;
+          return super.getProperty(name);
         }
       });
 
