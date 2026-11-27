@@ -182,7 +182,9 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep implements Ro
         } catch (final IOException e) {
           throw new CommandExecutionException("Error querying TimeSeries engine", e);
         }
-      }
+      } else
+        // A cursor kept open between two pulls asks for the grant again: the first pull asked it when the cursor was opened
+        tsType.checkAccess(SecurityDatabaseUser.ACCESS.READ_RECORD);
 
       // The engine row is { timestamp, non-TIMESTAMP columns in schema order... } whatever position the
       // TIMESTAMP column occupies in the declaration - TimeSeriesBucket.readRow writes position 0 from the
