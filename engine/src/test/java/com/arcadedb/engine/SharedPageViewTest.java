@@ -749,6 +749,7 @@ class SharedPageViewTest {
         Map.entry("readByte(int)", "an absolute read"),//
         Map.entry("readUnsignedByte(int)", "an absolute read"),//
         Map.entry("isSameContentAs(int,Binary,int,int)", "an array comparison"),//
+        Map.entry("findByteDownwards(int,int,int,byte)", "an absolute array scan, #13020"),//
         Map.entry("readString()", "delegates to readBytes(), which the shared view overrides"),//
         Map.entry("readString(int)", "delegates to readBytes(int), which the shared view overrides"),//
         Map.entry("getPageId()", "a final field"),//
@@ -815,6 +816,32 @@ class SharedPageViewTest {
       assertThat(page.readNumberSize(40)).isEqualTo(Binary.getNumberSpace(123_456_789L));
       assertThat(page.readNumberAndSize(40)).containsExactly(123_456_789L, Binary.getNumberSpace(123_456_789L));
       assertThat(page.getBufferPosition()).isEqualTo(7);
+    }
+
+    @Test
+    void findByteDownwardsAnswersTheOrdinalOfTheFirstMatchWithoutMovingThePosition() {
+      final int pageSize = 1024;
+      final MutablePage page = new MutablePage(new PageId((DatabaseInternal) database, 1, 0), pageSize);
+      // FOUR 3-BYTE SLOTS GROWING DOWNWARDS FROM 900, THE PROBED BYTE BEING THE LAST OF EACH: 7, -1, 7, 42
+      final int top = 900;
+      final byte[] probed = { 7, -1, 7, 42 };
+      for (int i = 0; i < probed.length; i++)
+        page.writeByte(top - i * 3, probed[i]);
+      page.setBufferPosition(11);
+
+      assertThat(page.findByteDownwards(top, 3, 4, (byte) 7)).isZero();
+      assertThat(page.findByteDownwards(top - 3, 3, 3, (byte) 7)).isEqualTo(1);
+      assertThat(page.findByteDownwards(top, 3, 4, (byte) -1)).as("a byte over 127 compares as itself").isEqualTo(1);
+      assertThat(page.findByteDownwards(top, 3, 4, (byte) 42)).isEqualTo(3);
+      assertThat(page.findByteDownwards(top, 3, 3, (byte) 42)).as("the match lies past the count").isEqualTo(-1);
+      assertThat(page.findByteDownwards(top, 3, 4, (byte) 5)).isEqualTo(-1);
+      assertThat(page.findByteDownwards(top, 3, 0, (byte) 7)).as("an empty scan reads nothing").isEqualTo(-1);
+      assertThat(page.getBufferPosition()).isEqualTo(11);
+
+      final ImmutablePage shared = new CachedPage(page, true).getSharedImmutableView();
+      assertThat(shared).isInstanceOf(SharedImmutablePage.class);
+      assertThat(shared.findByteDownwards(top, 3, 4, (byte) 42)).isEqualTo(3);
+      assertThat(shared.findByteDownwards(top - 3, 3, 3, (byte) 7)).isEqualTo(1);
     }
 
     @Test
