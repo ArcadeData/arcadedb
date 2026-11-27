@@ -2489,9 +2489,18 @@ public class HashIndexBucket extends PaginatedComponent {
    */
   private int findNextEntry(final BasePage page, final int entryCount, final byte[] searchKey, final int tag, final int from) {
     if (tagged) {
-      for (int i = from; i < entryCount; i++)
-        if (readTag(page, i) == tag && keysMatch(page, readSlot(page, i), searchKey))
+      // THE TAG OF EVERY SLOT IS COMPARED, SO THE PAGE SCANS THEM ON ITS BACKING ARRAY WITH A STRIDE: NO PER-SLOT CALL CHAIN,
+      // NO BUFFER BOUNDS CHECK, NO BUFFER BUILT PER CALL ON THE SHARED VIEW (#13020). SLOTS GROW DOWNWARDS FROM THE END OF THE
+      // PAGE, THE TAG BEING THE LAST BYTE OF A SLOT
+      final byte tagByte = (byte) tag;
+      for (int i = from; i < entryCount; i++) {
+        final int skipped = page.findByteDownwards(slotPosition(i) + SLOT_SIZE, TAGGED_SLOT_SIZE, entryCount - i, tagByte);
+        if (skipped < 0)
+          return -1;
+        i += skipped;
+        if (keysMatch(page, readSlot(page, i), searchKey))
           return i;
+      }
       return -1;
     }
 

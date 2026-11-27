@@ -165,6 +165,21 @@ public abstract class BasePage {
     return this.content.isSameRegionAs(PAGE_HEADER_SIZE + index, other, otherIndex, length);
   }
 
+  /**
+   * Scans {@code count} bytes of the page, the first at {@code index} and each next one {@code stride} bytes BELOW the
+   * previous, and returns the ordinal of the first one equal to {@code value} (0 for the byte at {@code index}), or -1 when
+   * none is. It reads the backing array at absolute positions: no call and no buffer bounds check per byte, no allocation and
+   * no position moved, so it is safe on a view shared by many threads (#13020).
+   */
+  public int findByteDownwards(final int index, final int stride, final int count, final byte value) {
+    final byte[] bytes = this.content.getContent();
+    int at = this.content.getByteBuffer().arrayOffset() + PAGE_HEADER_SIZE + index;
+    for (int i = 0; i < count; i++, at -= stride)
+      if (bytes[at] == value)
+        return i;
+    return -1;
+  }
+
   public void readByteArray(final int index, final byte[] buffer) {
     this.content.getByteArray(PAGE_HEADER_SIZE + index, buffer);
   }
