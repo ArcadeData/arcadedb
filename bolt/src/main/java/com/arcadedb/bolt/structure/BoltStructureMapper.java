@@ -57,7 +57,7 @@ import java.util.*;
  * Maps ArcadeDB objects to BOLT PackStream values.
  */
 public class BoltStructureMapper {
-  // Every key point() writes (CypherPointFunction) and pointMap() decodes
+  // Every key point() writes (CypherPointFunction), which is also what an inbound Point decodes to
   private static final Set<String> POINT_KEYS = Set.of("x", "y", "z", "longitude", "latitude", "height", "crs", "srid");
 
   /**
@@ -663,10 +663,12 @@ public class BoltStructureMapper {
         return new CypherDuration(asLong(f.get(0)), asLong(f.get(1)), asLong(f.get(2)), asLong(f.get(3)));
 
       case SIG_POINT_2D:
-        return pointMap((int) asLong(f.get(0)), asDouble(f.get(1)), asDouble(f.get(2)), null);
+        // The map point() builds for the srid, alias keys of a WGS-84 point included, so a Point parameter equals a stored or
+        // constructed point (issue #13570). It carries the crs key toPointStructure needs to send an echoed Point back as one
+        return CypherPointFunction.ofSrid((int) asLong(f.get(0)), asDouble(f.get(1)), asDouble(f.get(2)), null);
 
       case SIG_POINT_3D:
-        return pointMap((int) asLong(f.get(0)), asDouble(f.get(1)), asDouble(f.get(2)), asDouble(f.get(3)));
+        return CypherPointFunction.ofSrid((int) asLong(f.get(0)), asDouble(f.get(1)), asDouble(f.get(2)), asDouble(f.get(3)));
 
       default:
         // Not a recognized temporal, Duration or Point signature: leave as-is.
@@ -701,22 +703,5 @@ public class BoltStructureMapper {
 
   private static double asDouble(final Object value) {
     return ((Number) value).doubleValue();
-  }
-
-  /**
-   * Build the inbound decoded representation of a Point: a map carrying x, y, an optional z,
-   * the srid and a derived crs key. The crs key is required so an echoed Point (e.g.
-   * {@code RETURN $p AS echo}) is recognized by {@link #toPointStructure} and re-encoded as a
-   * native Bolt Point rather than a generic map.
-   */
-  private static Map<String, Object> pointMap(final int srid, final double x, final double y, final Double z) {
-    final Map<String, Object> m = new LinkedHashMap<>();
-    m.put("srid", srid);
-    m.put("x", x);
-    m.put("y", y);
-    if (z != null)
-      m.put("z", z);
-    m.put("crs", CypherPointFunction.crsOfSrid(srid, z != null));
-    return m;
   }
 }
