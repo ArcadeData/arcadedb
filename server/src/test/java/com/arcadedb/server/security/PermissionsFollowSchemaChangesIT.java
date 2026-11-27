@@ -25,11 +25,17 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.http.HttpSessionManager;
+import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.Label;
+import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.Sample;
+import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.TimeSeries;
+import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.WriteRequest;
 import org.junit.jupiter.api.Test;
+import org.xerial.snappy.Snappy;
 
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.Base64;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -173,6 +179,43 @@ class PermissionsFollowSchemaChangesIT extends BaseGraphServerTest {
       assertThat(countRecords("Granted")).isEqualTo(1);
     } finally {
       deleteToken(tokenName);
+    }
+  }
+
+  @Test
+  void metricNameWithoutTypeIsAnsweredFromTheGrantsOfTheRequest() throws Exception {
+    final String tokenName = "remote-write-token";
+    final String token = createToken(tokenName);
+    try {
+      final DatabaseInternal database = (DatabaseInternal) getServerDatabase(0, getDatabaseName());
+
+      // A METRIC NO GRANT NAMES, AND NO "*" GRANT COVERS, IS REFUSED BEFORE ITS TYPE IS CREATED
+      assertThat(remoteWrite(token, "Ungranted")).as(this::lastResponse).isEqualTo(403);
+      assertThat(database.getSchema().existsType("Ungranted")).isFalse();
+
+      // THE METRIC THE TOKEN IS GRANTED BY NAME HAS ITS TYPE CREATED BY THE FIRST WRITE
+      assertThat(remoteWrite(token, "Granted")).as(this::lastResponse).isEqualTo(204);
+      assertThat(database.getSchema().existsType("Granted")).isTrue();
+    } finally {
+      deleteToken(tokenName);
+    }
+  }
+
+  private int remoteWrite(final String token, final String metricName) throws Exception {
+    final WriteRequest request = new WriteRequest(
+        List.of(new TimeSeries(List.of(new Label("__name__", metricName)), List.of(new Sample(1.5, 1000)))));
+    final HttpURLConnection connection = open("/api/v1/ts/" + getDatabaseName() + "/prom/write", "Bearer " + token);
+    connection.setDoOutput(true);
+    connection.setRequestProperty("Content-Type", "application/x-protobuf");
+    connection.setRequestProperty("Content-Encoding", "snappy");
+    connection.getOutputStream().write(Snappy.compress(request.encode()));
+    connection.connect();
+    try {
+      final int code = connection.getResponseCode();
+      lastResponse = code + " " + (code >= 400 ? readError(connection) : "");
+      return code;
+    } finally {
+      connection.disconnect();
     }
   }
 

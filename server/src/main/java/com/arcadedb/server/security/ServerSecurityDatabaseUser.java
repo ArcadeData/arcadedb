@@ -183,9 +183,8 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
     if (currentMap == null)
       return true;
 
-    boolean[] permissions = currentMap.get(typeName);
-    if (permissions == null)
-      permissions = typeNotInSnapshot(snapshot, typeName);
+    final boolean[] known = currentMap.get(typeName);
+    final boolean[] permissions = known != null ? known : typeNotInSnapshot(snapshot, typeName);
     return permissions[access.ordinal()];
   }
 
