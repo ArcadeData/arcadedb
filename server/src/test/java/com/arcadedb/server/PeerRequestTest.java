@@ -236,4 +236,63 @@ class PeerRequestTest {
     PeerRequest.newRelayRequest(PLAIN_URL, true, PeerRequestTest.class, "testing", "s3cr3t", null);
     assertThat(PeerRequest.saidForTests()).as("the token alone").isTrue();
   }
+
+  // ------------------------------------------------------------------ the characters a principal name may have
+
+  /** Names with characters a header cannot carry as written: whitespace at either end or in a run, a control character, non-ASCII text. */
+  private static final String[] NAMES_A_HEADER_CANNOT_CARRY = { "reader ", " reader", "reader  ", "re  ader", "reader\t", "re\tader", "reader\n",
+      "reader\r", "re\u0000ader", "re\u007fader", "re\u0085ader", "Zo\u00eb", "user\u00a0name", "re\u20acader", "\u30e6\u30fc\u30b6\u30fc", " " };
+
+  /** Names a header carries as written: printable ASCII, a single inner space included. */
+  private static final String[] NAMES_A_HEADER_CARRIES = { "reader", "John Smith", "jane.doe@example.com", "o'brien",
+      "a-b_c", "~!@#$%^&*()_+{}|:\"<>?" };
+
+  /**
+   * A principal name with whitespace at either end or in a run, a control character or a character outside printable ASCII is
+   * refused where the request is built: a forward that cannot name its principal fails.
+   */
+  @Test
+  void aPrincipalNameWithUnsupportedCharactersIsRefused() {
+    for (final String name : NAMES_A_HEADER_CANNOT_CARRY) {
+      assertThatThrownBy(() -> PeerRequest.newRequest(PLAIN_URL, false, PeerRequestTest.class, "testing", "s3cr3t", name))
+          .as("builder form of '%s'", printable(name)).isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("principal");
+      assertThatThrownBy(() -> PeerRequest.openConnection(PLAIN_URL, false, PeerRequestTest.class, "testing", "s3cr3t", name))
+          .as("connection form of '%s'", printable(name)).isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("principal");
+    }
+  }
+
+  @Test
+  void aPrincipalNameWithSupportedCharactersIsCarried() throws Exception {
+    for (final String name : NAMES_A_HEADER_CARRIES) {
+      final HttpRequest built = PeerRequest.newRequest(PLAIN_URL, false, PeerRequestTest.class, "testing", "s3cr3t", name).GET()
+          .build();
+      assertThat(built.headers().firstValue(PeerRequest.FORWARDED_USER_HEADER)).as(printable(name)).hasValue(name);
+
+      final HttpURLConnection connection = PeerRequest.openConnection(PLAIN_URL, false, PeerRequestTest.class, "testing", "s3cr3t",
+          name);
+      try {
+        assertThat(connection.getRequestProperty(PeerRequest.FORWARDED_USER_HEADER)).as(printable(name)).isEqualTo(name);
+      } finally {
+        connection.disconnect();
+      }
+    }
+  }
+
+  /** Without a token the principal is not sent at all, so there is nothing for the receiving node to read differently. */
+  @Test
+  void aPrincipalNameIsNotCheckedWhenNoCredentialIsSent() throws Exception {
+    final HttpRequest built = PeerRequest.newRequest(PLAIN_URL, false, PeerRequestTest.class, "testing", null, "reader ").GET().build();
+    assertThat(built.headers().firstValue(PeerRequest.FORWARDED_USER_HEADER)).isEmpty();
+  }
+
+  private static String printable(final String name) {
+    final StringBuilder printable = new StringBuilder();
+    for (int i = 0; i < name.length(); i++) {
+      final char c = name.charAt(i);
+      printable.append(c == ' ' ? '_' : c < 0x20 || c > 0x7e ? String.format("\\u%04x", (int) c) : String.valueOf(c));
+    }
+    return printable.toString();
+  }
 }
