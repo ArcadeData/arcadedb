@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.ValidationException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
@@ -30,7 +31,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Issue #12932: {@code CREATE PROPERTY} with a LIST, MAP or EMBEDDED declaration (with or without {@code OF}) did not check
+ * Issue #12932: {@code CREATE PROPERTY} with a LIST, MAP, EMBEDDED or LINK declaration (with or without {@code OF}) did not check
  * the values records already hold, yet the save path refuses a stored value of the wrong shape on every later write of the
  * record, even one that only touches another property. The invariant held here, for every declaration and stored value:
  * either {@code CREATE PROPERTY} refuses, or a later {@code UPDATE} of another property of that record succeeds. And a refusal
@@ -39,24 +40,32 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 class Issue12932CreatePropertyStoredCollectionTest extends TestHelper {
   private static final String[] DECLARATIONS = { "LIST", "MAP", "EMBEDDED", "EMBEDDED OF Addr", "LIST OF INTEGER",
-      "LIST OF STRING", "LIST OF LONG", "LIST OF DOUBLE", "MAP OF INTEGER", "MAP OF LONG" };
+      "LIST OF STRING", "LIST OF LONG", "LIST OF DOUBLE", "MAP OF INTEGER", "MAP OF LONG", "LINK", "LINK OF Addr",
+      "LIST OF Addr" };
 
-  private static final String[] STORED_VALUES = { "10", "'abc'", "'12'", "[1, 2]", "['a', 'b']", "[1.5, 2.5]", "{'k': 1}",
-      "{'k': 'v'}", "true", "1.5", "{'@type': 'Addr', 'x': 1}", "{'@type': 'Other', 'x': 1}" };
-
-  private int typeCounter;
+  private String[] storedValues;
+  private String   addrLink;
+  private String   otherLink;
+  private int      typeCounter;
 
   @Override
   protected void beginTest() {
     database.command("sql", "CREATE DOCUMENT TYPE Addr");
     database.command("sql", "CREATE DOCUMENT TYPE Other");
+    database.transaction(() -> {
+      addrLink = database.newDocument("Addr").set("x", 1).save().getIdentity().toString();
+      otherLink = database.newDocument("Other").set("x", 1).save().getIdentity().toString();
+    });
+    storedValues = new String[] { "10", "'abc'", "'12'", "[1, 2]", "['a', 'b']", "[1.5, 2.5]", "{'k': 1}", "{'k': 'v'}", "true",
+        "1.5", "{'@type': 'Addr', 'x': 1}", "{'@type': 'Other', 'x': 1}", addrLink, otherLink, "[" + addrLink + "]",
+        "[" + otherLink + "]" };
   }
 
   @Test
   void createPropertyRefusesExactlyWhatEverySaveWouldRefuse() {
     final List<String> violations = new ArrayList<>();
     for (final String declaration : DECLARATIONS)
-      for (final String stored : STORED_VALUES) {
+      for (final String stored : storedValues) {
         final String typeName = newTypeWithRecord(stored);
         String refusal = null;
         try {
@@ -94,6 +103,30 @@ class Issue12932CreatePropertyStoredCollectionTest extends TestHelper {
     assertAccepted("[1, 2, 3]", "LIST OF LONG");
     assertAccepted("[1, 2]", "LIST OF DOUBLE");
     assertAccepted("{'a': 1}", "MAP OF LONG");
+    assertAccepted(addrLink, "LINK");
+    assertAccepted(addrLink, "LINK OF Addr");
+    assertAccepted("[" + addrLink + "]", "LIST OF Addr");
+    // a plain LINK has never refused a scalar on save, so neither does the declaration
+    assertAccepted("10", "LINK");
+  }
+
+  @Test
+  void linkDeclarationsRefuseWhatEverySaveWouldRefuse() {
+    // the save path used to cast the stored value to a link blindly: a ClassCastException on every later write of the record
+    assertRefused("10", "LINK OF Addr", "is declared as LINK OF Addr but a stored value cannot be read as such: 10");
+    assertRefused("'abc'", "LINK OF Addr", "is declared as LINK OF Addr but a stored value cannot be read as such: abc");
+    assertRefused(otherLink, "LINK OF Addr", "is declared as LINK OF Addr but a stored value cannot be read as such: " + otherLink);
+    assertRefused("{'@type': 'Addr', 'x': 1}", "LINK", "is declared as LINK but a stored value cannot be read as such");
+    assertRefused("[" + otherLink + "]", "LIST OF Addr", "is declared as LIST OF Addr but a stored value cannot be read as such");
+  }
+
+  @Test
+  void saveOfANonLinkUnderLinkOfIsAValidationErrorNotAClassCastException() {
+    final String typeName = newTypeWithRecord("10");
+    database.getSchema().getType(typeName).createProperty("p", Type.LINK, "Addr");
+    assertThatThrownBy(() -> database.transaction(() -> database.command("sql", "UPDATE " + typeName + " SET z = 1")))
+        .isInstanceOf(ValidationException.class)
+        .hasMessageContaining("has been declared as LINK of 'Addr' but a value that is not a link is used");
   }
 
   @Test

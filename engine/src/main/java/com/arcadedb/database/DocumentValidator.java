@@ -271,7 +271,7 @@ public class DocumentValidator {
    * a legal INTEGER, while {@code 'abc'} or {@code true} is not.
    * <p>
    * Existence (MANDATORY / NOTNULL) is not part of this: it has its own rule, {@link #unmetExistenceConstraint}.
-   * A LIST, MAP or EMBEDDED declaration (with or without {@code OF}) holds the stored value to exactly the check the save path
+   * A LIST, MAP, EMBEDDED or LINK declaration (with or without {@code OF}) holds the stored value to exactly the check the save path
    * applies to it, without converting it first: the save of a record that only touches another property hands the stored value
    * to that check as it is, so a shape it refuses would make every later write of the record fail (issue #12932).
    */
@@ -825,11 +825,12 @@ public class DocumentValidator {
 
   /**
    * The types whose stored value the save path refuses for its shape alone, whatever the other properties of the record:
-   * {@link #validateEmbeddedValues} refuses a value that is not a list, a map or an embedded document of the declared type. A
-   * LINK, a BINARY or an ARRAY_OF_* is not one of them: a stored value of another shape still saves.
+   * {@link #validateEmbeddedValues} refuses a value that is not a list, a map or an embedded document of the declared type, and
+   * a LINK that holds an embedded document (or, with {@code OF}, anything but a link to a record of that type). A BINARY or an
+   * ARRAY_OF_* is not one of them: a stored value of another shape still saves.
    */
   private static boolean isShapeCheckedType(final Type type) {
-    return type == Type.LIST || type == Type.MAP || type == Type.EMBEDDED;
+    return type == Type.LIST || type == Type.MAP || type == Type.EMBEDDED || type == Type.LINK;
   }
 
   /**
@@ -1240,6 +1241,11 @@ public class DocumentValidator {
             "has been declared as LINK but an EMBEDDED document is used. Value: " + fieldValue);
 
       if (ofType != null && !linkTargetTypeCheckDeferred()) {
+        // a value stored before the declaration reaches here unconverted: refuse it as the schema error it is, not as a
+        // ClassCastException on every later save of the record (#12932)
+        if (!(fieldValue instanceof Identifiable))
+          throwValidationException(document.getType(), p, ValidationException.Kind.TYPE,
+              "has been declared as LINK of '" + ofType + "' but a value that is not a link is used. Value: " + printableValue(fieldValue));
         final RID rid = ((Identifiable) fieldValue).getIdentity();
         final DocumentType embSchemaType = document.getDatabase().getSchema().getTypeByBucketId(rid.getBucketId());
         if (embSchemaType == null || !embSchemaType.instanceOf(ofType))
