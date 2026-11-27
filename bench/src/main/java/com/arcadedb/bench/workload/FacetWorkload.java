@@ -56,7 +56,10 @@ import static com.arcadedb.test.support.ContainersTestTemplate.DATABASE;
 public class FacetWorkload implements Workload {
   public static final String FACET_DATABASE = DATABASE;
 
-  static final int QUERIES_PER_REP = 200;
+  /** 1,000 at S so the latency percentiles stand on enough samples; 200 above, where a query takes up to a second. */
+  static int queriesPerRep(final Scale scale) {
+    return scale == Scale.S ? 1_000 : 200;
+  }
 
   private static final Logger LOGGER = LoggerFactory.getLogger(FacetWorkload.class);
 
@@ -119,10 +122,11 @@ public class FacetWorkload implements Workload {
   }
 
   private Measurement queryAfterLoad(final WorkloadContext ctx) {
-    final LatencyRecorder latencies = new LatencyRecorder(QUERIES_PER_REP);
+    final int queries = queriesPerRep(ctx.scale());
+    final LatencyRecorder latencies = new LatencyRecorder(queries);
     try (final FacetDatabaseWrapper client = new FacetDatabaseWrapper(ctx.server().wrapper(), DatabaseWrapper.Protocol.HTTP, 2)) {
       ctx.server().resetPeak();
-      for (int i = 0; i < QUERIES_PER_REP; i++) {
+      for (int i = 0; i < queries; i++) {
         final String where = FacetSchema.CHECKED_FILTERS.get(i % FacetSchema.CHECKED_FILTERS.size());
         final long t0 = System.nanoTime();
         client.queryFacets(where);
@@ -130,9 +134,9 @@ public class FacetWorkload implements Workload {
       }
     }
     final List<Metric> metrics = new ArrayList<>();
-    metrics.add(Metrics.rate("queries_per_s", "queries/s", QUERIES_PER_REP / (latencies.totalNanos() / 1e9)));
+    metrics.add(Metrics.rate("queries_per_s", "queries/s", queries / (latencies.totalNanos() / 1e9)));
     metrics.addAll(Metrics.latencies(latencies));
-    return new Measurement(metrics);
+    return Measurement.of(metrics, latencies);
   }
 
   /**
@@ -146,7 +150,8 @@ public class FacetWorkload implements Workload {
     final AtomicLong acked = new AtomicLong();
     final AtomicReference<Throwable> writerFailure = new AtomicReference<>();
     final List<Thread> writers = new ArrayList<>(WRITERS);
-    final LatencyRecorder latencies = new LatencyRecorder(QUERIES_PER_REP);
+    final int queries = queriesPerRep(ctx.scale());
+    final LatencyRecorder latencies = new LatencyRecorder(queries);
     long ackedAtEnd;
     double ingestSeconds;
     long lagMs;
@@ -171,7 +176,7 @@ public class FacetWorkload implements Workload {
           thread.start();
           writers.add(thread);
         }
-        for (int i = 0; i < QUERIES_PER_REP; i++) {
+        for (int i = 0; i < queries; i++) {
           final String where = FacetSchema.CHECKED_FILTERS.get(i % FacetSchema.CHECKED_FILTERS.size());
           final long t0 = System.nanoTime();
           client.queryFacets(where);
@@ -209,11 +214,11 @@ public class FacetWorkload implements Workload {
     if (ackedAtEnd == 0L)
       throw new IllegalStateException("No asset was ingested while the facets were queried", writerFailure.get());
     final List<Metric> metrics = new ArrayList<>();
-    metrics.add(Metrics.rate("queries_per_s", "queries/s", QUERIES_PER_REP / (latencies.totalNanos() / 1e9)));
+    metrics.add(Metrics.rate("queries_per_s", "queries/s", queries / (latencies.totalNanos() / 1e9)));
     metrics.addAll(Metrics.latencies(latencies));
     metrics.add(Metrics.rate("ingest_records_per_s", "records/s", ackedAtEnd / ingestSeconds));
     metrics.add(Metrics.of("facet_lag_ms", "ms", Metric.Better.LOWER, lagMs));
-    return new Measurement(metrics);
+    return Measurement.of(metrics, latencies);
   }
 
   /** True when the database holds exactly the baseline, after deleting what an earlier ingest case added. */

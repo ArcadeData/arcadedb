@@ -82,7 +82,7 @@ class ContinuousAggregateLateSampleReplicationIT extends BaseRaftHATest {
     try {
       // behind the watermark: the bucket of the first hour
       leaderDb.command("sql", "INSERT INTO sensor SET ts = ?, host = 'h0', v = 5", H0 + 60_000L).close();
-      assertThat(aggregate.getInvalidation()).as("the leader records the late sample").isNotNull();
+      assertThat(aggregate.getLateInvalidation()).as("the leader records the late sample").isNotNull();
       waitForAllServers();
 
       assertThat(awaitValue(H0, () -> invalidatedFromOn(followerIndex)))
@@ -132,7 +132,7 @@ class ContinuousAggregateLateSampleReplicationIT extends BaseRaftHATest {
 
       assertThat(awaitValue(H0 + HOUR, () -> invalidatedFromOn(followerIndex)))
           .as("the follower holds the record of the late sample appended inside a transaction").isEqualTo(H0 + HOUR);
-      assertThat(definitionOn(followerIndex).getLong("invalidatedToTs", Long.MIN_VALUE)).isEqualTo(H0 + 2 * HOUR - 1);
+      assertThat(definitionOn(followerIndex).getLong(ContinuousAggregateImpl.LATE_INVALIDATED_TO_KEY, Long.MIN_VALUE)).isEqualTo(H0 + 2 * HOUR - 1);
     } finally {
       aggregate.endRefresh();
     }
@@ -159,7 +159,7 @@ class ContinuousAggregateLateSampleReplicationIT extends BaseRaftHATest {
 
   /** The start of the range the aggregate records as invalidated on that server, or {@code Long.MIN_VALUE} when it records none. */
   private long invalidatedFromOn(final int serverIndex) {
-    return definitionOn(serverIndex).getLong("invalidatedFromTs", Long.MIN_VALUE);
+    return definitionOn(serverIndex).getLong(ContinuousAggregateImpl.LATE_INVALIDATED_FROM_KEY, Long.MIN_VALUE);
   }
 
   /**

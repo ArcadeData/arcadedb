@@ -42,6 +42,7 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
 import java.util.function.LongSupplier;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 
 /**
@@ -94,12 +95,32 @@ public class MembershipSecuritySeeder implements AutoCloseable {
 
   static final String THREAD_NAME = "arcadedb-raft-security-seed";
 
+  /**
+   * How many times a seed that could not commit every document is run again by {@link #rerunOwedSeedIfDue} before
+   * this node stops and leaves it to an operator (issue #13447).
+   * <p>
+   * A re-run is only started once no peer withholds the security entry capabilities, so one that fails again failed
+   * for another reason, usually a quorum lost at that instant. A handful of tries, one capability round apart at the
+   * least, rides that out without turning a cluster that cannot commit into a seed every five seconds for ever.
+   */
+  static final int OWED_SEED_RERUNS = 5;
+
+  /** For a seeder that is told nothing about the capability gate: no peer is ever reported as withholding. */
+  private static final Supplier<List<String>> NO_PEER_WITHHOLDING = List::of;
+
   /** The executor row of a pool that has no worker to report on: no thread, nothing queued, the one slot free. */
   static final PoolStats EMPTY_POOL_STATS = new PoolStats(0, 0, 0, 1, 0L, 0L, 0L);
 
   private final BooleanSupplier  isLeader;
   private final LongSupplier     retryBudgetMs;
   private final SecuritySeed     seed;
+  /**
+   * The peers the capability gate of the group and API-token entries is refusing for right now (issue #7511), empty
+   * when it would let a seed through. Read to say WHICH peer a failed seed was waiting for, and to decide when a seed
+   * that is owed can be run again (issue #13447). Answers from the capability registry the monitor fills: it must not
+   * probe, because it is asked on the capability monitor's own thread.
+   */
+  private final Supplier<List<String>> peersWithholdingSecurityEntries;
   private final Executor         executor;
   /** Non-null only when this instance built its own executor, and is then the same object as {@link #executor}. */
   private final ExecutorService  ownedExecutor;
@@ -161,6 +182,38 @@ public class MembershipSecuritySeeder implements AutoCloseable {
   private final AtomicLong                       coalescedSeeds = new AtomicLong();
   /** What {@link #runSeed} was last entered for; read back by a test that the reason is not hardcoded. */
   private       String                           lastRunReason;
+  /**
+   * What the seed that could not commit every document was for, or {@code null} when none is owed (issue #13447).
+   * Guarded by {@code this}.
+   * <p>
+   * A seed whose retry budget ran out used to be forgotten: the SEVERE line said the capability gate's refusal "clears
+   * itself once the peer answers", which is true of the gate and was never true of the seed it refused. During a
+   * rolling restart that is the common case rather than a corner: a node's catch-up asks for a seed while the next peer
+   * is still booting and has not advertised its capabilities, and the peer takes longer to come up than
+   * {@code arcadedb.ha.securitySeedRetryTimeout} lasts. So the seed is kept here and {@link #rerunOwedSeedIfDue} runs
+   * it again once every peer advertises the capabilities.
+   * <p>
+   * One reason is enough for any number of failed seeds, because a seed's payload does not depend on who asked for it:
+   * it carries the three documents as they are when it runs, so one run that commits pays every seed that was owed.
+   * <p>
+   * In memory only, and only on the node that ran the seed. A leader that restarts or is replaced forgets it; the
+   * node that asked covers that case itself, because its own catch-up asks again at the next leader change
+   * ({@code SecurityCatchUp.outcomeOfAnswer}). A membership seed has no such second asker, which is the gap issue
+   * #7833's once-per-start catch-up of the joined node is left to cover.
+   */
+  private       String                           owedSeedReason;
+  /** How many times {@link #rerunOwedSeedIfDue} has run the owed seed again. Guarded by {@code this}. */
+  private       int                              owedSeedReruns;
+  /**
+   * Which debt {@link #owedSeedReason} is, counted up every time a seed becomes owed. Guarded by {@code this}.
+   * <p>
+   * {@link #rerunOwedSeedIfDue} reads the debt, leaves the monitor to ask Ratis and the capability registry, and comes
+   * back to clear it or to run it again. The reason text cannot tell it whether the debt it finds then is the one it
+   * read: two catch-ups of the same node carry the same reason, so a debt dropped and owed again in between (the
+   * leadership lost and regained, and a new seed refused) would be cleared by the check that saw the old one, and never
+   * run again.
+   */
+  private       long                             owedSeedGeneration;
 
   /**
    * Production form: seeds on a dedicated single daemon worker.
@@ -187,10 +240,20 @@ public class MembershipSecuritySeeder implements AutoCloseable {
    */
   public MembershipSecuritySeeder(final BooleanSupplier isLeader, final LongSupplier retryBudgetMs,
       final SecuritySeed seed) {
+    this(isLeader, retryBudgetMs, seed, NO_PEER_WITHHOLDING);
+  }
+
+  /**
+   * The production form, told which peers the capability gate of the security entries is refusing for (issue
+   * #13447): see {@link #peersWithholdingSecurityEntries}.
+   */
+  public MembershipSecuritySeeder(final BooleanSupplier isLeader, final LongSupplier retryBudgetMs,
+      final SecuritySeed seed, final Supplier<List<String>> peersWithholdingSecurityEntries) {
     final ThreadPoolExecutor owned = createSeedExecutor(this);
     this.isLeader = isLeader;
     this.retryBudgetMs = retryBudgetMs;
     this.seed = seed;
+    this.peersWithholdingSecurityEntries = peersWithholdingSecurityEntries;
     this.executor = owned;
     this.ownedExecutor = owned;
   }
@@ -201,9 +264,16 @@ public class MembershipSecuritySeeder implements AutoCloseable {
    */
   MembershipSecuritySeeder(final BooleanSupplier isLeader, final LongSupplier retryBudgetMs,
       final SecuritySeed seed, final Executor executor) {
+    this(isLeader, retryBudgetMs, seed, NO_PEER_WITHHOLDING, executor);
+  }
+
+  /** The test seam above, with the peers the capability gate is refusing for (issue #13447). */
+  MembershipSecuritySeeder(final BooleanSupplier isLeader, final LongSupplier retryBudgetMs,
+      final SecuritySeed seed, final Supplier<List<String>> peersWithholdingSecurityEntries, final Executor executor) {
     this.isLeader = isLeader;
     this.retryBudgetMs = retryBudgetMs;
     this.seed = seed;
+    this.peersWithholdingSecurityEntries = peersWithholdingSecurityEntries;
     this.executor = executor;
     this.ownedExecutor = null;
   }
@@ -473,27 +543,34 @@ public class MembershipSecuritySeeder implements AutoCloseable {
     }
     try {
       final List<String> failed = seed.seed(retryBudgetMs.getAsLong());
+      // What the outcome owes or pays is settled BEFORE the future is completed too (issue #13447): a caller that
+      // sees the seed done must also see whether it is still owed. The peers are read first and outside this
+      // monitor, because that reads the capability registry.
+      final boolean committed = failed.isEmpty();
+      final List<String> withholding = committed ? List.of() : peersWithholdingSecurityEntries();
+      final boolean wasOwed = committed && settleOwedSeed();
+      final Owed owed = committed ? null : oweSeed(reason);
       // Recorded BEFORE the future is completed: a caller that sees the outstanding seed done must also see
       // the result it is allowed to reuse, or it installs a second seed for work that just finished.
       recordCompletion(result);
       result.complete(List.copyOf(failed));
-      if (failed.isEmpty())
+      if (committed) {
         // "Committed", not "the peer now holds them": what the submit waits for is a Raft commit, which a
         // quorum satisfies. The joining peer applies the entries when it catches up, and nothing here observes
         // that - claiming otherwise in a log line an operator reads would be claiming more than was checked.
         LogManager.instance().log(this, Level.INFO,
-            "Cluster security documents committed; the seed was run for %s", reason);
-      else
-        LogManager.instance().log(this, Level.SEVERE,
-            "The security seed run for %s could not commit these documents: %s. The peer(s) it was for are "
-                + "cluster members serving requests against their own copy of them - which for a node re-added "
-                + "after time out of the cluster can still hold a user dropped since, a group narrowed since or a "
-                + "token revoked since. Reissue the change to retry it. Two causes look alike from here: no quorum "
-                + "at this instant, for which raising arcadedb.ha.securitySeedRetryTimeout is the answer, and the "
-                + "capability gate on the group and API-token entries refusing because the peer that just joined "
-                + "has not answered a capability probe yet (issue #7511), for which it is not - that one clears "
-                + "itself once the peer answers, and arcadedb.ha.securityEntryCapabilityGate is the override",
-            reason, String.join(", ", failed));
+            "Cluster security documents committed; the seed was run for %s%s", reason,
+            wasOwed ? ". That also pays the seed that could not commit earlier (issue #13447)" : "");
+      } else {
+        // SEVERE when the seed becomes owed and when it is given up on; a WARNING in between, where the node that
+        // asked is retrying and each of its attempts fails here for the reason the first line already gave.
+        LogManager.instance().log(this, owed == Owed.STILL ? Level.WARNING : Level.SEVERE,
+            "The security seed run for %s could not commit these documents: %s. The node(s) it was for are "
+                + "cluster members serving requests against their own copy of them - which for a node that was "
+                + "away from the cluster can still hold a user dropped since, a group narrowed since or a "
+                + "token revoked since. %s %s", reason, String.join(", ", failed), causeOf(withholding),
+            remedyOf(owed != Owed.DROPPED));
+      }
     } catch (final Throwable t) {
       // Nothing here may escape: on the owned executor an escaping throwable kills the worker, and the next
       // membership change would then be seeded by a pool that has to build a new thread for it. The future is
@@ -505,6 +582,174 @@ public class MembershipSecuritySeeder implements AutoCloseable {
           "The security seed run for %s could not be run at all: %s. The peer(s) it was for are cluster "
               + "members serving requests against their own security documents", t, reason, t.getMessage());
     }
+  }
+
+  /**
+   * What most likely stopped a seed, said from what the capability registry holds at the moment it failed.
+   * <p>
+   * The two causes cannot be told apart from the document names the seed reports, and the line used to describe both
+   * and blame "the peer that just joined" for the second. The peer the gate waits for is whichever one has not
+   * advertised the capability, which during a rolling restart is the NEXT peer restarting, not the node the seed
+   * was for (issue #13447). So the peers are named, from the same registry the gate reads.
+   */
+  // @VisibleForTesting
+  static String causeOf(final List<String> withholding) {
+    if (withholding.isEmpty())
+      return "Every peer advertises the security entry capabilities at this moment, so the likely cause is that there "
+          + "was no quorum while the seed ran, for which raising arcadedb.ha.securitySeedRetryTimeout is the answer.";
+    return "Peer(s) " + withholding + " have not advertised the capabilities the group and API-token entries need, "
+        + "so the capability gate refuses to replicate those two documents (issue #7511). That is the usual state of "
+        + "a peer that is restarting, and it need not be the node this seed was for. Raising "
+        + "arcadedb.ha.securitySeedRetryTimeout does not help with it; arcadedb.ha.securityEntryCapabilityGate is "
+        + "the override.";
+  }
+
+  /** What happens next to a seed that failed, and what an operator can do about it. */
+  // @VisibleForTesting
+  static String remedyOf(final boolean owed) {
+    return owed
+        ? "This node runs the seed again, for as long as it leads, as soon as every peer advertises those "
+        + "capabilities, at most " + OWED_SEED_RERUNS + " times, and logs the outcome. To retry sooner, re-POST the "
+        + "node to /api/v1/cluster/peer on any other member, or reissue the change"
+        : "This node has run it again " + OWED_SEED_RERUNS + " times and stops here, or is stopping. Re-POST the "
+            + "node to /api/v1/cluster/peer on any other member, or reissue the change, to retry it";
+  }
+
+  /** The peers the gate is refusing for, never {@code null} and never a throw: it is read to write a log line. */
+  private List<String> peersWithholdingSecurityEntries() {
+    try {
+      final List<String> withholding = peersWithholdingSecurityEntries.get();
+      return withholding != null ? withholding : List.of();
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(this, Level.FINE,
+          "Could not read which peers withhold the security entry capabilities: %s", e.getMessage());
+      return List.of();
+    }
+  }
+
+  /** What recording a failed seed did: see {@link #oweSeed}. */
+  private enum Owed {
+    /** Nothing was owed before: this failure is the one {@link #rerunOwedSeedIfDue} will run again. */
+    NEW,
+    /** A seed was owed already and still is. */
+    STILL,
+    /** Run again {@link #OWED_SEED_RERUNS} times already, or this node is stopping: nothing is owed any longer. */
+    DROPPED
+  }
+
+  /** Records that a seed could not commit every document, so {@link #rerunOwedSeedIfDue} runs it again. */
+  private synchronized Owed oweSeed(final String reason) {
+    if (closed)
+      return Owed.DROPPED;
+    if (owedSeedReason == null) {
+      owedSeedReason = reason;
+      owedSeedReruns = 0;
+      owedSeedGeneration++;
+      return Owed.NEW;
+    }
+    if (owedSeedReruns < OWED_SEED_RERUNS)
+      // Already owed: the first reason stays, since one run pays them all, and so does the count, so a caller that
+      // keeps asking cannot keep the re-runs going for ever.
+      return Owed.STILL;
+    owedSeedReason = null;
+    owedSeedReruns = 0;
+    return Owed.DROPPED;
+  }
+
+  /** A seed committed every document, so nothing is owed any longer. Answers whether something was. */
+  private synchronized boolean settleOwedSeed() {
+    final boolean wasOwed = owedSeedReason != null;
+    owedSeedReason = null;
+    owedSeedReruns = 0;
+    return wasOwed;
+  }
+
+  /**
+   * Runs again the seed that could not commit, once nothing stands in its way (issue #13447). Called after every
+   * scheduled capability round, which is the moment the leader learns that a peer advertises its capabilities
+   * again; cheap when nothing is owed, which is nearly always.
+   * <p>
+   * Three conditions, each of them a reason the re-run would be wrong or wasted:
+   * <ul>
+   *   <li><b>no seed is queued or running</b>: its own outcome decides whether anything is still owed;</li>
+   *   <li><b>this node leads</b>: a seed publishes the leader's documents, which are the cluster's reference. A node
+   *       that no longer leads drops what it owed instead of keeping it for a leadership it may regain much later;
+   *       the node that asked is asking the new leader itself (see {@link #owedSeedReason});</li>
+   *   <li><b>no peer withholds the security entry capabilities</b>: the gate would refuse the same two documents
+   *       again, and the seed would spend its retry budget probing a peer that is still down.</li>
+   * </ul>
+   * Never blocks and never throws: the seed itself goes to {@link #executor}, like every other.
+   *
+   * @return whether a re-run was started
+   */
+  boolean rerunOwedSeedIfDue() {
+    final String reason;
+    final long generation;
+    synchronized (this) {
+      if (owedSeedReason == null || closed)
+        return false;
+      if (outstandingSeed != null && !outstandingSeed.isDone())
+        return false;
+      reason = owedSeedReason;
+      generation = owedSeedGeneration;
+    }
+
+    // Both read Ratis or the capability registry, so neither runs under this monitor. What they decide is applied
+    // only to the debt read above (see owedSeedGeneration): one owed since is left for the next round.
+    if (!isLeader.getAsBoolean()) {
+      final boolean dropped;
+      synchronized (this) {
+        dropped = owedSeedReason != null && generation == owedSeedGeneration;
+        if (dropped) {
+          owedSeedReason = null;
+          owedSeedReruns = 0;
+        }
+      }
+      if (dropped)
+        LogManager.instance().log(this, Level.INFO,
+            "This node no longer leads, so it will not run again the security seed for %s that could not commit; "
+                + "the node it was for asks the new leader itself (issue #13447)", reason);
+      return false;
+    }
+    final List<String> withholding = peersWithholdingSecurityEntries();
+    if (!withholding.isEmpty()) {
+      LogManager.instance().log(this, Level.FINE,
+          "The security seed for %s is still owed: peer(s) %s have not advertised the security entry capabilities",
+          reason, withholding);
+      return false;
+    }
+
+    final int rerun;
+    final boolean spent;
+    synchronized (this) {
+      if (owedSeedReason == null || generation != owedSeedGeneration || closed)
+        return false;
+      // Checked here as well as in oweSeed: a re-run that THROWS reports no documents, so it never reaches oweSeed
+      // and would otherwise be started again on every capability round.
+      spent = owedSeedReruns >= OWED_SEED_RERUNS;
+      if (spent) {
+        owedSeedReason = null;
+        owedSeedReruns = 0;
+        rerun = 0;
+      } else
+        rerun = ++owedSeedReruns;
+    }
+    if (spent) {
+      LogManager.instance().log(this, Level.SEVERE,
+          "The security seed for %s could not be run to the end in %d re-runs and is not run again. %s", reason,
+          OWED_SEED_RERUNS, remedyOf(false));
+      return false;
+    }
+    LogManager.instance().log(this, Level.INFO,
+        "Every peer advertises the security entry capabilities: running again the security seed for %s, which "
+            + "could not commit before (re-run %d of %d, issue #13447)", reason, rerun, OWED_SEED_RERUNS);
+    return schedule(reason, false) != null;
+  }
+
+  /** What the owed seed was for, or {@code null} when none is owed. Test seam. */
+  // @VisibleForTesting
+  synchronized String owedSeedReasonForTest() {
+    return owedSeedReason;
   }
 
   /**
@@ -579,6 +824,7 @@ public class MembershipSecuritySeeder implements AutoCloseable {
     final CompletableFuture<List<String>> pending;
     synchronized (this) {
       closed = true;
+      owedSeedReason = null;
       pending = outstandingSeed;
       outstandingSeed = null;
       lastCompletedSeed = null;

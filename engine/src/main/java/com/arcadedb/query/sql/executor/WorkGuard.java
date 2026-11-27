@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.PartialResultTimeoutException;
+import com.arcadedb.exception.QueryTerminatedException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.RunningQueryRegistry;
@@ -145,6 +146,26 @@ public final class WorkGuard {
     if (deadline == Long.MAX_VALUE && runningQuery == null)
       return UNBOUNDED;
     return new WorkGuard(what, null, deadline, false, false, runningQuery);
+  }
+
+  /**
+   * This bound for work that runs on a thread of a pool: it names the same work and reads the same deadline and the same
+   * statement, but leaves the interrupt flag of the thread alone. A pooled worker's flag belongs to whoever cancels its task,
+   * and consuming it here would hide the cancellation from the pool.
+   */
+  public WorkGuard withoutInterrupt() {
+    return interruptible ? new WorkGuard(what, context, deadline, false, yieldPartialResults, runningQuery) : this;
+  }
+
+  /**
+   * Whether {@code t} is one of the aborts {@link #check()} raises (deadline, termination, interrupt), as opposed to a failure
+   * of the work itself. A layer that wraps the failures of work run on other threads uses it to let an abort through unchanged,
+   * so the caller sees the abort and not a wrapper around it. An interrupt is raised as a plain {@link CommandExecutionException},
+   * which is why that type is accepted here: only a guard that is interruptible raises it, and the guards read on pool threads
+   * are not (see {@link #withoutInterrupt()}).
+   */
+  public static boolean isAbort(final Throwable t) {
+    return t instanceof TimeoutException || t instanceof QueryTerminatedException || t instanceof CommandExecutionException;
   }
 
   /**

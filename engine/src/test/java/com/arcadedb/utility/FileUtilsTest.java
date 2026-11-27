@@ -37,9 +37,14 @@ import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.channels.WritableByteChannel;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AccessDeniedException;
 import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.DirectoryStream;
+import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -1000,6 +1005,93 @@ class FileUtilsTest {
 
     private interface ThrowingRunnable {
       void run() throws Exception;
+    }
+  }
+
+  /**
+   * Issue #12825: the database size is summed over a directory that background work (columnar segment replacement, WAL
+   * segments) changes concurrently. A file or directory that disappears between being listed and being measured must count
+   * as 0 bytes instead of failing the whole sum, while any other I/O error still fails.
+   */
+  @Nested
+  class DirectorySize {
+
+    @Test
+    void sumsRegularFilesInNestedDirectories() throws IOException {
+      Files.write(tempDir.resolve("a.bin"), new byte[10]);
+      final Path sub = Files.createDirectory(tempDir.resolve("sub"));
+      Files.write(sub.resolve("b.bin"), new byte[20]);
+      Files.createDirectory(sub.resolve("empty"));
+
+      assertThat(FileUtils.getDirectorySize(tempDir)).isEqualTo(30L);
+    }
+
+    @Test
+    void missingDirectoryMeasuresZero() throws IOException {
+      assertThat(FileUtils.getDirectorySize(tempDir.resolve("gone"))).isEqualTo(0L);
+    }
+
+    @Test
+    void fileThatVanishedBeforeBeingMeasuredCountsAsZero() throws IOException {
+      final FileUtils.DirectorySizeVisitor visitor = new FileUtils.DirectorySizeVisitor();
+      final Path gone = tempDir.resolve("seg-0000000000000040.acs");
+
+      assertThat(visitor.visitFileFailed(gone, new NoSuchFileException(gone.toString()))).isEqualTo(FileVisitResult.CONTINUE);
+      assertThat(visitor.getTotal()).isEqualTo(0L);
+    }
+
+    @Test
+    void directoryThatVanishedWhileBeingListedCountsAsZero() throws IOException {
+      final FileUtils.DirectorySizeVisitor visitor = new FileUtils.DirectorySizeVisitor();
+      final Path gone = tempDir.resolve("b1");
+
+      assertThat(visitor.postVisitDirectory(gone, new NoSuchFileException(gone.toString()))).isEqualTo(FileVisitResult.CONTINUE);
+      assertThat(visitor.postVisitDirectory(tempDir, null)).isEqualTo(FileVisitResult.CONTINUE);
+    }
+
+    @Test
+    void otherIOErrorsStillFail() {
+      final FileUtils.DirectorySizeVisitor visitor = new FileUtils.DirectorySizeVisitor();
+      final AccessDeniedException denied = new AccessDeniedException(tempDir.toString());
+      final IOException broken = new IOException("disk error");
+
+      assertThatThrownBy(() -> visitor.visitFileFailed(tempDir, denied)).isSameAs(denied);
+      assertThatThrownBy(() -> visitor.postVisitDirectory(tempDir, broken)).isSameAs(broken);
+    }
+
+    /**
+     * The first file visited deletes every other entry of the directory, which the walker has typically already listed, the
+     * way a columnar merge removes the segments it replaced. The walk completes and counts only what was still there.
+     */
+    @Test
+    void entriesRemovedDuringTheWalkAreSkipped() throws IOException {
+      final Path dir = Files.createDirectory(tempDir.resolve("db"));
+      for (int i = 0; i < 8; i++)
+        Files.write(dir.resolve("f" + i), new byte[100 + i]);
+      final Path sub = Files.createDirectory(dir.resolve("sub"));
+      Files.write(sub.resolve("inner"), new byte[1000]);
+
+      final long[] expected = { -1L };
+      final FileUtils.DirectorySizeVisitor visitor = new FileUtils.DirectorySizeVisitor() {
+        @Override
+        public FileVisitResult visitFile(final Path file, final BasicFileAttributes attrs) throws IOException {
+          if (expected[0] < 0 && file.getParent().equals(dir)) {
+            // what was counted before (the sub directory if the walker entered it first) plus this file survives
+            expected[0] = getTotal() + attrs.size();
+            try (DirectoryStream<Path> siblings = Files.newDirectoryStream(dir)) {
+              for (final Path sibling : siblings)
+                if (!sibling.equals(file))
+                  FileUtils.deleteRecursively(sibling.toFile());
+            }
+          }
+          return super.visitFile(file, attrs);
+        }
+      };
+
+      Files.walkFileTree(dir, visitor);
+
+      assertThat(expected[0]).isGreaterThanOrEqualTo(100L);
+      assertThat(visitor.getTotal()).isEqualTo(expected[0]);
     }
   }
 }

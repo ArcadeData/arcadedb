@@ -71,6 +71,9 @@ import java.util.stream.Stream;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class CallStep extends AbstractExecutionStep {
+  /** The namespace of an explicit call to a built-in SQL function, {@code CALL sql.abs(-1)}. */
+  private static final String SQL_NAMESPACE = "sql";
+
   /**
    * What a procedure call answers in count-only mode when its stream knows its exact size: the number of rows, with
    * no row materialized.
@@ -78,7 +81,32 @@ public class CallStep extends AbstractExecutionStep {
   private record KnownRowCount(long rows) {
   }
 
+  /**
+   * What a void call answers: a procedure that declares no output column, or a function called with no YIELD that answered
+   * nothing (null). It adds no column and leaves the row count alone, so its input row goes on unchanged when another clause
+   * follows (issue #13537). Only a call that succeeded answers it: a failure under OPTIONAL CALL keeps answering null.
+   */
+  private static final Object VOID_CALL = new Object();
+
+  /**
+   * Marks, in the (input row, rows) pairs of a chained call, an input row a void call passes on unchanged. Its own instance,
+   * compared by identity: {@link Collections#emptyIterator()} is a shared singleton that already means "no row" there.
+   */
+  private static final Iterator<Object> PASS_INPUT_ROW = new Iterator<>() {
+    @Override
+    public boolean hasNext() {
+      return false;
+    }
+
+    @Override
+    public Object next() {
+      throw new NoSuchElementException();
+    }
+  };
+
   private boolean countOnlyOptimization = false;
+  /** Whether another clause follows this CALL, which is when a void call passes its input rows on (issue #13537). */
+  private boolean voidCallKeepsRows     = false;
   private final CallClause callClause;
   /**
    * The procedure streams this step has opened and nobody has read to the end. Concurrent because {@link #close()} may be called
@@ -180,6 +208,16 @@ public class CallStep extends AbstractExecutionStep {
     this.countOnlyOptimization = enabled;
   }
 
+  /**
+   * Tells the step that another clause follows the CALL. A void call (a procedure that declares no output column, or a function
+   * with no YIELD that answered null) then passes every input row on once, unchanged, as Neo4j does: {@code CALL
+   * apoc.util.sleep(10) RETURN 1 AS x} answers one row, where it used to answer none (issue #13537). A void call that ends the
+   * query answers no row, as a standalone {@code CALL voidProcedure()} does in Neo4j.
+   */
+  public void setVoidCallKeepsRows(final boolean keepsRows) {
+    this.voidCallKeepsRows = keepsRows;
+  }
+
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     // Check if this is a chained CALL with a previous step
@@ -189,6 +227,13 @@ public class CallStep extends AbstractExecutionStep {
 
     // Standalone CALL - execute once
     final Object result = executeCall(context);
+
+    if (result == VOID_CALL) {
+      // The CALL starts the query: the row a following clause starts from is the one empty row a void call leaves alone
+      if (!voidCallKeepsRows)
+        return createEmptyResultSet();
+      return new IteratorResultSet(Collections.singletonList(new ResultInternal()).iterator());
+    }
 
     // Convert result to ResultSet
     return convertToResultSet(result, context);
@@ -225,6 +270,13 @@ public class CallStep extends AbstractExecutionStep {
           rowCount++;
 
         final Object callResult = executeCall(context, inputRow);
+
+        if (callResult == VOID_CALL) {
+          // The input row goes on unchanged, once, OPTIONAL or not: there is no yield column to bind
+          if (voidCallKeepsRows)
+            allPairs.add(Map.entry(inputRow, PASS_INPUT_ROW));
+          continue;
+        }
 
         if (callResult instanceof KnownRowCount known) {
           // Summed per invocation: every input row runs the procedure once and contributes its own rows
@@ -291,6 +343,13 @@ public class CallStep extends AbstractExecutionStep {
             return true;
           } else if (pairIter.hasNext()) {
             final Map.Entry<Result, Iterator<?>> pair = pairIter.next();
+            if (pair.getValue() == PASS_INPUT_ROW) {
+              // A void call: the input row itself, with no column added
+              currentInputRow = null;
+              currentIter = null;
+              next = pair.getKey();
+              return true;
+            }
             currentInputRow = pair.getKey();
             currentIter = pair.getValue();
             currentYielded = false;
@@ -407,10 +466,13 @@ public class CallStep extends AbstractExecutionStep {
         && context.getDatabase().getSchema().getFunctionLibrary(namespace).hasFunction(simpleName))
       return callCustomFunction(namespace, simpleName, args, context);
 
-    // Fall back to ArcadeDB SQL function (try full name first, e.g. "vector.neighbors", then simple name)
-    if (functionFactory.getSQLFunctionFactory().hasFunction(procedureName))
-      return callSQLFunction(procedureName, args, context);
-    return callSQLFunction(simpleName, args, context);
+    // Fall back to the ArcadeDB SQL function the CALL names in full ("vector.neighbors", or "abs" unqualified), or to the one the
+    // explicit "sql." prefix names ("sql.abs", "sql.geo.asText"), as in expression position. Never to the last segment of any other
+    // qualified name: CALL apoc.atomic.concat(n, 'p', 'x') ran the SQL concat() and answered no row without writing anything, and
+    // CALL nosuch.max(1, 2) answered 2, where Neo4j refuses both with ProcedureNotFound (issue #12110)
+    if (procedureName.regionMatches(true, 0, SQL_NAMESPACE + ".", 0, SQL_NAMESPACE.length() + 1))
+      return callSQLFunction(procedureName.substring(SQL_NAMESPACE.length() + 1), args, context);
+    return callSQLFunction(procedureName, args, context);
   }
 
   /**
@@ -467,6 +529,16 @@ public class CallStep extends AbstractExecutionStep {
       resultStream = procedure.execute(args, inputRow, context, requestedYieldFields(procedure))
           .map(this::convertProcedureResultToInternal);
 
+      if (declaresNoOutput(procedure)) {
+        // A void procedure: whatever its stream holds is drained, for the work a lazy stream does while it is read, then the
+        // stream is closed. Not answered by a count either: the rows a void call leaves are its input rows (issue #13537)
+        final Iterator<ResultInternal> rows = resultStream.iterator();
+        while (rows.hasNext())
+          rows.next();
+        resultStream.close();
+        return VOID_CALL;
+      }
+
       // Count-only mode: a stream that knows its exact size answers the count without producing a single row. Only
       // for a read procedure, whose rows carry no side effect, and only without YIELD WHERE, which drops rows the
       // size still counts. An empty stream takes the ordinary path, where OPTIONAL CALL turns it into its null row.
@@ -503,6 +575,21 @@ public class CallStep extends AbstractExecutionStep {
     }
   }
 
+  /** A void procedure, in Neo4j's terms: one that declares no output column. */
+  private static boolean declaresNoOutput(final CypherProcedure procedure) {
+    final List<String> fields = procedure.getYieldFields();
+    return fields == null || fields.isEmpty();
+  }
+
+  /**
+   * What a function call answers: {@link #VOID_CALL} for a call with no YIELD that answered null (a function such as
+   * {@code apoc.util.sleep} that has nothing to answer), otherwise the value. A YIELD asks for a column that a null answer does
+   * not hold, so a call under YIELD that answered null keeps answering no row.
+   */
+  private Object functionResult(final Object value) {
+    return value == null && !callClause.hasYield() ? VOID_CALL : value;
+  }
+
   /**
    * Converts a procedure Result to ResultInternal for consistency.
    */
@@ -524,7 +611,7 @@ public class CallStep extends AbstractExecutionStep {
                                   final CommandContext context) {
     try {
       function.validateArgs(args);
-      return function.execute(args, context);
+      return functionResult(function.execute(args, context));
     } catch (final CommandParsingException clientError) {
       // OPTIONAL suppresses "no rows", not "your call is malformed": a wrong argument count or a bad argument type is
       // the same mistake inside OPTIONAL CALL as outside it, and answering null there would hide it behind a result
@@ -572,9 +659,11 @@ public class CallStep extends AbstractExecutionStep {
 
       // Execute the function with arguments
       final Object result = function.execute(args.toArray());
+      if (result == null)
+        return functionResult(null);
 
       // If the function returns a scalar and YIELD is specified, wrap it with the expected field name
-      if (result != null && callClause.hasYield() && !callClause.isYieldAll()) {
+      if (callClause.hasYield() && !callClause.isYieldAll()) {
         // Check if result is already structured (Map, Document, Result)
         if (!(result instanceof Map) && !(result instanceof Document) &&
             !(result instanceof Result) && !(result instanceof Collection) &&
@@ -615,8 +704,8 @@ public class CallStep extends AbstractExecutionStep {
     if (function == null)
       throw new UnknownProcedureException(callClause.getProcedureName(), "Unknown procedure/function: " + callClause.getProcedureName());
 
-    // Execute the function
-    return function.execute(null, null, null, args.toArray(), context);
+    // Execute the function: a null answer with no YIELD is a void call
+    return functionResult(function.execute(null, null, null, args.toArray(), context));
   }
 
   /**

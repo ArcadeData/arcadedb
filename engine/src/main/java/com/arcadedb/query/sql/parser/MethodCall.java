@@ -31,6 +31,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.SQLFunction;
 import com.arcadedb.query.sql.executor.SQLFunctionFiltered;
 import com.arcadedb.query.sql.executor.SQLMethod;
+import com.arcadedb.query.sql.method.DefaultSQLMethodFactory;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.utility.FileUtils;
@@ -60,6 +61,7 @@ public class MethodCall extends SimpleNode {
   public List<Expression> params = new ArrayList<Expression>();
 
   private Boolean calculatedIsGraph = null;
+  private String  lowerCaseName     = null;
 
   public MethodCall() {
   }
@@ -251,8 +253,38 @@ public class MethodCall extends SimpleNode {
     return true;
   }
 
+  /**
+   * Whether a statement holding this call can have its execution plan cached: a graph method always can, any other method when it
+   * declares itself {@link SQLMethod#isDeterministic() deterministic} and every argument is itself cacheable, as
+   * {@link FunctionCall#isCacheable()} decides for a function (#12466). Resolved against the registry the call is executed against,
+   * without invoking the method, so a name nothing answers is not cacheable.
+   */
   public boolean isCacheable() {
-    return isGraphFunction();
+    if (isGraphFunction())
+      return true;
+
+    if (!isDeterministicMethod())
+      return false;
+
+    for (final Expression param : params)
+      if (!param.isCacheable())
+        return false;
+
+    return true;
+  }
+
+  /**
+   * The registry is asked on every call, not remembered per name as {@link FunctionCall} does: {@link DefaultSQLMethodFactory#register}
+   * is public and may replace a built-in, which a remembered answer would not see. Only the implementation the factory registered
+   * itself is trusted to say it is deterministic ({@link DefaultSQLMethodFactory#isBuiltInDeterministic}): a replacement or an added
+   * method is not cacheable, whatever it inherits. What IS remembered is the lower-cased name, which this check needs on every
+   * execution of a statement holding the call and which allocates a new string for every camel-cased method ({@code toUpperCase}).
+   */
+  private boolean isDeterministicMethod() {
+    String name = lowerCaseName;
+    if (name == null)
+      lowerCaseName = name = methodName.getStringValue().toLowerCase(Locale.ENGLISH);
+    return DefaultSQLMethodFactory.getInstance().isBuiltInDeterministic(name);
   }
 
   private boolean isGraphFunction() {

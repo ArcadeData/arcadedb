@@ -18,9 +18,11 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
+import com.arcadedb.query.OperationType;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 
 import java.util.List;
+import java.util.Set;
 
 /**
  * Base interface for all Cypher AST statements.
@@ -33,6 +35,20 @@ public interface CypherStatement {
    * @return true if read-only, false if contains write operations
    */
   boolean isReadOnly();
+
+  /**
+   * Returns true when this statement calls a function whose effect cannot be confirmed without running it: a dotted name no
+   * built-in function answers, which can be a {@code DEFINE FUNCTION} body (issue #6418). Planning a statement evaluates some of
+   * its expressions ({@code SKIP}, {@code LIMIT}, the conditions of a conditional query), so such a call runs even where the
+   * statement itself is not executed, and an EXPLAIN of this statement is classified as the statement is.
+   * Defaults to false for non-query (control/admin/DDL/session) statements, which hold no expression of their own; a statement
+   * type that holds expressions the planner evaluates must override it.
+   *
+   * @return true if the statement calls a function that is not confirmed to be a built-in one
+   */
+  default boolean hasUnconfirmedFunctionCall() {
+    return false;
+  }
 
   /**
    * Returns the list of MATCH clauses in this statement.
@@ -128,6 +144,24 @@ public interface CypherStatement {
    */
   default boolean hasSchemaProcedureCall() {
     return false;
+  }
+
+  /**
+   * Adds to {@code operations} every kind of write this statement can run, the writes nested in a {@code CALL { ... }}
+   * subquery, a {@code FOREACH} body or a branch of a {@code UNION} or conditional query included. Unlike
+   * {@link #hasCreate()} and its siblings, which answer for the clauses written at the top level of the statement, this one
+   * answers for the whole tree, which is what an operation-type gate needs.
+   * <p>
+   * What cannot be narrowed to one kind of write (a write procedure, a call of a function that may run a body of its own) is
+   * added as every data write: a gate must never read a statement as allowed to do less than it can.
+   * Defaults to nothing for non-query (control/admin/DDL/session) statements. A statement type that can run a write
+   * overrides it: for one that does not, the operation types fall back to every data write only when the statement is not
+   * read-only and declares nothing at all.
+   *
+   * @param operations the set the write operation types are added to
+   */
+  default void collectWriteOperations(final Set<OperationType> operations) {
+    // Nothing to add: a statement that does not run queries has no clause that writes
   }
 
   /**

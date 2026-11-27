@@ -26,6 +26,7 @@ import com.arcadedb.query.sql.parser.BooleanExpression;
 import com.arcadedb.query.sql.parser.Batch;
 import com.arcadedb.query.sql.parser.DeleteStatement;
 import com.arcadedb.query.sql.parser.FromClause;
+import com.arcadedb.query.sql.parser.FromItem;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.query.sql.parser.IndexIdentifier;
 import com.arcadedb.query.sql.parser.Limit;
@@ -223,7 +224,23 @@ public class DeleteExecutionPlanner {
   }
 
   private void handleDelete(final DeleteExecutionPlan result, final CommandContext context) {
-    result.chain(new DeleteStep(context, returnProjection, returnBefore, deleteVertex));
+    result.chain(new DeleteStep(context, returnProjection, returnBefore, deleteVertex, sourceMayRepeatARecord()));
+  }
+
+  /**
+   * Whether two rows of the source plan can name one record (issue #12256). A scan of a type or of one bucket cannot: a record lives
+   * in one bucket, and the select planner puts a distinct step behind any fetch that could meet one twice (an index lookup of an IN
+   * or an OR). Every other source can: a subquery ({@code expand(out())} over parallel edges), a list of RIDs, a parameter, a
+   * variable, a list of buckets. The {@link DeleteStep} then deletes each record once, which costs one entry per deleted record for
+   * the whole statement, a cost a plain scan has no reason to pay - least of all under {@code BATCH n}, where the transaction forgets
+   * its deletes at each commit and the step does not.
+   */
+  private boolean sourceMayRepeatARecord() {
+    final FromItem item = fromClause.getItem();
+    if (item.getBucket() != null)
+      return false;
+    final Identifier identifier = item.getIdentifier();
+    return identifier == null || item.getModifier() != null || identifier.getStringValue().startsWith("$");
   }
 
   private void handleBatch(final DeleteExecutionPlan result, final CommandContext context, final Batch batch) {

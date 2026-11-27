@@ -24,6 +24,7 @@ import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.QueryAdmissionException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.server.ArcadeDBServer;
@@ -45,6 +46,7 @@ import de.bwaldvogel.mongo.wire.message.MongoQuery;
 import io.netty.channel.Channel;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Locale;
@@ -52,6 +54,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
+import java.util.logging.Level;
 
 /**
  * The ArcadeDB side of the bundled mongo-java-server. Every call the library's Netty handler makes with a client's request
@@ -82,6 +85,9 @@ public class MongoDBBackend extends AbstractMongoBackend {
   private static final String SASL_PLAIN_SEPARATOR  = "\u0000";
 
   private static final String ADMIN_DATABASE = "admin";
+
+  /** What a request of a connection that has not logged in is refused for: "Command 'find' requires authentication". */
+  private static final String COMMAND = "Command";
 
   /**
    * The lowest wire version current drivers accept: 9, MongoDB 4.4. PyMongo 4.x refuses a server below it.
@@ -137,6 +143,11 @@ public class MongoDBBackend extends AbstractMongoBackend {
     return new MongoDBDatabaseWrapper(databaseForClient(databaseName), plugin, this);
   }
 
+  /** The wrapper that serves a database, whichever connection it was opened for. */
+  MongoDBDatabaseWrapper wrapperOf(final String databaseName) {
+    return resolveDatabase(databaseName) instanceof MongoDBDatabaseWrapper wrapper ? wrapper : null;
+  }
+
   /**
    * The database a client names, resolved the way every wire protocol does (it honours the marks an operator puts on a name: a restore,
    * a {@code close database}). A database the server HAS and cannot serve now is answered with the code MongoDB gives a server in that
@@ -150,9 +161,9 @@ public class MongoDBBackend extends AbstractMongoBackend {
     } catch (final DatabaseOperationException e) {
       final ErrorCategory category = ErrorCategory.of(e);
       if (category == ErrorCategory.UNAVAILABLE)
-        throw MongoDBDatabaseWrapper.wireException("Database '" + databaseName + "' is not available", e);
+        throw MongoDBDatabaseWrapper.wireException("Database '" + MongoWireText.clean(databaseName) + "' is not available", e);
       if (category == ErrorCategory.DATABASE_NOT_FOUND)
-        throw MongoDBDatabaseWrapper.wireException("Database '" + databaseName + "' does not exist", e);
+        throw MongoDBDatabaseWrapper.wireException("Database '" + MongoWireText.clean(databaseName) + "' does not exist", e);
       throw e;
     }
   }
@@ -181,7 +192,7 @@ public class MongoDBBackend extends AbstractMongoBackend {
       final Channel channel = query.getChannel();
       MongoUnacknowledgedWrites.install(channel);
       final String databaseName = query.getDatabaseName();
-      final ServerSecurityUser user = authorizeOnDatabase(channel, databaseName, "Query on '" + query.getFullCollectionName() + "'");
+      final ServerSecurityUser user = authorizeOnDatabase(channel, databaseName, "Query on", query.getFullCollectionName());
       return runAuthorized(channel, databaseName, user, true, () -> "query " + query.getFullCollectionName() + " " + query.getQuery(),
           () -> super.handleQuery(query));
     } finally {
@@ -189,15 +200,68 @@ public class MongoDBBackend extends AbstractMongoBackend {
     }
   }
 
-  /** An OP_MSG: the library unwraps it into {@link #handleCommand}, which gives this tag back when it returns. */
+  /**
+   * An OP_MSG: the library unwraps it into {@link #handleCommand}, which gives this tag back when it returns.
+   * <p>
+   * A request that fails is answered here, with the reply the library would build from the exception, and not by throwing it to the
+   * library, which would report it together with the whole request document. The request is reported by its command name only
+   * ({@link #logFailure}).
+   */
   @Override
   public Document handleMessage(final MongoMessage message) {
     final String enclosing = tagAsMongo();
     try {
       return super.handleMessage(message);
+    } catch (final RuntimeException e) {
+      return failureReply(message, e);
     } finally {
       restoreProtocol(enclosing);
     }
+  }
+
+  /**
+   * The reply the library builds for a request that failed ({@code $err}, {@code errmsg}, the code and its name when the error has
+   * one, {@code ok} 0), so a client is answered exactly as before.
+   */
+  private Document failureReply(final MongoMessage message, final RuntimeException failure) {
+    final MongoServerException error =
+        failure instanceof MongoServerException known ? known : new MongoServerException("Unknown error: " + failure.getMessage(), failure);
+    logFailure(message, error);
+
+    final Document reply = new Document();
+    reply.put("$err", error.getMessageWithoutErrorCode());
+    reply.put("errmsg", error.getMessageWithoutErrorCode());
+    if (error instanceof MongoServerError coded) {
+      reply.put("code", coded.getCode());
+      reply.putIfNotNull("codeName", coded.getCodeName());
+    }
+    reply.put("ok", Integer.valueOf(0));
+    return reply;
+  }
+
+  /**
+   * Reports a failed request by its command name and the reason, never by its document. An error with a code, and one the library
+   * marks as silent, is an answer to a client (a login that fails, a command that does not exist): a FINE line without a stack
+   * trace. What is not (an uncoded error is a fault of the server) is a SEVERE line with the stack trace for a client that has
+   * logged in, and FINE for one that has not. The stack trace is the one of a copy whose messages are shown as the reason is.
+   */
+  private void logFailure(final MongoMessage message, final MongoServerException error) {
+    final boolean fault = !(error instanceof MongoServerError) && error.isLogError();
+    final boolean severe = fault && authenticatedUsers.containsKey(message.getChannel());
+    final Level level = severe ? Level.SEVERE : Level.FINE;
+    if (!LogManager.instance().isLoggable(this, level))
+      return;
+
+    final Document request = message.getDocument();
+    final String command = request == null || request.isEmpty() ? "" : MongoWireText.clean(request.keySet().iterator().next());
+    final String reason = MongoWireText.clean(error.getMessageWithoutErrorCode(), MongoWireText.MAX_MESSAGE_LENGTH);
+    if (error instanceof MongoServerError coded)
+      LogManager.instance()
+          .log(this, level, "MongoDB command '%s' failed with code %d (%s): %s", null, command, coded.getCode(), coded.getCodeName(),
+              reason);
+    else
+      LogManager.instance()
+          .log(this, level, "MongoDB command '%s' failed: %s", severe ? MongoWireText.forLog(error) : null, command, reason);
   }
 
   /**
@@ -220,7 +284,7 @@ public class MongoDBBackend extends AbstractMongoBackend {
       return handleSaslStart(channel, databaseName, query);
     else if ("saslContinue".equalsIgnoreCase(command))
       // A single round-trip is enough for PLAIN, so a saslContinue is unexpected: treat it as a failed conversation.
-      throw new MongoServerError(AUTHENTICATION_FAILED, "AuthenticationFailed", "Authentication conversation already completed");
+      throw new Refusal(AUTHENTICATION_FAILED, "AuthenticationFailed", "Authentication conversation already completed");
 
     // The handshake and diagnostic commands the library answers itself, without resolving any database: let through so
     // drivers can complete the connection handshake before authenticating.
@@ -233,22 +297,67 @@ public class MongoDBBackend extends AbstractMongoBackend {
     // Postgres and BOLT transports. Every name but the virtual admin one is such a database: the library resolves (and
     // opens) "local" or "config" by name exactly like any other, so a database called that is no exemption.
     if (!isAdminDatabase(databaseName)) {
-      final ServerSecurityUser user = authorizeOnDatabase(channel, databaseName, "Command '" + command + "'");
-      // A cursor continuation is not admitted: it only serves the rows its find already read, and refusing it would break a
-      // cursor the client cannot resume
-      final boolean admit = !"getmore".equals(normalizedCommand) && !"killcursors".equals(normalizedCommand);
-      return runAuthorized(channel, databaseName, user, admit, () -> command + " " + query, () -> super.handleCommand(channel,
-          databaseName, command, query));
+      final ServerSecurityUser user = authorizeOnDatabase(channel, databaseName, COMMAND, command);
+      // A getMore of the cursor of a find is admitted like the find: it reads, filters and converts the rows of its batch (a filtered
+      // cursor scans the collection to find the next matches), so it is bounded by the gate, listed as a running query and stopped
+      // by a terminate. A refused one leaves the cursor where it was. What is not that, a killCursors that only releases and a
+      // getMore of a cursor of the library (its rows are read already), is not admitted
+      final boolean admit = !"killcursors".equals(normalizedCommand) && (!"getmore".equals(normalizedCommand) || readsFindCursor(
+          databaseName, query));
+      return runAuthorized(channel, databaseName, user, admit, () -> command + " " + query, () -> handleCommandOrCursor(channel,
+          databaseName, command, normalizedCommand, query));
     }
 
     // The virtual admin database: the handshake commands stay public, anything else (listDatabases, renameCollection,
     // getMore, killCursors, dropDatabase...) touches the server's databases or another client's cursors and needs a login
     if (!ADMIN_HANDSHAKE_COMMANDS.contains(normalizedCommand)) {
-      final ServerSecurityUser user = authenticated(channel, "Command '" + command + "'");
+      final ServerSecurityUser user = authenticated(channel, COMMAND, command);
       // these two resolve the database the library is told about, which for the admin namespace is one named "admin"
       if (("dropdatabase".equals(normalizedCommand) || "getmore".equals(normalizedCommand)) && !user.canAccessToDatabase(
           databaseName))
         throw notAuthorizedOn(user, databaseName);
+    }
+    return super.handleCommand(channel, databaseName, command, query);
+  }
+
+  /** Whether a {@code getMore} names a cursor of a {@code find} of the database: the rows of its batch are read by the request itself. */
+  private boolean readsFindCursor(final String databaseName, final Document getMore) {
+    return resolveDatabase(databaseName) instanceof MongoDBDatabaseWrapper wrapper && wrapper.holdsFindCursor(getMore.get("getMore"));
+  }
+
+  /**
+   * A {@code getMore} or {@code killCursors} on a cursor of a {@code find} is served by the database that holds it, for the user that
+   * opened it; anything else (a change stream's cursor, an unknown id) is the library's.
+   */
+  private Document handleCommandOrCursor(final Channel channel, final String databaseName, final String command,
+      final String normalizedCommand, final Document query) {
+    if ("getmore".equals(normalizedCommand)) {
+      if (resolveDatabase(databaseName) instanceof MongoDBDatabaseWrapper wrapper) {
+        final Document reply = wrapper.getMore(query);
+        if (reply != null)
+          return reply;
+      }
+    } else if ("killcursors".equals(normalizedCommand) && query.get("cursors") instanceof List<?> ids
+        && resolveDatabase(databaseName) instanceof MongoDBDatabaseWrapper wrapper) {
+      final List<Object> killed = new ArrayList<>();
+      final List<Object> notFound = new ArrayList<>();
+      wrapper.killCursors(ids, killed, notFound);
+      if (!notFound.isEmpty()) {
+        // what is not a cursor of a find: the library closes its own kinds, and tells the ones it does not know
+        final Document rest = new Document();
+        rest.putAll(query);
+        rest.put("cursors", notFound);
+        final Document reply = super.handleCommand(channel, databaseName, command, rest);
+        if (reply.get("cursorsKilled") instanceof List<?> libraryKilled)
+          killed.addAll(libraryKilled);
+        reply.put("cursorsKilled", killed);
+        return reply;
+      }
+      final Document reply = new Document();
+      reply.put("cursorsKilled", killed);
+      reply.put("cursorsNotFound", notFound);
+      Utils.markOkay(reply);
+      return reply;
     }
     return super.handleCommand(channel, databaseName, command, query);
   }
@@ -260,8 +369,9 @@ public class MongoDBBackend extends AbstractMongoBackend {
    * @throws MongoServerError {@code Unauthorized} when the connection has not authenticated, when its user no longer
    *                          validates, or when the user has no grant on the database
    */
-  private ServerSecurityUser authorizeOnDatabase(final Channel channel, final String databaseName, final String what) {
-    final ServerSecurityUser user = authenticated(channel, what);
+  private ServerSecurityUser authorizeOnDatabase(final Channel channel, final String databaseName, final String what,
+      final String name) {
+    final ServerSecurityUser user = authenticated(channel, what, name);
     if (!user.canAccessToDatabase(databaseName))
       throw notAuthorizedOn(user, databaseName);
     return user;
@@ -269,12 +379,13 @@ public class MongoDBBackend extends AbstractMongoBackend {
 
   /**
    * The principal authenticated on {@code channel}, revalidated: a user deleted, re-passworded or stripped of a grant since
-   * the SASL login must not keep the access it had when it authenticated.
+   * the SASL login must not keep the access it had when it authenticated. {@code what} and {@code name} say what the connection
+   * asked for, a name the client chose: the message shows it with printable characters only.
    */
-  private ServerSecurityUser authenticated(final Channel channel, final String what) {
+  private ServerSecurityUser authenticated(final Channel channel, final String what, final String name) {
     final ServerSecurityUser user = authenticatedUsers.get(channel);
     if (user == null)
-      throw new MongoServerError(UNAUTHORIZED, "Unauthorized", what + " requires authentication");
+      throw requiresAuthentication(what, name);
 
     try {
       final ServerSecurityUser current = server.getSecurity().revalidate(user);
@@ -283,13 +394,35 @@ public class MongoDBBackend extends AbstractMongoBackend {
       return current;
     } catch (final ServerSecurityException e) {
       authenticatedUsers.remove(channel);
-      throw new MongoServerError(UNAUTHORIZED, "Unauthorized", what + " requires authentication");
+      throw requiresAuthentication(what, name);
     }
   }
 
+  private static MongoServerError requiresAuthentication(final String what, final String name) {
+    return new Refusal(UNAUTHORIZED, "Unauthorized", what + " '" + MongoWireText.clean(name) + "' requires authentication");
+  }
+
   private static MongoServerError notAuthorizedOn(final ServerSecurityUser user, final String databaseName) {
-    return new MongoServerError(UNAUTHORIZED, "Unauthorized",
-        "User '" + user.getName() + "' is not authorized to access database '" + databaseName + "'");
+    return new Refusal(UNAUTHORIZED, "Unauthorized",
+        "User '" + user.getName() + "' is not authorized to access database '" + MongoWireText.clean(databaseName) + "'");
+  }
+
+  /**
+   * A request the server turns down, an answer to a client and not a fault of the server. Over OP_MSG it is answered as a reply
+   * document; over the legacy OP_QUERY the library can only log what is thrown and close the connection, and a stack trace adds
+   * nothing to that line, so it carries none.
+   */
+  private static final class Refusal extends MongoServerError {
+    private static final long serialVersionUID = 1L;
+
+    Refusal(final int code, final String codeName, final String message) {
+      super(code, codeName, message);
+    }
+
+    @Override
+    public synchronized Throwable fillInStackTrace() {
+      return this;
+    }
   }
 
   /**
@@ -381,11 +514,12 @@ public class MongoDBBackend extends AbstractMongoBackend {
 
   /**
    * The virtual administrative namespace the library answers its admin commands on: {@code admin} exactly, as the library
-   * compares it, or an authentication source such as {@code $external}. Any other name is resolved (and opened) as a database
-   * by the library, so it requires authorization and principal binding.
+   * compares it, and a request that names no database at all, which the library cannot resolve to one. Any other name, whatever
+   * its first character, is resolved (and opened) as a database by the library, so it requires authorization and principal
+   * binding. An authentication source such as {@code $external} is only the name a login is made on ({@link #handleSaslStart}).
    */
   private static boolean isAdminDatabase(final String databaseName) {
-    return databaseName == null || databaseName.isEmpty() || databaseName.startsWith("$") || ADMIN_DATABASE.equals(databaseName);
+    return databaseName == null || ADMIN_DATABASE.equals(databaseName);
   }
 
   /**
@@ -394,19 +528,20 @@ public class MongoDBBackend extends AbstractMongoBackend {
    */
   private Document handleSaslStart(final Channel channel, final String databaseName, final Document query) {
     final Object mechanism = query.get("mechanism");
-    if (mechanism == null || !PLAIN_MECHANISM.equalsIgnoreCase(mechanism.toString()))
-      throw new MongoServerError(MECHANISM_UNAVAILABLE, "MechanismUnavailable",
-          "Unsupported authentication mechanism '" + mechanism + "'. The ArcadeDB MongoDB plugin only supports the PLAIN (SASL) mechanism");
+    if (!(mechanism instanceof String name) || !PLAIN_MECHANISM.equalsIgnoreCase(name))
+      throw new Refusal(MECHANISM_UNAVAILABLE, "MechanismUnavailable",
+          "Unsupported authentication mechanism '" + MongoWireText.describe(mechanism)
+              + "'. The ArcadeDB MongoDB plugin only supports the PLAIN (SASL) mechanism");
 
     final Object payload = query.get("payload");
     if (!(payload instanceof BinData))
-      throw new MongoServerError(AUTHENTICATION_FAILED, "AuthenticationFailed", "Missing or invalid SASL payload");
+      throw new Refusal(AUTHENTICATION_FAILED, "AuthenticationFailed", "Missing or invalid SASL payload");
 
     final byte[] data = ((BinData) payload).getData();
     final String decoded = new String(data, StandardCharsets.UTF_8);
     final String[] parts = decoded.split(SASL_PLAIN_SEPARATOR, -1);
     if (parts.length != 3)
-      throw new MongoServerError(AUTHENTICATION_FAILED, "AuthenticationFailed", "Malformed SASL PLAIN payload");
+      throw new Refusal(AUTHENTICATION_FAILED, "AuthenticationFailed", "Malformed SASL PLAIN payload");
 
     // parts[0] = authorization identity (optional, ignored), parts[1] = user, parts[2] = password
     final String userName = parts[1].isEmpty() ? parts[0] : parts[1];
@@ -421,7 +556,7 @@ public class MongoDBBackend extends AbstractMongoBackend {
       authenticatedUsers.put(channel, user);
     } catch (final ServerSecurityException e) {
       authenticatedUsers.remove(channel);
-      throw new MongoServerError(AUTHENTICATION_FAILED, "AuthenticationFailed", "Authentication failed");
+      throw new Refusal(AUTHENTICATION_FAILED, "AuthenticationFailed", "Authentication failed");
     }
 
     final Document response = new Document();

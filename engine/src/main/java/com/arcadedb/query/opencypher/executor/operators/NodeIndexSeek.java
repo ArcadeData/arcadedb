@@ -32,12 +32,14 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.InExpression;
+import com.arcadedb.query.opencypher.executor.RidTextKeys;
 import com.arcadedb.query.opencypher.executor.RowIndependentValues;
 import com.arcadedb.query.opencypher.ast.LogicalExpression;
 import com.arcadedb.utility.RidHashSet;
@@ -324,13 +326,15 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
       throw new CommandExecutionException(
           "Index '" + indexName + "' on type '" + label + "' is no longer available: re-plan the query");
 
-    // The prefix values are shared by every seek; only the leading value varies over an IN-list.
+    // The prefix values are shared by every seek; only the leading value varies over an IN-list. A RID spelled as text is sought
+    // as the id it stands for in a numeric column (issue #11933)
+    final Type[] keyTypes = index.getKeyTypes();
     final List<Object> trailing = new ArrayList<>(keyValues.size() - 1);
     for (int i = 1; i < keyValues.size(); i++) {
       final Object resolved = RowIndependentValues.resolve(keyValues.get(i), context);
       if (resolved == null)
         break; // an unresolved parameter truncates the key, degrading the seek to a shorter prefix
-      trailing.add(resolved);
+      trailing.add(RidTextKeys.keyFor(resolved, keyTypes, i));
     }
 
     // Resolve the seek keys at runtime (parameters change per execution). A single equality value
@@ -340,19 +344,19 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
       for (final Expression element : inList.getValues()) {
         final Object resolved = RowIndependentValues.resolve(element, context);
         if (inList.isScalar(element) || resolved == null)
-          addSeekKey(keys, resolved, trailing);
+          addSeekKey(keys, keyTypes, resolved, trailing);
         else if (inList.isWholeList(element))
           // The whole right side, x IN $ids: a list, or the refusal the scan gives a value that is not one (issue #10541). It used
           // to be taken for one key, which answered no rows where the scan refuses
           for (final Object v : InExpression.listOperand(resolved))
-            addSeekKey(keys, v, trailing);
+            addSeekKey(keys, keyTypes, v, trailing);
         else
           // One item of a list literal, x IN [$a, $b]: one key, whatever it resolves to (issue #10541). A list or a map is a key no
           // property holds, and the index answers it with no row, as the comparison of the scan does
-          addSeekKey(keys, resolved, trailing);
+          addSeekKey(keys, keyTypes, resolved, trailing);
       }
     } else
-      addSeekKey(keys, RowIndependentValues.resolve(propertyValue, context), trailing);
+      addSeekKey(keys, keyTypes, RowIndependentValues.resolve(propertyValue, context), trailing);
 
     // An index inherited from a supertype spans every bucket in the hierarchy, so its cursor also yields
     // the parent's own records and every sibling child's. Those are not answers to (n:label) and are
@@ -360,12 +364,12 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
     return new Seek(index, Labels.isInheritedIndex(index, label), keys, 1 + trailing.size() == index.getPropertyNames().size());
   }
 
-  private static void addSeekKey(final List<Object[]> keys, final Object leadingValue, final List<Object> trailing) {
+  private static void addSeekKey(final List<Object[]> keys, final Type[] keyTypes, final Object leadingValue, final List<Object> trailing) {
     if (leadingValue == null)
       return;
 
     final Object[] key = new Object[1 + trailing.size()];
-    key[0] = leadingValue;
+    key[0] = RidTextKeys.keyFor(leadingValue, keyTypes, 0);
     for (int i = 0; i < trailing.size(); i++)
       key[1 + i] = trailing.get(i);
     keys.add(key);

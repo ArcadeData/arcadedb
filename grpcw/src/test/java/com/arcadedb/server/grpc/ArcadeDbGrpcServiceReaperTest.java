@@ -20,6 +20,10 @@ package com.arcadedb.server.grpc;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -75,6 +79,74 @@ class ArcadeDbGrpcServiceReaperTest {
     try {
       assertThat(service.isIdleReaperActive()).isTrue();
     } finally {
+      service.close();
+    }
+  }
+
+  // Regression: #13253
+  @Test
+  void transactionWithARunningStatementIsNotIdleHoweverOldItsLastAccess() {
+    final ArcadeDbGrpcService service = new ArcadeDbGrpcService("/tmp/notused", null, 0L, 0L, 0L);
+    try {
+      final var txCtx = service.registerTransactionForTesting("tx-running-statement");
+      final long now = System.currentTimeMillis();
+      txCtx.lastAccessMs = now - 10_000L;
+      assertThat(txCtx.isIdleFor(1_000L, now)).isTrue();
+
+      txCtx.runningStatements.incrementAndGet();
+      assertThat(txCtx.isIdleFor(1_000L, now)).as("a statement is running in it").isFalse();
+
+      txCtx.runningStatements.decrementAndGet();
+      assertThat(txCtx.isIdleFor(1_000L, now)).isTrue();
+      assertThat(txCtx.isIdleFor(20_000L, now)).as("the last use is more recent than the idle window").isFalse();
+    } finally {
+      service.finalizeTransactionForTesting("tx-running-statement");
+      service.close();
+    }
+  }
+
+  // Regression: #13253. No sleep-vs-idle-window race: the last access is pinned in the past while the statement runs, so
+  // only the running statement keeps the transaction from the reaper, whatever the machine's load.
+  @Test
+  void reaperLeavesTheTransactionAloneWhileAStatementRunsAndReclaimsItOnceIdleAgain() throws Exception {
+    final long maxIdleMs = 50L;
+    final long reaperPeriodMs = 10L;
+    final ArcadeDbGrpcService service = new ArcadeDbGrpcService("/tmp/notused", null, maxIdleMs, 0L, reaperPeriodMs);
+    final CountDownLatch statementStarted = new CountDownLatch(1);
+    final CountDownLatch statementMayEnd = new CountDownLatch(1);
+    try {
+      final var txCtx = service.registerTransactionForTesting("tx-long-statement");
+      // not idle until the statement is known to be running
+      txCtx.lastAccessMs = System.currentTimeMillis() + 3_600_000L;
+
+      final Future<String> statement = service.submitToActiveTransaction(txCtx, () -> {
+        statementStarted.countDown();
+        statementMayEnd.await();
+        return "done";
+      });
+      assertThat(statementStarted.await(30, TimeUnit.SECONDS)).isTrue();
+      assertThat(txCtx.runningStatements.get()).isEqualTo(1);
+
+      // as old as it gets: on its last access alone the very next sweep reclaims the transaction
+      txCtx.lastAccessMs = 0L;
+      // many sweeps go by
+      Thread.sleep(20 * reaperPeriodMs);
+      assertThat(service.getActiveTransactionForTesting("tx-long-statement")).as("reaped under its running statement")
+          .isSameAs(txCtx);
+
+      statementMayEnd.countDown();
+      assertThat(statement.get(30, TimeUnit.SECONDS)).isEqualTo("done");
+      assertThat(txCtx.runningStatements.get()).isZero();
+      assertThat(txCtx.lastAccessMs).as("the idle window counts from the end of the statement").isGreaterThan(0L);
+
+      // nobody uses it any more: the reaper takes it once the idle window has gone by
+      final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+      while (service.getActiveTransactionCount() > 0 && System.nanoTime() < deadline)
+        Thread.sleep(reaperPeriodMs);
+      assertThat(service.getActiveTransactionCount()).as("an idle transaction is still reclaimed").isZero();
+    } finally {
+      statementMayEnd.countDown();
+      service.finalizeTransactionForTesting("tx-long-statement");
       service.close();
     }
   }

@@ -25,6 +25,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.RangeIndex;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
+import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.BooleanWrapperExpression;
 import com.arcadedb.query.opencypher.ast.ClauseEntry;
@@ -47,9 +48,11 @@ import com.arcadedb.query.opencypher.ast.WhereClause;
 import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.executor.CypherVariableUsage;
 import com.arcadedb.query.opencypher.executor.EdgeIndexSeedPlanner;
+import com.arcadedb.query.opencypher.executor.EdgeTypeScanPlanner;
 import com.arcadedb.query.opencypher.executor.VariableLengthDistinctEndpoints;
 import com.arcadedb.query.opencypher.executor.operators.CartesianProduct;
 import com.arcadedb.query.opencypher.executor.operators.EdgeIndexSeek;
+import com.arcadedb.query.opencypher.executor.operators.EdgeTypeScan;
 import com.arcadedb.query.opencypher.executor.operators.ExpandAll;
 import com.arcadedb.query.opencypher.executor.operators.ExpandInto;
 import com.arcadedb.query.opencypher.executor.operators.FilterOperator;
@@ -64,9 +67,11 @@ import com.arcadedb.query.opencypher.executor.operators.NodeByLabelScan;
 import com.arcadedb.query.opencypher.executor.operators.NodeIndexSeek;
 import com.arcadedb.query.opencypher.executor.operators.NodeIndexRangeScan;
 import com.arcadedb.query.opencypher.executor.operators.PhysicalOperator;
+import com.arcadedb.query.opencypher.executor.operators.RelationshipAnchor;
 import com.arcadedb.query.opencypher.executor.operators.SeekOrWalkExpand;
 import com.arcadedb.query.opencypher.executor.operators.GAVVarLengthExpand;
 import com.arcadedb.query.opencypher.executor.operators.VarLengthExpand;
+import com.arcadedb.query.opencypher.executor.steps.MatchEdgeByTypeScanStep;
 import com.arcadedb.query.opencypher.parser.FunctionValidator;
 import com.arcadedb.query.opencypher.optimizer.plan.AnchorSelection;
 import com.arcadedb.query.opencypher.optimizer.plan.LogicalNode;
@@ -382,22 +387,29 @@ public class CypherOptimizer {
     // 9. Defer vertex loading for remaining (non-fused) intermediate GAVExpandAll hops
     applyDeferredVertexLoading(rootOperator);
 
-    // 9a. Answer the ORDER BY from the index order, so that the LIMIT stops the scan (issue #8422)
-    final PhysicalOperator indexOrdered = components.size() <= 1 && isolatedNodes.isEmpty() ?
-        orderByIndex(logicalPlan, rootOperator, anchorOperator) : null;
+    // 9a. Answer the ORDER BY from the index order, so that the LIMIT stops the scan (issue #8422): the RETURN's, or that of the
+    // WITH the matched rows reach first (issue #12141)
+    final OrderedProjection orderedProjection = components.size() <= 1 && isolatedNodes.isEmpty() ? orderedProjection() : null;
+    final PhysicalOperator indexOrdered = orderedProjection != null ?
+        orderByIndex(logicalPlan, rootOperator, anchorOperator, orderedProjection) : null;
     if (indexOrdered != null)
       rootOperator = indexOrdered;
+    else
+      // 9b. A statement that reads only the distinct far ends of its top chain of anonymous hops gets each far end once
+      rootOperator = DistinctEndsRewrite.apply(statement, rootOperator);
 
     // 10. Calculate total cost and cardinality
     final double totalCost = rootOperator.getEstimatedCost();
     final long totalCardinality = rootOperator.getEstimatedCardinality();
 
     // 11. Build physical plan with complete operator tree
-    return new PhysicalPlan(logicalPlan, anchor, rootOperator, totalCost, totalCardinality, indexOrdered != null);
+    return new PhysicalPlan(logicalPlan, anchor, rootOperator, totalCost, totalCardinality,
+        indexOrdered != null && !orderedProjection.isWith(), indexOrdered != null && orderedProjection.isWith());
   }
 
   /**
-   * Makes the anchor produce the rows in the order the statement's ORDER BY asks for, when an index holds that order,
+   * Makes the anchor produce the rows in the order the ORDER BY of {@code projection} asks for (the RETURN's, or the first
+   * WITH's, see {@link #orderedProjection()}), when an index holds that order,
    * so the plan leaves the sort out and the LIMIT stops the scan after its first rows instead of after the whole range
    * (issue #8422). Two anchors qualify:
    * <ul>
@@ -417,7 +429,7 @@ public class CypherOptimizer {
    * @return the root operator, replaced when the anchor had to be, or null when the statement keeps its sort
    */
   private PhysicalOperator orderByIndex(final LogicalPlan logicalPlan, final PhysicalOperator rootOperator,
-      final PhysicalOperator anchorOperator) {
+      final PhysicalOperator anchorOperator, final OrderedProjection projection) {
     final String variable;
     final String label;
     if (anchorOperator instanceof NodeIndexRangeScan rangeScan) {
@@ -429,11 +441,11 @@ public class CypherOptimizer {
     } else
       return null;
 
-    if (!rowsKeepTheMatchOrder() || !preservesInputOrder(rootOperator, anchorOperator))
+    if (!preservesInputOrder(rootOperator, anchorOperator))
       return null;
 
     final List<String> orderedProperties = new ArrayList<>();
-    final Boolean ascending = orderedPropertiesOf(variable, orderedProperties);
+    final Boolean ascending = orderedPropertiesOf(variable, orderedProperties, projection);
     if (ascending == null)
       return null;
 
@@ -526,29 +538,51 @@ public class CypherOptimizer {
   }
 
   /**
-   * Whether the rows reach the ORDER BY in the order the MATCH produced them: a single statement of MATCH clauses and a
-   * RETURN that neither aggregates nor is fed by a WITH, UNWIND or a clause that writes (a SET could rewrite the very
-   * key the rows are ordered by), under a LIMIT.
+   * The projection the matched rows reach first in the order the MATCH produced them, when it sorts them under a LIMIT:
+   * after nothing but MATCH clauses, either a RETURN that does not aggregate, or a WITH that neither aggregates nor
+   * de-duplicates (issue #12141, the keyset page {@code WITH n ORDER BY n.key LIMIT k}). A WITH, UNWIND or a clause that
+   * writes before it (a SET could rewrite the very key the rows are ordered by) is not the MATCH's order any more.
+   * <p>
+   * Only the ORDER BY of that projection is answered from the index: whatever follows a WITH sorts as it would have.
+   *
+   * @return the projection, or null when no projection the rows reach in the MATCH's order sorts them under a LIMIT
    */
-  private boolean rowsKeepTheMatchOrder() {
-    if (statement.getLimit() == null || statement.getOrderByClause() == null || statement.getOrderByClause().isEmpty())
-      return false;
-    final ReturnClause returnClause = statement.getReturnClause();
-    if (returnClause == null || returnClause.hasAggregations())
-      return false;
-    final List<WithClause> withClauses = statement.getWithClauses();
-    if (withClauses != null && !withClauses.isEmpty())
-      return false;
+  private OrderedProjection orderedProjection() {
     final List<ClauseEntry> clauses = statement.getClausesInOrder();
     if (clauses == null)
-      return false;
+      return null;
     for (final ClauseEntry entry : clauses) {
-      if (entry.getType() == ClauseEntry.ClauseType.RETURN)
-        continue;
-      if (entry.getType() != ClauseEntry.ClauseType.MATCH || entry.<MatchClause>getTypedClause().isOptional())
-        return false;
+      switch (entry.getType()) {
+      case MATCH:
+        if (entry.<MatchClause>getTypedClause().isOptional())
+          return null;
+        break;
+      case WITH: {
+        final WithClause with = entry.getTypedClause();
+        if (with.getLimit() == null || with.getOrderByClause() == null || with.getOrderByClause().isEmpty()
+            || with.hasAggregations() || with.isDistinct() || with.isLetBinding())
+          return null;
+        return new OrderedProjection(with.getItems(), with.getOrderByClause(), true);
+      }
+      case RETURN: {
+        final ReturnClause returnClause = statement.getReturnClause();
+        if (statement.getLimit() == null || statement.getOrderByClause() == null || statement.getOrderByClause().isEmpty()
+            || returnClause == null || returnClause.hasAggregations())
+          return null;
+        return new OrderedProjection(returnClause.getReturnItems(), statement.getOrderByClause(), false);
+      }
+      default:
+        return null;
+      }
     }
-    return true;
+    return null;
+  }
+
+  /**
+   * The items and ORDER BY of the projection {@link #orderedProjection()} found, and whether it is the statement's first WITH
+   * rather than its RETURN.
+   */
+  private record OrderedProjection(List<ReturnClause.ReturnItem> items, OrderByClause orderBy, boolean isWith) {
   }
 
   /**
@@ -568,13 +602,14 @@ public class CypherOptimizer {
 
   /**
    * Collects the properties of the variable the ORDER BY items sort on, directly ({@code ORDER BY n.id}) or through
-   * the RETURN column that projects one ({@code RETURN n.id AS id ORDER BY id}).
+   * the column of the projection that projects one ({@code RETURN n.id AS id ORDER BY id}).
    *
    * @return the direction all the items share, or null when an item is not a property of the variable, or the items
    * mix directions
    */
-  private Boolean orderedPropertiesOf(final String variable, final List<String> properties) {
-    final List<ReturnClause.ReturnItem> returnItems = statement.getReturnClause().getReturnItems();
+  private static Boolean orderedPropertiesOf(final String variable, final List<String> properties,
+      final OrderedProjection projection) {
+    final List<ReturnClause.ReturnItem> returnItems = projection.items();
     for (final ReturnClause.ReturnItem item : returnItems)
       // A column named like the variable hides it from the ORDER BY: n.id would read a property of that column
       if (!item.isStar() && variable.equals(item.getOutputName())
@@ -582,7 +617,7 @@ public class CypherOptimizer {
         return null;
 
     Boolean ascending = null;
-    for (final OrderByClause.OrderByItem item : statement.getOrderByClause().getItems()) {
+    for (final OrderByClause.OrderByItem item : projection.orderBy().getItems()) {
       if (ascending != null && ascending != item.isAscending())
         return null;
       ascending = item.isAscending();
@@ -915,8 +950,11 @@ public class CypherOptimizer {
     return false;
   }
 
-  /** A relationship the plan can start from by its type's index, the seek doing it and the anchor it stands for (issue #11481). */
-  private record EdgeSeedPlan(LogicalRelationship relationship, EdgeIndexSeek operator, AnchorSelection anchor) {
+  /**
+   * A relationship the plan can start from by its type's index (issue #11481) or by a scan of its types (issue #11874), the operator
+   * doing it and the anchor it stands for.
+   */
+  private record EdgeSeedPlan(LogicalRelationship relationship, RelationshipAnchor operator, AnchorSelection anchor) {
   }
 
   /**
@@ -924,14 +962,14 @@ public class CypherOptimizer {
    * relationship whose key, or a leading prefix of it, the {@code WHERE} clause pins with row-independent equalities or
    * {@code IN}-lists, over every type it names (see {@link EdgeIndexSeedPlanner}). The seek binds both endpoints and checks their
    * labels; the whole {@code WHERE} clause still filters above it, inline node maps included, which the logical plan lowered into it.
+   * A relationship no index answers can still start the plan from a scan of its types, see {@link #edgeTypeScanSeedFor} (issue
+   * #11874).
    * <p>
    * Left out: a component holding a unidirectional type besides the seeded hop, whose reachability the anchor validation
    * reasons about from one node; and a prefix seek in a statement that writes, which could meet the entries its own writes move
    * inside the range it walks.
    */
   private EdgeSeedPlan edgeIndexSeedFor(final LogicalPlan logicalPlan, final RelationshipComponent component) {
-    if (logicalPlan.getWhereFilters().isEmpty())
-      return null;
     if (component.relationships().size() > 1 && hasUnidirectionalEdge(component.relationships()))
       return null;
 
@@ -951,8 +989,14 @@ public class CypherOptimizer {
         EdgeIndexSeedPlanner.collectWherePredicates(relVar, where.getConditionExpression(), predicates);
       final List<EdgeIndexSeedPlanner.TypeSeek> seeks = EdgeIndexSeedPlanner.planSeeks(database.getSchema(), rel.getTypes(),
           predicates);
-      if (seeks == null)
+      if (seeks == null) {
+        // No index answers the predicates: a scan of the types does when the WHERE clause requires a property of the relationship,
+        // or when the statement only aggregates properties of it
+        final EdgeSeedPlan scan = edgeTypeScanSeedFor(logicalPlan, rel);
+        if (scan != null && (best == null || scan.operator().getEstimatedCost() < best.operator().getEstimatedCost()))
+          best = scan;
         continue;
+      }
 
       long edgeCount = 0;
       long keys = 0;
@@ -984,6 +1028,52 @@ public class CypherOptimizer {
         best = new EdgeSeedPlan(rel, operator, new AnchorSelection(rel.getSourceVariable(), source, cost, rows));
     }
     return best;
+  }
+
+  /**
+   * The scan of the types of a relationship as the start of its component (issue #11874), when no index answers its predicates but
+   * the {@code WHERE} clause requires a property of it, which no light edge has, or the statement only aggregates properties of it
+   * with aggregates that skip the null of a light edge (see {@link EdgeTypeScanPlanner}): the scan reads every edge of the types,
+   * where a node anchor reads its vertices and expands their edges. The conjuncts that read only the relationship are checked on
+   * each edge before its endpoints are loaded; the whole {@code WHERE} clause still filters above. Left out in a statement that
+   * writes, which could meet in the buckets the edges its own writes add behind the scan.
+   */
+  private EdgeSeedPlan edgeTypeScanSeedFor(final LogicalPlan logicalPlan, final LogicalRelationship rel) {
+    if (!statement.isReadOnly())
+      return null;
+    final String relVar = rel.getVariable();
+    boolean filtered = false;
+    final List<BooleanExpression> relationshipConjuncts = new ArrayList<>();
+    for (final WhereClause where : logicalPlan.getWhereFilters()) {
+      filtered |= EdgeTypeScanPlanner.requiresAPropertyOf(relVar, where.getConditionExpression());
+      relationshipConjuncts.addAll(EdgeTypeScanPlanner.relationshipOnlyConjuncts(relVar, where.getConditionExpression()));
+    }
+    if (!filtered && !EdgeTypeScanPlanner.onlyAggregatesAPropertyOf(relVar, statement))
+      return null;
+    final List<String> edgeTypes = EdgeTypeScanPlanner.scanTypes(database.getSchema(), rel.getTypes());
+    if (edgeTypes == null || edgeTypes.isEmpty())
+      return null;
+
+    long edgeCount = 0;
+    for (final String edgeType : edgeTypes)
+      edgeCount += statisticsProvider.getCardinality(edgeType);
+    // With no predicate on the relationship every edge of the types is a row
+    final long rows = filtered || !relationshipConjuncts.isEmpty() ?
+        Math.max(1L, (long) (edgeCount * CostModel.SELECTIVITY_EQUALITY)) :
+        Math.max(1L, edgeCount);
+    // Every edge of the types is read; each one kept is read with its two endpoints, the work of an expansion step
+    final double cost = edgeCount * CostModel.SCAN_COST_PER_ROW + rows * CostModel.EXPAND_COST_PER_ROW;
+
+    final LogicalNode source = logicalPlan.getPatternNode(rel.getSourceVariable());
+    final LogicalNode target = logicalPlan.getPatternNode(rel.getTargetVariable());
+    final MatchEdgeByTypeScanStep.Pattern pattern = new MatchEdgeByTypeScanStep.Pattern(edgeTypes, rel.getDirection(),
+        rel.getSourceVariable(), relVar, rel.getTargetVariable(),
+        source != null ? EdgeIndexSeedPlanner.EndpointFilter.ofLabels(source.getLabels(), source.isLabelDisjunction()) :
+            EdgeIndexSeedPlanner.EndpointFilter.NONE,
+        target != null ? EdgeIndexSeedPlanner.EndpointFilter.ofLabels(target.getLabels(), target.isLabelDisjunction()) :
+            EdgeIndexSeedPlanner.EndpointFilter.NONE);
+    final EdgeTypeScan operator = new EdgeTypeScan(pattern, EdgeTypeScanPlanner.and(relationshipConjuncts), cost, rows);
+    return new EdgeSeedPlan(rel, operator, new AnchorSelection(rel.getSourceVariable(), source, cost, rows));
   }
 
   /**
@@ -1739,7 +1829,7 @@ public class CypherOptimizer {
         addVariable(bound, gavExpand.getTargetVariable());
       } else if (op instanceof GAVExpandInto gavInto) {
         addVariable(bound, gavInto.getTargetVariable());
-      } else if (op == anchorOperator && op instanceof EdgeIndexSeek seek)
+      } else if (op == anchorOperator && op instanceof RelationshipAnchor seek)
         bound.addAll(seek.getBoundVariables());
       else if (op == anchorOperator)
         addVariable(bound, anchorVariable);
@@ -2267,7 +2357,8 @@ public class CypherOptimizer {
         final Object vertexObj = result.getProperty(expandTargetVariable);
         if (vertexObj instanceof Vertex) {
           final Vertex vertex = (Vertex) vertexObj;
-          return vertex.getType().instanceOf(targetLabel);
+          // the one definition of "carries the label": a virtual node (issue #12109) has no schema type to ask
+          return Labels.hasLabel(vertex, targetLabel);
         }
         return false;
       }

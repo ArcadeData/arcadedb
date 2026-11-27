@@ -20,7 +20,6 @@ package com.arcadedb.bolt.message;
 
 import com.arcadedb.bolt.packstream.PackStreamReader;
 import com.arcadedb.bolt.packstream.PackStreamWriter;
-import com.arcadedb.bolt.structure.BoltStructureMapper;
 
 import java.io.IOException;
 import java.util.List;
@@ -73,6 +72,10 @@ public abstract class BoltMessage {
 
   /**
    * Parse a message from PackStream reader result.
+   * <p>
+   * Every request the client sends is parsed, in every state of the connection, before the state is checked, so this only
+   * picks the decoded fields apart: nothing here may cost more than the size of the request, such as converting or rendering
+   * the values it carries. That is left to the handler of a request the state accepts.
    */
   @SuppressWarnings("unchecked")
   public static BoltMessage parse(final PackStreamReader.StructureValue structure) throws IOException {
@@ -106,13 +109,11 @@ public abstract class BoltMessage {
   @SuppressWarnings("unchecked")
   private static RunMessage parseRun(final List<Object> fields) {
     final String query = (String) fields.get(0);
-    // Hydrate temporal PackStream structures (Date/Time/DateTime/...) into java.time values so
-    // native temporal query parameters bind correctly instead of being dropped (issue #4905).
-    final Map<String, Object> parameters = fields.size() > 1 && fields.get(1) != null ?
-        (Map<String, Object>) BoltStructureMapper.fromPackStreamValue(fields.get(1)) :
-        Map.of();
+    // The parameters stay as decoded: the temporal PackStream structures (Date/Time/DateTime/...) are hydrated into java.time
+    // values, so native temporal query parameters bind correctly (issue #4905), when the RUN handler reads them
+    final Map<String, Object> parameters = fields.size() > 1 && fields.get(1) != null ? (Map<String, Object>) fields.get(1) : Map.of();
     final Map<String, Object> extra = fields.size() > 2 && fields.get(2) != null ? (Map<String, Object>) fields.get(2) : Map.of();
-    return new RunMessage(query, parameters, extra);
+    return RunMessage.decoded(query, parameters, extra);
   }
 
   @SuppressWarnings("unchecked")
@@ -144,11 +145,11 @@ public abstract class BoltMessage {
     final Map<String, Object> routing = fields.isEmpty() || fields.get(0) == null ? Map.of() : (Map<String, Object>) fields.get(0);
     final List<String> bookmarks = fields.size() > 1 && fields.get(1) != null ? (List<String>) fields.get(1) : List.of();
     final Object thirdField = fields.size() > 2 ? fields.get(2) : null;
-    // Bolt <=4.3 sends db::String; Bolt 4.4+ sends extra::Map{db, imp_user} (issue #4916).
+    // Bolt <=4.3 sends db::String; Bolt 4.4+ sends extra::Map{db, imp_user} (issue #4916). The name is taken only when it is
+    // a String: nothing else is a database name, and rendering an arbitrary decoded value as text costs as much as it is large
     final String database;
     if (thirdField instanceof Map<?, ?> extra) {
-      final Object db = extra.get("db");
-      database = db != null ? db.toString() : null;
+      database = extra.get("db") instanceof final String name ? name : null;
     } else {
       database = (String) thirdField;
     }

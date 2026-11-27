@@ -22,6 +22,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
+import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -71,6 +72,7 @@ public class ListIndexExpression implements PropertyReadExpression {
 
     // Map/Document property access via bracket notation: map['key']
     if (indexValue instanceof String) {
+      DeletedEntityMarker.checkNotDeleted(listValue);
       final String key = (String) indexValue;
       if (listValue instanceof Map)
         return ((Map<?, ?>) listValue).get(key);
@@ -124,9 +126,10 @@ public class ListIndexExpression implements PropertyReadExpression {
       return MultiValue.getValue(listValue, actualIndex);
     }
 
-    // In Cypher, numeric indexing is only valid for lists, not for strings or other types
-    throw new TypeMismatchException(
-        "TypeError: InvalidArgumentType - Cannot index into type: " + CypherFunctionHelper.cypherTypeName(listValue));
+    // In Cypher, numeric indexing is only valid for lists, not for strings or other types. A byte[] is named as such, the
+    // way the slice error names it, not as the LIST<ANY> it is not (issue #12780)
+    throw new TypeMismatchException("TypeError: InvalidArgumentType - Cannot index into type: "
+        + (listValue instanceof byte[] ? "byte[]" : CypherFunctionHelper.cypherTypeName(listValue)));
   }
 
   /** {@code n['v']} and {@code properties(n)['v']} read the property {@code v} of the record {@code n}. */

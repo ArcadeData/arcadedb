@@ -57,6 +57,13 @@ public class TextRegexReplace extends AbstractTextFunction {
       return str;
 
     final String replacement = args[2] == null ? "" : args[2].toString();
-    return applyRegex(regex, str, context, (pattern, input) -> pattern.matcher(input).replaceAll(replacement));
+    return applyRegex(regex, str, context, (pattern, input) -> {
+      try {
+        return pattern.matcher(input).replaceAll(replacement);
+      } catch (final IndexOutOfBoundsException | IllegalArgumentException e) {
+        // a group the pattern does not have ($2), or a lone '$' or '\' at the end of the replacement (issue #12744)
+        throw new IllegalArgumentException("text.regexReplace() cannot apply the replacement '" + replacement + "': " + e.getMessage(), e);
+      }
+    });
   }
 }

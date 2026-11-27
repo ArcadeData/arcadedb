@@ -1093,8 +1093,9 @@ public enum GlobalConfiguration {
       shares ONE deadline for the whole command: not one per row, not one per function, and not one per worker of a \
       parallel type scan. Full-text search and REGEXP property \
       validation run outside a command context and share one deadline across an entire scan (not per item). The MongoDB \
-      wire protocol plugin applies a regex filter the same way: one budget per command, counting only the time spent \
-      inside the regular expressions. SQL LIKE/ILIKE match their pattern without a regular expression, so they never \
+      wire protocol plugin and Gremlin's TextP.regex()/notRegex() predicates apply a regex filter the same way: one budget \
+      per command or statement, counting only the time spent inside the regular expressions. SQL LIKE/ILIKE match \
+      their pattern without a regular expression, so they never \
       backtrack catastrophically, but a huge value against a long pattern can still cost the product of their lengths, \
       and this bound applies to them as well (per row, or shared across the items of a multi-value property). A large, \
       legitimately slow (non-catastrophic) operation can hit this bound too, so raise it for workloads that need more \
@@ -1143,9 +1144,10 @@ public enum GlobalConfiguration {
       Maximum number of elements (records/groups) allowed in a single query for memory-intensive operations (eg. ORDER BY, GROUP BY \
       and DISTINCT in heap, the result of a LET subquery or of one written inline in an expression (a projection, a function argument, \
       a SET value, a CREATE EDGE endpoint: its bytes are charged to the budget while the list is built, and given back when it is returned) and the rows of a user defined SQL function (against this cap only: no bytes are charged for \
-      the body of a function), the records a MATCH prefetches, the vertices a MATCH while:/maxDepth: walk holds along its current path and the \
+      the body of a function) and the elements of the arrays and objects a user defined JavaScript function answers, the records a MATCH prefetches, the vertices a MATCH while:/maxDepth: walk holds along its current path and the \
       values an aggregate that keeps them holds, like list(), set(), percentile() or the ts.* windows; in OpenCypher also the rows \
-      a Cartesian product or a hash join buffers, UNION, collect(), and the eager materialization ahead of a write). If exceeded, the query fails with a CommandExecutionException. Negative number means no limit. \
+      a Cartesian product or a hash join buffers, UNION, collect(), the eager materialization ahead of a write, and the rows the \
+      YIELD/WHERE clause of a SHOW command produces). If exceeded, the query fails with a CommandExecutionException. Negative number means no limit. \
       This setting is intended as a safety measure against excessive resource consumption from a single query (eg. prevent OutOfMemory). \
       When left at the default it auto-scales with the JVM max heap (roughly one element every 2KB of heap, never below 500000), so \
       large-cardinality analytical queries (eg. top-N-by-aggregate over millions of distinct keys) complete out of the box on servers \
@@ -1167,7 +1169,7 @@ public enum GlobalConfiguration {
       database: the rows an ORDER BY sorts, the keys a DISTINCT or a UNION remembers, the groups a GROUP BY keeps, the result \
       of a LET subquery, the records a TRAVERSE has visited and the rows it keeps queued to expand, the records a MATCH prefetches, the record addresses an UPDATE reads ahead \
       of its writes, the values an aggregate like list() or percentile() holds, and in OpenCypher also the values collect() gathers, the rows a Cartesian product or a hash join buffers and the eager \
-      materialization ahead of a write, or the record addresses an index range reads ahead of a write to its key. Every \
+      materialization ahead of a write, the rows the YIELD/WHERE clause of a SHOW command produces, or the record addresses an index range reads ahead of a write to its key. Every \
       buffer reserves its estimated size from this budget as it grows and gives it \
       back when it is released, so many large queries running together cannot exhaust the heap even when each one stays \
       below arcadedb.queryMaxHeapElementsAllowedPerOp. A query whose buffers would take the reservations past the budget \
@@ -1384,6 +1386,17 @@ public enum GlobalConfiguration {
       so the default is deliberately generous while staying far below the point where the stack is at risk. \
       Raise it only if a legitimate, deeply-nested or very long generated document needs it.""",
       Integer.class, 200),
+
+  GRAPHQL_MAX_INTROSPECTION_ENTRIES("arcadedb.graphql.maxIntrospectionEntries", SCOPE.DATABASE,
+      """
+      Maximum size of the answer to one GraphQL introspection query ('__schema' or '__type'), counted in entries: \
+      every object built, every selection visited and every type or field skipped counts one. Each alias of a \
+      selection is answered under its own response key, so the size follows the aliases and the fragment spreads of \
+      the document as much as the size of the schema. A query past the limit is rejected as a normal parse error. \
+      The default is well above what the standard introspection query of the common GraphQL tools needs on a schema \
+      of thousands of types: raise it only if a legitimate query of a larger schema needs it. 0 or a negative number \
+      means no limit.""",
+      Integer.class, 2_000_000),
 
   // INDEXES
   INDEX_BUILD_CHUNK_SIZE_MB("arcadedb.index.buildChunkSizeMB", SCOPE.DATABASE,
@@ -3571,7 +3584,7 @@ public enum GlobalConfiguration {
 
   BOLT_WEBSOCKET_MAX_FRAME_SIZE("arcadedb.bolt.websocket.maxFrameSize", SCOPE.SERVER,
       "Maximum payload size in bytes accepted for a single BOLT WebSocket frame. Frames declaring a larger size are rejected before allocation, "
-          + "since the length is read off the wire before authentication. Default is 16MB",
+          + "since the length is read off the wire before authentication. The connection is closed after such a frame. Default is 16MB",
       Integer.class, 16 * 1024 * 1024),
 
   // The three *_SIZE/*_LENGTH settings below are defense in depth at different layers of the same BOLT ingest
@@ -3584,7 +3597,7 @@ public enum GlobalConfiguration {
       Maximum total size in bytes accepted for a single BOLT protocol message after chunk reassembly. BOLT frames \
       a message as a sequence of chunks terminated by a zero-length chunk; without a bound on the reassembled \
       total, a client that never sends the terminator grows the reassembly buffer unbounded, before the BOLT \
-      handshake or authentication. Default is 16MB""",
+      handshake or authentication. A larger message is refused and the connection is closed. Default is 16MB""",
       Integer.class, 16 * 1024 * 1024),
 
   BOLT_PACKSTREAM_MAX_VALUE_LENGTH("arcadedb.bolt.packstream.maxValueLength", SCOPE.SERVER, """
@@ -3651,7 +3664,9 @@ public enum GlobalConfiguration {
       "Path of the PEM private key served by the gRPC endpoint when arcadedb.grpc.tls.enabled is true", String.class, null),
 
   GRPC_MAX_MESSAGE_SIZE("arcadedb.grpc.maxMessageSize", SCOPE.SERVER,
-      "Maximum inbound gRPC message size, in megabytes (minimum 1). Default is 100", Integer.class, 100),
+      "Maximum gRPC message size, in megabytes (minimum 1): the largest message the server accepts, and the largest result it "
+          + "encodes into one response, streamed batch or materialized result (a larger one fails with RESOURCE_EXHAUSTED). "
+          + "Default is 100", Integer.class, 100),
 
   GRPC_MAX_METADATA_SIZE("arcadedb.grpc.maxMetadataSize", SCOPE.SERVER,
       "Maximum inbound gRPC metadata (headers) size, in kilobytes (minimum 1). Default is 16", Integer.class, 16),
@@ -3716,14 +3731,16 @@ public enum GlobalConfiguration {
   REDIS_MAX_MULTIBULK_LENGTH("arcadedb.redis.maxMultiBulkLength", SCOPE.SERVER, """
       Maximum number of elements accepted in a single RESP array by the Redis wire-protocol listener, matching \
       Redis' own hard limit on multibulk requests. Guards against a client-declared array length (e.g. \
-      *2000000000\\r\\n) starting a parse loop with billions of iterations. Default is 1048576.""",
+      *2000000000\\r\\n) starting a parse loop with billions of iterations. A connection that has not authenticated yet is \
+      held to 10 elements at most, the bound Redis applies, whatever this setting says. Default is 1048576.""",
       Integer.class, 1_048_576),
 
   REDIS_MAX_BULK_LENGTH("arcadedb.redis.maxBulkLength", SCOPE.SERVER, """
       Maximum length in bytes accepted for a single RESP bulk string ($) by the Redis wire-protocol listener, \
       matching Redis' own proto-max-bulk-len. Without a bound, a client-declared length (e.g. $2000000000\\r\\n) \
       can tie up a connection thread indefinitely by trickling bytes, or grow the parse buffer unbounded if the \
-      declared bytes are actually sent. Default is 536870912 (512MB).""",
+      declared bytes are actually sent. A connection that has not authenticated yet is held to 16384 bytes at most, the \
+      bound Redis applies, whatever this setting says. Default is 536870912 (512MB).""",
       Integer.class, 536_870_912),
 
   // MONGO

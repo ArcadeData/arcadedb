@@ -37,6 +37,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Direct tests for the machinery behind a Cypher label write, so a regression in it is localised here rather than
@@ -222,6 +223,88 @@ class LabelReplacementsTest {
       assertThat(replacements.resolve(first)).isSameAs(firstReplacement);
       // ...but the one recorded after it is gone, exactly as if that attempt had never run.
       assertThat(replacements.resolve(second)).isSameAs(second);
+    });
+  }
+
+  /**
+   * Two parallel lightweight edges share their identity, the (type, out, in) triple, so re-attaching both puts the same key
+   * twice and the second put overwrites the first. Undone oldest first, the restore would leave the first replacement behind.
+   */
+  @Test
+  void restoreUndoesSeveralPutsOnOneKeyNewestFirst() {
+    database.transaction(() -> {
+      final LabelReplacements replacements = new LabelReplacements();
+      final MutableVertex start = database.newVertex("A").save();
+      final MutableVertex end = database.newVertex("A").save();
+      final Edge light = start.newEdge("Light", end);
+      start.newEdge("Light", end);
+      // Replaced before the snapshot, so the map is not empty after the restore and the edges are still looked up
+      final MutableVertex other = database.newVertex("A").save();
+      final Vertex otherReplacement = replacements.replace(other, "B");
+
+      final LabelReplacements.Snapshot snapshot = replacements.copy();
+      replacements.replace(start, "B");
+      assertThat(replacements.resolveEdge(light)).isNotSameAs(light);
+
+      replacements.restore(snapshot);
+      replacements.release(snapshot);
+
+      assertThat(replacements.resolveEdge(light)).isSameAs(light);
+      assertThat(replacements.resolve(start)).isSameAs(start);
+      assertThat(replacements.resolve(other)).isSameAs(otherReplacement);
+    });
+  }
+
+  @Test
+  void nestedSnapshotsRestoreInStackOrderAndTheJournalEmptiesWhenTheLastIsReleased() {
+    database.transaction(() -> {
+      final LabelReplacements replacements = new LabelReplacements();
+      final MutableVertex first = database.newVertex("A").save();
+      final MutableVertex second = database.newVertex("A").save();
+
+      final LabelReplacements.Snapshot outer = replacements.copy();
+      final Vertex firstReplacement = replacements.replace(first, "B");
+      final LabelReplacements.Snapshot inner = replacements.copy();
+      replacements.replace(second, "C");
+
+      replacements.restore(inner);
+      assertThat(replacements.resolve(second)).isSameAs(second);
+      assertThat(replacements.resolve(first)).isSameAs(firstReplacement);
+
+      replacements.release(inner);
+      // The outer snapshot is still live, so what was recorded since it stays journaled
+      assertThat(replacements.journalSize()).isGreaterThan(0);
+      replacements.restore(outer);
+      assertThat(replacements.resolve(first)).isSameAs(first);
+      assertThat(replacements.isEmpty()).isTrue();
+
+      replacements.release(outer);
+      assertThat(replacements.journalSize()).isZero();
+    });
+  }
+
+  @Test
+  void nothingIsJournaledWhileNoSnapshotIsLive() {
+    database.transaction(() -> {
+      final LabelReplacements replacements = new LabelReplacements();
+      final MutableVertex first = database.newVertex("A").save();
+      final MutableVertex second = database.newVertex("A").save();
+
+      replacements.replace(first, "B");
+      assertThat(replacements.journalSize()).isZero();
+
+      final LabelReplacements.Snapshot snapshot = replacements.copy();
+      replacements.replace(second, "B");
+      assertThat(replacements.journalSize()).isGreaterThan(0);
+
+      replacements.release(snapshot);
+      // A second release of the same snapshot is a no-op, and it cannot be restored any more
+      replacements.release(snapshot);
+      assertThat(replacements.journalSize()).isZero();
+      final Vertex secondReplacement = replacements.resolve(second);
+      assertThat(secondReplacement).isNotSameAs(second);
+      assertThatThrownBy(() -> replacements.restore(snapshot)).isInstanceOf(IllegalStateException.class);
+      assertThat(replacements.resolve(second)).isSameAs(secondReplacement);
     });
   }
 

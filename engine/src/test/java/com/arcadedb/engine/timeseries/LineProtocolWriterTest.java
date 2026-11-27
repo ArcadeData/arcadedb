@@ -95,6 +95,18 @@ class LineProtocolWriterTest {
   }
 
   @Test
+  void charactersOnlyJavaTreatsAsLineEndsSurviveTheRoundTrip() {
+    // Issue #12672: the writer refuses only \n and \r inside a value, so these five are written, and the parser must read
+    // them back as part of the value instead of cutting the line at them.
+    for (final char separator : new char[] { '\u000B', '\u000C', '\u0085', '\u2028', '\u2029' }) {
+      final Sample sample = roundTrip("cpu", Map.of("host", "a" + separator + "b"), Map.of("note", "x" + separator + "y"), 1_000L);
+
+      assertThat(sample.getTags()).as("U+%04X", (int) separator).containsEntry("host", "a" + separator + "b");
+      assertThat(sample.getFields()).as("U+%04X", (int) separator).containsEntry("note", "x" + separator + "y");
+    }
+  }
+
+  @Test
   void aNullTagOrFieldIsOmittedRatherThanWrittenAsText() {
     final Map<String, Object> tags = new LinkedHashMap<>();
     tags.put("present", "yes");

@@ -85,7 +85,7 @@ public class InsertExecutionPlanner {
     handleTargetType(result, targetType, context);
     handleSetFields(result, insertBody, context);
     if (targetBucket != null) {
-      String name = resolveBucketName(targetBucket, context);
+      String name = targetBucket.resolveName(context.getInputParameters());
       if (name == null && targetBucket.getBucketNumber() != null) {
         name = context.getDatabase().getSchema().getBucketById(targetBucket.getBucketNumber()).getName();
       }
@@ -119,7 +119,7 @@ public class InsertExecutionPlanner {
     } else if (insertBody.getJsonArrayContent() != null) {
       result.chain(new UpdateContentStep(insertBody.getJsonArrayContent(), context));
     } else if (insertBody.getContentInputParam() != null) {
-      result.chain(new UpdateContentStep(insertBody.getContentInputParam(), context));
+      result.chain(new UpdateContentStep(insertBody.getContentInputParam(), "INSERT", context));
     } else if (insertBody.getSetExpressions() != null) {
       final List<UpdateItem> items = new ArrayList<>();
       for (final InsertSetExpression exp : insertBody.getSetExpressions()) {
@@ -158,7 +158,7 @@ public class InsertExecutionPlanner {
       // and no number were given at all. An unknown name or id still raised out of the throwing lookups before it
       // could run - i.e. the guard was dead for exactly the input it reads as though it handles.
       final com.arcadedb.engine.Bucket bucket;
-      final String resolvedName = resolveBucketName(targetBucket, context);
+      final String resolvedName = targetBucket.resolveName(context.getInputParameters());
       if (resolvedName != null)
         bucket = context.getDatabase().getSchema().getBucketByNameIfExists(resolvedName);
       else if (targetBucket.getBucketNumber() != null)
@@ -191,31 +191,6 @@ public class InsertExecutionPlanner {
     return new CommandSQLParsingException("Target bucket not specified");
   }
 
-  /**
-   * Resolves the bucket name from a Bucket object, handling parameterized bucket names.
-   * If the bucket has an inputParam, it resolves the parameter value from the context.
-   *
-   * @param bucket  the bucket object to resolve
-   * @param context the command context containing input parameters
-   * @return the resolved bucket name, or null if it cannot be resolved
-   */
-  private String resolveBucketName(final Bucket bucket, final CommandContext context) {
-    // First check for literal bucket name
-    if (bucket.getBucketName() != null) {
-      return bucket.getBucketName();
-    }
-
-    // Check for input parameter
-    if (bucket.getInputParam() != null) {
-      final Object paramValue = bucket.getInputParam().getValue(context.getInputParameters());
-      if (paramValue != null) {
-        return paramValue.toString();
-      }
-    }
-
-    return null;
-  }
-
   private void handleInsertSelect(final InsertExecutionPlan result, final SelectStatement selectStatement,
       final CommandContext context) {
     final InternalExecutionPlan subPlan = selectStatement.createExecutionPlan(context);
@@ -225,13 +200,13 @@ public class InsertExecutionPlanner {
     Identifier effectiveTargetType = targetType;
     if (effectiveTargetType == null && targetBucket != null) {
       // #5636: identical in shape to handleCreateRecord above, which it had drifted from in three ways. It read
-      // getBucketName() directly instead of resolveBucketName(), so a PARAMETERIZED target - INSERT INTO bucket:?
+      // getBucketName() directly instead of Bucket.resolveName(), so a PARAMETERIZED target - INSERT INTO bucket:?
       // FROM SELECT ... - never resolved its parameter and failed even for a bucket that exists. It had no
       // `else bucket = null` arm, so an unknown bucket lost its message to a generic SchemaException and a target
       // with neither name nor number unboxed null on getBucketNumber(). And its message named nothing.
       final com.arcadedb.engine.Bucket bucket = findTargetBucket(context);
       if (bucket == null)
-        throw missingTargetBucket(resolveBucketName(targetBucket, context));
+        throw missingTargetBucket(targetBucket.resolveName(context.getInputParameters()));
 
       effectiveTargetType = new Identifier(context.getDatabase().getSchema().getTypeNameByBucketId(bucket.getFileId()));
     }
@@ -307,7 +282,7 @@ public class InsertExecutionPlanner {
   /** The bucket the statement names as its target, by name, parameter or number, or null when it names none that exists. */
   private com.arcadedb.engine.Bucket findTargetBucket(final CommandContext context) {
     final Schema schema = context.getDatabase().getSchema();
-    final String name = resolveBucketName(targetBucket, context);
+    final String name = targetBucket.resolveName(context.getInputParameters());
     if (name != null)
       return schema.getBucketByNameIfExists(name);
     if (targetBucket.getBucketNumber() != null)

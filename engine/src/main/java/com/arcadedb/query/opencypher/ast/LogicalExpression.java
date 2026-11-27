@@ -161,4 +161,19 @@ public class LogicalExpression implements BooleanExpression {
   public BooleanExpression getRight() {
     return right;
   }
+
+  /**
+   * The inequality {@code a <> b} of {@code NOT (a <> b)} (wrapped in any number of parentheses), or null for any other expression.
+   * The negation holds on exactly the rows where {@code a = b} does, and is null where that is null, so a seek of the equality finds
+   * every row the negation keeps (issue #12281). Allocates nothing: an input row asks it for every candidate set.
+   */
+  public ComparisonExpression getNegatedInequality() {
+    if (operator != Operator.NOT)
+      return null;
+    BooleanExpression negated = left;
+    while (negated instanceof BooleanWrapperExpression wrapper)
+      negated = wrapper.getBooleanExpression();
+    return negated instanceof ComparisonExpression comparison && comparison.getOperator() == ComparisonExpression.Operator.NOT_EQUALS
+        ? comparison : null;
+  }
 }
