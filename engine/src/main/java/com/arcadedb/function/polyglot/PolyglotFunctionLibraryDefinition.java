@@ -200,6 +200,12 @@ public abstract class PolyglotFunctionLibraryDefinition<T extends PolyglotFuncti
     return f;
   }
 
+  /**
+   * Runs {@code callback} on the engine of the library. The calls on one engine are serialized. A
+   * {@link #registerFunction} that runs meanwhile does not wait for them: it publishes a new engine, so a call running
+   * on the replaced (retired) engine can run at the same time as the registration and as the new calls, which take the
+   * new engine. A call nested in a running call stays on the engine of that call.
+   */
   public Object execute(final Callback callback) {
     final EngineHolder active = running.get();
     if (active != null) {

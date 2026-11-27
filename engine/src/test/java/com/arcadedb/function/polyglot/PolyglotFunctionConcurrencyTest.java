@@ -124,7 +124,7 @@ class PolyglotFunctionConcurrencyTest {
   class ConcurrentRedefinition extends TestHelper {
 
     @Test
-    void redefinitionWaitsForInFlightCallInsteadOfClosingItsEngine() throws Exception {
+    void redefinitionLeavesTheEngineOfAnInFlightCallOpenUntilItReturns() throws Exception {
       final JavascriptFunctionLibraryDefinition library = new JavascriptFunctionLibraryDefinition(database, "issue7006");
       database.getSchema()
           .registerFunctionLibrary(library.registerFunction(new JavascriptFunctionDefinition("sum", "return a + b;", "a", "b")));
