@@ -173,17 +173,13 @@ public class DeleteExecutionPlanner {
         throw new CommandExecutionException("Index queries with this kind of condition are not supported yet: " + whereClause);
       } else {
         final AndBlock andBlock = flattenedWhereClause.getFirst();
+        // the index does all the filtering and this branch returns: the WHERE clause is kept only to name it in a refusal
         if (andBlock.getSubBlocks().size() == 1) {
-
-          whereClause = null;//The WHERE clause won't be used anymore, the index does all the filtering
-          flattenedWhereClause = null;
           keyCondition = getKeyCondition(andBlock);
           if (keyCondition == null) {
             throw new CommandExecutionException("Index queries with this kind of condition are not supported yet: " + whereClause);
           }
         } else if (andBlock.getSubBlocks().size() == 2) {
-          whereClause = null;//The WHERE clause won't be used anymore, the index does all the filtering
-          flattenedWhereClause = null;
           keyCondition = getKeyCondition(andBlock);
           ridCondition = getRidCondition(andBlock);
           if (keyCondition == null || ridCondition == null) {

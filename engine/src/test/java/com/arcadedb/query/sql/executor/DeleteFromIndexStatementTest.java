@@ -164,10 +164,13 @@ class DeleteFromIndexStatementTest extends TestHelper {
         .hasMessageContaining("without a condition");
     assertThatThrownBy(() -> delete("DELETE FROM " + target + " WHERE key = 1 OR key = 2")).isInstanceOf(CommandExecutionException.class)
         .hasMessageContaining("not supported");
+    // the refusal names the condition it refuses (it used to name "null")
     assertThatThrownBy(() -> delete("DELETE FROM " + target + " WHERE k = 1")).isInstanceOf(CommandExecutionException.class)
-        .hasMessageContaining("not supported");
+        .hasMessageContaining("not supported").hasMessageContaining("k = 1").hasMessageNotContaining("null");
     assertThatThrownBy(() -> delete("DELETE FROM " + target + " WHERE rid = " + rids.get(1))).isInstanceOf(CommandExecutionException.class)
-        .hasMessageContaining("not supported");
+        .hasMessageContaining("not supported").hasMessageContaining("rid = " + rids.get(1)).hasMessageNotContaining("null");
+    assertThatThrownBy(() -> delete("DELETE FROM " + target + " WHERE key = 1 AND k = 2")).isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("not supported").hasMessageContaining("k = 2").hasMessageNotContaining("null");
     assertThatThrownBy(() -> delete("DELETE FROM " + target + " WHERE key = 1 AND key = 2 AND rid = " + rids.get(1)))
         .isInstanceOf(CommandExecutionException.class).hasMessageContaining("not supported");
 
