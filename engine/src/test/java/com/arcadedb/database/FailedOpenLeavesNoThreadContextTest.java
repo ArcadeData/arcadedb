@@ -20,6 +20,7 @@ package com.arcadedb.database;
 
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.exception.DatabaseMetadataException;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -27,9 +28,11 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.io.File;
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -89,9 +92,67 @@ class FailedOpenLeavesNoThreadContextTest {
     final Database db = new DatabaseFactory(PATH).open();
     final long count = executor.submit(() -> {
       db.transaction(() -> db.newDocument("T").set("i", 1).save());
-      return db.countType("T", false);
+      return countRecords(db);
     }).get(30, TimeUnit.SECONDS);
 
     assertThat(count).isEqualTo(2L);
+  }
+
+  /**
+   * The clean-up rolls back the transactions of the failed open one by one. A rollback that raises an Error must neither keep
+   * the transactions under it from being rolled back nor skip the release of {@code database.lck} and of the files: the path has
+   * to open again in this JVM, and the Error still reaches the caller, carrying the reason the open failed.
+   */
+  @Test
+  @Timeout(60)
+  void aRollbackErrorOfTheFailedOpenSkipsNeitherTheOuterTransactionsNorTheLockRelease() throws Exception {
+    final AtomicBoolean outerRolledBack = new AtomicBoolean();
+    try (final DatabaseFactory factory = new DatabaseFactory(PATH)) {
+      // RUNS DURING THE RECOVERY, ON THE OPENING THREAD, ONCE database.lck IS LOCKED
+      factory.registerCallback(DatabaseInternal.CALLBACK_EVENT.DB_NOT_CLOSED, () -> {
+        final DatabaseInternal opening = (DatabaseInternal) DatabaseContext.INSTANCE.getActiveDatabase();
+        final List<TransactionContext> transactions = DatabaseContext.INSTANCE.getContext(PATH).transactions;
+        transactions.add(new TransactionContext(opening) {
+          @Override
+          public boolean isActive() {
+            return true;
+          }
+
+          @Override
+          public void rollback() {
+            outerRolledBack.set(true);
+          }
+        });
+        transactions.add(new TransactionContext(opening) {
+          @Override
+          public boolean isActive() {
+            return true;
+          }
+
+          @Override
+          public void rollback() {
+            throw new AssertionError("injected rollback failure");
+          }
+        });
+        throw new IllegalStateException("injected open failure");
+      });
+
+      executor.submit(() -> assertThatThrownBy(factory::open).isInstanceOf(AssertionError.class)
+          .hasMessage("injected rollback failure")
+          .satisfies(error -> assertThat(error.getSuppressed()).extracting(Throwable::getMessage).contains("injected open failure")))
+          .get(30, TimeUnit.SECONDS);
+    }
+
+    assertThat(outerRolledBack.get()).as("the transaction under the one whose rollback failed").isTrue();
+
+    // THE LOCK AND THE FILES WERE RELEASED: THE PATH OPENS (AND RECOVERS) IN THIS JVM
+    final Database db = new DatabaseFactory(PATH).open();
+    assertThat(countRecords(db)).isEqualTo(1L);
+  }
+
+  private static long countRecords(final Database db) {
+    try (final ResultSet result = db.query("sql", "SELECT count(@rid) AS n FROM T")) {
+      return result.next().<Long>getProperty("n");
+    }
   }
 }
