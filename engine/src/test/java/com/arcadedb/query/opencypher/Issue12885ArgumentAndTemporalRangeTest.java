@@ -21,6 +21,8 @@ package com.arcadedb.query.opencypher;
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.ArithmeticErrorException;
 import com.arcadedb.exception.CauseChain;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoAllSimplePaths;
+import com.arcadedb.query.opencypher.procedures.algo.AlgoKShortestPaths;
 import com.arcadedb.query.opencypher.temporal.CypherDate;
 import com.arcadedb.query.opencypher.temporal.CypherDateTime;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -37,8 +39,8 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  * {@code path.expand} (and its {@code apoc.path.expand} alias), {@code algo.kShortestPaths} and {@code algo.allSimplePaths}
  * was cast unchecked into a {@code ClassCastException} or a {@code NullPointerException}; they now raise an
  * {@link IllegalArgumentException} naming the argument, which the HTTP layer answers 400. Temporal arithmetic and
- * {@code datetime.fromepoch} past the supported year range surfaced a raw {@code DateTimeException}; they now raise the
- * client errors the duration overflow and the temporal constructors already use, keeping the {@code java.time} message.
+ * {@code datetime.fromepoch} past the supported year range, the issue's second group, were already answered with an
+ * {@link ArithmeticErrorException} keeping the {@code java.time} message (#12706, #12744): those cases only pin it.
  */
 class Issue12885ArgumentAndTemporalRangeTest extends TestHelper {
 
@@ -73,9 +75,9 @@ class Issue12885ArgumentAndTemporalRangeTest extends TestHelper {
   @Test
   void kShortestPathsRefusesANonNumberOrNullK() {
     assertIllegalArgument("MATCH (n:P {id: 1}), (m:P {id: 2}) CALL algo.kShortestPaths(n, m, 'x') YIELD path RETURN count(*)",
-        "algo.kShortestPaths(): k must be a number, got String");
+        AlgoKShortestPaths.NAME + "(): k must be a number, got String");
     assertIllegalArgument("MATCH (n:P {id: 1}), (m:P {id: 2}) CALL algo.kShortestPaths(n, m, null) YIELD path RETURN count(*)",
-        "algo.kShortestPaths(): k cannot be null");
+        AlgoKShortestPaths.NAME + "(): k cannot be null");
     assertCount("MATCH (n:P {id: 1}), (m:P {id: 2}) CALL algo.kShortestPaths(n, m, 2) YIELD path RETURN count(*) AS c", 1L);
   }
 
@@ -83,10 +85,10 @@ class Issue12885ArgumentAndTemporalRangeTest extends TestHelper {
   void allSimplePathsRefusesANonNumberOrNullMaxDepth() {
     assertIllegalArgument(
         "MATCH (n:P {id: 1}), (m:P {id: 2}) CALL algo.allSimplePaths(n, m, 'K', 'x') YIELD path RETURN count(*)",
-        "algo.allsimplepaths(): maxDepth must be a number, got String");
+        AlgoAllSimplePaths.NAME + "(): maxDepth must be a number, got String");
     assertIllegalArgument(
         "MATCH (n:P {id: 1}), (m:P {id: 2}) CALL algo.allSimplePaths(n, m, 'K', null) YIELD path RETURN count(*)",
-        "algo.allsimplepaths(): maxDepth cannot be null");
+        AlgoAllSimplePaths.NAME + "(): maxDepth cannot be null");
     assertCount("MATCH (n:P {id: 1}), (m:P {id: 2}) CALL algo.allSimplePaths(n, m, 'K', 3) YIELD path RETURN count(*) AS c", 1L);
   }
 

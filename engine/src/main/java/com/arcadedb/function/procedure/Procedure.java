@@ -239,13 +239,13 @@ public interface Procedure {
   }
 
   /**
-   * Returns the numeric argument at {@code index}, refusing a missing or {@code null} one and any other value naming the
-   * parameter, where a {@code (Number)} cast surfaced as a bare {@code ClassCastException} or a {@code NullPointerException}
-   * (issue #12885).
+   * Returns the numeric argument at {@code index}, which has no default, and refuses a {@code null} or any other value naming the
+   * parameter: an unchecked cast surfaced a non-number as a bare {@code ClassCastException} and a {@code null} as a
+   * {@code NullPointerException} at the first unboxing, both answered as server errors (issue #12847).
    *
    * @param paramName the parameter name the error message reports
    *
-   * @throws IllegalArgumentException when the argument is missing, {@code null} or not a number
+   * @throws IllegalArgumentException when the argument is {@code null}, absent or not a number
    */
   default Number requiredNumberArg(final Object[] args, final int index, final String paramName) {
     final Number value = optionalNumberArg(args, index, paramName, null);
