@@ -76,7 +76,7 @@ class ArcadeGAVFusedStep extends FlatMapStep<org.apache.tinkerpop.gremlin.struct
     else
       rid = null;
 
-    if (rid != null) {
+    if (rid != null && ArcadeGAVVertexStep.viewAnswers(graph)) {
       final int startNodeId = provider.getNodeId(rid);
       if (startNodeId >= 0) {
         final List<org.apache.tinkerpop.gremlin.structure.Vertex> results = new ArrayList<>();

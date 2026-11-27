@@ -25,6 +25,7 @@ import com.arcadedb.utility.DedicatedThreadPool.PoolStats;
 import com.arcadedb.utility.FileUtils;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.DirectoryNotEmptyException;
 import java.nio.file.FileAlreadyExistsException;
@@ -118,6 +119,10 @@ class DeferredDatabaseDeleter implements AutoCloseable {
    * <p>
    * The database must already be closed and deregistered from the server. On return its directory is gone under
    * its own name either way, so an immediate re-create of the same name succeeds.
+   *
+   * @throws UncheckedIOException when neither the rename nor the inline deletion removed the directory (issue #12611): it
+   *                              is still there under the name the server loads it from, so the caller must not report
+   *                              the database as dropped
    */
   Path stageForDeletion(final Path databaseDirectory) {
     if (!Files.exists(databaseDirectory))
@@ -126,11 +131,15 @@ class DeferredDatabaseDeleter implements AutoCloseable {
     final Path staged = rename(databaseDirectory);
     if (staged == null) {
       // The rename is not available on this filesystem: fall back to deleting where we stand, which is the
-      // behaviour that predates the deferral - slow, but never leaves the directory behind under a name the
-      // server would reload.
+      // behaviour that predates the deferral - slow, and it only logs what it could not delete (a read-only or
+      // faulty filesystem, a permission problem), so whether the directory is gone is checked below.
       LogManager.instance().log(this, Level.WARNING,
           "Cannot stage database directory '%s' for deferred deletion: deleting it inline", databaseDirectory);
       FileUtils.deleteRecursively(databaseDirectory.toFile());
+      // Only a path confirmed missing counts as deleted: one the filesystem cannot answer for may still be there
+      if (!Files.notExists(databaseDirectory))
+        throw new UncheckedIOException(new IOException("Database directory '" + databaseDirectory
+            + "' could be neither renamed aside nor deleted: its files are still on disk"));
     }
     return staged;
   }

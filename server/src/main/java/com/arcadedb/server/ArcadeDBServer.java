@@ -401,7 +401,27 @@ public class ArcadeDBServer {
   }
 
   public static void main(final String[] args) {
-    new ArcadeDBServer().start();
+    if (!startOrStop(new ArcadeDBServer()))
+      // The services a failed start left running (the wire-protocol listeners own non-daemon threads) must not keep
+      // the process alive: a supervisor restarts it only when it exits (issue #12827)
+      System.exit(1);
+  }
+
+  /**
+   * Starts the server. A start that fails stops everything it had already brought up, because {@link #start()} leaves
+   * that decision to its caller and the process entry point has nobody above it to decide.
+   *
+   * @return true if the server is running, false if the start failed and the server was stopped
+   */
+  static boolean startOrStop(final ArcadeDBServer server) {
+    try {
+      server.start();
+      return true;
+    } catch (final RuntimeException | Error e) {
+      LogManager.instance().log(server, Level.SEVERE, "Error on starting the server, stopping the services that were started", e);
+      CodeUtils.executeIgnoringExceptions(server::stop, "Error on stopping the server after a failed start", false);
+      return false;
+    }
   }
 
   /**
@@ -1190,6 +1210,10 @@ public class ArcadeDBServer {
   static void installCardinalityMeterFilters(final MeterRegistry.Config config) {
     // arcadedb.http.requests / path: the handler already collapses unmatched URIs to a constant (issue #5025).
     config.meterFilter(MeterFilter.maximumAllowableTags("arcadedb.http.requests", "path", 100, MeterFilter.deny()));
+    // arcadedb.http.requests / method: the handler already collapses a method outside the standard set onto a
+    // constant, so the bound is the standard methods plus that constant.
+    config.meterFilter(MeterFilter.maximumAllowableTags("arcadedb.http.requests", "method",
+        AbstractServerHttpHandler.MAX_METHOD_TAG_VALUES, MeterFilter.deny()));
     // arcadedb.http.requests / db: the handler already collapses a {database} path parameter naming no existing
     // database onto a constant, but database name churn - or a future route exposing another free segment as
     // "db" - must not be able to grow the registry either (issue #6805).
@@ -1785,35 +1809,54 @@ public class ArcadeDBServer {
           "Cannot create database '" + databaseName + "': it is being dropped");
   }
 
+  /**
+   * Refuses {@code databaseName} for every reason {@link #createDatabase} would, without creating anything (issue #11848).
+   * The cluster-wide create of the HA layer asks this before it submits the entry whose apply creates the database on every
+   * node, this one included: a name that is taken is refused here, as a local create refuses it, instead of becoming an
+   * entry every node skips as "already present" while the caller is told the database was created.
+   */
+  public void checkDatabaseCanBeCreated(final String databaseName) {
+    checkDatabaseNameIsValid(databaseName);
+    synchronized (databasesLock) {
+      checkDatabaseCanBeCreated(databaseName, databasePathOf(databaseName));
+    }
+  }
+
+  private String databasePathOf(final String databaseName) {
+    return configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + File.separator + databaseName;
+  }
+
+  /** The refusals of a create, under {@link #databasesLock} so they are atomic with the create that follows them. */
+  private void checkDatabaseCanBeCreated(final String databaseName, final String databasePath) {
+    checkDatabasesNotClosedByStop(databaseName);
+    checkDatabaseNameIsNotBeingRestored(databaseName);
+
+    if (databases.containsKey(databaseName))
+      throw new DatabaseAlreadyExistsException("Database '" + databaseName + "' already exists");
+
+    // A directory mid-snapshot-install can look "absent" to factory.exists() precisely because the swap took
+    // its schema away, and creating a fresh database on top of it would destroy the one state snapshot
+    // recovery reads to decide between completing the swap and rolling it back (issue #7129).
+    if (isAwaitingSnapshotRecovery(new File(databasePath)))
+      throw new DatabaseNotAvailableException("Cannot create database '" + databaseName + "': an interrupted "
+          + "HA snapshot install left '" + SNAPSHOT_PENDING_FILE + "' in its directory. Snapshot recovery must "
+          + "reconcile it first", Reason.RECOVERING);
+
+    if (new DatabaseFactory(databasePath).exists())
+      throw new DatabaseAlreadyExistsException("Database '" + databaseName + "' already exists");
+  }
+
   public ServerDatabase createDatabase(final String databaseName, final ComponentFile.MODE mode) {
     checkDatabaseNameIsValid(databaseName);
 
-    ServerDatabase serverDatabase;
+    final ServerDatabase serverDatabase;
     synchronized (databasesLock) {
-      checkDatabasesNotClosedByStop(databaseName);
-      checkDatabaseNameIsNotBeingRestored(databaseName);
-
-      serverDatabase = databases.get(databaseName);
-      if (serverDatabase != null)
-        throw new DatabaseAlreadyExistsException("Database '" + databaseName + "' already exists");
-
-      final String databasePath =
-          configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + File.separator + databaseName;
-
-      // A directory mid-snapshot-install can look "absent" to factory.exists() precisely because the swap took
-      // its schema away, and creating a fresh database on top of it would destroy the one state snapshot
-      // recovery reads to decide between completing the swap and rolling it back (issue #7129).
-      if (isAwaitingSnapshotRecovery(new File(databasePath)))
-        throw new DatabaseNotAvailableException("Cannot create database '" + databaseName + "': an interrupted "
-            + "HA snapshot install left '" + SNAPSHOT_PENDING_FILE + "' in its directory. Snapshot recovery must "
-            + "reconcile it first", Reason.RECOVERING);
+      final String databasePath = databasePathOf(databaseName);
+      checkDatabaseCanBeCreated(databaseName, databasePath);
 
       final DatabaseFactory factory = new DatabaseFactory(databasePath).setAutoTransaction(true).setReplicatedNode(isHARequested());
 
       factory.setSecurity(getDatabaseSecurityManager());
-
-      if (factory.exists())
-        throw new DatabaseAlreadyExistsException("Database '" + databaseName + "' already exists");
 
       DatabaseInternal embeddedDatabase = (DatabaseInternal) factory.create();
 

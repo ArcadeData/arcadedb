@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.OrderedAfterCommitCallback;
 import com.arcadedb.database.RID;
 import com.arcadedb.event.BeforeRecordCreateListener;
 import com.arcadedb.event.BeforeRecordDeleteListener;
@@ -633,7 +634,8 @@ class MaterializedViewGroupedDeltaTest extends TestHelper {
 
   /**
    * A transaction that reached its commit point and has not delivered its delta yet when a rebuild begins: the rebuild takes it over,
-   * and its delta is not applied on top.
+   * and its delta is not applied on top. The transaction delivers once its pages are published, while it still holds its locks
+   * (issue #12720): the rebuild begins in between, with the pages published.
    */
   @Test
   void aTransactionInFlightWhenARebuildBeginsIsTakenOver() throws Exception {
@@ -660,13 +662,28 @@ class MaterializedViewGroupedDeltaTest extends TestHelper {
     };
     try {
       database.transaction(() -> {
-        // registered before the first change, so it runs before the view's own callback: the transaction is past its commit point
-        // and has not delivered its delta
-        ((DatabaseInternal) database).getTransaction().addAfterCommitCallback(() -> {
-          final Thread rebuild = new Thread(() -> database.getSchema().getMaterializedView("GSums").refresh());
-          rebuilds.add(rebuild);
-          rebuild.start();
-          await(scanning);
+        // registered before the first change, so it is told of the publication before the view's own callback: the transaction has
+        // published its pages and has not delivered its delta
+        ((DatabaseInternal) database).getTransaction().addAfterCommitCallback(new OrderedAfterCommitCallback() {
+          @Override
+          public void onCommitPoint() {
+          }
+
+          @Override
+          public void onPublished() {
+            final Thread rebuild = new Thread(() -> database.getSchema().getMaterializedView("GSums").refresh());
+            rebuilds.add(rebuild);
+            rebuild.start();
+            await(scanning);
+          }
+
+          @Override
+          public void onAbandoned() {
+          }
+
+          @Override
+          public void run() {
+          }
         });
         ((Document) database.lookupByRID(moved, true)).modify().set("cat", "a").set("v", 25).save();
         insert("c", 1, 3, 3L, "y", 2, "I");
@@ -730,6 +747,59 @@ class MaterializedViewGroupedDeltaTest extends TestHelper {
     // and a commit after it still applies as a delta on the rebuilt state
     database.transaction(() -> insert("b", 1, 9, 9L, "z", 1, "I"));
     assertViewMatchesQuery("GSums");
+  }
+
+  /**
+   * Issue #12720: the after-commit callbacks of a transaction can run long after its pages are published and its locks released
+   * (another view's refresh queued before this view's callback, a starved thread). A later transaction changes the same record again
+   * meanwhile, hands its delta over first, and its pass rebuilds the view (a group lost its {@code max}). The rebuild must count the
+   * record as the later transaction left it, not take the after-image of the earlier one, still waiting to run its callbacks, for
+   * the newest state of the record.
+   */
+  @Test
+  void aRebuildCountsTheNewestStateOfARecordChangedAgainWhileAnEarlierCommitWaitsToRunItsCallbacks() throws Exception {
+    createSource();
+    database.transaction(() -> {
+      for (int i = 0; i < 60; i++)
+        insert(CATS[i % 4], i % 3, i % 40, (long) i, "n" + i, i % 3, "I");
+      // the max of (a, 0) and of (b, 0)
+      insert("a", 0, 1000, 1L, "x", 1, "I");
+      insert("b", 0, 900, 1L, "y", 1, "I");
+    });
+    createView("GExtreme", G_EXTREME);
+    database.transaction(() -> insert("c", 1, 1, 1L, "x", 1, "I"));
+    assertViewMatchesQuery("GExtreme");
+    final RID changedTwice = ridOfValue(1000);
+    final RID lowered = ridOfValue(900);
+
+    final CountDownLatch committed = new CountDownLatch(1);
+    final CountDownLatch release = new CountDownLatch(1);
+    final Thread earlier = new Thread(() -> database.transaction(() -> {
+      // registered before the first change, so it runs before the view's own callback: it holds the transaction there, committed
+      // and with its locks released, as a long refresh of another view queued before this one does
+      ((DatabaseInternal) database).getTransaction().addAfterCommitCallback(() -> {
+        committed.countDown();
+        await(release);
+      });
+      ((Document) database.lookupByRID(changedTwice, true)).modify().set("v", 1001).save();
+    }));
+    try {
+      earlier.start();
+      assertThat(committed.await(30, TimeUnit.SECONDS)).as("the earlier transaction committed").isTrue();
+      // the same record again, and the max of (b, 0) goes down: the pass of this commit rebuilds the view
+      database.transaction(() -> {
+        ((Document) database.lookupByRID(changedTwice, true)).modify().set("v", 1002).save();
+        ((Document) database.lookupByRID(lowered, true)).modify().set("v", 899).save();
+      });
+      assertViewMatchesQuery("GExtreme");
+    } finally {
+      release.countDown();
+      earlier.join(TimeUnit.SECONDS.toMillis(60));
+    }
+    assertViewMatchesQuery("GExtreme");
+    // and a commit after it still applies as a delta on the rebuilt state
+    database.transaction(() -> ((Document) database.lookupByRID(changedTwice, true)).modify().set("v", 1003).save());
+    assertViewMatchesQuery("GExtreme");
   }
 
   /** A WHERE that follows a link reads a record that is not a source record: nothing refreshes the view when it changes. */
@@ -893,6 +963,13 @@ class MaterializedViewGroupedDeltaTest extends TestHelper {
     if (people.isEmpty())
       return null;
     return database.lookupByRID(people.get(random.nextInt(people.size())), true).asVertex().modify();
+  }
+
+  /** The source record holding the value {@code v}, unique in the tests that use it. */
+  private RID ridOfValue(final int v) {
+    try (final ResultSet rs = database.query("sql", "SELECT @rid AS r FROM I WHERE v = ?", v)) {
+      return rs.next().getProperty("r");
+    }
   }
 
   private static void await(final CountDownLatch latch) {

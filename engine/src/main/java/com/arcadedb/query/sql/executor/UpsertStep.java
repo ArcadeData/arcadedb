@@ -22,17 +22,22 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.index.Index;
 import com.arcadedb.query.sql.parser.AndBlock;
 import com.arcadedb.query.sql.parser.BooleanExpression;
 import com.arcadedb.query.sql.parser.Bucket;
 import com.arcadedb.query.sql.parser.FromClause;
 import com.arcadedb.query.sql.parser.FromItem;
+import com.arcadedb.query.sql.parser.UpdateItem;
 import com.arcadedb.query.sql.parser.WhereClause;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Schema;
 
+import java.util.HashSet;
 import java.util.List;
+import java.util.Optional;
+import java.util.Set;
 
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
@@ -89,8 +94,37 @@ public class UpsertStep extends AbstractExecutionStep {
     return result;
   }
 
-  private static boolean isUniqueFullKeyLookup(final FetchFromIndexStep step) {
-    return step.index.isUnique() && step.isFullKeyEquality();
+  private boolean isUniqueFullKeyLookup(final FetchFromIndexStep step) {
+    return step.index.isUnique() && step.isFullKeyEquality() && initialFilterSetsTheKeyOf(step.index);
+  }
+
+  /**
+   * The record an UPSERT inserts is built from the {@code property = value} conditions of its WHERE ({@link #setContent}), so the
+   * key the index looks up must be set by them. The planner also answers other spellings of the same key from an index (a value
+   * written first, {@code ? = code}, or a comparison under NOT, {@code NOT (code <> ?)}, issue #12281): the lookup then finds
+   * nothing, and the record would be inserted with no key at all. A UNIQUE index that skips nulls takes any number of those, and
+   * no later UPSERT finds one of them, so every repeat of the statement would insert another. Those spellings stay refused, as
+   * they always were: the statement is rejected whether or not the record is there.
+   */
+  private boolean initialFilterSetsTheKeyOf(final Index index) {
+    if (initialFilter == null)
+      return false;
+    final List<AndBlock> flattened = initialFilter.flatten();
+    if (flattened.size() != 1)
+      // setContent refuses an OR when it has to insert
+      return true;
+
+    final Set<String> keyProperties = new HashSet<>();
+    for (final BooleanExpression condition : flattened.getFirst().getSubBlocks()) {
+      final Optional<UpdateItem> item = condition.transformToUpdateItem();
+      if (item.isPresent() && item.get().getOperator() == UpdateItem.OPERATOR_EQ && item.get().getLeftModifier() == null
+          && item.get().getLeft() != null)
+        keyProperties.add(item.get().getLeft().getStringValue());
+    }
+    for (final String property : index.getPropertyNames())
+      if (!keyProperties.contains(Index.basePropertyName(property)))
+        return false;
+    return true;
   }
 
   /**

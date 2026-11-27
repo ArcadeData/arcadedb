@@ -21,6 +21,8 @@ package com.arcadedb.function;
 import com.arcadedb.function.convert.ConvertToBoolean;
 import com.arcadedb.function.convert.ToBooleanFunction;
 import com.arcadedb.function.date.AbstractDateFunction;
+import com.arcadedb.function.date.ApocDateConvert;
+import com.arcadedb.function.date.ApocDateField;
 import com.arcadedb.function.date.DateField;
 import com.arcadedb.function.math.RoundFunction;
 import com.arcadedb.function.text.NormalizeFunction;
@@ -147,7 +149,7 @@ class LocaleSensitivityTest {
     // Same bug as UtilCompress - "GZIP".toLowerCase(tr_TR) -> "gzıp"
     final UtilCompress compress = new UtilCompress();
     final UtilDecompress decompress = new UtilDecompress();
-    final String compressed = (String) compress.execute(new Object[]{"hello world", "gzip"}, null);
+    final Object compressed = compress.execute(new Object[]{"hello world", "gzip"}, null);
     final Object resultUpper = decompress.execute(new Object[]{compressed, "GZIP"}, null);
     final Object resultLower = decompress.execute(new Object[]{compressed, "gzip"}, null);
     assertThat(resultUpper).isEqualTo(resultLower).isEqualTo("hello world");
@@ -212,6 +214,22 @@ class LocaleSensitivityTest {
     assertThat(fn.execute(new Object[]{timestampMs, "MILLISECOND"}, null)).isEqualTo(123L);
     assertThat(fn.execute(new Object[]{timestampMs, "MILLISECONDS"}, null)).isEqualTo(123L);
     assertThat(fn.execute(new Object[]{timestampMs, "MILLIS"}, null)).isEqualTo(123L);
+  }
+
+  // ========= AbstractApocDateFunction.timeUnit, ApocDateField (issue #12106) =========
+
+  @Test
+  void apocDateUnitsUpperCaseUnderTurkishLocale() {
+    final ApocDateConvert convert = new ApocDateConvert();
+    assertThat(convert.execute(new Object[]{1L, "MILLISECONDS", "MILLISECONDS"}, null)).isEqualTo(1L);
+    assertThat(convert.execute(new Object[]{1L, "MINUTES", "MILLISECONDS"}, null)).isEqualTo(60_000L);
+    assertThat(convert.execute(new Object[]{1L, "MILLI", "MILLIS"}, null)).isEqualTo(1L);
+
+    final ApocDateField field = new ApocDateField();
+    final long timestampMs = 1_700_000_000_123L;
+    assertThat(field.execute(new Object[]{timestampMs, "MILLISECOND"}, null)).isEqualTo(123L);
+    assertThat(field.execute(new Object[]{timestampMs, "MINUTES"}, null)).isEqualTo(13L);
+    assertThat(field.execute(new Object[]{timestampMs, "WEEKDAYS"}, null)).isEqualTo(2L);
   }
 
   // ========= AbstractNodeFunction.parseDirection =========

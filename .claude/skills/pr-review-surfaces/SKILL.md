@@ -14,7 +14,9 @@ findings for hours (PR #7437):
   `<!-- classify-pr sha=<head> verdict=<lgtm|needs-changes|unsafe|none> -->`. Trust a verdict only when that `sha`
   is the PR's current head; an older comment reviews an older push. It also sets the `triage:*` label (cleared on
   every push until the new review lands), one `severity:*`, `has-issue`/`no-issue` and area labels, and adds
-  `do not merge` on `unsafe`. `verdict=none` means the review failed: read the run log.
+  `do not merge` on `unsafe`. `verdict=none` means the review failed: the comment says why (the classifier job
+  failed, it returned no structured output, its decision did not reach the apply job, or the decision was not
+  valid), and the apply job's audit line carries the same `reason=`. Read the run log.
 - A missing review for the current head: dispatch it, `gh workflow run classify-pr.yml -f pr_number=<N> -f
   dry_run=false` (the default `dry_run=true` only logs). Never use the `@claude` trigger phrase in a comment.
 - CodeRabbit posts PR REVIEWS: `gh api repos/ArcadeData/arcadedb/pulls/<N>/reviews` carries their bodies (the

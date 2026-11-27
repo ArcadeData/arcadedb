@@ -79,6 +79,8 @@ class PeerDialsGoThroughOneBuilderCensusTest {
    * file. A new method that dials a peer is not on this list, and fails the census.
    */
   private static final Map<String, String> OUTSIDE_THE_CLUSTER = new TreeMap<>(Map.ofEntries(//
+      Map.entry("bench/server/ServerUnderTest#answersReady",
+          "the readiness endpoint of the server a benchmark harness drives, as an anonymous HTTP client"),//
       Map.entry("server/ai/AiActivateHandler#execute", AI_PROVIDER),//
       Map.entry("server/ai/AiAnalyzeProfilerHandler#callGateway", AI_PROVIDER),//
       Map.entry("server/ai/AiChatHandler#callGateway", AI_PROVIDER),//

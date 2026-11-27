@@ -37,6 +37,9 @@
         <docker.buildArg.platform>arm64v8/,amd64/,winamd64/,arm32v7/</docker.buildArg.platform>
         <docker-maven-plugin.version>0.49.0</docker-maven-plugin.version>
         <docker-maven-plugin.platform>linux/amd64</docker-maven-plugin.platform>
+        <!-- Docker Hub namespace of the image. A release rehearsal on a fork overrides it with the fork's own
+             namespace (-Ddocker.image.prefix), so a rehearsal cannot push to arcadedata/arcadedb. -->
+        <docker.image.prefix>arcadedata</docker.image.prefix>
     </properties>
 
     <build>
@@ -305,6 +308,172 @@
     </dependencies>
 
     <profiles>
+        <!--
+         | Release-level SBOM per distribution, shipped inside it as sbom/arcadedb-<v>[-<assembly>].cdx.json.
+         |
+         | The package module's own BOM describes its whole runtime classpath, which is not what any single
+         | archive ships (base leaves out Studio, the console and the wire protocols) and misses Studio's npm
+         | tree entirely. So, before the archives are built at `package`:
+         |   process-resources  makeBom on this module, and each assembly laid out once more as a bare `dir`
+         |                      under target/sbom-staging from the SAME descriptor, so its lib/ is exactly the
+         |                      set the archive will contain
+         |   prepare-package    merge-sbom.py keeps the BOM components whose jar is in that lib/ (checking each
+         |                      SHA-256, failing on a jar the BOM does not describe), nests under each shaded
+         |                      jar the libraries its module shades in (from <module>/target/*-cyclonedx.json,
+         |                      minus the module's shade artifactSet excludes), nests Studio's npm BOM where
+         |                      the Studio jar ships, adds every artifact a shipped jar carries in
+         |                      META-INF/maven/ that is not listed yet (e.g. Netty inside ratis-thirdparty inside
+         |                      the ha-raft uber-jar), licensed from the local repository, and stamps supplier
+         |                      and timestamp
+         |   package            the assemblies pick target/sbom/<assembly>/ up as sbom/
+         | Only under -Pdeploy, and it needs python3 (3.9+, standard library only) on the PATH: the release
+         | runners have it, developer builds without -Pdeploy never call it. It also needs Maven online:
+         | cyclonedx-maven-plugin skips makeBom under -o, and merge-sbom.py then fails on the missing BOM.
+         | minimal and headless are disabled above; re-enabling one needs its own staging and merge execution here.
+        -->
+        <profile>
+            <id>deploy</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.cyclonedx</groupId>
+                        <artifactId>cyclonedx-maven-plugin</artifactId>
+                        <version>${cyclonedx-maven-plugin.version}</version>
+                        <configuration>
+                            <projectType>application</projectType>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <id>make-sbom</id>
+                                <phase>process-resources</phase>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <!-- Configuration per execution, never at plugin level: a profile's plugin-level
+                             configuration merges into the full and base executions above as well, and
+                             would turn the real archives into bare directories. -->
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-assembly-plugin</artifactId>
+                        <version>${maven-assembly-plugin.version}</version>
+                        <executions>
+                            <execution>
+                                <id>full-sbom-staging</id>
+                                <phase>process-resources</phase>
+                                <goals>
+                                    <goal>single</goal>
+                                </goals>
+                                <configuration>
+                                    <formats>
+                                        <format>dir</format>
+                                    </formats>
+                                    <attach>false</attach>
+                                    <outputDirectory>${project.build.directory}/sbom-staging</outputDirectory>
+                                    <finalName>arcadedb-${project.version}</finalName>
+                                    <ignoreDirFormatExtensions>false</ignoreDirFormatExtensions>
+                                    <appendAssemblyId>false</appendAssemblyId>
+                                    <descriptors>
+                                        <descriptor>./src/main/assembly/full.xml</descriptor>
+                                    </descriptors>
+                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>base-sbom-staging</id>
+                                <phase>process-resources</phase>
+                                <goals>
+                                    <goal>single</goal>
+                                </goals>
+                                <configuration>
+                                    <formats>
+                                        <format>dir</format>
+                                    </formats>
+                                    <attach>false</attach>
+                                    <outputDirectory>${project.build.directory}/sbom-staging</outputDirectory>
+                                    <finalName>arcadedb-${project.version}</finalName>
+                                    <ignoreDirFormatExtensions>false</ignoreDirFormatExtensions>
+                                    <appendAssemblyId>true</appendAssemblyId>
+                                    <descriptors>
+                                        <descriptor>./src/main/assembly/base.xml</descriptor>
+                                    </descriptors>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <version>${exec-maven-plugin.version}</version>
+                        <configuration>
+                            <executable>python3</executable>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <id>full-sbom</id>
+                                <phase>prepare-package</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <arguments>
+                                        <argument>${project.basedir}/../.github/scripts/merge-sbom.py</argument>
+                                        <argument>--root</argument>
+                                        <argument>${project.build.directory}/${project.build.finalName}-cyclonedx.json</argument>
+                                        <argument>--nested</argument>
+                                        <argument>${project.basedir}/../studio/target/studio.cdx.json</argument>
+                                        <argument>--name</argument>
+                                        <argument>arcadedb-studio</argument>
+                                        <argument>--module-boms</argument>
+                                        <argument>${project.basedir}/../*/target/*-cyclonedx.json</argument>
+                                        <argument>--maven-repo</argument>
+                                        <argument>${settings.localRepository}</argument>
+                                        <argument>--lib-dir</argument>
+                                        <argument>${project.build.directory}/sbom-staging/arcadedb-${project.version}.dir/arcadedb-${project.version}/lib</argument>
+                                        <argument>--supplier</argument>
+                                        <argument>Arcade Data Ltd</argument>
+                                        <argument>--supplier-url</argument>
+                                        <argument>https://arcadedb.com</argument>
+                                        <argument>--timestamp</argument>
+                                        <argument>--out</argument>
+                                        <argument>${project.build.directory}/sbom/full/arcadedb-${project.version}.cdx.json</argument>
+                                    </arguments>
+                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>base-sbom</id>
+                                <phase>prepare-package</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <arguments>
+                                        <argument>${project.basedir}/../.github/scripts/merge-sbom.py</argument>
+                                        <argument>--root</argument>
+                                        <argument>${project.build.directory}/${project.build.finalName}-cyclonedx.json</argument>
+                                        <argument>--nested</argument>
+                                        <argument>${project.basedir}/../studio/target/studio.cdx.json</argument>
+                                        <argument>--name</argument>
+                                        <argument>arcadedb-studio</argument>
+                                        <argument>--module-boms</argument>
+                                        <argument>${project.basedir}/../*/target/*-cyclonedx.json</argument>
+                                        <argument>--maven-repo</argument>
+                                        <argument>${settings.localRepository}</argument>
+                                        <argument>--lib-dir</argument>
+                                        <argument>${project.build.directory}/sbom-staging/arcadedb-${project.version}-base.dir/arcadedb-${project.version}/lib</argument>
+                                        <argument>--supplier</argument>
+                                        <argument>Arcade Data Ltd</argument>
+                                        <argument>--supplier-url</argument>
+                                        <argument>https://arcadedb.com</argument>
+                                        <argument>--timestamp</argument>
+                                        <argument>--out</argument>
+                                        <argument>${project.build.directory}/sbom/base/arcadedb-${project.version}-base.cdx.json</argument>
+                                    </arguments>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
         <profile>
             <id>multiplatform</id>
             <activation>
@@ -414,7 +583,7 @@
                             <verbose>true</verbose>
                             <images>
                                 <image>
-                                    <name>arcadedata/arcadedb</name>
+                                    <name>${docker.image.prefix}/arcadedb</name>
                                     <build>
                                         <contextDir>${project.build.directory}/arcadedb-${project.version}.dir
                                         </contextDir>

@@ -52,6 +52,19 @@ import java.util.Set;
 final class PluginPathHandler extends PathHandler {
   private static final String SERVER = "the server";
 
+  /**
+   * The handler a path that matches no route at all is passed to. The {@link PathHandler} ends such a request with a
+   * bare 404 and no body, so the server hands it the handler that answers with the documented envelope instead
+   * (issue #12410).
+   */
+  PluginPathHandler(final HttpHandler next) {
+    super(next);
+  }
+
+  PluginPathHandler() {
+    super();
+  }
+
   private final PluginRoutes.RouteTable   routeTable   = new PluginRoutes.RouteTable();
   // Normalized path -> who registered it as an exact path and as a prefix ("the server" or "plugin 'name'"). One table for both
   // kinds, so that a lookup cannot be written against one kind and forget the other (issue #10532)

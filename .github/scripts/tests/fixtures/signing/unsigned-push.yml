@@ -1,0 +1,8 @@
+name: unsigned-push
+on: [ workflow_dispatch ]
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Push
+        run: docker push "arcadedata/arcadedb:latest"

@@ -261,6 +261,24 @@ grpcurl -H "authorization: Bearer <token>" \
         -plaintext localhost:50051 \
         com.arcadedb.grpc.ArcadeDbService/Ping
 
+# Packed vectors (float_array_value / double_array_value in GrpcValue)
+# A float[] / double[] (a vector, an ARRAY_OF_FLOATS / ARRAY_OF_DOUBLES property) can be sent as GrpcFloatArray /
+# GrpcDoubleArray, 4 or 8 bytes per element, instead of a list_value of one GrpcValue per element; the server decodes it
+# straight into the array. Both directions are negotiated with the header "x-arcade-packed-arrays: true", because a peer
+# generated from an older proto reads the packed kinds as null:
+# - every response of a server that decodes them carries the header (headers and trailers): send packed values only to a
+#   server that announced it, lists otherwise (an older server would store a null);
+# - results carry the packed kinds only to a call that sent the header; without it they stay list_value.
+# The Java client does both: it sends the header on every call and packs its float[] / double[] once a response announced it,
+# on the same channel: after a reconnect (RemoteGrpcServer close() / start()) it sends lists until the new server announces.
+grpcurl -H "x-arcade-user: admin" \
+        -H "x-arcade-password: admin" \
+        -H "x-arcade-database: mydb" \
+        -H "x-arcade-packed-arrays: true" \
+        -d '{"database": "mydb", "query": "SELECT embedding FROM Chunk LIMIT 1"}' \
+        -plaintext localhost:50051 \
+        com.arcadedb.grpc.ArcadeDbService/ExecuteQuery
+
 
 server.registerPlugin(new GrpcServerPlugin());
 

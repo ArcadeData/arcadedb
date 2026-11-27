@@ -645,6 +645,40 @@ class SealedBlobApplyTest {
       assertThat(carriesAContinuousAggregateRecordNotHeldHere(follower, schemaOf(leader))).isTrue();
     }
 
+    // Regression for #13049: the range of the late appends is a record of its own, and the follower compares it as it compares the
+    // range of the deletes
+    @Test
+    void aLateRecordTheFollowerDoesNotHoldIsASchemaChange() {
+      aggregateOf(leader).setWatermarkTs(3_600_000L);
+      aggregateOf(leader).invalidateLateSamples(100L, 200L);
+      assertThat(aggregateOf(leader).getLateInvalidation()).isNotNull();
+      assertThat(schemaOf(leader)).contains("\"" + ContinuousAggregateImpl.LATE_INVALIDATED_FROM_KEY + "\"");
+      assertThat(carriesAContinuousAggregateRecordNotHeldHere(follower, schemaOf(leader))).isTrue();
+    }
+
+    // Regression for #13049
+    @Test
+    void aLateRecordTheFollowerHoldsAlreadyIsNot() {
+      for (final DatabaseInternal db : new DatabaseInternal[] { leader, follower }) {
+        aggregateOf(db).setWatermarkTs(7_200_000L);
+        aggregateOf(db).invalidateLateSamples(100L, 200L);
+      }
+      assertThat(carriesAContinuousAggregateRecordNotHeldHere(follower, schemaOf(leader))).isFalse();
+
+      // narrower on the follower than on the leader (a second bucket behind the watermark): the leader's is the one to hold
+      aggregateOf(leader).invalidateLateSamples(3_700_000L, 3_800_000L);
+      assertThat(carriesAContinuousAggregateRecordNotHeldHere(follower, schemaOf(leader))).isTrue();
+    }
+
+    // Regression for #13049: a delete range held on the follower is no answer for a late range the leader records
+    @Test
+    void aRangeOfDeletesTheFollowerHoldsDoesNotStandForTheRangeOfLateAppends() {
+      aggregateOf(leader).setWatermarkTs(3_600_000L);
+      aggregateOf(leader).invalidateLateSamples(100L, 200L);
+      aggregateOf(follower).invalidate(Long.MIN_VALUE, Long.MAX_VALUE);
+      assertThat(carriesAContinuousAggregateRecordNotHeldHere(follower, schemaOf(leader))).isTrue();
+    }
+
     // Regression for #10677: a record on an aggregate the follower does not have is a schema change
     @Test
     void aRecordOnAnAggregateTheFollowerDoesNotHaveIsASchemaChange() {
