@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.graph.MutableVertex;
 import org.junit.jupiter.api.Test;
 
@@ -57,6 +58,20 @@ class Issue12943MatchMatchedDependencyRootTest extends TestHelper {
   void aMatchedWhereOnAMiddleNodeInOneChain() {
     assertThat(rows("MATCH {type: V, as: a0}.out('A'){as: a1, where: ($matched.a0.c = c)}.in('A'){type: W, as: a2} "
         + "RETURN a0.id AS a0, a1.id AS a1, a2.id AS a2")).containsExactly("0,1,2", "0,1,3", "3,1,2", "3,1,3");
+  }
+
+  @Test
+  void aMiddleNodeReadingBothEndsNeverAnswersWrongRows() {
+    // a1 waits for a0 AND a2 through $matched: whichever end starts, its pass schedules nothing, and one root cannot bind both
+    // ends before a1. Before the fix this answered no rows (the second end was walked from unbound); the planner may refuse
+    // the statement, but whenever it answers, the answer must be the right one
+    final String match = "MATCH {type: V, as: a0}.out('A'){as: a1, where: ($matched.a0.c = c AND $matched.a2.c = c)}.in('A'){type: W, as: a2} "
+        + "RETURN a0.id AS a0, a1.id AS a1, a2.id AS a2";
+    try {
+      assertThat(rows(match)).containsExactly("0,1,3", "3,1,3");
+    } catch (final CommandExecutionException e) {
+      assertThat(e.getMessage()).contains("cannot be evaluated");
+    }
   }
 
   @Test

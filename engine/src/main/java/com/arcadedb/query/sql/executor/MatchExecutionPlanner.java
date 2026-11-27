@@ -624,20 +624,26 @@ public class MatchExecutionPlanner {
       // 2. Having found a starting vertex, traverse its neighbors depth-first,
       //    adding any non-visited ones with satisfied dependencies to our schedule.
       final int scheduledBefore = resultingSchedule.size();
-      final Set<PatternNode> visitedBefore = new HashSet<>(visitedNodes);
-      final Map<String, Set<String>> dependenciesBefore = new HashMap<>();
-      for (final Map.Entry<String, Set<String>> entry : remainingDependencies.entrySet())
-        dependenciesBefore.put(entry.getKey(), new HashSet<>(entry.getValue()));
+      // The dependency sets the start satisfies, kept to undo an empty pass. Collected only when some alias reads the start
+      // through $matched, so the common pattern allocates nothing here
+      List<Set<String>> satisfiedByStart = null;
+      for (final Set<String> dependencies : remainingDependencies.values())
+        if (dependencies.contains(startingNode.alias)) {
+          if (satisfiedByStart == null)
+            satisfiedByStart = new ArrayList<>(2);
+          satisfiedByStart.add(dependencies);
+        }
       updateScheduleStartingAt(startingNode, visitedNodes, visitedEdges, remainingDependencies, resultingSchedule, rootCandidates);
       if (resultingSchedule.size() == scheduledBefore) {
         // A pass that schedules no edge (every neighbour waits for an alias bound elsewhere through $matched) has not started
-        // anything: nothing binds the node, so it must not count as visited, or an edge that reaches it later is scheduled from it
-        // as if it were bound (issue #12943). It is reached through the edge that binds it, and the dependencies it seemed to
-        // satisfy are not satisfied yet.
-        visitedNodes.clear();
-        visitedNodes.addAll(visitedBefore);
-        remainingDependencies.clear();
-        remainingDependencies.putAll(dependenciesBefore);
+        // anything: only the first scheduled edge gets a root step, so nothing binds the node, and it must not count as visited,
+        // or an edge that reaches it later is scheduled from it as if it were bound (issue #12943). It is reached through the
+        // edge that binds it, and the dependencies it seemed to satisfy are not satisfied yet. Such a pass never recursed, so
+        // marking the start visited and releasing its alias is all it changed: undoing exactly that restores the state before it
+        visitedNodes.remove(startingNode);
+        if (satisfiedByStart != null)
+          for (final Set<String> dependencies : satisfiedByStart)
+            dependencies.add(startingNode.alias);
       }
     }
 
