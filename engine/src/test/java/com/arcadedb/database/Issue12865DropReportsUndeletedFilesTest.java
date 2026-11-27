@@ -60,6 +60,7 @@ class Issue12865DropReportsUndeletedFilesTest {
 
   @AfterEach
   void tearDown() {
+    new File(PARENT).setExecutable(true);
     new File(PARENT).setWritable(true);
     new File(PATH).setReadable(true);
     new File(PATH).setWritable(true);
@@ -119,10 +120,31 @@ class Issue12865DropReportsUndeletedFilesTest {
       assumeTrue(!directory.canRead() && !directory.canWrite(), "the directory cannot be made unreadable here (running as root?)");
 
       assertThatThrownBy(db::drop).isInstanceOf(DatabaseOperationException.class)
-          .hasMessageContaining("was closed but its files could not be deleted").hasMessageContaining("cannot be listed");
+          .hasMessageContaining("was closed but its files could not be deleted").hasMessageContaining("cannot be inspected");
     } finally {
       directory.setReadable(true);
       directory.setWritable(true);
+    }
+
+    assertThat(DatabaseFactory.getActiveDatabaseInstance(PATH)).isNull();
+    assertThat(new DatabaseFactory(PATH).exists()).isTrue();
+  }
+
+  @Test
+  @Timeout(60)
+  void aDirectoryHiddenByAnAncestorWithoutSearchPermissionIsAFailedDrop() {
+    final Database db = new DatabaseFactory(PATH).open();
+    final File parent = new File(PARENT);
+
+    // THE PARENT DENIES SEARCH: File.exists() ANSWERS FALSE FOR THE DATABASE DIRECTORY, THE DELETE SKIPS IT, AND THE FILES STAY
+    parent.setExecutable(false);
+    try {
+      assumeTrue(!new File(PATH).exists(), "search permission is not enforced here (running as root?)");
+
+      assertThatThrownBy(db::drop).isInstanceOf(DatabaseOperationException.class)
+          .hasMessageContaining("was closed but its files could not be deleted").hasMessageContaining("cannot be inspected");
+    } finally {
+      parent.setExecutable(true);
     }
 
     assertThat(DatabaseFactory.getActiveDatabaseInstance(PATH)).isNull();
