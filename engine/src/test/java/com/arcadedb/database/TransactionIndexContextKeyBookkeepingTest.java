@@ -205,7 +205,8 @@ class TransactionIndexContextKeyBookkeepingTest extends TestHelper {
         rs.next();
         assertThat(rs.hasNext()).isFalse();
       }
-    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM Doc")) {
+    // count() scans the records; count(*) would answer from the cached bucket counter
+    try (final ResultSet rs = database.query("sql", "SELECT count() AS c FROM Doc")) {
       assertThat(rs.next().<Long>getProperty("c")).isEqualTo((long) total);
     }
   }
