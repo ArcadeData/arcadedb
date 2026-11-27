@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.ArithmeticErrorException;
 import com.arcadedb.function.sql.math.SQLFunctionAverage;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
@@ -28,6 +29,7 @@ import java.math.BigInteger;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Arithmetic and aggregates in SQL over every numeric width: bound parameters of unusual numeric classes, sums that overflow a
@@ -112,14 +114,21 @@ class SqlAggregateArithmeticTest extends TestHelper {
     }
   }
 
-  /** Regression test for issue #8974. */
+  /**
+   * Regression test for issue #8974: the Cypher sum() past the long range must not wrap. Cypher has no DECIMAL, so since #12993
+   * it raises the 'long overflow' ArithmeticError that + and reduce() raise instead of widening, while avg() is still exact.
+   */
   @Test
-  void cypherSumWidens() {
+  void cypherSumDoesNotWrap() {
     longSumSetup();
-    try (final ResultSet rs = database.query("opencypher", "MATCH (x:L) RETURN sum(x.n) AS s, avg(x.n) AS a")) {
-      final Result row = rs.next();
-      assertThat(new BigDecimal(row.<Number>getProperty("s").toString())).isEqualByComparingTo("12000000000000000000");
-      assertThat(row.<Number>getProperty("a").doubleValue()).isEqualTo(4.0E18);
+    assertThatThrownBy(() -> {
+      try (final ResultSet rs = database.query("opencypher", "MATCH (x:L) RETURN sum(x.n) AS s")) {
+        rs.next().getProperty("s");
+      }
+    }).isInstanceOf(ArithmeticErrorException.class).hasMessageContaining("long overflow");
+
+    try (final ResultSet rs = database.query("opencypher", "MATCH (x:L) RETURN avg(x.n) AS a")) {
+      assertThat(rs.next().<Number>getProperty("a").doubleValue()).isEqualTo(4.0E18);
     }
   }
 
