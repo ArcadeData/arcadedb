@@ -2720,23 +2720,16 @@ public class PageManager extends LockContext {
         for (final MutablePage page : pages) {
           // An older copy of this page can still be in the asynchronous pipeline: committed before the database
           // switched to synchronous flush, or by a commit that asked for async flush. Written after this page it would
-          // revert it on disk (issue #13441), so it leaves the pipeline first and is never written.
-          final List<MutablePage> superseded = thread != null ? thread.detachCopiesSupersededBy(page) : null;
-          try {
-            flushPage(page, superseded != null ? thread : null);
-          } catch (final IOException | RuntimeException e) {
-            // The copies are out of the pipeline and the newer image is not on disk: after an eviction a read would get
-            // the file's older image. Only the WAL holds their content now (their acks are kept), so the database goes
-            // to recovery, as a commit whose page write fails does
-            if (superseded != null && !superseded.isEmpty() && ((DatabaseInternal) page.getPageId().getDatabase()).getEmbedded() instanceof LocalDatabase localDatabase)
-              localDatabase.fenceForRecovery("a synchronous page write that superseded pending copies failed", e);
-            throw e;
-          }
-          // Only now that the newer image is on disk: until then the WAL is what holds the content of the copies
-          if (superseded != null)
-            releaseWALOfSupersededCopies(superseded);
+          // revert it on disk (issue #13441). The write is therefore recorded under the page's I/O lock, which makes the
+          // flush thread skip any older copy from then on, and the copies leave the pipeline only once this image is on
+          // disk and in the read cache: a write that fails leaves the pipeline exactly as it was, and no read can fall
+          // back to the file's older image in between.
+          final boolean pending = thread != null && thread.hasPendingCopy(page.pageId);
+          flushPage(page, pending ? thread : null);
           // ADD THE PAGE IN TO READ CACHE. FROM THIS POINT THE PAGE IS NEVER MODIFIED, SO IT CAN BE CACHED
           putPageInReadCache(new CachedPage(page, false));
+          if (pending)
+            releaseWALOfSupersededCopies(thread.detachCopiesSupersededBy(page));
           if (i++ == half)
             midway.run();
         }
@@ -2751,10 +2744,10 @@ public class PageManager extends LockContext {
   }
 
   /**
-   * Releases the WAL acks of the pending copies a synchronous write superseded (issue #13441): they will never be
-   * written, and the pending count they hold would otherwise keep their WAL files alive forever (the close-time ack
-   * gate, #4928). takeWALFile makes the release exactly-once against the flush thread, which may be holding one of
-   * them and skips it.
+   * Releases the WAL acks of the pending copies a synchronous write superseded, once that write is on disk (issue
+   * #13441): they will never be written, and the pending count they hold would otherwise keep their WAL files alive
+   * forever (the close-time ack gate, #4928). takeWALFile makes the release exactly-once against the flush thread,
+   * which may have skipped one of them already.
    */
   private static void releaseWALOfSupersededCopies(final List<MutablePage> superseded) {
     for (int i = 0; i < superseded.size(); i++) {
@@ -2814,8 +2807,7 @@ public class PageManager extends LockContext {
 
   /**
    * @param recordSyncWriteIn not null for a synchronous write that found the page pending: the write is recorded there
-   *                          under the page's I/O lock, so that no copy the detach could not reach lands after it (issue
-   *                          #13441)
+   *                          under the page's I/O lock, so that no pending copy lands after it (issue #13441)
    */
   private boolean flushPage(final MutablePage page, final PageManagerFlushThread recordSyncWriteIn) throws IOException {
     final DatabaseInternal database = (DatabaseInternal) page.getPageId().getDatabase();

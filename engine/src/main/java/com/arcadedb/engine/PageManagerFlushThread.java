@@ -182,14 +182,15 @@ public class PageManagerFlushThread extends Thread {
   /**
    * Issue #13441: per page, the version a SYNCHRONOUS write put on its file while older copies of the page could still
    * be in this pipeline. Recorded under the page's I/O lock right after that write (see {@link #recordSyncWrite}) and
-   * read under the same lock before every write of a pending copy, which is skipped when it is older. It is what covers
-   * the copies {@link #detachCopiesSupersededBy} cannot reach: those of a batch this thread has polled from
-   * {@link #queue} but not yet published in {@link #nextPagesToFlush}.
+   * read under the same lock before every write of a pending copy, which is skipped when it is older. It covers the
+   * copies until {@link #detachCopiesSupersededBy} takes them out, and those it cannot reach: the ones of a batch this
+   * thread has polled from {@link #queue} but not yet published in {@link #nextPagesToFlush}.
    * <p>
-   * Each entry is {version, flush cycle it was recorded in}, and lives one flush cycle (one poll of {@link #run}, with
-   * the batch it returned): the only batch out of the detach's reach is the one this thread held between poll and
-   * publication when the write was recorded, which that cycle finishes. Every later batch was in {@link #queue} when the
-   * detach walked it, so {@link #endFlushCycle} drops the entries of the cycles before. Empty in the steady state: an
+   * Each entry is {version, flush cycle}. It is pinned (no cycle) from the write until the detach that follows it has
+   * walked the pipeline, then lives until the end of the flush cycle (one poll of {@link #run}, with the batch it
+   * returned) in which that walk ended: the only batch out of the walk's reach is the one this thread held between poll
+   * and publication meanwhile, which that cycle finishes. Every later batch was in {@link #queue} when the detach walked
+   * it, so {@link #endFlushCycle} drops the entries of the cycles before. Empty in the steady state: an
    * entry is only taken by a synchronous write that found the page pending. The purges of a closed database and of a
    * dropped file drop theirs too, so a file id or a database path reused with fresh page versions never inherits one.
    */
@@ -2214,65 +2215,72 @@ public class PageManagerFlushThread extends Thread {
   }
 
   /**
-   * Takes out of the pipeline every pending copy of a page a commit is about to write to its file SYNCHRONOUSLY, and
-   * marks each one so that no write of it can still land after the synchronous image (issue #13441).
+   * Whether a copy of the page can be pending in this pipeline, for a synchronous write that is about to write it
+   * (issue #13441). O(1), per page and not per database, so a database that mixes the two modes (an index compaction
+   * writes synchronously while the commits of the same database flush asynchronously) pays for the pages it actually
+   * has pending. The newest pending copy of a page stays indexed until it reaches the disk (removeFromFlushIndex runs
+   * AFTER the write), older copies queued with it are flushed before it in FIFO order, and a failed copy is kept in
+   * failedFlushPages. A copy can only outlive its entry when a NEWER copy was written first (the backlog of a
+   * suspension, re-enqueued behind the commits made since), and that copy already reverts the page on its own,
+   * whatever happens here; the full walk of detachPendingPages is kept for the replay path, which must not trust this.
+   */
+  boolean hasPendingCopy(final PageId pageId) {
+    return pageIndex.get(pageId) != null || (!failedFlushPages.isEmpty() && failedFlushPages.get(pageId) != null);
+  }
+
+  /**
+   * Takes out of the pipeline every pending copy of a page a commit has just written to its file SYNCHRONOUSLY, and
+   * marks each one, so that it is never written (issue #13441). Called once that write is on disk and in the read cache,
+   * and after it was recorded with {@link #recordSyncWrite} under the page's I/O lock: from that point the flush thread
+   * skips any older copy it reaches, so a copy written or skipped before the detach gets here is harmless, and a write
+   * that failed never detaches anything.
    * <p>
    * The synchronous image is newer than every pending copy: the commit passed its version check against
    * {@link #getCachedPageFromMutablePageInQueue}, so it was built on the most recent of them, and it is a full page
-   * image. The copies are therefore dropped, never written. The caller releases their WAL acks once its own write
-   * succeeded, and not before: until then the WAL is what still holds their content.
+   * image. The caller releases the WAL acks of the copies returned.
    * <p>
    * {@link #detachPendingPages} cannot see a batch the flush thread has polled from {@link #queue} but not yet
-   * published in {@link #nextPagesToFlush}. The marks cover the copy of it that is indexed, and the version the caller
-   * records under the page's I/O lock right after its write ({@link #recordSyncWrite}) covers any other one: the flush
-   * thread reads both under that same lock, so it either wrote the copy before the synchronous image or skips it.
+   * published in {@link #nextPagesToFlush}. The recorded version covers it: recorded pinned, it cannot expire between
+   * the write and this walk, and the walk unpins it to the current flush cycle when it ends, since whatever copy it
+   * missed was polled before that, so it belongs to this cycle at the latest.
    * <p>
    * The detach's assumption holds here: the committer holds the commit lock of the page's file, so no other commit
    * can schedule a flush of this page meanwhile.
    * <p>
-   * The page being written can itself be one of the pending copies: a compaction writes a data page asynchronously
-   * when it fills, then writes the same {@link MutablePage} instance again synchronously with the rest of its series
+   * The page written can itself be one of the pending copies: a compaction writes a data page asynchronously when it
+   * fills, then writes the same {@link MutablePage} instance again synchronously with the rest of its series
    * ({@code LSMTreeIndexCompactedStreamWriter.finishSeries}). That instance leaves the pipeline like the others, since
-   * the caller is about to write it, but it is neither marked nor returned: marking it would make
-   * {@link PageManager#flushPage} skip the synchronous write itself and lose the page.
+   * it is on disk, but it is neither marked nor returned: it is not a superseded copy, and its WAL ack is the one its
+   * own write released.
    *
-   * @return {@code null}, without allocating, when the page has nothing pending, which is the steady state of a
-   *     database that flushes synchronously; otherwise the OTHER copies taken out (possibly none, when the only one was
-   *     the instance written), to be released by the caller after its write, which records it with
-   *     {@link #recordSyncWrite} in either case: an older copy can still sit in a batch polled but not yet published.
+   * @return the OTHER copies taken out, possibly none.
    */
   List<MutablePage> detachCopiesSupersededBy(final MutablePage page) {
     final PageId pageId = page.getPageId();
-    // O(1) fast path, per page and not per database, so a database that mixes the two modes (an index compaction
-    // writes synchronously while the commits of the same database flush asynchronously) walks the pipeline only for
-    // the pages it actually has pending. The newest pending copy of a page stays indexed until it reaches the disk
-    // (removeFromFlushIndex runs AFTER the write), and older copies queued with it are flushed before it in FIFO
-    // order, while a failed copy is kept in failedFlushPages. A copy can only outlive its entry when a NEWER copy was
-    // written first (the backlog of a suspension, re-enqueued behind the commits made since), and that copy already
-    // reverts the page on its own, whatever happens here; the full walk of detachPendingPages is kept for the replay
-    // path, which must not trust this.
-    if (pageIndex.get(pageId) == null && (failedFlushPages.isEmpty() || failedFlushPages.get(pageId) == null))
-      return null;
-
     final List<MutablePage> detached = detachPendingPages((Database) pageId.getDatabase(), pageId);
     for (int i = detached.size() - 1; i >= 0; i--) {
       final MutablePage copy = detached.get(i);
       if (copy == page)
-        // The very instance the caller writes now: not a superseded copy
         detached.remove(i);
       else
         copy.markSupersededOnDisk();
     }
+    // Unpinned now that the walk is over: whatever copy it missed was polled before it ended, so it belongs to the
+    // current flush cycle at the latest, and the entry lives until that cycle ends
+    final long cycle = flushCycles;
+    syncWrittenVersions.computeIfPresent(pageId, (id, entry) -> new long[] { entry[0], cycle });
     return detached;
   }
 
   /**
-   * Records, under the page's I/O lock and right after the write, that a synchronous write put this version of the page
-   * on its file while older copies of it could still be in the pipeline (issue #13441). See {@link #syncWrittenVersions}.
+   * Records that a synchronous write put this version of the page on its file while older copies of it could still be
+   * in the pipeline (issue #13441). Called under the page's I/O lock right after the write. The entry is PINNED: no
+   * flush cycle ends it until {@link #detachCopiesSupersededBy} has taken the copies out and unpinned it, since a copy
+   * still queued at the write can be polled in a later cycle. See {@link #syncWrittenVersions}.
    */
   void recordSyncWrite(final MutablePage page) {
-    syncWrittenVersions.merge(page.getPageId(), new long[] { page.getVersion(), flushCycles },
-        (a, b) -> new long[] { Math.max(a[0], b[0]), Math.max(a[1], b[1]) });
+    syncWrittenVersions.merge(page.getPageId(), new long[] { page.getVersion(), Long.MAX_VALUE },
+        (a, b) -> new long[] { Math.max(a[0], b[0]), Long.MAX_VALUE });
   }
 
   /**

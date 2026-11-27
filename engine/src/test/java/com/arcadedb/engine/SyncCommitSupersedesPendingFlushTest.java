@@ -31,14 +31,17 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.io.File;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #13441: a page committed with asynchronous flush and then rewritten by a commit with synchronous flush (a
@@ -267,6 +270,74 @@ class SyncCommitSupersedesPendingFlushTest {
     } finally {
       PageManager.setPageWriteFaultInjector(null);
       blocker.drop();
+    }
+  }
+
+  /**
+   * A synchronous write that fails takes nothing out of the pipeline: the copies leave it only once the newer image is
+   * on disk, so the pending copy is still the one reads resolve and the one the flush thread writes.
+   */
+  @Test
+  @Timeout(value = 2, unit = TimeUnit.MINUTES)
+  void aFailedSynchronousWriteLeavesThePendingCopyInThePipeline() throws Exception {
+    final Database blocker = new DatabaseFactory(BLOCKER_PATH).create();
+    final PageId pageId;
+    final int pageSize;
+    final int markerOffset;
+    try {
+      final CountDownLatch held = new CountDownLatch(1);
+      final CountDownLatch release = new CountDownLatch(1);
+      final AtomicReference<PageId> failWritesOf = new AtomicReference<>();
+      final String blockerName = blocker.getName();
+      PageManager.setPageWriteFaultInjector(id -> {
+        if (isFlushThread() && blockerName.equals(id.getDatabase().getName())) {
+          held.countDown();
+          awaitQuietly(release, 30);
+        } else if (!isFlushThread() && id.equals(failWritesOf.get()))
+          throw new IOException("injected failure of the synchronous write");
+      });
+      blocker.transaction(() -> blocker.getSchema().createDocumentType("Blocker"));
+      assertThat(held.await(30, TimeUnit.SECONDS)).as("the flush thread must be held on the blocker's batch").isTrue();
+
+      try (final DatabaseInternal db = (DatabaseInternal) new DatabaseFactory(DATABASE_PATH).create()) {
+        final PaginatedComponent bucket = (PaginatedComponent) db.getSchema().createDocumentType("Item").getBuckets(false)
+            .getFirst();
+        pageSize = bucket.getPageSize();
+        pageId = new PageId(db, bucket.getFileId(), bucket.getTotalPages());
+        final PageManager pageManager = db.getPageManager();
+
+        final MutablePage older = new MutablePage(pageId, pageSize);
+        markerOffset = older.getMaxContentSize() - Integer.BYTES;
+        older.writeInt(markerOffset, 1);
+        pageManager.updatePageVersion(older, true);
+        // Queued behind the held batch of the blocker
+        pageManager.writePages(List.of(older), true);
+
+        final MutablePage newer = pageManager.getImmutablePage(pageId, pageSize, false, false).modify();
+        newer.writeInt(markerOffset, 2);
+        pageManager.updatePageVersion(newer, false);
+
+        failWritesOf.set(pageId);
+        assertThatThrownBy(() -> pageManager.writePages(List.of(newer), false)).isInstanceOf(IOException.class);
+        failWritesOf.set(null);
+
+        assertThat(pageManager.getFlushThread().pageIndex.get(pageId)).as("the pending copy must still be in the pipeline")
+            .isSameAs(older);
+        assertThat(older.isSupersededOnDisk()).isFalse();
+        assertThat(pageManager.getFlushThread().isOlderThanASyncWrite(older)).isFalse();
+        release.countDown();
+      } finally {
+        release.countDown();
+      }
+    } finally {
+      PageManager.setPageWriteFaultInjector(null);
+      blocker.drop();
+    }
+
+    try (final Database db = new DatabaseFactory(DATABASE_PATH).open()) {
+      final PageId reopened = new PageId(db, pageId.getFileId(), pageId.getPageNumber());
+      final ImmutablePage page = ((DatabaseInternal) db).getPageManager().getImmutablePage(reopened, pageSize, false, false);
+      assertThat(page.readInt(markerOffset)).as("the pending copy must have reached the file").isEqualTo(1);
     }
   }
 
