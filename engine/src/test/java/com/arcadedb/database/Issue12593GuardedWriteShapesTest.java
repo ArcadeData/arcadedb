@@ -391,6 +391,35 @@ class Issue12593GuardedWriteShapesTest extends TestHelper {
     assertThat(cypherValue("claimed")).isEqualTo("A");
   }
 
+  /** A DELETE over a SELECT of the records themselves must not delete a record a concurrent commit claimed after the SELECT read it. */
+  @Test
+  void sqlDeleteOfASelectSourceOfRecordsDoesNotDeleteAVertexClaimedAfterItsWhere() {
+    runWithConcurrentCommit(CONCURRENT_CLAIM, () -> database.command("sql",
+        "DELETE FROM (SELECT FROM R WHERE claimed IS NULL AND `race12593.interleave`(@rid))").close());
+
+    // skipped or refused with a retryable conflict: either way the claimed record survives
+    assertThat(cypherValue("claimed")).isEqualTo("A");
+  }
+
+  /** A source whose predicate answers differently from one call to the next keeps its rows as read: none is dropped by a second call. */
+  @Test
+  void sqlUpdateOfASourceWithANonRepeatablePredicateUpdatesEveryRowItSelected() {
+    database.transaction(() -> {
+      for (int i = 1; i <= 400; i++)
+        database.command("sql", "INSERT INTO R SET k = ?, n = 0", "s" + i).close();
+    });
+    final AtomicLong updated = new AtomicLong(-1);
+    database.transaction(() -> updated.set(countOf(database.command("sql",
+        "UPDATE (SELECT @rid FROM R WHERE k LIKE 's%' AND randomInt(2) = 0) SET n = 1"))));
+
+    try (final ResultSet rs = database.query("sql", "SELECT count(@rid) AS c FROM R WHERE k LIKE 's%' AND n = 1")) {
+      assertThat(((Number) rs.next().getProperty("c")).longValue()).as("the count reports the rows written").isEqualTo(updated.get());
+    }
+    // half the rows are selected (200, sd 10); with a second call per row only a quarter would survive both draws (100, sd 8.7).
+    // 150 is five standard deviations from either
+    assertThat(updated.get()).isGreaterThan(150L);
+  }
+
   // ---------------------------------------------------------------- helpers
 
   /** Called after the read that selected the record: runs the armed concurrent commit, once, and answers true. */

@@ -152,22 +152,29 @@ public final class CorrelatedSubQueryCache {
       return statement.isIdempotent();
 
     if (node instanceof FunctionCall call) {
-      if (call.getName() == null)
-        return false;
-      final String name = call.getName().getStringValue().toLowerCase(Locale.ENGLISH);
-      if (NON_REPEATABLE_FUNCTIONS.contains(name))
-        return false;
-      // date() WITHOUT ARGUMENTS READS THE CLOCK, date('2020-01-01', ...) PARSES ITS ARGUMENTS
-      if ("date".equals(name) && call.getParams().isEmpty())
+      if (call.getName() == null || isNonRepeatableBuiltInCall(call))
         return false;
       // A NAME THE ENGINE DID NOT REGISTER ITSELF IS A USER-DEFINED, LIBRARY OR APPLICATION FUNCTION: ITS BEHAVIOUR IS UNKNOWN
-      return DefaultSQLFunctionFactory.getInstance().isBuiltIn(name);
+      return DefaultSQLFunctionFactory.getInstance().isBuiltIn(call.getName().getStringValue().toLowerCase(Locale.ENGLISH));
     }
 
     if (node instanceof MethodCall call)
       return isTrustedMethod(call);
 
     return true;
+  }
+
+  /**
+   * Whether {@code node} is a call of a built-in function that can answer differently between two calls with the same arguments
+   * inside one execution: one of {@link #NON_REPEATABLE_FUNCTIONS}, or {@code date()} without arguments, which reads the clock
+   * ({@code date('2020-01-01', ...)} parses its arguments). Also read by {@link SubquerySourceSelection}, which evaluates the
+   * predicates of a source again on the record (issue #12593).
+   */
+  static boolean isNonRepeatableBuiltInCall(final SimpleNode node) {
+    if (!(node instanceof FunctionCall call) || call.getName() == null)
+      return false;
+    final String name = call.getName().getStringValue().toLowerCase(Locale.ENGLISH);
+    return NON_REPEATABLE_FUNCTIONS.contains(name) || ("date".equals(name) && call.getParams().isEmpty());
   }
 
   /**

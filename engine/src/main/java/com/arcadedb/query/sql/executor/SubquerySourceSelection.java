@@ -37,9 +37,11 @@ import com.arcadedb.query.sql.parser.WhereClause;
  * record they no longer select is not written, as the WHERE of {@code UPDATE R ... WHERE} is evaluated again on a record that changed
  * since its read (issue #11818).
  * <p>
- * Only a SELECT whose rows can be made again from one record qualifies: one that reads records (a type, a bucket, RIDs, an index),
- * with no GROUP BY, aggregation, UNWIND, LET or expand, and whose projection reads no enclosing query ({@code $parent}). Any other
- * source keeps its rows as they are.
+ * Only a SELECT whose rows can be made again from one record qualifies: one that reads records (a type, a bucket, RIDs), with no
+ * GROUP BY, aggregation, UNWIND, LET or expand, that reads no enclosing query ({@code $parent}), and that calls no built-in whose
+ * answer changes from one call to the next ({@code randomInt()}, {@code uuid()}, {@code sysdate()}), in its own clauses as in the
+ * statement's WHERE. Any other source keeps its rows as they are. A user-defined function is evaluated again like any other
+ * expression, as the openCypher predicates of a guarded write are (issue #11818).
  *
  * @author lvca (l.garulli@arcadedata.com)
  */
@@ -68,18 +70,29 @@ final class SubquerySourceSelection {
     if (select.getGroupBy() != null || select.getLetClause() != null || select.getUnwind() != null)
       return null;
     final FromItem source = select.getTarget() != null ? select.getTarget().getItem() : null;
+    // A row of an index (key, rid) or of the schema is not made of the record it names: the source WHERE read other columns
     if (source == null || source.getStatement() != null || source.getFunctionCall() != null || source.getInputParam() != null
-        || source.getResultSet() != null)
+        || source.getResultSet() != null || source.getIndex() != null || source.getSchema() != null || source.getModifier() != null)
+      return null;
+    // The SELECT runs as a subquery, in a context of its own: what it reads of the enclosing statement ($parent, in its WHERE as much
+    // as in its projection) is not what the UPDATE's context holds
+    if (select.refersToParent())
       return null;
     final Projection projection = select.getProjection();
     if (projection != null) {
-      if (projection.isExpand() || projection.refersToParent())
+      if (projection.isExpand())
         return null;
       for (final ProjectionItem projectionItem : projection.getItems())
         if (projectionItem.isAggregate(context))
           return null;
     }
     if (select.getWhereClause() == null && where == null)
+      return null;
+    // A row of a projection that carries the @rid is evaluated again on every record, contended or not: a built-in that answers
+    // differently from one call to the next (randomInt(), uuid(), sysdate()) would drop records the source selected, so the rows of
+    // such a source stand as they were read, as before
+    if (!SqlAstInspector.allNodesMatch(select, node -> !CorrelatedSubQueryCache.isNonRepeatableBuiltInCall(node))
+        || !SqlAstInspector.allNodesMatch(where, node -> !CorrelatedSubQueryCache.isNonRepeatableBuiltInCall(node)))
       return null;
     return new SubquerySourceSelection(select.getWhereClause() != null ? select.getWhereClause().copy() : null,
         projection != null ? projection.copy() : null, where != null ? where.copy() : null);
