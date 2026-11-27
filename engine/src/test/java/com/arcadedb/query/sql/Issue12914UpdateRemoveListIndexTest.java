@@ -20,7 +20,9 @@ package com.arcadedb.query.sql;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -88,6 +90,7 @@ class Issue12914UpdateRemoveListIndexTest extends TestHelper {
       else if (read != null)
         selected.add(read);
     }
+    // by value, which is exact only because the elements of ORIGINAL are distinct
     final List<Object> remaining = new ArrayList<>(ORIGINAL);
     remaining.removeAll(selected);
     assertThat(remaining).as("SELECT %s", selector).containsExactlyElementsOf(expected);
@@ -96,6 +99,27 @@ class Issue12914UpdateRemoveListIndexTest extends TestHelper {
 
     assertThat((List<Object>) database.lookupByRID(rid[0], true).asDocument().get("l")).as("REMOVE %s", selector)
         .containsExactlyElementsOf(expected);
+  }
+
+  /**
+   * The read form on its own, on a literal list and on a property: a range starting at the size reads nothing (it read the last
+   * element), one starting just before it still reads that element, and an inclusive end at Integer.MAX_VALUE reads to the end
+   * (it read nothing).
+   */
+  @Test
+  void rangeReadAtTheBoundaries() {
+    database.getSchema().createDocumentType(TYPE);
+    final RID[] rid = new RID[1];
+    database.transaction(() -> rid[0] = database.newDocument(TYPE).set("l", new ArrayList<>(ORIGINAL)).save().getIdentity());
+
+    try (final ResultSet rs = database.query("sql",
+        "SELECT [10,20,30,40][4..6] AS lit, l[4..6] AS atSize, l[3..6] AS last, l[1...2147483647] AS toMax FROM " + rid[0])) {
+      final Result row = rs.next();
+      assertThat((Object) row.getProperty("lit")).isNull();
+      assertThat((Object) row.getProperty("atSize")).isNull();
+      assertThat((Object) row.getProperty("last")).isEqualTo(List.of(40));
+      assertThat((Object) row.getProperty("toMax")).isEqualTo(List.of(20, 30, 40));
+    }
   }
 
   /**
