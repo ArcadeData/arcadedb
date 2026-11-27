@@ -220,6 +220,11 @@ final class PatternStartSeek {
       return switch (logical.getOperator()) {
         case AND -> and(pins(logical.getLeft(), variable, bound), pins(logical.getRight(), variable, bound));
         case OR -> or(pins(logical.getLeft(), variable, bound), pins(logical.getRight(), variable, bound));
+        // NOT (a.p <> v) holds exactly where a.p = v does: the comprehension's WHERE spells NOT this way
+        case NOT -> {
+          final ComparisonExpression inequality = negatedInequality(logical.getLeft());
+          yield inequality != null ? pins(equality(inequality), variable, bound) : Map.of();
+        }
         default -> Map.of();
       };
     if (predicate instanceof LogicalExpression logical)
@@ -249,6 +254,20 @@ final class PatternStartSeek {
       return Map.of(((PropertyAccessExpression) in.getExpression()).getPropertyName(), sources);
     }
     return Map.of();
+  }
+
+  /** The {@code a <> b} the operand of a NOT is, through any wrapper, or null for any other operand. */
+  private static ComparisonExpression negatedInequality(Object operand) {
+    while (true) {
+      if (operand instanceof BooleanWrapperExpression wrapper)
+        operand = wrapper.getBooleanExpression();
+      else if (operand instanceof ComparisonExpressionWrapper wrapper)
+        operand = wrapper.getComparison();
+      else
+        break;
+    }
+    return operand instanceof ComparisonExpression comparison && comparison.getOperator() == ComparisonExpression.Operator.NOT_EQUALS ?
+        comparison : null;
   }
 
   private static ComparisonExpression equality(final ComparisonExpression inequality) {

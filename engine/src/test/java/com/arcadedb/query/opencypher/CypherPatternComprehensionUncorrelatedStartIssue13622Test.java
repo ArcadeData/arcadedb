@@ -158,6 +158,66 @@ class CypherPatternComprehensionUncorrelatedStartIssue13622Test extends TestHelp
   }
 
   @Test
+  void anAndPinningTheSamePropertyTwiceSeeksAndKeepsBothPredicates() {
+    // Both sides pin a.id: the seek takes the fewer values, every predicate is still evaluated on each candidate
+    assertThat(list("RETURN [" + POISON_CHECK + "-[:KNOWS]->(b) WHERE a.id IN [1, 2, 3] AND a.id = 2 | b.id] AS l"))
+        .containsExactlyInAnyOrder(3L, 4L);
+    assertThat(list("RETURN [" + POISON_CHECK + "-[:KNOWS]->(b) WHERE a.id = 2 AND a.id IN [1, 2, 3] | b.id] AS l"))
+        .containsExactlyInAnyOrder(3L, 4L);
+    // Disjoint pins: the seek yields candidates, the predicates reject them all
+    assertThat(list("RETURN [" + POISON_CHECK + "-[:KNOWS]->(b) WHERE a.id = 2 AND a.id = 3 | b.id] AS l")).isEmpty();
+    // An inline pin and a WHERE pin on the same property
+    assertThat(list("RETURN [(a:Person {id: 2} WHERE 10 / a.d > 0)-[:KNOWS]->(b) WHERE a.id IN [2, 3] | b.id] AS l"))
+        .containsExactlyInAnyOrder(3L, 4L);
+  }
+
+  @Test
+  void aNegatedInequalityIsSoughtAsTheEquality() {
+    assertThat(list("RETURN [" + POISON_CHECK + "-[:KNOWS]->(b) WHERE NOT (a.id <> 2) | b.id] AS l")).containsExactlyInAnyOrder(3L, 4L);
+  }
+
+  @Test
+  void aPinOnAPropertyWithNoIndexIsSkippedForTheIndexedOne() {
+    // a.d has no index: the seek uses a.id
+    assertThat(list("RETURN [" + POISON_CHECK + "-[:KNOWS]->(b) WHERE a.d = 1 AND a.id = 2 | b.id] AS l"))
+        .containsExactlyInAnyOrder(3L, 4L);
+    // Only a.d is pinned: nothing to seek with, the scan meets the poison person
+    assertThatThrownBy(() -> list("RETURN [" + POISON_CHECK + "-[:KNOWS]->(b) WHERE a.d = 1 | b.id] AS l"))
+        .hasStackTraceContaining("/ by zero");
+  }
+
+  @Test
+  void shapesThatPinNothingExactlyAreScanned() {
+    // XOR pins nothing
+    assertThatThrownBy(() -> list("RETURN [" + POISON_CHECK + "-[:KNOWS]->(b) WHERE a.id = 2 XOR b.id = 3 | b.id] AS l"))
+        .hasStackTraceContaining("/ by zero");
+    // An IN element that reads a variable of the pattern
+    assertThatThrownBy(() -> list("RETURN [" + POISON_CHECK + "-[:KNOWS]->(b) WHERE a.id IN [2, b.id] | b.id] AS l"))
+        .hasStackTraceContaining("/ by zero");
+    // A value that can change between two evaluations
+    assertThatThrownBy(() -> list("RETURN [" + POISON_CHECK + "-[:KNOWS]->(b) WHERE a.id = toInteger(rand() * 0) + 2 | b.id] AS l"))
+        .hasStackTraceContaining("/ by zero");
+    // The same inline: the inline map rejects the poison person before its WHERE runs, so only the answer can be checked
+    assertThat(list("RETURN [(a:Person {id: toInteger(rand() * 0) + 2})-[:KNOWS]->(b) | b.id] AS l")).containsExactlyInAnyOrder(3L, 4L);
+  }
+
+  @Test
+  void anUnknownLabelAnswersNoMatch() {
+    assertThat(list("RETURN [(a:Nobody)-[:KNOWS]->(b) WHERE a.id = 2 | b.id] AS l")).isEmpty();
+  }
+
+  @Test
+  void aSubtypeIsSoughtThroughTheIndexOfItsSupertype() {
+    database.getSchema().createVertexType("Student").addSuperType("Person");
+    database.transaction(() -> {
+      final MutableVertex student = database.newVertex("Student").set("id", 7L).set("d", 1).save();
+      student.newEdge("KNOWS", database.query("opencypher", "MATCH (p:Person {id: 1}) RETURN p").next().getVertex().get()).save();
+    });
+    // The index of Person holds the persons 2 and 7: only the Student is a candidate
+    assertThat(list("RETURN [(a:Student)-[:KNOWS]->(b) WHERE a.id IN [2, 7] | b.id] AS l")).containsExactly(1L);
+  }
+
+  @Test
   void theWalkOfAComprehensionStopsAtTheCommandTimeout() {
     // Persons with no index on x, 30 KNOWS each: the 4-hop walk from every one of them is ~800M expansions
     database.getSchema().createVertexType("Walker");
