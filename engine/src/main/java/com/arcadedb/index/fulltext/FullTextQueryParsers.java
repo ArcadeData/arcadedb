@@ -84,22 +84,26 @@ final class FullTextQueryParsers {
     for (int i = 0, length = text.length(); i < length && opening <= MAX_PARENTHESES_DEPTH; i++)
       if (text.charAt(i) == '(')
         opening++;
-    if (opening <= MAX_PARENTHESES_DEPTH)
-      return;
+    if (opening > MAX_PARENTHESES_DEPTH && nestsTooDeep(text))
+      throw new FullTextQueryParseException("Invalid search query: parentheses nest deeper than " + MAX_PARENTHESES_DEPTH + " levels");
+  }
 
+  private static boolean nestsTooDeep(final String text) {
     final QueryParserTokenManager tokens = new QueryParserTokenManager(new FastCharStream(new StringReader(text)));
     int depth = 0;
     try {
       for (Token token = tokens.getNextToken(); token.kind != QueryParserConstants.EOF; token = tokens.getNextToken()) {
         if (token.kind == QueryParserConstants.LPAREN) {
           if (++depth > MAX_PARENTHESES_DEPTH)
-            throw new FullTextQueryParseException("Invalid search query: parentheses nest deeper than " + MAX_PARENTHESES_DEPTH + " levels");
+            return true;
         } else if (token.kind == QueryParserConstants.RPAREN && depth > 0)
           depth--;
       }
     } catch (final TokenMgrError e) {
       // not a text the parser can read: it refuses it with the position of the fault
+      return false;
     }
+    return false;
   }
 
   /**

@@ -617,6 +617,7 @@ public class FullTextQueryExecutor {
 
       final Map<RID, AtomicInteger> groupResults;
       boolean exclusionsApplied = false;
+      boolean writtenInPlace = false;
       if (mustResults != null) {
         // SHOULD clauses add bonus score to documents that already match every MUST clause
         if (!shouldResults.isEmpty())
@@ -637,7 +638,8 @@ public class FullTextQueryExecutor {
         final Map<RID, AtomicInteger> prohibited = new HashMap<>();
         collectProhibitedClauses(bq, prohibited);
         // an answer that is the whole of this call's result is written in place, not built and then copied into it
-        groupResults = scoreMap.isEmpty() ? scoreMap : new HashMap<>();
+        writtenInPlace = scoreMap.isEmpty();
+        groupResults = writtenInPlace ? scoreMap : new HashMap<>();
         collectIndexedRidsExcept(prohibited, groupResults);
         exclusionsApplied = true;
       } else
@@ -652,7 +654,7 @@ public class FullTextQueryExecutor {
             removeMatches(clause.query(), groupResults);
         }
 
-      if (groupResults != scoreMap) {
+      if (!writtenInPlace) {
         if (scoreMap.isEmpty())
           scoreMap.putAll(groupResults);
         else
