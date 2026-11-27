@@ -164,7 +164,11 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     pullPrevious(context, nRecords);
 
     try {
-      init(context.getDatabase());
+      if (!inited)
+        init(context.getDatabase());
+      else if (index != null)
+        // A cursor kept open between two pulls asks for the grant again: init() asked it when the cursor was opened
+        SecurityHelper.checkAccessOnIndex((DatabaseInternal) context.getDatabase(), index, SecurityDatabaseUser.ACCESS.READ_RECORD);
     } catch (final IllegalArgumentException e) {
       throw staleIndexOr(e);
     }
