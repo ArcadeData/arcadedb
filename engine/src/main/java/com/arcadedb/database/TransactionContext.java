@@ -163,6 +163,11 @@ public class TransactionContext implements Transaction {
   private static final int                           RECORDS_CACHE_CAPACITY = 1024;
   private static final int                           PAGES_CACHE_CAPACITY   = 64;
   private static final int                           DELETED_SET_CAPACITY   = 256;
+  // #13005: initial capacity of the per-file maps (fileStamps, bucketFirstWriteSequences, snapshotBucketCounts). They hold one
+  // entry per bucket or index file a transaction touched, a handful for almost every one, and grow on demand. The LongLongHashMap
+  // default (1024 slots, sized for its aggregation use) is two 8 KB arrays per map, allocated and filled by every writing
+  // transaction: 32 KB per autocommit write, more than the write itself.
+  private static final int                           SMALL_PER_FILE_MAP     = 16;
   // #10315: the two counters of a lightweight edge entry in lightEdgeEntryChanges
   private static final int                           REMOVED                = 0;
   private static final int                           APPENDED               = 1;
@@ -455,10 +460,6 @@ public class TransactionContext implements Transaction {
   // writes into one bucket, the common case; it is reset wherever the map is (begin() and reset(), which a rollback reaches)
   private       LongLongHashMap                      bucketFirstWriteSequences;
   private       int                                  lastNotedBucket = -1;
-  // The per-file maps above hold one entry per bucket or index file a transaction touched, a handful for almost every one. The
-  // default capacity of LongLongHashMap (1024, sized for its aggregation use) is two 8 KB arrays, filled, for each map: 32 KB
-  // allocated and cleared by every autocommit write, more than the write itself (issue #13005). They grow on demand.
-  private static final int                           SMALL_PER_FILE_MAP    = 16;
   // #8610: identifies the transaction a vertex was read in. Drawn from one JVM-wide sequence, not counted per context,
   // so that a nested transaction (a context of its own) can never share a value with the one it is nested in.
   private static final AtomicLong                    BEGIN_SEQUENCE        = new AtomicLong();

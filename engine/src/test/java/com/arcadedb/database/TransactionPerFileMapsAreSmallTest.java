@@ -19,6 +19,7 @@
 package com.arcadedb.database;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.LongLongHashMap;
 import org.junit.jupiter.api.Test;
@@ -28,10 +29,10 @@ import java.lang.reflect.Field;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Issue #13005: the per-file maps a transaction keeps (the change stamps of the files it wrote and the index registration
- * sequence of each bucket it first wrote to) hold a handful of entries, so a transaction that writes starts them small. They
- * were created at the {@link LongLongHashMap} default of 1024 slots, two 8 KB arrays per map filled and thrown away with every
- * autocommit write.
+ * Issue #13005: the per-file maps a transaction keeps (the change stamps of the files it wrote, the index registration
+ * sequence of each bucket it first wrote to and, under REPEATABLE_READ, the committed count of each bucket it counted) hold a
+ * handful of entries, so a transaction starts them small. They were created at the {@link LongLongHashMap} default of 1024
+ * slots, two 8 KB arrays per map filled and thrown away with every autocommit write.
  */
 class TransactionPerFileMapsAreSmallTest extends TestHelper {
   private static final int SMALL = 64;
@@ -44,9 +45,27 @@ class TransactionPerFileMapsAreSmallTest extends TestHelper {
       database.newDocument(type.getName()).set("a", 1).save();
       final TransactionContext tx = ((DatabaseInternal) database).getTransaction();
 
-      assertThat(capacityOf(tx, "fileStamps")).as("change stamps of the files written").isLessThanOrEqualTo(SMALL);
-      assertThat(capacityOf(tx, "bucketFirstWriteSequences")).as("index registration sequence per bucket written")
+      assertThat(mapOf(tx, "fileStamps").capacity()).as("change stamps of the files written").isLessThanOrEqualTo(SMALL);
+      assertThat(mapOf(tx, "bucketFirstWriteSequences").capacity()).as("index registration sequence per bucket written")
           .isLessThanOrEqualTo(SMALL);
+    } finally {
+      database.rollback();
+    }
+  }
+
+  @Test
+  void aRepeatableReadCountStartsItsSnapshotMapSmall() throws Exception {
+    final DocumentType type = database.getSchema().createDocumentType("Counted", 1);
+    database.transaction(() -> database.newDocument(type.getName()).set("a", 1).save());
+
+    database.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+    try {
+      assertThat(database.countType(type.getName(), false)).isEqualTo(1L);
+      final TransactionContext tx = ((DatabaseInternal) database).getTransaction();
+
+      final LongLongHashMap counts = mapOf(tx, "snapshotBucketCounts");
+      assertThat(counts.size()).as("one pinned count per bucket counted").isEqualTo(1);
+      assertThat(counts.capacity()).as("committed count per bucket counted").isLessThanOrEqualTo(SMALL);
     } finally {
       database.rollback();
     }
@@ -60,25 +79,28 @@ class TransactionPerFileMapsAreSmallTest extends TestHelper {
 
     database.begin();
     try {
-      for (final com.arcadedb.engine.Bucket bucket : type.getBuckets(false))
+      for (final Bucket bucket : type.getBuckets(false))
         database.newDocument(type.getName()).set("a", 1).save(bucket.getName());
       final TransactionContext tx = ((DatabaseInternal) database).getTransaction();
 
-      assertThat(capacityOf(tx, "fileStamps")).as("one stamp per bucket written").isGreaterThan(buckets);
-      assertThat(capacityOf(tx, "bucketFirstWriteSequences")).as("one sequence per bucket written").isGreaterThan(buckets);
-      assertThat(tx.getModifiedPages()).isPositive();
+      final LongLongHashMap stamps = mapOf(tx, "fileStamps");
+      final LongLongHashMap sequences = mapOf(tx, "bucketFirstWriteSequences");
+      assertThat(sequences.size()).as("one sequence per bucket written").isEqualTo(buckets);
+      assertThat(sequences.capacity()).as("grown past its initial size").isGreaterThan(buckets);
+      assertThat(stamps.size()).as("one stamp per file written").isGreaterThanOrEqualTo(buckets);
+      assertThat(stamps.capacity()).as("grown past its initial size").isGreaterThan(buckets);
+      for (final Bucket bucket : type.getBuckets(false))
+        assertThat(sequences.get(bucket.getFileId(), -1L)).as("sequence of bucket " + bucket.getName()).isNotNegative();
     } finally {
       database.rollback();
     }
   }
 
-  private static int capacityOf(final TransactionContext tx, final String field) throws Exception {
+  private static LongLongHashMap mapOf(final TransactionContext tx, final String field) throws Exception {
     final Field mapField = TransactionContext.class.getDeclaredField(field);
     mapField.setAccessible(true);
     final LongLongHashMap map = (LongLongHashMap) mapField.get(tx);
     assertThat(map).as(field).isNotNull();
-    final Field keys = LongLongHashMap.class.getDeclaredField("keys");
-    keys.setAccessible(true);
-    return ((long[]) keys.get(map)).length;
+    return map;
   }
 }
