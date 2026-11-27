@@ -26,6 +26,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import com.arcadedb.query.sql.parser.Expression;
+import com.arcadedb.query.sql.parser.SuffixIdentifier;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
@@ -186,7 +187,8 @@ public abstract class AbstractProperty implements Property {
 
     final Database database = owner.getSchema().getEmbedded().getDatabase();
     try {
-      final Object result = current.expression().execute((Record) null, new BasicCommandContext().setDatabase(database));
+      // A record attribute has no record to be read from here and must fail, not answer the null it answers a planner
+      final Object result = current.expression().execute((Record) null, new DefaultValueContext().setDatabase(database));
       return Type.convert(database, result, type.javaDefaultType);
     } catch (Exception e) {
       // Reported, not swallowed: the expression was accepted at DDL time because it parses, so a failure here is a real
@@ -195,6 +197,18 @@ public abstract class AbstractProperty implements Property {
       throw new SchemaException(
           "Error on evaluating the default value `" + current.value() + "` defined on property '" + owner.getName() + "."
               + name + "'", e);
+    }
+  }
+
+  /**
+   * The context a default value is evaluated in. It answers {@link SuffixIdentifier#RECORD_ATTRIBUTE_NEEDS_RECORD}, so a
+   * record attribute in the default is refused instead of read as null. Answered by the class and not stored with
+   * {@code setCachedValue}, which would allocate a map for every record created.
+   */
+  private static final class DefaultValueContext extends BasicCommandContext {
+    @Override
+    protected Object getCachedValueFromParentHierarchy(final String key) {
+      return SuffixIdentifier.RECORD_ATTRIBUTE_NEEDS_RECORD.equals(key) ? Boolean.TRUE : super.getCachedValueFromParentHierarchy(key);
     }
   }
 

@@ -21,7 +21,9 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.query.sql.parser.InputParameter;
 import com.arcadedb.query.sql.parser.Json;
 import com.arcadedb.query.sql.parser.JsonArray;
@@ -39,6 +41,7 @@ public class UpdateContentStep extends AbstractExecutionStep {
   private int            arrayIndex = 0;
   private InputParameter inputParameter;
   private List<?>        parameterArray; // For handling List parameters
+  private String         statement; // the statement a CONTENT parameter belongs to, for the error message
 
   public UpdateContentStep(final Json json, final CommandContext context) {
     super(context);
@@ -50,9 +53,13 @@ public class UpdateContentStep extends AbstractExecutionStep {
     this.jsonArray = jsonArray;
   }
 
-  public UpdateContentStep(final InputParameter inputParameter, final CommandContext context) {
+  /**
+   * @param statement the statement name, for the error message a parameter of the wrong kind is refused with
+   */
+  public UpdateContentStep(final InputParameter inputParameter, final String statement, final CommandContext context) {
     super(context);
     this.inputParameter = inputParameter;
+    this.statement = statement;
   }
 
   /**
@@ -71,7 +78,7 @@ public class UpdateContentStep extends AbstractExecutionStep {
     if (op.getJsonArray() != null)
       return new UpdateContentStep(op.getJsonArray(), context);
     if (op.getInputParam() != null)
-      return new UpdateContentStep(op.getInputParam(), context);
+      return new UpdateContentStep(op.getInputParam(), statement, context);
     throw new CommandExecutionException("Missing payload for " + statement + " ... CONTENT: " + op);
   }
 
@@ -125,7 +132,7 @@ public class UpdateContentStep extends AbstractExecutionStep {
       } else if (item instanceof Map) {
         doc.fromMap((Map<String, Object>) item);
       } else {
-        throw new CommandExecutionException("Invalid array item for UPDATE CONTENT: " + item);
+        throw invalidContent("array item", item, "the items of a CONTENT list must be maps or documents");
       }
     } else if (inputParameter != null && parameterArray == null) {
       // Initialize parameterArray on first call if the parameter is a List
@@ -139,9 +146,19 @@ public class UpdateContentStep extends AbstractExecutionStep {
       } else if (val instanceof Map) {
         doc.fromMap((Map<String, Object>) val);
       } else {
-        throw new CommandExecutionException("Invalid value for UPDATE CONTENT: " + val);
+        throw invalidContent("value", val, "a CONTENT parameter must be a map, a document or a list of them");
       }
     }
+  }
+
+  /**
+   * A CONTENT parameter bound to a value of the wrong kind: the caller's mistake, a client error (issue #12795, where it answered
+   * 500 and named UPDATE for an INSERT too).
+   */
+  private TypeMismatchException invalidContent(final String what, final Object value, final String expected) {
+    final String kind = value != null ? " (" + value.getClass().getSimpleName() + ")" : "";
+    return new TypeMismatchException(
+        "Invalid " + what + " for " + statement + " CONTENT: " + InvalidArgumentException.quote(value) + kind + ", " + expected);
   }
 
   @Override
