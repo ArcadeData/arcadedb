@@ -32,7 +32,11 @@ import io.grpc.MethodDescriptor;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -146,5 +150,76 @@ public class GrpcColumnNamesIT extends BaseGrpcServerTest {
 
     assertThat(response.getColumnNamesList()).containsExactly("dev");
     assertThat(response.getRecords(0).getPropertiesMap()).containsKey("id");
+  }
+
+  @ParameterizedTest
+  @EnumSource(value = StreamQueryRequest.RetrievalMode.class, names = { "CURSOR", "PAGED", "MATERIALIZE_ALL" })
+  void everyStreamedBatchWithRowsNamesTheColumns(final StreamQueryRequest.RetrievalMode mode) {
+    final List<QueryResult> batches = stream("opencypher", "UNWIND [1, 2, 3] AS x RETURN x AS z, x * 2 AS a, x * 3 AS m", 2, mode);
+
+    assertThat(batches).hasSize(2);
+    for (final QueryResult batch : batches) {
+      assertThat(batch.getRecordsCount()).isPositive();
+      assertThat(batch.getColumnNamesList()).containsExactly("z", "a", "m");
+    }
+  }
+
+  @ParameterizedTest
+  @EnumSource(value = StreamQueryRequest.RetrievalMode.class, names = { "CURSOR", "PAGED", "MATERIALIZE_ALL" })
+  void aStreamWithoutRowsHasNoColumnNames(final StreamQueryRequest.RetrievalMode mode) {
+    for (final QueryResult batch : stream("opencypher", "UNWIND [] AS x RETURN x AS z, x AS a", 2, mode))
+      assertThat(batch.getColumnNamesList()).isEmpty();
+  }
+
+  @Test
+  void aSqlRowThatProjectsOverItsRecordNamesItsColumns() {
+    command("sql", "CREATE DOCUMENT TYPE ColDoc");
+    command("sql", "INSERT INTO ColDoc SET name = 'x', size = 3");
+
+    final ExecuteCommandResponse response = command("sql", "SELECT *, size * 2 AS doubled FROM ColDoc");
+
+    // SQL * expands to the record's @rid and @type too: they are columns of the row
+    assertThat(response.getColumnNamesList()).containsExactly("name", "size", "@rid", "@type", "doubled");
+    assertThat(response.getRecords(0).getPropertiesMap()).containsKeys("name", "size", "doubled");
+  }
+
+  @Test
+  void aPlainRecordRowHasNoColumnNames() {
+    command("sql", "CREATE DOCUMENT TYPE ColPlain");
+    command("sql", "INSERT INTO ColPlain SET name = 'x', size = 3");
+
+    assertThat(command("sql", "SELECT FROM ColPlain").getColumnNamesList()).isEmpty();
+  }
+
+  @Test
+  void rowsWithDifferentColumnsAreNamedByTheFirstRow() {
+    final ExecuteCommandResponse response = command("sql", "SELECT expand([{'a': 1}, {'b': 2, 'c': 3}])");
+
+    assertThat(response.getRecordsCount()).isEqualTo(2);
+    assertThat(response.getColumnNamesList()).containsExactly("a");
+  }
+
+  private ExecuteCommandResponse command(final String language, final String command) {
+    return stub.executeCommand(ExecuteCommandRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCredentials(credentials())
+        .setLanguage(language)
+        .setCommand(command)
+        .setReturnRows(true)
+        .build());
+  }
+
+  private List<QueryResult> stream(final String language, final String query, final int batchSize,
+      final StreamQueryRequest.RetrievalMode mode) {
+    final List<QueryResult> batches = new ArrayList<>();
+    stub.streamQuery(StreamQueryRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCredentials(credentials())
+        .setLanguage(language)
+        .setQuery(query)
+        .setBatchSize(batchSize)
+        .setRetrievalMode(mode)
+        .build()).forEachRemaining(batches::add);
+    return batches;
   }
 }
