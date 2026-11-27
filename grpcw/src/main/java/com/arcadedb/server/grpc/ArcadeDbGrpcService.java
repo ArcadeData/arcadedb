@@ -6586,7 +6586,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     return excluded != null && excluded.contains(name);
   }
 
-  private GrpcRecord convertToGrpcRecord(Record dbRecord, Database db) {
+  /** Package-private so a test can convert a record it loaded, without a LookupByRid call behind it. */
+  GrpcRecord convertToGrpcRecord(Record dbRecord, Database db) {
 
     final GrpcEncodingBudget budget = newEncodingBudget();
     GrpcRecord.Builder builder = GrpcRecord.newBuilder().setRid(dbRecord.getIdentity().toString());
