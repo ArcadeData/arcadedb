@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.executor;
 
 import com.arcadedb.database.RID;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
+import com.arcadedb.query.opencypher.ast.BooleanWrapperExpression;
 import com.arcadedb.query.opencypher.ast.ComparisonExpression;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
@@ -110,6 +111,10 @@ final class FilterPushdown {
     for (final BooleanExpression conjunct : WhereClause.conjuncts(whereClause.getConditionExpression())) {
       final Set<String> vars = WhereClause.collectVariables(conjunct);
       if (!vars.contains(pathVariable) || !available.containsAll(vars))
+        continue;
+      // A conjunct that may answer differently on a second evaluation (rand(), a pattern or subquery that reads the graph) is
+      // left to the clause's filter alone: the search and the filter would otherwise decide it twice, and could disagree
+      if (!RowIndependentValues.isDeterministic(new BooleanWrapperExpression(conjunct)))
         continue;
       result = result == null ? conjunct : new LogicalExpression(LogicalExpression.Operator.AND, result, conjunct);
     }

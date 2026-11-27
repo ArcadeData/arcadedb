@@ -171,6 +171,25 @@ class CypherShortestPathWherePredicateIssue13574Test extends TestHelper {
   }
 
   @Test
+  void undirectedSelfLoopIsOneRelationshipNotTwoPaths() {
+    database.transaction(() -> database.command("opencypher", "MATCH (m:Movie {title:'M1'}) CREATE (m)-[:R]->(m)"));
+    final String query = """
+        MATCH p = allShortestPaths((:Person {name:'K'})-[*]-(:Person {name:'A'}))
+        WHERE length(p) = 3 AND any(n IN nodes(p) WHERE n.title = 'M1')
+        RETURN [n IN nodes(p) | coalesce(n.name, n.title)] AS names""";
+    assertThat(namesOf(query, Map.of())).containsExactly(List.of("K", "M1", "M1", "A"));
+  }
+
+  @Test
+  void limitStopsTheLazySearch() {
+    final String query = """
+        MATCH p = allShortestPaths((:Person {name:'K'})-[*]-(:Person {name:'A'}))
+        WHERE length(p) = 2
+        RETURN [n IN nodes(p) | coalesce(n.name, n.title)] AS names LIMIT 1""";
+    assertThat(namesOf(query, Map.of())).hasSize(1);
+  }
+
+  @Test
   void withoutPredicateTheShortestPathIsUnchanged() {
     final String query = """
         MATCH p = shortestPath((:Person {name:'K'})-[*]-(:Person {name:'A'}))
