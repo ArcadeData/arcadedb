@@ -110,7 +110,8 @@ public class SQLLiteralParameterizer extends LiteralParameterizer<Statement> {
     return scan;
   }
 
-  private static boolean isCandidate(final Token token) {
+  /** Whether a token is a literal the scan records; the parser counts the same ones (issue #12605). */
+  static boolean isCandidate(final Token token) {
     return switch (token.getType()) {
       case SQLLexer.INTEGER_LITERAL, SQLLexer.FLOATING_POINT_LITERAL -> true;
       // an empty string stays: it carries no value worth a shared entry

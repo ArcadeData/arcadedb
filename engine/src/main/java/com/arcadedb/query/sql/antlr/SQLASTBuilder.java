@@ -259,6 +259,37 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       "map", "agg", "node", "rel", "path", "create");
 
   /**
+   * Whether the text being built holds more literals than a shape records: every statement built from it whose plans can reach
+   * the execution plan cache is then kept out of it as it is built (see {@link #planned}, issue #12605).
+   */
+  private final boolean keepPlansOutOfTheCache;
+
+  public SQLASTBuilder() {
+    this(false);
+  }
+
+  /**
+   * @param keepPlansOutOfTheCache true for a text with more literals than a shape records
+   *                               ({@link LiteralParameterizer#MAX_LITERALS}), which the parser counts
+   *                               on the tokens it read
+   */
+  public SQLASTBuilder(final boolean keepPlansOutOfTheCache) {
+    this.keepPlansOutOfTheCache = keepPlansOutOfTheCache;
+  }
+
+  /**
+   * Hands back a statement this builder just created, kept out of the execution plan cache when the text is a bulk one. Every
+   * SELECT, UPDATE and DELETE the builder creates goes through here, at any nesting depth (a LET, a FROM subquery, the source of
+   * an INSERT, the body of a script block): those are the statements a plan is cached for, and the literals can be in any of
+   * them. Marking them here costs nothing for a text under the limit and needs no walk of the finished tree for one above it.
+   */
+  private <S extends Statement> S planned(final S statement) {
+    if (keepPlansOutOfTheCache)
+      statement.excludeFromPlanCache();
+    return statement;
+  }
+
+  /**
    * Token indexes of every parameter that takes a sequential number ({@code ?}, {@code :name}, {@code bucket:?},
    * {@code bucket::name}), in source order. A parameter's number is its position in this array, so it follows where
    * the placeholder is WRITTEN, not the order in which the clauses happen to be visited: SKIP is built before LIMIT
@@ -501,7 +532,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    */
   @Override
   public SelectStatement visitSelectStatement(final SQLParser.SelectStatementContext ctx) {
-    final SelectStatement stmt = new SelectStatement();
+    final SelectStatement stmt = planned(new SelectStatement());
 
     // FROM clause. Visited before every other clause even though it is not written first: the target may declare an
     // alias, and the clauses below are the ones that reference it (issue #7153).
@@ -828,7 +859,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    */
   @Override
   public SelectStatement visitSelectStmt(final SQLParser.SelectStmtContext ctx) {
-    final SelectStatement stmt = new SelectStatement();
+    final SelectStatement stmt = planned(new SelectStatement());
 
     // Get the selectStatement context from the labeled alternative
     final SQLParser.SelectStatementContext selectCtx = ctx.selectStatement();
@@ -5260,7 +5291,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         stmt.selectStatement = (SelectStatement) visitResult;
       } else if (visitResult instanceof FromClause) {
         // Handle case where parser returns FromClause - wrap it in a SELECT
-        final SelectStatement select = new SelectStatement();
+        final SelectStatement select = planned(new SelectStatement());
         select.target = (FromClause) visitResult;
         stmt.selectStatement = select;
       } else {
@@ -5358,7 +5389,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    */
   @Override
   public UpdateStatement visitUpdateStmt(final SQLParser.UpdateStmtContext ctx) {
-    final UpdateStatement stmt = new UpdateStatement();
+    final UpdateStatement stmt = planned(new UpdateStatement());
     final SQLParser.UpdateStatementContext updateCtx = ctx.updateStatement();
 
     // Target
@@ -5595,7 +5626,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    */
   @Override
   public DeleteStatement visitDeleteStmt(final SQLParser.DeleteStmtContext ctx) {
-    final DeleteStatement stmt = new DeleteStatement();
+    final DeleteStatement stmt = planned(new DeleteStatement());
     final SQLParser.DeleteStatementContext deleteCtx = ctx.deleteStatement();
 
     // FROM clause

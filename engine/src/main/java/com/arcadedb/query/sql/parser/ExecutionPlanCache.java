@@ -84,6 +84,13 @@ public class ExecutionPlanCache {
   }
 
   /**
+   * @return how many plans the cache holds
+   */
+  public synchronized int size() {
+    return map.size();
+  }
+
+  /**
    * returns an already prepared SQL execution plan, taking it from the cache if it exists or creating a new one if it doesn't
    *
    * @param statement the SQL statement
