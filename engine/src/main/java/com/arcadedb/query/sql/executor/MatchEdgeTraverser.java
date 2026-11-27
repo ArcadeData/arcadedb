@@ -85,6 +85,15 @@ public class MatchEdgeTraverser {
   }
 
   /**
+   * Whether this traverser walks the pattern edge from its target back to its source. The {@code $matchPath} of a
+   * {@code while:}/{@code maxDepth:} walk is always reported in the direction of the pattern, from the hop's source to its
+   * target, whichever end the planner started the walk from (issue #12945).
+   */
+  protected boolean walksAgainstThePattern() {
+    return false;
+  }
+
+  /**
    * Gives back the heap a {@code while:}/{@code maxDepth:} walk still holds: one stopped before its end (a {@code LIMIT}, a
    * closed result set) holds its current path, which nothing else would release before the query context is collected.
    * Idempotent.
@@ -340,6 +349,7 @@ public class MatchEdgeTraverser {
     private final String               className;
     private final Integer              clusterId;
     private final Rid                  targetRid;
+    private final boolean              againstThePattern;
     private final WorkGuard            guard;
     private       OperationHeapLimit   heapLimit;
     /** The vertex of each frame: frame {@code i} is at depth {@code startDepth + i}. */
@@ -365,6 +375,7 @@ public class MatchEdgeTraverser {
       this.className = className;
       this.clusterId = clusterId;
       this.targetRid = targetRid;
+      this.againstThePattern = walksAgainstThePattern();
       this.guard = WorkGuard.forCommandDeadline(context);
     }
 
@@ -464,10 +475,23 @@ public class MatchEdgeTraverser {
     /**
      * The vertices from the item's starting point to {@code vertex}, the starting point excluded and {@code vertex}
      * included, after {@link #pathToHere}: the vertices of frames 1..top, then {@code vertex}, which is not pushed yet.
+     * <p>
+     * A walk against the pattern ({@link #walksAgainstThePattern()}) started at the hop's target and reached its source
+     * {@code vertex}, so the path in the direction of the pattern is the other way round: the source excluded and the target
+     * included, that is the vertices of frames top..0. It is built in that order here rather than reversed afterwards, so
+     * no second list is allocated per row (issue #12945). Only {@link #init} starts such a walk, with no
+     * {@link #pathToHere}.
      */
     private List<Identifiable> pathTo(final Identifiable vertex) {
       if (size == 0)
         return pathToHere == null ? Collections.emptyList() : pathToHere;
+
+      if (againstThePattern) {
+        final List<Identifiable> path = new ArrayList<>(size);
+        for (int i = size - 1; i >= 0; i--)
+          path.add(vertices[i].getIdentity());
+        return path;
+      }
 
       final List<Identifiable> path = new ArrayList<>((pathToHere == null ? 0 : pathToHere.size()) + size);
       if (pathToHere != null)
