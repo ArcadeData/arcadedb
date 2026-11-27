@@ -1043,6 +1043,10 @@ public enum Type {
           return new BigDecimal(string);
         else if (value instanceof Number)
           return new BigDecimal(value.toString());
+        else if (value instanceof Boolean)
+          // no DECIMAL value, as a boolean has none for the other numeric types: kept as it came, it was ordered against a DECIMAL by the
+          // name of its class, so a scan answered every row for "dec > true" where the index lookup answered none (issue #12936)
+          return asNumber(value, "DECIMAL", property);
 
       } else if (targetClass.equals(Double.TYPE) || targetClass.equals(Double.class)) {
         if (value instanceof Double)

@@ -68,6 +68,7 @@ import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.utility.CollectionUtils;
+import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.Pair;
 
@@ -909,6 +910,11 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       // A bound no integral key equals (12.5, 1e19) is moved onto the key that bounds the same keys, or matches none (#9021).
       // First: the conversion check below refuses a bound past the range of the key type, which this maps into it
       final Object[][] seek = { convertedFrom, convertedTo, { fromKeyIncluded, toKeyIncluded } };
+      // A numeric string bound of a DATETIME key is the epoch count the scan's comparison reads it as (#12936), not a bound no key
+      // can be compared with. Checked again on every entry, as the scan would: the key holds a coarser precision than the bound can
+      if (mapNumericStringDateTimeBounds(seek, rangeKeySize))
+        verifyKeys = true;
+
       if (!mapInexactIntegralBounds(seek, rangeKeySize))
         continue;
 
@@ -1263,6 +1269,47 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
         && IntegralKeyBound.isEmptyRange(seek[0][rangeSlot], seek[1][rangeSlot]))
       return false;
     return true;
+  }
+
+  /**
+   * Converts, in the copies {@code seek} holds, a numeric string bound of the range slot of a DATETIME key into the date-time
+   * {@link DateUtils#numericStringAsDateTime} reads it as, the reading of the scan's {@code <}, {@code <=}, {@code >},
+   * {@code >=} and {@code BETWEEN}. The index has no key for the string itself and answered nothing (issue #12936). Only a range
+   * slot: an equality compares such a string with no date-time on either path.
+   * <p>
+   * Only a key of a DATETIME type: a DATE key converts the string to a day, as the scan's comparison does, and the scan compares
+   * no numeric string with a ZONED_DATETIME (nor with a DATETIME held as a {@code ZonedDateTime}), so there the index declines as
+   * the scan does, rather than reading every key of the range only to drop it.
+   *
+   * @return true when a bound was converted
+   */
+  private boolean mapNumericStringDateTimeBounds(final Object[][] seek, final int rangeKeySize) {
+    if (!isRangeCondition() || !(index instanceof IndexInternal internalIndex))
+      return false;
+    final byte[] keyTypes = internalIndex.getBinaryKeyTypes();
+    final int rangeSlot = rangeKeySize - 1;
+    if (keyTypes == null || rangeSlot < 0 || rangeSlot >= keyTypes.length)
+      return false;
+    final byte keyType = keyTypes[rangeSlot];
+    if (keyType != BinaryTypes.TYPE_DATETIME && keyType != BinaryTypes.TYPE_DATETIME_SECOND
+        && keyType != BinaryTypes.TYPE_DATETIME_MICROS && keyType != BinaryTypes.TYPE_DATETIME_NANOS)
+      return false;
+    boolean mapped = false;
+    for (int side = 0; side < 2; side++) {
+      final Object[] key = seek[side];
+      if (key == null || key.length <= rangeSlot)
+        continue;
+      final Object dateTime = DateUtils.numericStringAsDateTime(context.getDatabase(), key[rangeSlot],
+          BinaryTypes.getClassFromType(keyType));
+      if (dateTime == null)
+        continue;
+      // a copy: the array can be the one the other side, or another seek, holds
+      final Object[] mappedKey = key.clone();
+      mappedKey[rangeSlot] = dateTime;
+      seek[side] = mappedKey;
+      mapped = true;
+    }
+    return mapped;
   }
 
   /** {@link #mapInexactIntegralBound} outcomes. */
