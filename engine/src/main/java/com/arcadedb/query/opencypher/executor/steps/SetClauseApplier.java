@@ -27,6 +27,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VirtualVertex;
 import com.arcadedb.query.opencypher.Labels;
@@ -214,9 +215,6 @@ public final class SetClauseApplier {
           applyMergeMap(item, result, writtenDocs, asPropertyMap(values[i]));
           break;
         case LABELS:
-          // A label write copies the vertex into another type through modify(), which finds what the clause wrote before
-          // it only once that is saved: saved first
-          savePending();
           applyLabels(item, result, writtenDocs, labelReplacements, asLabelList(values[i]));
           break;
         }
@@ -712,6 +710,49 @@ public final class SetClauseApplier {
     return doc;
   }
 
+  /**
+   * Readies the records the clause has written and not saved yet for the label write that moves {@code vertex} to another type
+   * (issue #12824), and answers the instance the move has to copy.
+   * <ul>
+   *   <li>the vertex's own unsaved copy is what the move copies, and it is dropped from the queue unsaved: the move deletes the
+   *       record, so saving it first only fired its UPDATE triggers on a half-applied record about to disappear;</li>
+   *   <li>a record the move rewrites is saved first: an edge of the vertex (re-created from what the transaction holds, which is
+   *       only what was saved) and a vertex at the other end of one (whose edge list the move rewrites on the saved copy, so
+   *       its own unsaved copy, saved later, would overwrite the re-attached edges);</li>
+   *   <li>every other record stays queued and is saved once at the end of the clause.</li>
+   * </ul>
+   */
+  private Vertex prepareForLabelMove(final Vertex vertex) {
+    if (pendingSaves.isEmpty())
+      return vertex;
+    final RID rid = vertex.getIdentity();
+    Vertex toMove = vertex;
+    int kept = 0;
+    for (int i = 0; i < pendingSaves.size(); i++) {
+      final MutableDocument pending = pendingSaves.get(i);
+      if (pending instanceof Vertex pendingVertex && rid.equals(pending.getIdentity()))
+        toMove = pendingVertex;
+      else if (isRewrittenByLabelMove(pending, vertex, rid))
+        pending.save();
+      else
+        pendingSaves.set(kept++, pending);
+    }
+    for (int i = pendingSaves.size() - 1; i >= kept; i--)
+      pendingSaves.remove(i);
+    return toMove;
+  }
+
+  /** Whether moving {@code vertex} (whose RID is {@code rid}) to another type rewrites {@code pending}. */
+  private static boolean isRewrittenByLabelMove(final MutableDocument pending, final Vertex vertex, final RID rid) {
+    if (pending instanceof Edge edge)
+      return rid.equals(edge.getOut()) || rid.equals(edge.getIn());
+    if (pending instanceof Vertex other)
+      // An edge of a unidirectional type that ends in the vertex is stored on its source only
+      return vertex.isConnectedTo(other) || other.isConnectedTo(vertex, Vertex.DIRECTION.OUT);
+    // A document is no part of the graph the move rewrites
+    return false;
+  }
+
   /** Saves every record the clause has written since the last call, once each, in the order the clause first wrote them. */
   private void savePending() {
     for (int i = 0; i < pendingSaves.size(); i++)
@@ -875,8 +916,8 @@ public final class SetClauseApplier {
       return;
 
     // Rewrite the vertex under the composite type: the record moves, and the replacement is recorded so this row and
-    // every later one follow it.
-    labelReplacements.replace(vertex, newTypeName);
+    // every later one follow it. The move copies what the clause wrote to the vertex so far (issue #12824).
+    labelReplacements.replace(prepareForLabelMove(vertex), newTypeName);
     if (newLabelsCount > 0)
       context.getStatistics().addLabelsAdded(newLabelsCount);
 

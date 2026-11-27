@@ -151,6 +151,59 @@ class CypherSetSingleSaveIssue12824Test extends TestHelper {
   }
 
   @Test
+  void labelWriteOnAnotherRecordDoesNotSaveTheFirstOneTwice() {
+    insert("INSERT INTO T SET k = 2, a = 0, b = 0, c = 0");
+
+    database.command("opencypher", "MATCH (x:T {k: 1}), (y:T {k: 2}) SET x.a = 1, y:Extra, x.b = 3").close();
+
+    assertThat(audit()).containsExactly("before k=1 a=1 b=3 c=0", "after k=1 a=1 b=3 c=0");
+  }
+
+  @Test
+  void labelItemThatAddsNoLabelDoesNotSaveTwice() {
+    database.command("opencypher", "MATCH (n:T) SET n.a = 1, n:T, n.b = 3").close();
+
+    assertThat(audit()).containsExactly("before k=1 a=1 b=3 c=0", "after k=1 a=1 b=3 c=0");
+  }
+
+  @Test
+  void labelWriteOnTheWrittenVertexFiresNoUpdateOnAHalfAppliedRecord() {
+    database.command("opencypher", "MATCH (n:T) SET n.a = 9, n:Extra, n.b = 9").close();
+
+    // The vertex the label write moves is deleted, so it is never saved half-applied (a=9 with b still 0)
+    assertThat(audit()).doesNotContain("before k=1 a=9 b=0 c=0", "after k=1 a=9 b=0 c=0");
+    try (final ResultSet rs = database.query("opencypher", "MATCH (n:Extra) RETURN n.a AS a, n.b AS b")) {
+      final Result row = rs.next();
+      assertThat(intOf(row, "a")).isEqualTo(9);
+      assertThat(intOf(row, "b")).isEqualTo(9);
+      assertThat(rs.hasNext()).isFalse();
+    }
+  }
+
+  @Test
+  void labelWriteOnANeighbourKeepsTheWrittenVertexAndItsEdge() {
+    insert("INSERT INTO T SET k = 2, a = 0, b = 0, c = 0");
+    database.command("sql", "CREATE EDGE TYPE E");
+    database.transaction(() -> database.command("opencypher", "MATCH (x:T {k: 1}), (y:T {k: 2}) CREATE (x)-[:E {w: 0}]->(y)").close());
+
+    // The move of y re-creates the edge from x, so x and the edge carry what the clause wrote before the move
+    database.command("opencypher", "MATCH (x:T {k: 1})-[r:E]->(y:T {k: 2}) SET x.a = 1, r.w = 5, y:Extra, x.b = 3").close();
+
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH (x:T {k: 1})-[r:E]->(y:Extra) RETURN x.a AS a, x.b AS b, r.w AS w, y.k AS k")) {
+      final Result row = rs.next();
+      assertThat(intOf(row, "a")).isEqualTo(1);
+      assertThat(intOf(row, "b")).isEqualTo(3);
+      assertThat(intOf(row, "w")).isEqualTo(5);
+      assertThat(intOf(row, "k")).isEqualTo(2);
+      assertThat(rs.hasNext()).isFalse();
+    }
+    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS n FROM E")) {
+      assertThat(intOf(rs.next(), "n")).isEqualTo(1);
+    }
+  }
+
+  @Test
   void maxConstraintStillRefusesTheClause() {
     database.command("sql", "CREATE VERTEX TYPE M");
     database.command("sql", "CREATE PROPERTY M.a INTEGER (max 100)");
