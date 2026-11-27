@@ -1487,32 +1487,56 @@ public final class SnapshotInstaller {
    * crash partway leaves dbPath partially cleared, but the caller keeps the {@code .snapshot-pending}
    * marker on failure so {@link #recoverPendingSnapshotSwaps} restores the backup on the next startup.
    */
-  private static void clearLiveDatabaseFiles(final Path dbPath) throws IOException {
-    clearLiveDatabaseFiles(dbPath, null, null);
-  }
-
   /**
-   * Same as above, except that an entry {@code originalToKeep} accepts is moved to {@code backupDir} instead of deleted: the
-   * swap's own rollback passes {@link #unbackedOriginal}, so the listing that clears the live directory is also the one
-   * that keeps every original it sees, and an original no earlier listing showed is restored rather than deleted
-   * (issue #13618).
+   * Only an entry that is not of uncertain origin is deleted (issue #13618): one {@link #unbackedOriginal} accepts (the
+   * backup does not hold it, and the snapshot does not name it or still has it staged) may be an original that no listing
+   * of the swap showed. With {@code originalToKeep}, the swap's own rollback, nothing has opened the directory, so such an
+   * entry IS an original and is moved to {@code backupDir} to be restored. Without it (a rollback resumed by recovery, or
+   * one after the validation of the installed copy) an open may have written files that are neither the snapshot's nor
+   * originals, so the entry is preserved in {@link #SNAPSHOT_ORPHANS_DIR} instead, never deleted.
    */
   private static void clearLiveDatabaseFiles(final Path dbPath, final Predicate<Path> originalToKeep, final Path backupDir)
       throws IOException {
+    final Predicate<Path> uncertain = originalToKeep != null ?
+        originalToKeep :
+        unbackedOriginal(dbPath, dbPath.resolve(SNAPSHOT_NEW_DIR), backupDir);
+    final List<String> orphaned = new ArrayList<>();
     // Drained, not walked once (issue #13618): a snapshot file a single walk missed (a dictionary of another version,
     // say) stayed live next to the restored originals, and the engine refused the directory as two files on one id.
     drainDirectory(dbPath, SnapshotInstaller::isLiveDatabaseEntry, entry -> {
-      if (originalToKeep != null && originalToKeep.test(entry)) {
-        Files.move(entry, backupDir.resolve(entry.getFileName().toString()));
-        LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
-            "Snapshot rollback of %s kept original '%s', which no earlier listing showed, by moving it to the backup", null,
-            dbPath, entry.getFileName());
+      if (uncertain.test(entry)) {
+        if (originalToKeep != null) {
+          Files.move(entry, backupDir.resolve(entry.getFileName().toString()));
+          LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
+              "Snapshot rollback of %s kept original '%s', which no earlier listing showed, by moving it to the backup", null,
+              dbPath, entry.getFileName());
+        } else {
+          moveToOrphans(dbPath, entry);
+          orphaned.add(entry.getFileName().toString());
+        }
         snapshotSwapProgress("RESCUING:" + entry.getFileName());
       } else if (Files.isDirectory(entry, LinkOption.NOFOLLOW_LINKS))
         FileUtils.deleteRecursively(entry.toFile());
       else
         Files.delete(entry);
     });
+    if (!orphaned.isEmpty())
+      LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
+          "Snapshot rollback of %s found %d live entries the retained backup does not hold and the snapshot did not install: "
+              + "moved them to %s rather than deleting them, since any of them may be an original the swap did not see: %s. "
+              + "They are safe to delete once the database has been verified", null, dbPath, orphaned.size(),
+          SNAPSHOT_ORPHANS_DIR, orphaned);
+  }
+
+  /** Moves {@code entry} of {@code dbDir} into {@link #SNAPSHOT_ORPHANS_DIR}, under a suffixed name when that one is taken. */
+  private static void moveToOrphans(final Path dbDir, final Path entry) throws IOException {
+    final Path orphans = dbDir.resolve(SNAPSHOT_ORPHANS_DIR);
+    Files.createDirectories(orphans);
+    final String name = entry.getFileName().toString();
+    Path target = orphans.resolve(name);
+    for (int suffix = 1; Files.exists(target, LinkOption.NOFOLLOW_LINKS); suffix++)
+      target = orphans.resolve(name + "." + suffix);
+    Files.move(entry, target);
   }
 
   /**
@@ -3021,6 +3045,9 @@ public final class SnapshotInstaller {
       // entries that now point at it, so a crash after the backup is gone cannot lose the swap (#4830).
       fsyncDirectory(dbDir);
       fsyncDirectory(newDir);
+      // Phase 2 and the sweep may have moved missed originals into the backup: their entries must be durable before
+      // INSTALLED, after which a crash may roll forward and a later validation failure restores from the backup.
+      fsyncDirectory(backupDir);
       // The drain above is what lets INSTALLED mean "nothing is left in the staging". Whether the live files are exactly
       // what the leader sent is then checked against the manifest by every caller (swapAndReopen,
       // rollBackUnlessSnapshotOpens) before the retained backup can be deleted (#11200, #11223).
@@ -3067,8 +3094,9 @@ public final class SnapshotInstaller {
    * snapshot's manifest does not name, or one whose staged copy is still in {@code newDir} (issue #13618). Such an entry
    * can only be an original that phase 1's listing missed: left live, it would sit next to the snapshot's files (a
    * dictionary of another version is enough for the engine to refuse the directory), and a rollback would delete it with
-   * the snapshot files instead of restoring it. Called only before anything opens the directory (before INSTALLED is
-   * published, or by the swap's own rollback), so nothing but the swap has written to it. A top-level name that is both an
+   * the snapshot files instead of restoring it. Only before anything opens the directory (before INSTALLED is published,
+   * or in the swap's own rollback) does the answer prove the entry an original; afterwards it only says the origin is
+   * uncertain, see {@link #clearLiveDatabaseFiles}. A top-level name that is both an
    * original and a snapshot directory counts as the snapshot's, the safe reading: phase 2 already rescued the original
    * when it installed the snapshot's entry over it. Without a manifest (in {@code dbDir}, or still staged) only the second
    * test applies.

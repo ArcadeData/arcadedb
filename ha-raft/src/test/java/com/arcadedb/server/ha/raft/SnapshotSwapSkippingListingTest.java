@@ -22,6 +22,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -382,6 +384,40 @@ class SnapshotSwapSkippingListingTest {
     }
 
     assertThat(databaseFiles(dbDir)).as("the original only the clear saw is restored, not deleted").isEqualTo(originals());
+  }
+
+  /**
+   * Regression for #13618: a rollback resumed by recovery (after a crash once ROLLING_BACK was published, or after a
+   * failed validation) cannot tell an original that no listing of the swap showed from a file an open wrote, so it
+   * preserves such an entry in the orphans directory instead of deleting it, and still deletes the snapshot's own files.
+   */
+  @ParameterizedTest
+  @ValueSource(strings = { "ROLLING_BACK", "VALIDATION_FAILED" })
+  void resumedRollbackPreservesAnEntryOfUncertainOrigin(final String phase, @TempDir final Path databasesDir)
+      throws IOException {
+    final Path dbDir = databasesDir.resolve("drill");
+    final Path snapshotBackup = dbDir.resolve(SnapshotInstaller.SNAPSHOT_BACKUP_DIR);
+    write(dbDir, snapshot());
+    final Map<String, Long> manifest = new HashMap<>();
+    for (final Map.Entry<String, String> file : snapshot().entrySet())
+      manifest.put(file.getKey(), (long) file.getValue().length());
+    SnapshotInstaller.writeInstalledFilesManifest(dbDir, manifest);
+    // The v0 dictionary is an original the swap never moved: still live, in neither the snapshot nor the backup.
+    final String missed = "dictionary.0.327680.v0.dict";
+    final Map<String, String> backedUp = new LinkedHashMap<>(originals());
+    backedUp.remove(missed);
+    write(snapshotBackup, backedUp);
+    Files.writeString(dbDir.resolve(missed), "old-dictionary");
+    Files.writeString(dbDir.resolve(SnapshotInstaller.SNAPSHOT_PENDING_FILE), "");
+    Files.writeString(dbDir.resolve(SnapshotInstaller.SNAPSHOT_SWAP_STATE_FILE), phase);
+
+    SnapshotInstaller.recoverPendingSnapshotSwaps(databasesDir);
+
+    assertThat(databaseFiles(dbDir)).as("the backed-up originals are restored, the snapshot-only v1 dictionary is gone")
+        .isEqualTo(backedUp);
+    final Path orphan = dbDir.resolve(SnapshotInstaller.SNAPSHOT_ORPHANS_DIR).resolve(missed);
+    assertThat(orphan).as("the entry of uncertain origin is preserved, not deleted").exists();
+    assertThat(Files.readString(orphan)).isEqualTo("old-dictionary");
   }
 
   // Regression for #13618: recovery never accepts an install whose staging still holds staged files
