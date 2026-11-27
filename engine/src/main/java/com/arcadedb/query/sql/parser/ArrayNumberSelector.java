@@ -54,11 +54,19 @@ public class ArrayNumberSelector extends SimpleNode {
       result = integer;
     }
 
-    if (result == null) {
-      return null;
-    }
-    if (result instanceof Number number) {
-      return number.intValue();
+    return toIndex(result);
+  }
+
+  /**
+   * The value as an index, or null when it is not a number. A value outside the int range saturates instead of being narrowed:
+   * {@code intValue()} of a long keeps its low 32 bits, so 4294967297 read as index 1 (issue #12849).
+   */
+  private static Integer toIndex(final Object value) {
+    if (value instanceof Integer integerValue)
+      return integerValue;
+    if (value instanceof Number number) {
+      final long index = number.longValue();
+      return index > Integer.MAX_VALUE ? Integer.MAX_VALUE : index < Integer.MIN_VALUE ? Integer.MIN_VALUE : (int) index;
     }
     return null;
   }
@@ -73,13 +81,7 @@ public class ArrayNumberSelector extends SimpleNode {
       result = integer;
     }
 
-    if (result == null) {
-      return null;
-    }
-    if (result instanceof Number number) {
-      return number.intValue();
-    }
-    return null;
+    return toIndex(result);
   }
 
   /**

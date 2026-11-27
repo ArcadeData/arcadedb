@@ -49,6 +49,10 @@ public class ArrayRangeSelector extends SimpleNode {
       fromSelector.toString(params, builder);
     }
     if (newRange) {
+      // "1..3" is one INTEGER_RANGE token, but in any other shape a digit glued to the operator lexes as a float ("1." of
+      // "1..", "1..(2)", "x - 1..3") and the rendering does not parse again: keep them apart (issue #12849)
+      if ((from == null || to == null) && builder.length() > 0 && Character.isDigit(builder.charAt(builder.length() - 1)))
+        builder.append(' ');
       builder.append("..");
       if (included) {
         builder.append('.');
