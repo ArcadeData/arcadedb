@@ -204,6 +204,23 @@ class CypherSetSingleSaveIssue12824Test extends TestHelper {
   }
 
   @Test
+  void expressionTargetWritesOnTheUnsavedCopyOfAnEarlierItem() {
+    insert("INSERT INTO T SET k = 2, a = 0, b = 0, c = 0");
+    database.command("sql", "CREATE EDGE TYPE E");
+    database.transaction(() -> database.command("opencypher", "MATCH (x:T {k: 1}), (y:T {k: 2}) CREATE (x)-[:E]->(y)").close());
+
+    // startNode(r) loads its own instance of n: the write lands on the copy n.a = 1 left unsaved, so neither item is lost
+    database.command("opencypher", "MATCH (n:T {k: 1})-[r:E]->() SET n.a = 1, (CASE WHEN true THEN startNode(r) END).b = 2").close();
+
+    assertThat(audit()).containsExactly("before k=1 a=1 b=2 c=0", "after k=1 a=1 b=2 c=0");
+    try (final ResultSet rs = database.query("sql", "SELECT a, b FROM T WHERE k = 1")) {
+      final Result row = rs.next();
+      assertThat(intOf(row, "a")).isEqualTo(1);
+      assertThat(intOf(row, "b")).isEqualTo(2);
+    }
+  }
+
+  @Test
   void maxConstraintStillRefusesTheClause() {
     database.command("sql", "CREATE VERTEX TYPE M");
     database.command("sql", "CREATE PROPERTY M.a INTEGER (max 100)");
