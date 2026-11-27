@@ -28,6 +28,7 @@ import com.arcadedb.query.sql.executor.QueryHeapTracker;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import de.bwaldvogel.mongo.bson.Document;
+import de.bwaldvogel.mongo.exception.MongoServerError;
 import de.bwaldvogel.mongo.wire.message.MongoQuery;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -312,6 +313,18 @@ class MongoBufferedResultsTest {
   }
 
   @Test
+  void aFailureOfAStageIsAnsweredWithTheSameCodeWhetherOrNotThePipelineMatches() {
+    final Document divideByZero = new Document("$project", new Document("x", new Document("$divide", List.of("$k", 0))));
+    final Document matchAll = new Document("$match", new Document("k", new Document("$gt", 0)));
+
+    final MongoServerError plain = failure(divideByZero);
+    final MongoServerError matched = failure(matchAll, divideByZero);
+    assertThat(plain.getCode()).isEqualTo(16608);
+    assertThat(matched.getCode()).isEqualTo(plain.getCode());
+    assertThat(matched.getMessage()).isEqualTo(plain.getMessage()).contains("can't $divide by zero");
+  }
+
+  @Test
   void anAggregationHandsBackWhatItCharged() {
     cap(-1L);
     final long baseline = QueryHeapBudget.getReservedBytes();
@@ -349,6 +362,15 @@ class MongoBufferedResultsTest {
 
   private Document find(final Document command) {
     return wrapper.handleCommand(null, "find", command, null, null);
+  }
+
+  private MongoServerError failure(final Document... stages) {
+    try {
+      aggregate(stages);
+    } catch (final MongoServerError e) {
+      return e;
+    }
+    throw new AssertionError("the pipeline was expected to fail");
   }
 
   private Document aggregate(final Document... stages) {

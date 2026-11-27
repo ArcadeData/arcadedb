@@ -595,7 +595,11 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     }
   }
 
-  /** The documents of {@code stream}, each counted against {@code heap} as a stage that holds them all takes it in. */
+  /**
+   * The documents of {@code stream}, each counted against {@code heap} as a stage that holds them all takes it in. The documents of the
+   * answer are counted against the same limit by their own count: the cap on elements applies to each of the two, the budget of bytes to
+   * both.
+   */
   private static Stream<Document> heldBy(final Stream<Document> stream, final OperationHeapLimit heap) {
     final long[] held = { 0L };
     return stream.peek(document -> MongoResultHeap.add(heap, ++held[0], document));

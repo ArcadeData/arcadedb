@@ -267,6 +267,24 @@ class MongoFindCursorTest {
   }
 
   @Test
+  void aFailureReadingADocumentSurfacesWhenItIsAskedForAndReleasesTheCursor() {
+    final Source source = new Source(100, 3);
+    final MongoFindCursor cursor = new MongoFindCursor(source, source, 0, 0, null);
+
+    final Iterator<Document> documents = cursor.documents();
+    for (int expected = 0; expected < 3; expected++) {
+      assertThat(documents.hasNext()).isTrue();
+      assertThat(documents.next().get("n")).isEqualTo(expected);
+    }
+    assertThat(source.closed.get()).as("nothing failed yet").isZero();
+
+    assertThatThrownBy(documents::hasNext).isInstanceOf(IllegalStateException.class).hasMessageContaining("row 3");
+    assertThat(source.closed.get()).as("the failed cursor is released").isEqualTo(1);
+    assertThat(cursor.isClosed()).isTrue();
+    assertThat(documents.hasNext()).isFalse();
+  }
+
+  @Test
   void aStreamOfTheCursorStopsReadingWhereItIsStoppedAndReleasesTheCursorWhenClosed() {
     final Source source = new Source(100_000);
     final MongoFindCursor cursor = new MongoFindCursor(source, source, 0, 0, null);
