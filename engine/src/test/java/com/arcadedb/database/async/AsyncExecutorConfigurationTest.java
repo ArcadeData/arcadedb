@@ -714,10 +714,19 @@ class AsyncExecutorConfigurationTest {
         async.setParallelLevel(4);
         async.setParallelLevel(2);
 
-        // and it has to go on past the last shrink, the one that leaves bucket 3 with a surviving worker only
+        // and it has to go on past the last shrink, the one that leaves bucket 3 with a surviving worker only. The
+        // producer counts a task only after scheduleTask() returned, so the first count past the snapshot can still
+        // belong to a call that started during the shrink: the second one is from a call that began after it returned.
+        // The deadline is a hang detector, well inside @Timeout, so a producer that stops being accepted fails here
+        // with a message rather than as a bare JUnit timeout.
         final int scheduledAtTheLastShrink = scheduled.get();
-        while (scheduled.get() == scheduledAtTheLastShrink && producerFailures.isEmpty())
+        final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+        while (scheduled.get() < scheduledAtTheLastShrink + 2 && producerFailures.isEmpty() && producer.isAlive()
+            && System.nanoTime() < deadline)
           Thread.sleep(1);
+        if (producerFailures.isEmpty())
+          assertThat(scheduled.get()).as("the producer must have kept scheduling after the last shrink")
+              .isGreaterThanOrEqualTo(scheduledAtTheLastShrink + 2);
       } finally {
         stop.set(true);
         producer.join(30_000);
