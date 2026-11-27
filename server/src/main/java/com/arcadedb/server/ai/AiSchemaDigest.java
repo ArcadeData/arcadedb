@@ -171,7 +171,7 @@ public final class AiSchemaDigest {
     int shown = 0;
     int index = 0;
     for (; index < entries.size(); index++) {
-      final String line = line(entries.get(index));
+      final String line = line(database, entries.get(index));
       if (lines.length() + line.length() + 1 > fullBudget)
         break;
       lines.append(line).append('\n');
@@ -206,7 +206,7 @@ public final class AiSchemaDigest {
     return out.toString();
   }
 
-  private static String line(final Entry entry) {
+  private static String line(final Database database, final Entry entry) {
     final DocumentType type = entry.type();
     final StringBuilder sb = new StringBuilder(256);
     sb.append(kind(type)).append(' ').append(clean(type.getName(), MAX_NAME)).append(" ~").append(count(entry.rows())).append(" rows, ")
@@ -226,7 +226,7 @@ public final class AiSchemaDigest {
 
     final Collection<TypeIndex> typeIndexes = type.getAllIndexes(false);
     final List<String> indexes = indexes(typeIndexes);
-    appendProperties(sb, type, typeIndexes);
+    appendProperties(database, sb, type, typeIndexes);
     if (!indexes.isEmpty()) {
       sb.append(" | idx: ");
       for (int i = 0; i < indexes.size() && i < MAX_INDEXES; i++)
@@ -238,7 +238,8 @@ public final class AiSchemaDigest {
   }
 
   /** The properties most useful for writing a query first: the indexed ones, then the mandatory ones, then by name. */
-  private static void appendProperties(final StringBuilder sb, final DocumentType type, final Collection<TypeIndex> typeIndexes) {
+  private static void appendProperties(final Database database, final StringBuilder sb, final DocumentType type,
+      final Collection<TypeIndex> typeIndexes) {
     final Set<String> indexed = new HashSet<>();
     for (final TypeIndex index : typeIndexes)
       indexed.addAll(index.getPropertyNames());
@@ -258,7 +259,7 @@ public final class AiSchemaDigest {
       final Property p = properties.get(i);
       if (i > 0)
         sb.append(", ");
-      sb.append(clean(p.getName(), MAX_NAME)).append(' ').append(typeName(p));
+      sb.append(clean(p.getName(), MAX_NAME)).append(' ').append(typeName(database, p));
       if (p.isMandatory())
         sb.append('!');
       if (p.isNotNull())
@@ -270,9 +271,10 @@ public final class AiSchemaDigest {
       sb.append(", +").append(properties.size() - shown).append(" more");
   }
 
-  private static String typeName(final Property p) {
+  private static String typeName(final Database database, final Property p) {
     final String base = p.getType().name();
-    final String of = p.getOfType();
+    // The declared type is a reference to another type: named only when the user may read that one
+    final String of = SecurityHelper.readableOfType(database, p);
     return of == null || of.isEmpty() ? base : base + "<" + clean(of, MAX_NAME) + ">";
   }
 
@@ -456,8 +458,9 @@ public final class AiSchemaDigest {
         break;
       }
       final JSONObject pj = new JSONObject().put("name", clean(p.getName(), MAX_NAME)).put("type", p.getType().name());
-      if (p.getOfType() != null)
-        pj.put("ofType", clean(p.getOfType(), MAX_NAME));
+      final String ofType = SecurityHelper.readableOfType(database, p);
+      if (ofType != null)
+        pj.put("ofType", clean(ofType, MAX_NAME));
       if (p.isMandatory())
         pj.put("mandatory", true);
       if (p.isNotNull())
