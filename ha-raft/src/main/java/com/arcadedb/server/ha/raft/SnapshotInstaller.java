@@ -2978,7 +2978,8 @@ public final class SnapshotInstaller {
             // A live entry under a staged name that the backup does not hold is an original phase 1 did not see (its
             // listing missed it, issue #13618): phase 1 renames, so an original it moved is gone from dbDir, and a staged
             // name is installed once. It goes to the backup first rather than being overwritten.
-            if (Files.exists(target, LinkOption.NOFOLLOW_LINKS) && !Files.exists(backupDir.resolve(name), LinkOption.NOFOLLOW_LINKS)) {
+            if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)
+                && !Files.exists(backupDir.resolve(name), LinkOption.NOFOLLOW_LINKS)) {
               Files.move(target, backupDir.resolve(name));
               snapshotSwapProgress("RESCUING:" + name);
             }
@@ -2986,7 +2987,7 @@ public final class SnapshotInstaller {
             snapshotSwapProgress("INSTALLING:" + name);
           });
       HALog.log(SnapshotInstaller.class, HALog.BASIC, "Snapshot swap of %s: installed %d staged entries", dbDir, installed);
-      moveOriginalsLeftLiveToTheBackup(dbDir, backupDir);
+      moveOriginalsLeftLiveToTheBackup(dbDir, newDir, backupDir);
 
       // Make the rename directory entries durable before the caller deletes the retained backup. The
       // file data itself was already fsynced at extraction time; this fsync persists the directory
@@ -3005,6 +3006,11 @@ public final class SnapshotInstaller {
       // before restoring the originals; if phase 1 failed partway, the un-moved originals are still in
       // dbDir, so restoreBackup just moves the backed-up ones back to reconstruct the full set.
       try {
+        // The rollback below clears the live directory, so an original phase 1 missed must reach the backup first
+        // (issue #13618). Nothing has opened the directory yet, so a live entry the backup does not hold, that is not
+        // the snapshot's or whose staged copy is still in the staging, can only be an original.
+        if (liveMovedToBackup)
+          moveOriginalsLeftLiveToTheBackup(dbDir, newDir, backupDir);
         writeSwapPhase(dbDir, liveMovedToBackup ? SwapPhase.ROLLING_BACK : SwapPhase.RESTORING);
         resumeRollback(dbDir, backupDir);
       } catch (final IOException restoreEx) {
@@ -3028,27 +3034,37 @@ public final class SnapshotInstaller {
   }
 
   /**
-   * Once every staged entry is live, moves to the backup each live entry that the snapshot does not name and the backup
-   * does not hold (issue #13618). Such an entry can only be an original that phase 1's listing missed: left live, it would
-   * sit next to the snapshot's files (a dictionary of another version is enough for the engine to refuse the directory),
-   * and a later rollback would delete it with the snapshot files instead of restoring it. Runs before INSTALLED is
-   * published and before anything opens the directory, so nothing but the swap has written to it. A no-op without the
-   * snapshot's manifest, the only account of which names are the snapshot's.
+   * Moves to the backup each live entry that the backup does not hold and that is not an installed snapshot entry: one the
+   * snapshot's manifest does not name, or one whose staged copy is still in {@code newDir} (issue #13618). Such an entry
+   * can only be an original that phase 1's listing missed: left live, it would sit next to the snapshot's files (a
+   * dictionary of another version is enough for the engine to refuse the directory), and a rollback would delete it with
+   * the snapshot files instead of restoring it. Called only before anything opens the directory (before INSTALLED is
+   * published, or by the swap's own rollback), so nothing but the swap has written to it. A top-level name that is both an
+   * original and a snapshot directory counts as the snapshot's, the safe reading: phase 2 already rescued the original
+   * when it installed the snapshot's entry over it. Without a manifest (in {@code dbDir}, or still staged) only the second
+   * test applies.
    */
-  private static void moveOriginalsLeftLiveToTheBackup(final Path dbDir, final Path backupDir) throws IOException {
-    final Map<String, Long> expected = readInstalledFilesManifest(dbDir);
-    if (expected == null)
-      return;
-    final Set<String> snapshotEntries = new HashSet<>();
-    for (final String path : expected.keySet()) {
-      final int slash = path.indexOf('/');
-      snapshotEntries.add(slash < 0 ? path : path.substring(0, slash));
-    }
+  private static void moveOriginalsLeftLiveToTheBackup(final Path dbDir, final Path newDir, final Path backupDir)
+      throws IOException {
+    Map<String, Long> expected = readInstalledFilesManifest(dbDir);
+    if (expected == null && Files.isDirectory(newDir))
+      expected = readInstalledFilesManifest(newDir);
+    final Set<String> snapshotEntries;
+    if (expected != null) {
+      snapshotEntries = new HashSet<>();
+      for (final String path : expected.keySet()) {
+        final int slash = path.indexOf('/');
+        snapshotEntries.add(slash < 0 ? path : path.substring(0, slash));
+      }
+    } else
+      snapshotEntries = null;
     final List<String> rescued = new ArrayList<>();
     drainDirectory(dbDir, entry -> {
       final String name = entry.getFileName().toString();
-      return isLiveDatabaseEntry(entry) && !snapshotEntries.contains(name)
-          && !Files.exists(backupDir.resolve(name), LinkOption.NOFOLLOW_LINKS);
+      if (!isLiveDatabaseEntry(entry) || Files.exists(backupDir.resolve(name), LinkOption.NOFOLLOW_LINKS))
+        return false;
+      return (snapshotEntries != null && !snapshotEntries.contains(name))
+          || Files.exists(newDir.resolve(name), LinkOption.NOFOLLOW_LINKS);
     }, entry -> {
       final String name = entry.getFileName().toString();
       Files.move(entry, backupDir.resolve(name));

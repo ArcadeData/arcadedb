@@ -280,6 +280,43 @@ class SnapshotSwapSkippingListingTest {
     assertThat(databaseFiles(dbDir)).as("no original is left live next to the snapshot").isEqualTo(snapshot());
   }
 
+  // Regression for #13618: a swap that fails in phase 2 rescues the originals phase 1 missed before its rollback clears
+  @Test
+  void failedInstallRestoresTheOriginalsTheBackupPhaseMissed(@TempDir final Path databasesDir) throws IOException {
+    final Path dbDir = databasesDir.resolve("drill");
+    final Path snapshotNew = dbDir.resolve(SnapshotInstaller.SNAPSHOT_NEW_DIR);
+    final Path snapshotBackup = dbDir.resolve(SnapshotInstaller.SNAPSHOT_BACKUP_DIR);
+    write(dbDir, originals());
+    write(snapshotNew, snapshot());
+    SnapshotInstaller.writeInstalledFilesManifest(snapshotNew, SnapshotInstaller.expectedInstalledFiles(snapshotNew));
+    Files.writeString(snapshotNew.resolve(SnapshotInstaller.SNAPSHOT_COMPLETE_FILE), "");
+
+    // Phase 1 misses an original the snapshot does not ship (the v0 dictionary) and one it does (Link3), whose staged copy
+    // the staging listings never show either; and the staging listings keep naming a gone entry, so phase 2 fails.
+    final String missedSnapshotOnly = "dictionary.0.327680.v0.dict";
+    final String missedStaged = "Link3_0.103.65536.v0.bucket";
+    final AtomicBoolean installing = new AtomicBoolean();
+    SnapshotInstaller.directoryListingForTesting = (dir, entries) -> {
+      if (dir.equals(snapshotNew)) {
+        installing.set(true);
+        final List<Path> listed = new ArrayList<>(
+            entries.stream().filter(entry -> !entry.getFileName().toString().equals(missedStaged)).toList());
+        listed.add(dir.resolve("Ghost_0.999.65536.v0.bucket"));
+        return listed;
+      }
+      if (!dir.equals(dbDir) || installing.get())
+        return entries;
+      return entries.stream()
+          .filter(entry -> !entry.getFileName().toString().equals(missedSnapshotOnly) && !entry.getFileName().toString()
+              .equals(missedStaged)).toList();
+    };
+
+    assertThatThrownBy(() -> SnapshotInstaller.atomicSwap(dbDir, snapshotNew, snapshotBackup)).isInstanceOf(IOException.class);
+
+    assertThat(databaseFiles(dbDir)).as("every original is back, the two phase 1 missed included").isEqualTo(originals());
+    assertThat(snapshotBackup).doesNotExist();
+  }
+
   // Regression for #13618: recovery never accepts an install whose staging still holds staged files
   @Test
   void recoveryRollsBackAnInstallWhoseStagingStillHoldsFiles(@TempDir final Path databasesDir) throws IOException {
