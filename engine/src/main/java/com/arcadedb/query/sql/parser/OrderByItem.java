@@ -101,6 +101,10 @@ public class OrderByItem {
   /**
    * The value {@code row} is sorted by for this item, modifier applied. {@link OrderBy#extractKeys} calls it once per row when
    * the row enters the sort, and the sort compares the values with {@link #compareKeys} (issue #12860).
+   * <p>
+   * An alias key falls back to the row's metadata of the same name when THIS row's property is null. The comparator used to read
+   * the metadata of both rows only when both properties were null, a pairwise rule that is not transitive and could break the
+   * contract of the sort; a key extracted once per row cannot depend on the other row anyway.
    */
   public Object extractKey(final Result row, final CommandContext context) {
     Object value = null;
