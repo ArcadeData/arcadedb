@@ -68,11 +68,17 @@ final class SQLTriggerBodyTypes {
     return body;
   }
 
-  /** Whether the body names the type {@code canonicalTypeName}, by its name or by one of its aliases. */
+  /**
+   * Whether the body names the type {@code canonicalTypeName}, by its name or by one of its aliases. A name of the body that
+   * resolves to no type names none: compared as it is spelled, it would answer for the drop of a type that does not exist, and
+   * the drop would be refused for the trigger instead of for the type that is not there.
+   */
   boolean names(final LocalSchema schema, final String canonicalTypeName) {
-    for (final String typeName : typeNames)
-      if (canonicalTypeName.equals(TypeNameDependant.canonicalNameOf(schema, typeName)))
+    for (final String typeName : typeNames) {
+      final LocalDocumentType type = schema.getTypeOrNull(typeName);
+      if (type != null && canonicalTypeName.equals(type.getName()))
         return true;
+    }
     return false;
   }
 

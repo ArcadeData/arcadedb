@@ -21,6 +21,8 @@ package com.arcadedb.schema.trigger;
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.LocalSchema;
+import com.arcadedb.schema.TriggerImpl;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -213,6 +215,67 @@ class TriggerBodyTypeDependantTest extends TestHelper {
         "INSERT INTO Audit SET n = (SELECT count(*) FROM B)");
     // THE BODY RUNS ON THE NEW NAME: ON THE OLD ONE THE INSERT WOULD FAIL WITH "Type with name 'A' was not found"
     database.transaction(() -> database.command("sql", "INSERT INTO B SET x = 1"));
+    assertThat(count("Audit")).isEqualTo(1);
+  }
+
+  /**
+   * The drop of a materialized view drops its backing type, and asks the dependants of that type first: a body reading the view
+   * keeps it, as a second view built from it does.
+   */
+  @Test
+  void droppingAMaterializedViewTheBodyReadsIsRefusedNamingTheTrigger() {
+    database.command("sql", "CREATE MATERIALIZED VIEW AuditView AS SELECT at FROM Audit");
+    database.command("sql",
+        "CREATE TRIGGER view_a AFTER CREATE ON TYPE A EXECUTE SQL 'INSERT INTO Audit SET n = (SELECT count(*) FROM AuditView)'");
+
+    assertThatThrownBy(() -> database.command("sql", "DROP MATERIALIZED VIEW AuditView")).isInstanceOf(SchemaException.class)
+        .hasMessageContaining("trigger 'view_a'").hasMessageContaining("DROP TRIGGER view_a");
+    assertThat(database.getSchema().existsMaterializedView("AuditView")).isTrue();
+    assertThat(database.getSchema().existsType("AuditView")).isTrue();
+    insertA(1);
+    assertThat(count("Audit")).isEqualTo(1);
+
+    database.command("sql", "DROP TRIGGER view_a");
+    database.command("sql", "DROP MATERIALIZED VIEW AuditView");
+    assertThat(database.getSchema().existsMaterializedView("AuditView")).isFalse();
+  }
+
+  /** A body can name a type that does not exist: the drop of that name fails for the type that is not there, not for the trigger. */
+  @Test
+  void theDropOfATypeThatDoesNotExistIsNotRefusedForATriggerNamingIt() {
+    database.command("sql", "CREATE TRIGGER ghost_a AFTER DELETE ON TYPE A EXECUTE SQL 'INSERT INTO Ghost SET n = 1'");
+
+    // THE STATEMENT LOOKS THE TYPE UP ITSELF; THE API GOES STRAIGHT TO THE DEPENDANTS
+    assertThatThrownBy(() -> database.getSchema().dropType("Ghost")).hasMessageContaining("Ghost")
+        .hasMessageNotContaining("ghost_a");
+    assertThatThrownBy(() -> database.command("sql", "DROP TYPE Ghost")).hasMessageContaining("Ghost")
+        .hasMessageNotContaining("ghost_a");
+    database.command("sql", "DROP TYPE Ghost IF EXISTS");
+
+    // AND IT HOLDS NO OTHER TYPE EITHER
+    database.command("sql", "DROP TYPE Audit UNSAFE");
+    assertThat(database.getSchema().existsType("Audit")).isFalse();
+  }
+
+  /**
+   * A rename the body cannot follow with certainty is refused before a file moves, naming the trigger. No name the SQL can spell
+   * gets there, the back-ticked spelling taking any of them, so the dependant is asked directly with one that cannot be spelled.
+   */
+  @Test
+  void aRenameTheBodyCannotFollowIsRefusedNamingTheTriggerAndTheCarryLeavesTheBodyAlone() {
+    database.command("sql", "CREATE TRIGGER audit_a AFTER CREATE ON TYPE A EXECUTE SQL 'INSERT INTO Audit SET n = 1'");
+    final LocalSchema schema = database.getSchema().getEmbedded();
+    final TriggerImpl trigger = (TriggerImpl) schema.getTrigger("audit_a");
+
+    assertThatThrownBy(() -> trigger.checkTypeRename(schema, "Audit", "")).isInstanceOf(SchemaException.class)
+        .hasMessageContaining("Cannot rename type 'Audit'").hasMessageContaining("trigger 'audit_a'")
+        .hasMessageContaining("DROP TRIGGER audit_a");
+
+    // THE CARRY RUNS AFTER THE FILES MOVED AND CANNOT REFUSE: A TRIGGER REGISTERED AFTER THE CHECK KEEPS ITS BODY AS IT WAS WRITTEN
+    trigger.carryTypeRename(schema, "Audit", "");
+    assertThat(trigger.getActionCode()).isEqualTo("INSERT INTO Audit SET n = 1");
+    assertThat(trigger.getTypeName()).isEqualTo("A");
+    insertA(1);
     assertThat(count("Audit")).isEqualTo(1);
   }
 
