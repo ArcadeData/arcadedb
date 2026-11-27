@@ -5317,6 +5317,50 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
+   * The rows of a {@code (columns) VALUES (...), (...)} clause. The grammar keeps every expression of the clause in one flat
+   * list of the context, so the rows are read from the parentheses that follow {@code VALUES}: cutting the flat list every
+   * {@code columns} expressions made {@code (a) VALUES (1, 2)} two records and {@code (a, b) VALUES (1, 2, 3, 4)} two as well
+   * (issue #12844). A row whose size differs from the column list is the caller's mistake.
+   */
+  private List<List<Expression>> valueRows(final ParserRuleContext ctx, final int columns) {
+    final List<List<Expression>> rows = new ArrayList<>();
+    List<Expression> row = null;
+    boolean afterValues = false;
+    for (final ParseTree child : ctx.children) {
+      if (child instanceof TerminalNode terminal) {
+        final int type = terminal.getSymbol().getType();
+        if (type == SQLParser.VALUES)
+          afterValues = true;
+        else if (afterValues && type == SQLParser.LPAREN)
+          row = new ArrayList<>(columns);
+        else if (afterValues && type == SQLParser.RPAREN && row != null) {
+          if (row.size() != columns)
+            throw new CommandSQLParsingException(
+                "The row " + (rows.size() + 1) + " of VALUES holds " + row.size() + " values for " + columns + " fields");
+          rows.add(row);
+          row = null;
+        }
+      } else if (row != null && child instanceof SQLParser.ExpressionContext expression)
+        row.add((Expression) visit(expression));
+    }
+    return rows;
+  }
+
+  /**
+   * The token index of the parenthesis that opens the column list of a {@code CREATE VERTEX [type [BUCKET b]] (columns) VALUES ...},
+   * {@code Integer.MAX_VALUE} when the statement has none: an identifier before it is the type or the bucket, one after it is a
+   * column. Taking the first identifier as the type whatever its position made {@code CREATE VERTEX (a, b) VALUES (1, 2)} a
+   * statement on a type named {@code a} with the single column {@code b} (issue #12844).
+   */
+  private static int columnsStart(final ParserRuleContext ctx) {
+    if (ctx.children != null)
+      for (final ParseTree child : ctx.children)
+        if (child instanceof TerminalNode terminal && terminal.getSymbol().getType() == SQLParser.LPAREN)
+          return terminal.getSymbol().getTokenIndex();
+    return Integer.MAX_VALUE;
+  }
+
+  /**
    * Visit INSERT body (VALUES, SET, or CONTENT).
    */
   @Override
@@ -5332,24 +5376,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
       body.valueExpressions = new ArrayList<>();
 
-      // The grammar: (id, id) VALUES (expr, expr) (, (expr, expr))*
-      // All expressions are in ctx.expression() as a flat list
-      // We need to group them by the number of fields per row
-      final List<SQLParser.ExpressionContext> allExpressions = ctx.expression();
       final int fieldsPerRow = body.identifierList.size();
-
-      if (fieldsPerRow > 0 && !allExpressions.isEmpty()) {
-        // Split expressions into rows of size fieldsPerRow
-        for (int i = 0; i < allExpressions.size(); i += fieldsPerRow) {
-          List<Expression> currentRow = new ArrayList<>();
-          for (int j = 0; j < fieldsPerRow && (i + j) < allExpressions.size(); j++) {
-            currentRow.add((Expression) visit(allExpressions.get(i + j)));
-          }
-          if (!currentRow.isEmpty()) {
-            body.valueExpressions.add(currentRow);
-          }
-        }
-      }
+      if (fieldsPerRow > 0 && !ctx.expression().isEmpty())
+        body.valueExpressions.addAll(valueRows(ctx, fieldsPerRow));
     }
     // SET clause: SET field1 = val1, field2 = val2
     else if (ctx.SET() != null) {
@@ -6088,6 +6117,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final SQLParser.CreateVertexBodyContext bodyCtx = ctx.createVertexBody();
 
     try {
+      final int columnsStart = columnsStart(bodyCtx);
       // Set targetType (vertex type identifier) - first identifier in the body
       if (bodyCtx.BUCKET_IDENTIFIER() != null) {
         // bucket:name format — no type, just bucket
@@ -6103,11 +6133,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         final Bucket bucket = new Bucket();
         bucket.bucketNumber = Integer.parseInt(bucketNum);
         stmt.targetBucket = bucket;
-      } else if (bodyCtx.identifier() != null && !bodyCtx.identifier().isEmpty()) {
-        // First identifier is the target type
+      } else if (bodyCtx.identifier() != null && !bodyCtx.identifier().isEmpty()
+          && bodyCtx.identifier(0).getStart().getTokenIndex() < columnsStart) {
+        // First identifier is the target type, unless it is already a column of the list: "(a, b) VALUES (...)" names no type
         stmt.targetType = (Identifier) visit(bodyCtx.identifier(0));
         // Second identifier is the bucket name if BUCKET keyword is present
-        if (bodyCtx.BUCKET() != null && bodyCtx.identifier().size() > 1) {
+        if (bodyCtx.BUCKET() != null && bodyCtx.identifier().size() > 1
+            && bodyCtx.identifier(1).getStart().getTokenIndex() < columnsStart) {
           stmt.targetBucketName = (Identifier) visit(bodyCtx.identifier(1));
         }
       }
@@ -6118,33 +6150,22 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
         // Handle VALUES clause - (field1, field2) VALUES (val1, val2), (val3, val4)
         if (bodyCtx.VALUES() != null) {
-          // Build identifier list from identifiers (skipping type name and bucket name)
-          final int startIdx =
-              (stmt.targetType != null ? 1 : 0) + (stmt.targetBucketName != null ? 1 : 0);
-          if (bodyCtx.identifier() != null && bodyCtx.identifier().size() > startIdx) {
-            body.identifierList = new ArrayList<>();
-            for (int i = startIdx; i < bodyCtx.identifier().size(); i++) {
-              body.identifierList.add((Identifier) visit(bodyCtx.identifier(i)));
+          // The column list: the identifiers after the opening parenthesis, whatever precedes it
+          for (final SQLParser.IdentifierContext identifierCtx : bodyCtx.identifier()) {
+            if (identifierCtx.getStart().getTokenIndex() > columnsStart) {
+              if (body.identifierList == null)
+                body.identifierList = new ArrayList<>();
+              body.identifierList.add((Identifier) visit(identifierCtx));
             }
           }
 
-          // Build value expressions list
+          // Build value expressions list: one row per parenthesis, each as wide as the column list
           if (bodyCtx.expression() != null && !bodyCtx.expression().isEmpty()) {
             body.valueExpressions = new ArrayList<>();
 
-            // Group expressions by VALUES rows
-            // Each row has same number of expressions as identifierList
             final int colCount = body.identifierList != null ? body.identifierList.size() : 0;
-            if (colCount > 0) {
-              int exprIdx = 0;
-              while (exprIdx < bodyCtx.expression().size()) {
-                final List<Expression> row = new ArrayList<>();
-                for (int i = 0; i < colCount && exprIdx < bodyCtx.expression().size(); i++) {
-                  row.add((Expression) visit(bodyCtx.expression(exprIdx++)));
-                }
-                body.valueExpressions.add(row);
-              }
-            }
+            if (colCount > 0)
+              body.valueExpressions.addAll(valueRows(bodyCtx, colCount));
           }
         }
         // Handle SET clause - list of updateItems
@@ -6172,6 +6193,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         stmt.insertBody = body;
       }
 
+    } catch (final CommandSQLParsingException e) {
+      // Already says what is wrong with the statement (a VALUES row of the wrong size): the same text INSERT gives
+      throw e;
     } catch (final Exception e) {
       throw new CommandSQLParsingException("Failed to build CREATE VERTEX statement: " + e.getMessage(), e);
     }
