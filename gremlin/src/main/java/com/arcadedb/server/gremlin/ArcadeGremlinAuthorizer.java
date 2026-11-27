@@ -80,16 +80,16 @@ public class ArcadeGremlinAuthorizer implements Authorizer {
   private static final Set<String> STEP_OPERATORS   = symbols(GraphTraversal.Symbols.class, Traversal.Symbols.class);
   private static final Set<String> SOURCE_OPERATORS = sourceOperators();
 
+  private static final Rule LAMBDA                  = value -> value instanceof Lambda;
+  private static final Rule UNSUPPORTED_INSTRUCTION = value -> value instanceof Bytecode bytecode && unsupportedOperator(bytecode) != null;
+
+  private ArcadeDBServer server;
+
   /** What the request scan looks for: a value that breaks the rule on its own, whatever is nested in it. */
   @FunctionalInterface
   private interface Rule {
     boolean refuses(Object value);
   }
-
-  private static final Rule LAMBDA                  = value -> value instanceof Lambda;
-  private static final Rule UNSUPPORTED_INSTRUCTION = value -> value instanceof Bytecode bytecode && unsupportedOperator(bytecode) != null;
-
-  private ArcadeDBServer server;
 
   @Override
   public void setup(final Map<String, Object> config) {
