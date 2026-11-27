@@ -202,6 +202,33 @@ public class RedisMultiGetReplyHeapTest extends BaseRedisServerTest {
     assertThat(QueryHeapBudget.getReservedBytes()).as("the answers gave their heap back").isLessThanOrEqualTo(baseline);
   }
 
+  @Test
+  void theAnswersOfABatchAreAccountedTogetherAndGivenBackWithTheResultSet() throws Exception {
+    final String[] rids = createHeavyRecords();
+    final long baseline = QueryHeapBudget.getReservedBytes();
+    GlobalConfiguration.QUERY_MAX_HEAP_RAM.setValue(baseline / MB + 64);
+
+    // four commands of thirty entries: each takes about 2.4MB of accounting, so each fits what is left on its own, and the four do not
+    final StringBuilder batch = new StringBuilder();
+    for (int line = 0; line < 4; line++)
+      batch.append("HMGET ").append(String.join(" ", Arrays.copyOfRange(rids, line * 30, line * 30 + 30))).append('\n');
+
+    // other queries hold all the budget but 5MB
+    final QueryHeapTracker others = new QueryHeapTracker();
+    others.charge(QueryHeapTracker.UNRESERVED_BYTES + QueryHeapBudget.getLimitBytes() - QueryHeapBudget.getReservedBytes() - 5 * MB,
+        "other queries");
+    try {
+      assertThatThrownBy(() -> executeCommand(0, "redis", batch.toString())).hasMessageStartingWith("HTTP 503");
+    } finally {
+      others.close();
+    }
+
+    final JSONArray answers = (JSONArray) getResultValue(executeCommand(0, "redis", batch.toString()));
+    assertThat(answers.length()).isEqualTo(4);
+    assertThat(answers.getJSONArray(3).length()).isEqualTo(30);
+    assertThat(QueryHeapBudget.getReservedBytes()).as("the result set gave the heap of its answers back").isLessThanOrEqualTo(baseline);
+  }
+
   /** {@link #RECORDS} records of about {@link #PAYLOAD_CHARS} characters, indexed by {@code id}, the RIDs in the order of the ids. */
   private String[] createHeavyRecords() {
     final Database database = getServerDatabase(0, getDatabaseName());
