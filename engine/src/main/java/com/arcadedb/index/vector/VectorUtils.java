@@ -550,10 +550,7 @@ public final class VectorUtils {
    * @return the magnitude
    */
   public static float magnitude(final float[] vector) {
-    double sum = 0.0;
-    for (final float v : vector)
-      sum += (double) v * v;
-    return (float) Math.sqrt(sum);
+    return (float) Math.sqrt(sumOfSquares(vector));
   }
 
   /**
@@ -564,10 +561,16 @@ public final class VectorUtils {
    * @return the magnitude
    */
   public static double magnitude(final double[] vector) {
-    double sum = 0.0;
-    for (final double v : vector)
-      sum += v * v;
-    return Math.sqrt(sum);
+    final double sum = sumOfSquares(vector);
+    if (isSumOfSquaresInRange(sum))
+      return Math.sqrt(sum);
+
+    // The squares overflowed or underflowed (issue #12853): the magnitude itself may still be a double, so it is taken on the
+    // vector scaled by its largest component
+    final double max = Double.isNaN(sum) ? Double.NaN : maxAbs(vector);
+    if (max == 0.0 || !Double.isFinite(max))
+      return max;
+    return max * Math.sqrt(sumOfScaledSquares(vector, max));
   }
 
   /**
@@ -579,11 +582,9 @@ public final class VectorUtils {
    */
   public static float[] normalize(final float[] vector) {
     // The magnitude stays in double, and each component is divided by it (issue #12853): narrowed to a float, a magnitude beyond
-    // Float.MAX_VALUE turned every component into 0, and one below ~2.9e-39 has a float reciprocal of Infinity.
-    double sum = 0.0;
-    for (final float v : vector)
-      sum += (double) v * v;
-    final double mag = Math.sqrt(sum);
+    // Float.MAX_VALUE turned every component into 0, and one below ~2.9e-39 has a float reciprocal of Infinity. The double sum of
+    // float squares can neither overflow nor underflow, so no scaling is needed here.
+    final double mag = Math.sqrt(sumOfSquares(vector));
     if (mag == 0.0)
       return vector;
 
@@ -601,15 +602,73 @@ public final class VectorUtils {
    * @return a new unit vector in the same direction, or the original vector if magnitude is zero
    */
   public static double[] normalize(final double[] vector) {
-    final double mag = magnitude(vector);
+    final double sum = sumOfSquares(vector);
+    if (!isSumOfSquaresInRange(sum)) {
+      // The squares overflowed (a component above ~1.3e154) or underflowed (all components below ~1.5e-154), issue #12853: the
+      // direction is still defined, so the vector is scaled by its largest component first. A NaN or infinite component keeps
+      // the result it always had (NaN, or 0 and NaN), through the plain path below.
+      final double max = Double.isNaN(sum) ? Double.NaN : maxAbs(vector);
+      if (max == 0.0)
+        return vector;
+
+      if (Double.isFinite(max)) {
+        final double scaledMag = Math.sqrt(sumOfScaledSquares(vector, max));
+        final double[] result = new double[vector.length];
+        for (int i = 0; i < vector.length; i++)
+          result[i] = vector[i] / max / scaledMag;
+        return result;
+      }
+    }
+
+    final double mag = Math.sqrt(sum);
     if (mag == 0.0)
       return vector;
 
     final double[] result = new double[vector.length];
-    final double normFactor = 1.0 / mag;
     for (int i = 0; i < vector.length; i++)
-      result[i] = vector[i] * normFactor;
+      result[i] = vector[i] / mag;
     return result;
+  }
+
+  private static double sumOfSquares(final float[] vector) {
+    double sum = 0.0;
+    for (final float v : vector)
+      sum += (double) v * v;
+    return sum;
+  }
+
+  private static double sumOfSquares(final double[] vector) {
+    double sum = 0.0;
+    for (final double v : vector)
+      sum += v * v;
+    return sum;
+  }
+
+  /**
+   * True when a double sum of squares neither overflowed nor lost its precision to underflow. A zero sum is out of range too: it is
+   * also what squares that all underflowed add up to.
+   */
+  private static boolean isSumOfSquaresInRange(final double sum) {
+    return sum >= Double.MIN_NORMAL && sum < Double.POSITIVE_INFINITY;
+  }
+
+  private static double maxAbs(final double[] vector) {
+    double max = 0.0;
+    for (final double v : vector) {
+      final double abs = Math.abs(v);
+      if (abs > max)
+        max = abs;
+    }
+    return max;
+  }
+
+  private static double sumOfScaledSquares(final double[] vector, final double scale) {
+    double sum = 0.0;
+    for (final double v : vector) {
+      final double s = v / scale;
+      sum += s * s;
+    }
+    return sum;
   }
 
   /**
