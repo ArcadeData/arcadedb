@@ -41,6 +41,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -230,6 +231,21 @@ public class MongoDBBsonTypesRoundTripTest extends BaseMongoServerTest {
     final Document back = collection.find(eq("_id", 30)).first();
     assertThat(back).isNotNull();
     assertThat(((Number) back.get("v")).doubleValue()).isGreaterThan(1e39);
+  }
+
+  @Test
+  void decimalBeyondTheExponentRangeOfDecimal128DoesNotFailTheRead() {
+    final Database db = getServer(0).getDatabaseForOperator(getDatabaseName());
+    db.transaction(() -> {
+      db.newDocument("bson").set("_id", 40).set("v", new BigDecimal(BigInteger.TEN.pow(6200))).save();
+      db.newDocument("bson").set("_id", 41).set("v", new BigDecimal(BigInteger.TEN.pow(40), 6177)).save();
+      db.newDocument("bson").set("_id", 42).set("v", new BigDecimal(BigInteger.TEN.pow(30_000).add(BigInteger.valueOf(7)), 30_000)).save();
+    });
+    assertThat(collection.find(eq("_id", 40)).first().get("v")).isEqualTo(Double.POSITIVE_INFINITY);
+    assertThat(collection.find(eq("_id", 41)).first().get("v")).isEqualTo(0D);
+    assertThat(collection.find(eq("_id", 42)).first().get("v")).isEqualTo(1D);
+    // the connection is still usable
+    assertThat(collection.countDocuments()).isEqualTo(3);
   }
 
   @Test
