@@ -147,6 +147,17 @@ abstract class PostgresCatalogExpression {
     default StatementPatterns statementPatterns() {
       return null;
     }
+
+    /**
+     * Charges the statement this resolver evaluates a row of for the expression about to be evaluated against that row, see
+     * {@link PostgresCatalogExpression#evaluateCharged}. A resolver that belongs to no statement has no budget to charge.
+     *
+     * @param nodes the size of the expression, see {@link PostgresCatalogExpression#nodes}
+     *
+     * @throws BudgetExceeded when the statement has spent what it may
+     */
+    default void evaluating(final int nodes) {
+    }
   }
 
   /**
@@ -196,7 +207,58 @@ abstract class PostgresCatalogExpression {
     ARRAY
   }
 
+  /**
+   * How many nodes of an expression the work budget of a statement pays for with one unit. A unit is a row read, and evaluating a
+   * node costs a small fraction of that: a statement is charged for what its expressions cost, so that a wide one evaluated for
+   * every row is refused as a narrow one over too many rows is.
+   */
+  static final int NODES_PER_UNIT = 16;
+
+  /** How many characters of a text literal weigh as much as one node: comparing or changing a text reads all of it. */
+  private static final int CHARACTERS_PER_NODE = 16;
+
+  /**
+   * How many nodes the tree rooted here has, with the length of its text literals counted in: the most one evaluation of it reads.
+   * It is added up as the tree is built, from the nodes each node is built of, so that charging an evaluation costs no walk of the
+   * tree, and a chain a statement makes as long as it likes is not walked either.
+   */
+  private int nodes = 1;
+
   abstract Object evaluate(Resolver resolver);
+
+  /** @return what one evaluation of this expression reads, in nodes */
+  final int nodes() {
+    return nodes;
+  }
+
+  /** Counts the nodes of a child this node is built of, which its constructor calls for each of them. */
+  final void adopt(final PostgresCatalogExpression child) {
+    if (child != null)
+      weigh(child.nodes);
+  }
+
+  /** Counts the nodes of the children this node is built of. */
+  final void adopt(final List<PostgresCatalogExpression> children) {
+    for (final PostgresCatalogExpression child : children)
+      adopt(child);
+  }
+
+  /** Counts {@code more} nodes in this one, for what it holds that is more than a node. */
+  final void weigh(final long more) {
+    nodes = (int) Math.min(Integer.MAX_VALUE, nodes + more);
+  }
+
+  /**
+   * Evaluates this expression as a whole, once the statement the resolver belongs to has been charged for it: the entry point for
+   * an expression the statement evaluates for a row, which is what multiplies its size. What the expression evaluates inside
+   * itself is covered by this charge.
+   *
+   * @throws BudgetExceeded when the statement has spent what it may
+   */
+  final Object evaluateCharged(final Resolver resolver) {
+    resolver.evaluating(nodes);
+    return evaluate(resolver);
+  }
 
   /** Receives the columns an expression reads, see {@link #collectColumns}. */
   interface Columns {
@@ -302,6 +364,8 @@ abstract class PostgresCatalogExpression {
 
     Literal(final Object value) {
       this.value = value;
+      if (value instanceof String text)
+        weigh(text.length() / CHARACTERS_PER_NODE);
     }
 
     @Override
@@ -355,6 +419,8 @@ abstract class PostgresCatalogExpression {
       this.operand = operand;
       this.subquery = subquery;
       this.negated = negated;
+      adopt(operand);
+      adopt(subquery);
     }
 
     @Override
@@ -406,6 +472,8 @@ abstract class PostgresCatalogExpression {
       this.argument = argument;
       this.extraArguments = extraArguments;
       this.distinct = distinct;
+      adopt(argument);
+      adopt(extraArguments);
     }
 
     @Override
@@ -449,6 +517,7 @@ abstract class PostgresCatalogExpression {
     FunctionCall(final String name, final List<PostgresCatalogExpression> arguments) {
       this.name = name;
       this.arguments = arguments;
+      adopt(arguments);
     }
 
     @Override
@@ -511,6 +580,8 @@ abstract class PostgresCatalogExpression {
       this.partitionBy = partitionBy;
       this.orderBy = orderBy;
       this.orderByDescending = orderByDescending;
+      adopt(partitionBy);
+      adopt(orderBy);
     }
 
     @Override
@@ -643,6 +714,7 @@ abstract class PostgresCatalogExpression {
     Field(final PostgresCatalogExpression operand, final String name) {
       this.operand = operand;
       this.name = name;
+      adopt(operand);
     }
 
     @Override
@@ -672,6 +744,7 @@ abstract class PostgresCatalogExpression {
 
     ExpandArray(final PostgresCatalogExpression array) {
       this.array = array;
+      adopt(array);
     }
 
     @Override
@@ -685,7 +758,7 @@ abstract class PostgresCatalogExpression {
      * @return -1 when the array cannot be read
      */
     int rows(final Resolver resolver) {
-      final Object value = array.evaluate(resolver);
+      final Object value = array.evaluateCharged(resolver);
       if (value == null)
         return 0;
       return value instanceof List<?> list ? list.size() : -1;
@@ -729,6 +802,7 @@ abstract class PostgresCatalogExpression {
 
     Not(final PostgresCatalogExpression operand) {
       this.operand = operand;
+      adopt(operand);
     }
 
     @Override
@@ -752,6 +826,7 @@ abstract class PostgresCatalogExpression {
 
     Negate(final PostgresCatalogExpression operand) {
       this.operand = operand;
+      adopt(operand);
     }
 
     @Override
@@ -799,6 +874,8 @@ abstract class PostgresCatalogExpression {
       this.operator = operator;
       this.left = left;
       this.right = right;
+      adopt(left);
+      adopt(right);
     }
 
     @Override
@@ -1185,6 +1262,8 @@ abstract class PostgresCatalogExpression {
       this.operand = operand;
       this.candidates = candidates;
       this.negated = negated;
+      adopt(operand);
+      adopt(candidates);
     }
 
     @Override
@@ -1237,6 +1316,8 @@ abstract class PostgresCatalogExpression {
       this.all = all;
       this.operand = operand;
       this.array = array;
+      adopt(operand);
+      adopt(array);
     }
 
     @Override
@@ -1278,6 +1359,7 @@ abstract class PostgresCatalogExpression {
     IsNull(final PostgresCatalogExpression operand, final boolean negated) {
       this.operand = operand;
       this.negated = negated;
+      adopt(operand);
     }
 
     @Override
@@ -1306,6 +1388,10 @@ abstract class PostgresCatalogExpression {
       this.conditions = conditions;
       this.results = results;
       this.fallback = fallback;
+      adopt(operand);
+      adopt(conditions);
+      adopt(results);
+      adopt(fallback);
     }
 
     @Override
@@ -1352,6 +1438,8 @@ abstract class PostgresCatalogExpression {
     Subscript(final PostgresCatalogExpression operand, final PostgresCatalogExpression index) {
       this.operand = operand;
       this.index = index;
+      adopt(operand);
+      adopt(index);
     }
 
     @Override

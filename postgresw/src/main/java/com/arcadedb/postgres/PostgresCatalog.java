@@ -159,12 +159,24 @@ public class PostgresCatalog {
   private record Column(String name, PostgresType type, boolean notNull, Object defaultValue) {
   }
   /**
-   * How much work one statement may do, in rows read plus sub-select tokens re-read. Nesting depth alone does not
+   * How much work one statement may do, in rows read plus sub-select tokens re-read plus the nodes of the expressions evaluated
+   * (see {@link PostgresCatalogExpression#NODES_PER_UNIT}). Nesting depth alone does not
    * bound it: a correlated sub-select runs once per row of the query around it, so {@code EXISTS} nested 32 deep
-   * over three rows is 3^32 evaluations. psql's {@code \d} on a table of a hundred columns spends a few thousand
+   * over three rows is 3^32 evaluations. Nor do the rows alone: an expression is evaluated for each of them, however wide it is.
+   * psql's {@code \d} on a table of a hundred columns spends a few thousand
    * units; past the budget the statement is refused with {@link WorkLimitExceeded}.
    */
   private static final long WORK_BUDGET = 5_000_000L;
+  /**
+   * How many FROM entries a node of an expression looks through at the price of one: a statement a client writes has a handful,
+   * and one with more is charged for each further {@code FROM_ENTRIES_PER_NODE} as for another evaluation of its expressions.
+   */
+  private static final int  FROM_ENTRIES_PER_NODE = 16;
+  /**
+   * What building the row an expression of a join is evaluated against costs, in nodes: a row, its map and its resolver are made
+   * for every evaluation, and the entries bound so far are put in it.
+   */
+  private static final int  JOIN_ROW_NODES        = 16;
   /**
    * The OID of the bootstrap superuser in a stock PostgreSQL, used for every "owner" column - here and in
    * {@link PostgresTypeCatalog}'s {@code typowner}, so the two surfaces cannot drift apart on who owns what.
@@ -1358,12 +1370,14 @@ public class PostgresCatalog {
     }
 
     final PostgresCatalogJoin.Evaluator evaluator = (expression, bound, nulled) -> {
+      // every evaluation of a condition builds its row, and is charged for it as well as for the condition
+      context.evaluated(JOIN_ROW_NODES + bound.length);
       final Row row = new Row();
       row.keys = keys;
       for (int i = 0; i < bound.length; i++)
         if (bound[i] != null)
           row.relations.put(keys[i], bound[i]);
-      return expression.evaluate(new RowResolver(row, nulled, from, context, outer));
+      return expression.evaluateCharged(new RowResolver(row, nulled, from, context, outer));
     };
 
     final List<PostgresCatalogJoin.Binding> bindings;
@@ -1461,7 +1475,7 @@ public class PostgresCatalog {
       final PostgresCatalogExpression expression = tokens.isEmpty() ? null : PostgresCatalogExpression.parse(tokens);
       if (expression == null)
         return null;
-      final Object value = expression.evaluate(resolver);
+      final Object value = expression.evaluateCharged(resolver);
       if (value == PostgresCatalogExpression.UNKNOWN)
         return null;
       arguments.add(value);
@@ -1931,6 +1945,8 @@ public class PostgresCatalog {
     private final Map<Family, List<Row>> rowsByFamily = new EnumMap<>(Family.class);
     private int                          nesting;
     private long                         work;
+    /** The nodes of expressions evaluated that no whole unit of {@link #work} has been charged for yet. */
+    private int                          unchargedNodes;
     /**
      * The character reads the text patterns of the statement may make in all: one for every expression of it, and for every
      * sub-select parsed again for a row of the query around it (see {@link PostgresCatalogExpression.StatementPatterns}).
@@ -2082,6 +2098,19 @@ public class PostgresCatalog {
       work += units;
       if (work > WORK_BUDGET)
         throw new PostgresCatalogExpression.BudgetExceeded();
+    }
+
+    /**
+     * Charges the evaluation of expressions of {@code nodes} nodes in all, {@link PostgresCatalogExpression#NODES_PER_UNIT} of them
+     * to the unit: what a row costs is what is evaluated against it, so a wide expression read for every row of a statement is
+     * paid for as often as the rows are.
+     *
+     * @throws PostgresCatalogExpression.BudgetExceeded once this statement has spent its {@link #WORK_BUDGET}
+     */
+    void evaluated(final long nodes) {
+      final long total = unchargedNodes + nodes;
+      unchargedNodes = (int) (total % PostgresCatalogExpression.NODES_PER_UNIT);
+      charge(unitsOf(total / PostgresCatalogExpression.NODES_PER_UNIT));
     }
 
     PostgresCatalogExpression.StatementPatterns patterns() {
@@ -3141,7 +3170,7 @@ public class PostgresCatalog {
         // In FROM order, so that a condition reading an earlier outer-joined relation sees it already nulled.
         for (int i = 0; i < outerJoins.length; i++)
           if (outerJoins[i] != null) {
-            final Object matched = outerJoins[i].evaluate(resolver);
+            final Object matched = outerJoins[i].evaluateCharged(resolver);
             if (matched != PostgresCatalogExpression.UNKNOWN && !PostgresCatalogExpression.isTrue(matched))
               nulled[i] = true;
           }
@@ -3245,7 +3274,7 @@ public class PostgresCatalog {
   private static Map<String, Object> projectRow(final Projection projection, final RowResolver resolver) {
     final Map<String, Object> projected = new LinkedHashMap<>(projection.items.size());
     for (final ProjectionItem item : projection.items) {
-      final Object value = item.expression.evaluate(resolver);
+      final Object value = item.expression.evaluateCharged(resolver);
       if (value == PostgresCatalogExpression.UNKNOWN)
         return null;
       projected.put(item.alias, value);
@@ -3260,7 +3289,7 @@ public class PostgresCatalog {
   private static Object passes(final List<PostgresCatalogExpression> filters, final RowResolver resolver) {
     boolean unknown = false;
     for (final PostgresCatalogExpression filter : filters) {
-      final Object value = filter.evaluate(resolver);
+      final Object value = filter.evaluateCharged(resolver);
       if (value == PostgresCatalogExpression.UNKNOWN)
         unknown = true;
       else if (!PostgresCatalogExpression.isTrue(value))
@@ -3311,7 +3340,7 @@ public class PostgresCatalog {
         final RowResolver resolver = new RowResolver(joined.row(), joined.nulled(), from, context, outer);
         final List<Object> key = new ArrayList<>(keys.size());
         for (final PostgresCatalogExpression expression : keys) {
-          final Object value = expression.evaluate(resolver);
+          final Object value = expression.evaluateCharged(resolver);
           if (value == PostgresCatalogExpression.UNKNOWN)
             return null;
           key.add(value);
@@ -3405,7 +3434,7 @@ public class PostgresCatalog {
         final RowResolver resolver = new RowResolver(rows.get(i).row(), rows.get(i).nulled(), from, context, outer);
         final List<Object> key = new ArrayList<>(call.partitionBy.size());
         for (final PostgresCatalogExpression expression : call.partitionBy) {
-          final Object value = expression.evaluate(resolver);
+          final Object value = expression.evaluateCharged(resolver);
           if (value == PostgresCatalogExpression.UNKNOWN)
             return null;
           key.add(value);
@@ -3422,7 +3451,7 @@ public class PostgresCatalog {
                 outer);
             final List<Object> key = new ArrayList<>(call.orderBy.size());
             for (final PostgresCatalogExpression expression : call.orderBy)
-              key.add(expression.evaluate(resolver));
+              key.add(expression.evaluateCharged(resolver));
             keys.put(index, key);
           }
           partition.sort((left, right) -> {
@@ -3838,6 +3867,12 @@ public class PostgresCatalog {
       return context.patterns();
     }
 
+    /** A column reference finds its FROM entry by looking through them, so the more there are the more a node costs. */
+    @Override
+    public void evaluating(final int nodes) {
+      context.evaluated((long) nodes * (1 + from.size() / FROM_ENTRIES_PER_NODE));
+    }
+
     @Override
     public Object window(final PostgresCatalogExpression.WindowCall call) {
       if (windows == null)
@@ -3913,7 +3948,7 @@ public class PostgresCatalog {
           continue;
         }
         final RowResolver resolver = new RowResolver(joined.row(), joined.nulled(), from, context, outer);
-        final Object value = call.argument.evaluate(resolver);
+        final Object value = call.argument.evaluateCharged(resolver);
         if (value == PostgresCatalogExpression.UNKNOWN)
           return PostgresCatalogExpression.UNKNOWN;
         // Aggregates skip NULLs; array_agg is the one that collects them.
@@ -3924,7 +3959,7 @@ public class PostgresCatalog {
         values.add(value);
         if (separators != null) {
           // string_agg's delimiter is read off each row, as PostgreSQL does: the one before a value is its row's.
-          final Object separator = call.extraArguments.get(0).evaluate(resolver);
+          final Object separator = call.extraArguments.get(0).evaluateCharged(resolver);
           if (separator == PostgresCatalogExpression.UNKNOWN)
             return PostgresCatalogExpression.UNKNOWN;
           separators.add(separator);
