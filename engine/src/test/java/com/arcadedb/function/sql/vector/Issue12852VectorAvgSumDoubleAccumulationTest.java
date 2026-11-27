@@ -19,9 +19,13 @@
 package com.arcadedb.function.sql.vector;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
+
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
@@ -76,5 +80,19 @@ class Issue12852VectorAvgSumDoubleAccumulationTest extends TestHelper {
     for (int i = 0; i < 17_000_000; i++)
       avg.execute(null, null, null, row, null);
     assertThat(((float[]) avg.getResult())[0]).isEqualTo(1f);
+  }
+
+  @Test
+  void aRecommendationCentroidWhoseSumOverflowsAFloatIsTheTrueMean() {
+    // vector.recommend averages its example embeddings the same way, and overflowed the same way
+    final List<RID> rids = new ArrayList<>();
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("E").createProperty("embedding", Type.ARRAY_OF_FLOATS);
+      rids.add(database.newDocument("E").set("embedding", new float[] { 3.0e38f, 1f }).save().getIdentity());
+      rids.add(database.newDocument("E").set("embedding", new float[] { 3.0e38f, 3f }).save().getIdentity());
+    });
+
+    final float[] centroid = new SQLFunctionVectorRecommend().centroidFromRids(database, rids, "embedding", "positives");
+    assertThat(centroid).containsExactly(3.0e38f, 2f);
   }
 }
