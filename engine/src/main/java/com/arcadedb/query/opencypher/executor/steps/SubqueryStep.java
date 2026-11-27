@@ -785,7 +785,10 @@ public class SubqueryStep extends AbstractExecutionStep {
       if (innerStatement.getReturnClause() == null) {
         while (resultSet.hasNext())
           resultSet.next();
-        return List.of(new ResultInternal());
+        // The row kept for the outer row is held like any answer of a body
+        final ResultInternal unitRow = new ResultInternal();
+        collectedHeapLimit.add(heldBefore + 1, unitRow);
+        return List.of(unitRow);
       }
 
       // The rows are held until the caller has merged them, and the body can answer any number of them for one outer row: each is

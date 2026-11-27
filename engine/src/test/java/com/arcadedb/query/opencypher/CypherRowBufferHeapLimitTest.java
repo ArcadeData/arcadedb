@@ -57,6 +57,8 @@ class CypherRowBufferHeapLimitTest extends TestHelper {
   private static final String PROFILE_SCAN   = "PROFILE MATCH (n:N) RETURN n.id AS id";
   private static final String PROFILE_BIG    = "PROFILE MATCH (p:P) RETURN p.name AS name";
   private static final String SCAN_IN_BATCH  = "MATCH (n:N) CALL { WITH n RETURN n.id AS v } IN TRANSACTIONS OF %d ROWS RETURN v";
+  private static final String UNIT_IN_BATCH  =
+      "MATCH (n:N) CALL { WITH n CREATE (:W {k: n.id}) } IN TRANSACTIONS OF %d ROWS RETURN count(*) AS c";
   private static final String WRITE_IN_BATCH =
       "MATCH (p:P) CALL { WITH p CREATE (:W {k: p.id}) RETURN p.name AS nm } IN TRANSACTIONS OF %d ROWS RETURN nm";
   // THE ROWS A BATCH COLLECTS FIT THE BUDGET, BUT THEY AND THE ROWS RESERVED TO SERVE THEM DO NOT. MEASURED: 450 AND 700 ROWS ARE
@@ -167,6 +169,17 @@ class CypherRowBufferHeapLimitTest extends TestHelper {
   }
 
   @Test
+  void theRowKeptForAnOuterRowOfABodyWithoutAnswersCountsToo() {
+    // Six outer rows and the six rows kept for them are twelve rows held: refused before the batch commits. Five and five are ten
+    assertThatThrownBy(() -> drainCommand(UNIT_IN_BATCH.formatted(6))).isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining(LIMIT_SETTING);
+    assertThat(countOf("W")).isZero();
+
+    assertThat(drainCommand(UNIT_IN_BATCH.formatted(5))).isEqualTo(1);
+    assertThat(countOf("W")).isEqualTo(ROWS);
+  }
+
+  @Test
   void aBatchWhoseAnswersOutgrowTheHeapBudgetIsRefusedBeforeItCommits() {
     QueryHeapBudgetTestSupport.awaitNoReservationLeft();
     database.getConfiguration().setValue(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP, -1L);
@@ -175,7 +188,7 @@ class CypherRowBufferHeapLimitTest extends TestHelper {
     // What the batch collects fits the budget, what it then holds to serve does not: the writes of the batch are not committed
     assertThatThrownBy(() -> drainCommand(WRITE_IN_BATCH.formatted(WRITE_BATCH))).isInstanceOf(HeapLimitExceededException.class)
         .hasMessageContaining("CALL subquery batch");
-    assertThat(database.query("opencypher", "MATCH (w:W) RETURN count(w) AS c").next().<Number>getProperty("c").longValue()).isZero();
+    assertThat(countOf("W")).isZero();
     assertThat(QueryHeapBudget.getReservedBytes()).isZero();
   }
 
@@ -212,6 +225,12 @@ class CypherRowBufferHeapLimitTest extends TestHelper {
       assertThat(rs.hasNext()).isTrue();
     }
     assertThat(probe.hints).containsExactly(AbstractExecutionStep.DEFAULT_FETCH_RECORDS_PER_PULL);
+  }
+
+  private long countOf(final String type) {
+    try (final ResultSet rs = database.query("opencypher", "MATCH (v:" + type + ") RETURN count(v) AS c")) {
+      return rs.next().<Number>getProperty("c").longValue();
+    }
   }
 
   private long drainCommand(final String query) {
