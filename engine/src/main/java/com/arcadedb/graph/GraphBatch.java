@@ -886,9 +886,7 @@ public class GraphBatch implements AutoCloseable {
     // an empty Map is how a caller sends no properties, as on Vertex.newEdge() (issue #8934)
     final boolean hasProps = GraphEngine.describesProperties(edgeProperties);
     if (typeIsLightweight && hasProps)
-      throw new IllegalArgumentException("Edge type '" + edgeTypeName
-          + "' is declared LIGHTWEIGHT, so its edges cannot have properties. Use a regular edge type if the edge "
-          + "needs to carry data");
+      throw GraphEngine.lightweightEdgeCannotHaveProperties(edgeTypeName);
 
     // A LIGHTWEIGHT type is stored lightweight whatever the builder was told: the storage shape belongs to the
     // schema, and withLightEdges() is only the legacy per-batch override for types that do not declare one.
