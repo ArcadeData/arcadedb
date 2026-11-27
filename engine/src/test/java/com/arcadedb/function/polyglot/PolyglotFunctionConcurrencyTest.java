@@ -290,6 +290,32 @@ class PolyglotFunctionConcurrencyTest {
 
     @Test
     @Timeout(value = 60, unit = TimeUnit.SECONDS)
+    void aNestedCallRunsOnTheEngineOfTheCallAroundIt() {
+      final JavascriptFunctionLibraryDefinition library = new JavascriptFunctionLibraryDefinition(database, "nestedEngine");
+      database.getSchema().registerFunctionLibrary(
+          library.registerFunction(new JavascriptFunctionDefinition("readMarker", "return globalThis.marker || -1;")));
+
+      final Object result = library.execute(polyglotEngine -> {
+        try {
+          polyglotEngine.eval("globalThis.marker = 41");
+          // A NEWER ENGINE IS PUBLISHED WHILE THIS CALL RUNS
+          library.registerFunction(new JavascriptFunctionDefinition("twice", "return a * 2;", "a"));
+          return library.getFunction("readMarker").execute();
+        } catch (final RuntimeException e) {
+          throw e;
+        } catch (final Exception e) {
+          throw new RuntimeException(e);
+        }
+      });
+
+      assertThat(result).isEqualTo(41);
+      // A NEW CALL RUNS ON THE NEWER ENGINE
+      assertThat(library.getFunction("readMarker").execute()).isEqualTo(-1);
+      assertThat(library.getFunction("twice").execute(21)).isEqualTo(42);
+    }
+
+    @Test
+    @Timeout(value = 60, unit = TimeUnit.SECONDS)
     void aRefusedDefinitionLeavesTheOtherFunctionsCallable() {
       final JavascriptFunctionLibraryDefinition library = new JavascriptFunctionLibraryDefinition(database, "refused");
       database.getSchema()

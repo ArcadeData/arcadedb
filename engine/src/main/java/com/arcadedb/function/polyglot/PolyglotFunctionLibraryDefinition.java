@@ -52,10 +52,10 @@ public abstract class PolyglotFunctionLibraryDefinition<T extends PolyglotFuncti
    */
   private volatile EngineHolder            current;
   /**
-   * The engine a rebuild declares the functions into before it is published. Only its {@link EngineHolder#builder} uses
-   * it: any other thread that reads it goes on to {@link #current}.
+   * The engine the current thread is running a call on, or declaring the functions into during a rebuild, so a nested
+   * call stays on it. {@code null} outside a call.
    */
-  private          EngineHolder            declaring;
+  private final    ThreadLocal<EngineHolder> running  = new ThreadLocal<>();
 
   public interface Callback {
     Object execute(GraalPolyglotEngine polyglotEngine);
@@ -64,7 +64,6 @@ public abstract class PolyglotFunctionLibraryDefinition<T extends PolyglotFuncti
   /** An engine and the lock its calls take. */
   private static final class EngineHolder {
     private final    GraalPolyglotEngine engine;
-    private final    Thread              builder;
     private final    ReentrantLock       lock = new ReentrantLock();
     private volatile boolean             retired;
     // GUARDED BY lock
@@ -72,7 +71,6 @@ public abstract class PolyglotFunctionLibraryDefinition<T extends PolyglotFuncti
 
     private EngineHolder(final GraalPolyglotEngine engine) {
       this.engine = engine;
-      this.builder = Thread.currentThread();
     }
 
     /**
@@ -128,7 +126,9 @@ public abstract class PolyglotFunctionLibraryDefinition<T extends PolyglotFuncti
    */
   private void reloadEngine() {
     final EngineHolder next = new EngineHolder(newEngine());
-    declaring = next;
+    // THE DECLARATIONS GO THROUGH execute(): THEY RUN ON THE NEW ENGINE, ALSO WHEN THIS THREAD IS INSIDE A CALL
+    final EngineHolder outer = running.get();
+    running.set(next);
     try {
       for (final T f : functions.values())
         f.init(this);
@@ -136,7 +136,7 @@ public abstract class PolyglotFunctionLibraryDefinition<T extends PolyglotFuncti
       next.engine.close();
       throw e;
     } finally {
-      declaring = null;
+      running.set(outer);
     }
 
     final EngineHolder previous = current;
@@ -201,19 +201,31 @@ public abstract class PolyglotFunctionLibraryDefinition<T extends PolyglotFuncti
   }
 
   public Object execute(final Callback callback) {
-    final EngineHolder beingDeclared = declaring;
-    if (beingDeclared != null && beingDeclared.builder == Thread.currentThread())
-      // A FUNCTION BEING DECLARED BY A REBUILD: THE NEW ENGINE IS NOT PUBLISHED YET, NO OTHER THREAD CAN REACH IT
-      return run(beingDeclared.engine, callback);
+    final EngineHolder active = running.get();
+    if (active != null) {
+      // A CALL NESTED IN A RUNNING CALL, OR A FUNCTION BEING DECLARED BY A REBUILD: THE ENGINE OF THAT CALL OR REBUILD,
+      // EVEN IF A NEWER ONE WAS PUBLISHED SINCE
+      active.lock.lock();
+      try {
+        return run(active.engine, callback);
+      } finally {
+        active.lock.unlock();
+      }
+    }
 
     while (true) {
       final EngineHolder holder = current;
       holder.lock.lock();
       try {
-        // A RETIRED ENGINE KEEPS SERVING THE CALL THAT WAS ALREADY RUNNING ON IT (A NESTED CALL), A NEW CALL TAKES THE
-        // CURRENT ONE
-        if (!holder.retired || holder.lock.getHoldCount() > 1)
-          return run(holder.engine, callback);
+        // A RETIRED ENGINE ONLY FINISHES THE CALLS ALREADY RUNNING ON IT: A NEW CALL TAKES THE CURRENT ONE
+        if (!holder.retired) {
+          running.set(holder);
+          try {
+            return run(holder.engine, callback);
+          } finally {
+            running.set(null);
+          }
+        }
       } finally {
         holder.lock.unlock();
         if (holder.retired)
