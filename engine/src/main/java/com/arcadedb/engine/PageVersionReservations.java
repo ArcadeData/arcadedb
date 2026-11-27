@@ -27,6 +27,10 @@ package com.arcadedb.engine;
  * <p>
  * Installed on a {@link com.arcadedb.database.LocalDatabase} by the replication layer; a standalone database has
  * none, and the check costs nothing there.
+ * <p>
+ * A reservation ends when the entry that took it is applied here, one round trip of the log later, so a commit refused for
+ * one is refused again by every retry made at once (issue #12470). A caller that retries, or that cannot, waits first with
+ * {@link PageManager#awaitReservedVersionApplied}, which reads nothing but {@link #reservedVersion}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

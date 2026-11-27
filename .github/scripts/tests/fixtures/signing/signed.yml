@@ -1,0 +1,21 @@
+name: signed
+on:
+  workflow_dispatch:
+    inputs:
+      attach_to_release:
+        type: boolean
+jobs:
+  docker-and-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require main
+        if: ${{ github.ref != 'refs/heads/main' }}
+        run: exit 1
+      - name: Build and push Docker images
+        run: ./mvnw -Pdocker --batch-mode -pl package -am deploy
+      - name: Sign images
+        run: cosign sign --yes "arcadedata/arcadedb@${DIGEST}"
+      - name: Tag
+        run: |
+          git tag "${RELEASE_VERSION}"
+          git push origin "${RELEASE_VERSION}"

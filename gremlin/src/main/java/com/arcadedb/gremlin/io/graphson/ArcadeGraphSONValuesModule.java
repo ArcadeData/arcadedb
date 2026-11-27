@@ -66,7 +66,9 @@ import java.util.logging.Level;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class ArcadeGraphSONValuesModule extends TinkerPopJacksonModule {
-  private static final Map<Class, String> TYPES = new LinkedHashMap<>();
+  private static final Map<Class, String> TYPES    = new LinkedHashMap<>();
+  /** The fallback of an element of a list or a map: its own text, built only when the element has no stored equivalent. */
+  private static final Object             OWN_TEXT = new Object();
 
   static {
     TYPES.put(byte[].class, "Binary");
@@ -193,17 +195,18 @@ public class ArcadeGraphSONValuesModule extends TinkerPopJacksonModule {
   static Object storable(final Object value, final Object fallback) {
     if (value == null || value instanceof UUID)
       return value;
-    // THE ELEMENTS TOO: SAVED AS THEY ARE, ONE ARCADEDB CANNOT STORE WOULD BECOME A NULL
+    // THE ELEMENTS TOO: SAVED AS THEY ARE, ONE ARCADEDB CANNOT STORE WOULD BECOME A NULL. THEIR TEXT IS BUILT ONLY FOR THE ONE
+    // THAT IS NOT STORABLE, NEVER FOR A LIST OR A MAP, WHOSE TEXT WOULD BE THE WHOLE SUBTREE AT EVERY LEVEL
     if (value instanceof Collection<?> collection) {
       final List<Object> result = new ArrayList<>(collection.size());
       for (final Object item : collection)
-        result.add(storable(item, String.valueOf(item)));
+        result.add(storable(item, OWN_TEXT));
       return result;
     }
     if (value instanceof Map<?, ?> map) {
       final Map<Object, Object> result = new LinkedHashMap<>();
       for (final Map.Entry<?, ?> entry : map.entrySet())
-        result.put(storable(entry.getKey(), String.valueOf(entry.getKey())), storable(entry.getValue(), String.valueOf(entry.getValue())));
+        result.put(storable(entry.getKey(), OWN_TEXT), storable(entry.getValue(), OWN_TEXT));
       return result;
     }
     if (value instanceof ByteBuffer buffer) {
@@ -213,7 +216,9 @@ public class ArcadeGraphSONValuesModule extends TinkerPopJacksonModule {
     }
     if (value instanceof Character c)
       return c.toString();
-    return Type.getTypeByValue(value) != null ? value : fallback;
+    if (Type.getTypeByValue(value) != null)
+      return value;
+    return fallback == OWN_TEXT ? String.valueOf(value) : fallback;
   }
 
   private static final class TypedValueMapperHolder {

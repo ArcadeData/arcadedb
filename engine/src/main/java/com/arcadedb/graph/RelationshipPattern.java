@@ -29,8 +29,9 @@ import java.util.StringJoiner;
 /**
  * One hop of APOC's relationship pattern syntax ({@code relTypes}, {@code relTypesAndDirections}, the
  * {@code relationshipFilter} of {@code path.*}): alternatives separated by {@code |}, each a type name with an optional
- * direction marker, {@code TYPE>} outgoing, {@code <TYPE} incoming, {@code TYPE} both; {@code >} or {@code <} alone is
- * every type in that direction. A blank entry is skipped, so a blank pattern has no entry.
+ * direction marker, {@code TYPE>} outgoing, {@code <TYPE} or {@code TYPE<} incoming (APOC reads both, issue #12674),
+ * {@code TYPE} both; {@code >} or {@code <} alone is every type in that direction. A blank entry is skipped, so a blank
+ * pattern has no entry.
  * <p>
  * The {@code path.*} procedures read it since #10025; the {@code node.*} functions and the {@code algo.*} path finders
  * read the whole string as one type name, so {@code apoc.node.degree(n, 'KNOWS>')} answered 0 (issue #12103). Every
@@ -46,7 +47,7 @@ public final class RelationshipPattern {
    * One alternative of the hop.
    *
    * @param type      the edge type, {@code null} for every type
-   * @param direction {@code OUT} for {@code TYPE>}, {@code IN} for {@code <TYPE}, {@code BOTH} without a marker
+   * @param direction {@code OUT} for {@code TYPE>}, {@code IN} for {@code <TYPE} or {@code TYPE<}, {@code BOTH} without a marker
    */
   public record Entry(String type, Vertex.DIRECTION direction) {
   }
@@ -99,15 +100,19 @@ public final class RelationshipPattern {
     if (entry.isEmpty())
       return null;
 
-    final boolean incoming = entry.charAt(0) == '<';
-    final boolean outgoing = entry.charAt(entry.length() - 1) == '>';
-    if (incoming && outgoing && entry.length() > 1) {
-      final String inner = entry.substring(1, entry.length() - 1).trim();
+    final int last = entry.length() - 1;
+    final boolean leadingIncoming = entry.charAt(0) == '<';
+    final boolean trailingIncoming = last > 0 && entry.charAt(last) == '<';
+    final boolean outgoing = entry.charAt(last) == '>';
+    if (outgoing && (leadingIncoming || last > 0 && entry.charAt(last - 1) == '<')) {
+      final String inner = entry.substring(leadingIncoming ? 1 : 0, last).trim();
+      final String name = inner.endsWith("<") ? inner.substring(0, inner.length() - 1).trim() : inner;
       throw new IllegalArgumentException(functionName + "(): relationship filter '" + entry + "' carries both direction markers: "
-          + (inner.isEmpty() ? "leave the filter empty" : "write '" + inner + "'") + " to follow it in both directions");
+          + (name.isEmpty() ? "leave the filter empty" : "write '" + name + "'") + " to follow it in both directions");
     }
 
-    final String name = entry.substring(incoming ? 1 : 0, entry.length() - (outgoing ? 1 : 0)).trim();
+    final boolean incoming = leadingIncoming || trailingIncoming;
+    final String name = entry.substring(leadingIncoming ? 1 : 0, trailingIncoming || outgoing ? last : entry.length()).trim();
     final Vertex.DIRECTION direction = incoming ? Vertex.DIRECTION.IN : outgoing ? Vertex.DIRECTION.OUT : Vertex.DIRECTION.BOTH;
     return new Entry(name.isEmpty() ? null : name, direction);
   }

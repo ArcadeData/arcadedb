@@ -22,7 +22,6 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
-import com.arcadedb.utility.FileUtils;
 
 /**
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
@@ -41,7 +40,7 @@ public class SQLMethodLastIndexOf extends AbstractSQLMethod {
     if (value == null || params[0] == null)
       return null;
 
-    final String toFind = FileUtils.getStringContent(params[0].toString());
+    final String toFind = params[0].toString();
     // The result and the start index count Unicode code points, and a match never begins or ends inside a surrogate pair (issue #10248)
     return CypherFunctionHelper.lastIndexOfCodePoints(value.toString(), toFind,
         params.length > 1 ? indexArgument(params[1], "from-index") : Integer.MAX_VALUE);

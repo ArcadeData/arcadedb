@@ -22,6 +22,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityUser;
+import com.arcadedb.server.security.UserNameCheck;
 import io.undertow.server.HttpServerExchange;
 
 import java.io.IOException;
@@ -64,6 +65,9 @@ public class PostUserHandler extends AbstractServerHttpHandler {
       return new ExecutionResponse(400, new JSONObject().put("error", "User name is required").toString());
     if (name.startsWith("apitoken:"))
       return new ExecutionResponse(400, new JSONObject().put("error", "User name cannot start with 'apitoken:'").toString());
+    final String nameProblem = UserNameCheck.storedNameProblem(name);
+    if (nameProblem != null)
+      return new ExecutionResponse(400, new JSONObject().put("error", "The user name " + nameProblem).toString());
 
     final String password = payload.getString("password", "");
     if (password.length() < 8)

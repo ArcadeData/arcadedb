@@ -1,0 +1,90 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.6",
+  "serialNumber": "urn:uuid:22222222-2222-4222-8222-222222222222",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-11-26T09:00:00.000Z",
+    "tools": {
+      "components": [
+        {
+          "type": "application",
+          "vendor": "@cyclonedx",
+          "name": "cyclonedx-npm",
+          "version": "4.0.0"
+        }
+      ]
+    },
+    "component": {
+      "type": "application",
+      "bom-ref": "arcadedb-studio@26.12.1-SNAPSHOT",
+      "name": "arcadedb-studio",
+      "version": "26.12.1-SNAPSHOT",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "purl": "pkg:npm/arcadedb-studio@26.12.1-SNAPSHOT"
+    }
+  },
+  "components": [
+    {
+      "type": "library",
+      "bom-ref": "jquery@4.1.0",
+      "name": "jquery",
+      "version": "4.1.0",
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "purl": "pkg:npm/jquery@4.1.0"
+    },
+    {
+      "type": "library",
+      "bom-ref": "bootstrap@5.3.9",
+      "name": "bootstrap",
+      "version": "5.3.9",
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "purl": "pkg:npm/bootstrap@5.3.9"
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "arcadedb-studio@26.12.1-SNAPSHOT",
+      "dependsOn": [
+        "jquery@4.1.0",
+        "bootstrap@5.3.9"
+      ]
+    },
+    {
+      "ref": "jquery@4.1.0"
+    },
+    {
+      "ref": "bootstrap@5.3.9"
+    }
+  ]
+}

@@ -101,6 +101,8 @@ public class DeleteStatement extends Statement {
     result.batch = batch == null ? null : batch.copy();
     result.unsafe = unsafe;
     result.deleteVertex = deleteVertex;
+    // the copy holds the same literals (issue #12605)
+    result.excludedFromPlanCache = excludedFromPlanCache;
     return result;
   }
 

@@ -20,7 +20,9 @@ package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.exception.ValidationException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.serializer.json.JSONObject;
@@ -36,7 +38,9 @@ import java.nio.file.Files;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.EnumSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -110,6 +114,13 @@ class PropertyDefaultValueTest extends TestHelper {
 
       assertThatThrownBy(() -> database.newDocument("Probe").save()).hasMessageContaining("Probe.ridDefault")
           .hasMessageContaining("@rid");
+
+      // not only the bare attribute: one inside a larger expression has no record to be read from either, and a planner being
+      // answered null for it (issue #12795) must not turn the default into a null stored on every record
+      final DocumentType nested = database.getSchema().createDocumentType("ProbeNested");
+      nested.createProperty("typeDefault", Type.STRING).setDefaultValue("@type.toLowerCase()");
+      assertThatThrownBy(() -> database.newDocument("ProbeNested").save()).isInstanceOf(SchemaException.class)
+          .hasMessageContaining("ProbeNested.typeDefault").hasMessageContaining("@type");
     });
   }
 
@@ -650,6 +661,192 @@ class PropertyDefaultValueTest extends TestHelper {
     assertThat(type.getPolymorphicPropertiesWithDefaultDefined()).doesNotContain("obsolete");
 
     database.transaction(() -> assertThat(database.newDocument("Probe").save().has("obsolete")).isFalse());
+  }
+
+  /**
+   * Issue #12040. A literal default that parses but cannot be converted to the property's type ({@code INTEGER DEFAULT 'dflt'},
+   * {@code DATE DEFAULT 'notadate'}) was accepted, and every record create of the type then failed with a 500. It is refused at DDL
+   * time now, by CREATE PROPERTY and ALTER PROPERTY, and the property keeps the default it had.
+   */
+  @Test
+  void aLiteralDefaultThatCannotBeConvertedIsRejectedAtDdlTime() {
+    database.command("sql", "CREATE DOCUMENT TYPE Probe");
+    database.command("sql", "CREATE PROPERTY Probe.n INTEGER");
+
+    assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY Probe.n DEFAULT 'dflt'")).isInstanceOf(SchemaException.class)
+        .hasMessageContaining("Probe.n").hasMessageContaining("cannot be converted to the property type INTEGER");
+    assertThat(database.getSchema().getType("Probe").getProperty("n").getDefaultValueDefinition()).isNull();
+
+    assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY Probe.d DATE (DEFAULT 'notadate')"))
+        .hasMessageContaining("cannot be converted to the property type DATE");
+    assertThatThrownBy(() -> database.getSchema().getType("Probe").createProperty("m", Type.LONG).setDefaultValue("'x' + 1"))
+        .isInstanceOf(SchemaException.class).hasMessageContaining("cannot be converted to the property type LONG");
+
+    // records are still created, with no default applied
+    database.transaction(() -> assertThat(database.newDocument("Probe").save().has("n")).isFalse());
+
+    // what converts stays legal: a number in a string, a number, null, and a per-record function
+    database.command("sql", "ALTER PROPERTY Probe.n DEFAULT '7'");
+    database.command("sql", "CREATE PROPERTY Probe.k INTEGER (DEFAULT 4)");
+    database.command("sql", "CREATE PROPERTY Probe.z INTEGER (DEFAULT null)");
+    database.command("sql", "CREATE PROPERTY Probe.t DATETIME (DEFAULT sysdate())");
+    database.transaction(() -> {
+      final MutableDocument doc = database.newDocument("Probe").save();
+      assertThat(doc.getInteger("n")).isEqualTo(7);
+      assertThat(doc.getInteger("k")).isEqualTo(4);
+      assertThat(doc.get("t")).isNotNull();
+    });
+  }
+
+  /** A database whose schema.json already holds such a default still opens, and ALTER PROPERTY repairs it. */
+  @Test
+  void aLegacyUnconvertibleDefaultDoesNotBlockTheSchemaLoad() throws Exception {
+    database.transaction(() -> database.getSchema().createDocumentType("Probe").createProperty("n", Type.INTEGER).setDefaultValue("1"));
+
+    reopenWithPersistedDefault("n", "'dflt'");
+
+    assertThatThrownBy(() -> database.transaction(() -> database.newDocument("Probe").save())).hasMessageContaining("Probe.n");
+
+    database.command("sql", "ALTER PROPERTY Probe.n DEFAULT 2");
+    database.transaction(() -> assertThat(database.newDocument("Probe").save().getInteger("n")).isEqualTo(2));
+  }
+
+  /**
+   * A CREATE PROPERTY the schema refuses over its DEFAULT must not leave the bare property behind: the refusal comes after the
+   * property was declared, and a half-declared one would take the name and keep none of the attributes the statement asked for.
+   */
+  @Test
+  void aCreatePropertyRefusedOverItsDefaultLeavesNoPropertyBehind() {
+    database.command("sql", "CREATE DOCUMENT TYPE Probe");
+
+    assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY Probe.d DATE (MANDATORY true, DEFAULT 'notadate')"))
+        .hasMessageContaining("cannot be converted to the property type DATE");
+
+    final DocumentType type = database.getSchema().getType("Probe");
+    assertThat(type.existsProperty("d")).isFalse();
+    assertThat(type.getPolymorphicPropertiesWithDefaultDefined()).doesNotContain("d");
+    database.transaction(() -> assertThat(database.newDocument("Probe").save().has("d")).isFalse());
+
+    // the name is free again
+    database.command("sql", "CREATE PROPERTY Probe.d DATE (DEFAULT '2024-01-15')");
+    database.transaction(() -> assertThat(database.newDocument("Probe").save().has("d")).isTrue());
+  }
+
+  /**
+   * The check is the same conversion a record create runs, so it has to hold for every property type, the ones that are not a
+   * scalar included (LIST, MAP, EMBEDDED, LINK): a literal default the schema accepts never fails a record create with a
+   * conversion error, and one it refuses leaves the property as it was. Enumerated from {@link Type}, so a new property type is
+   * covered by itself. What the record validator refuses afterwards (a text default on a MAP or EMBEDDED property) is a
+   * validation error and not a conversion, and stays out of this check.
+   */
+  @Test
+  void aLiteralDefaultIsAcceptedOnlyWhenARecordCanBeCreatedWithIt() {
+    final String[] literals = { "'dflt'", "'7'", "7", "true", "null", "'2024-01-15'", "[1, 2]", "1 + 2", "'x' + 1" };
+
+    final DocumentType type = database.getSchema().createDocumentType("Probe");
+    final List<String> mismatches = new ArrayList<>();
+    final Set<Type> validatorRefused = EnumSet.noneOf(Type.class);
+    int declaredTypes = 0;
+    int accepted = 0;
+    int refused = 0;
+    for (final Type propertyType : Type.values()) {
+      boolean declared = false;
+      for (final String literal : literals) {
+        final Property property;
+        try {
+          property = type.createProperty("p", propertyType);
+        } catch (final RuntimeException e) {
+          // a type that cannot be declared as a bare property has no default to check
+          break;
+        }
+        declared = true;
+
+        final String label = propertyType + " DEFAULT " + literal;
+        boolean wasAccepted;
+        try {
+          property.setDefaultValue(literal);
+          wasAccepted = true;
+          ++accepted;
+        } catch (final SchemaException e) {
+          wasAccepted = false;
+          ++refused;
+          if (property.getDefaultValueDefinition() != null)
+            mismatches.add(label + " was refused but left a default on the property");
+        }
+
+        // accepted or not, a record of the type can be created: the default either applies or is not there
+        try {
+          database.transaction(() -> database.newDocument("Probe").save());
+        } catch (final ValidationException e) {
+          // not a conversion: the record validator refuses a value of another kind than the declared one (a text in a MAP), which
+          // the HTTP layer answers with a 400 naming the property, not with the 500 of issue #12040
+          validatorRefused.add(propertyType);
+        } catch (final RuntimeException e) {
+          mismatches.add(label + (wasAccepted ? " was accepted but fails the record create: " : " was refused and the record create fails: ")
+              + e.getMessage());
+        }
+
+        type.dropProperty("p");
+      }
+      if (declared)
+        ++declaredTypes;
+    }
+
+    assertThat(mismatches).isEmpty();
+    // a literal can never be a map or an embedded document, which is all the validator refuses here
+    assertThat(validatorRefused).isSubsetOf(Type.MAP, Type.EMBEDDED);
+    // the scan reached the types and the literals the check is about
+    assertThat(declaredTypes).isGreaterThan(10);
+    assertThat(accepted).isGreaterThan(0);
+    assertThat(refused).isGreaterThan(0);
+  }
+
+  /**
+   * A Cypher type constraint recreates the property under the new type, and when the schema or the stored records refuse the
+   * recreated declaration the previous one is put back. A DEFAULT an earlier release accepted (#12040) is one the schema now
+   * refuses even there: the restore has to keep every other attribute of the declaration and leave the default off, not stop at
+   * the first attribute it cannot restore (the order of the JSON form puts the default ahead of the constraints).
+   */
+  @Test
+  void aRefusedCypherRetypeOfALegacyUnconvertibleDefaultPutsEveryOtherAttributeBack() throws Exception {
+    database.transaction(() -> {
+      final Property property = database.getSchema().createVertexType("Probe").createProperty("n", Type.INTEGER);
+      property.setDefaultValue("1");
+      property.setMandatory(true);
+      property.setNotNull(true);
+      property.setReadonly(true);
+      property.setCustomValue("owner", "billing");
+    });
+
+    reopenWithPersistedDefault("n", "'dflt'");
+
+    assertThatThrownBy(() -> database.command("opencypher", "CREATE CONSTRAINT FOR (n:Probe) REQUIRE n.n IS :: DATE"))
+        .isInstanceOf(CommandExecutionException.class).hasMessageContaining("DEFAULT `'dflt'`").hasMessageContaining("DATE");
+
+    final Property restored = database.getSchema().getType("Probe").getProperty("n");
+    assertThat(restored.getType()).isEqualTo(Type.INTEGER);
+    assertThat(restored.isMandatory()).isTrue();
+    assertThat(restored.isNotNull()).isTrue();
+    assertThat(restored.isReadonly()).isTrue();
+    assertThat(restored.getCustomValue("owner")).isEqualTo("billing");
+    // the default the schema refuses is the one thing left off, and records are created again
+    assertThat(restored.getDefaultValueDefinition()).isNull();
+    database.transaction(() -> assertThat(database.newVertex("Probe").set("n", 5).save().getInteger("n")).isEqualTo(5));
+  }
+
+  /** The other way out of a legacy default: a retype to a type that can hold it carries it over, and repairs the property. */
+  @Test
+  void aCypherRetypeToATypeThatHoldsALegacyUnconvertibleDefaultRepairsIt() throws Exception {
+    database.transaction(() -> database.getSchema().createVertexType("Probe").createProperty("n", Type.INTEGER).setDefaultValue("1"));
+
+    reopenWithPersistedDefault("n", "'dflt'");
+
+    database.command("opencypher", "CREATE CONSTRAINT FOR (n:Probe) REQUIRE n.n IS :: STRING").close();
+
+    final Property retyped = database.getSchema().getType("Probe").getProperty("n");
+    assertThat(retyped.getType()).isEqualTo(Type.STRING);
+    assertThat(retyped.getDefaultValue()).isEqualTo("dflt");
+    database.transaction(() -> assertThat(database.newVertex("Probe").save().getString("n")).isEqualTo("dflt"));
   }
 
   /**

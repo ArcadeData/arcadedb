@@ -50,7 +50,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * flag and passes it a value, not a literal: a literal {@code false} is the leak written out, and a literal {@code true} is a
  * decision nobody made. The source-text census it replaces read only this module's {@code com/arcadedb/server/grpc} directory,
  * and judged the decision by the spelling of the last argument ({@code concealErrors()}, {@code conceal}). The other three
- * scans of {@code Issue7472EveryGrpcFailureIsConcealableTest} stay in the grpcw module, which says why.
+ * scans of {@code GrpcFailureConcealmentCensusTest} stay in the grpcw module, which says why.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

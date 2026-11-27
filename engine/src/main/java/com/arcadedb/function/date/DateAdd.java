@@ -52,6 +52,10 @@ public class DateAdd extends AbstractDateFunction {
     if (args[0] == null)
       return null;
 
+    // null in, null out, as for the timestamp: a null amount was a NullPointerException (issue #12744)
+    if (args[1] == null)
+      return null;
+
     final long timestamp = toMillis(args[0]);
     // Issue #10850: a whole number - longValue() read 1.5 hours as 1
     final long value = CypherFunctionHelper.requireWholeNumberOrTextArgument(args[1], getName(), "value");
