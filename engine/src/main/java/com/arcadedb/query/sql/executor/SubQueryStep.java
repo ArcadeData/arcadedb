@@ -26,6 +26,8 @@ import java.util.List;
  * Created by luigidellaquila on 22/07/16.
  */
 public class SubQueryStep extends AbstractExecutionStep {
+  private static final String HEADER = "+ FETCH FROM SUBQUERY";
+
   private final InternalExecutionPlan subExecutionPlan;
   private final boolean               sameContextAsParent;
 
@@ -114,8 +116,14 @@ public class SubQueryStep extends AbstractExecutionStep {
     final StringBuilder builder = new StringBuilder();
     final String ind = ExecutionStepInternal.getIndent(depth, indent);
     builder.append(ind);
-    builder.append("+ FETCH FROM SUBQUERY \n");
+    builder.append(HEADER).append(" \n");
     builder.append(subExecutionPlan.prettyPrint(depth + 1, indent));
     return builder.toString();
+  }
+
+  /** The steps of the sub-plan are nodes under this step, each described by its own: only the header line is this step's. */
+  @Override
+  public String getOwnDescription() {
+    return HEADER;
   }
 }

@@ -237,14 +237,25 @@ public class MergeByScoreStep extends AbstractExecutionStep {
   @Override
   public String prettyPrint(final int depth, final int indent) {
     final String ind = ExecutionStepInternal.getIndent(depth, indent);
-    final StringBuilder result = new StringBuilder(ind).append("+ MERGE BY $score DESC");
-    if (context.isProfiling())
-      result.append(" (").append(getCostFormatted()).append(")");
+    final StringBuilder result = header(ind);
     for (int i = 0; i < subExecutionPlans.size(); i++) {
       result.append("\n").append(ind).append("  +-- BRANCH ").append(i + 1);
       result.append("\n").append(subExecutionPlans.get(i).prettyPrint(depth + 2, indent));
     }
     return result.toString();
+  }
+
+  /** The steps of the branches are nodes under this step, each described by its own: only the header line is this step's. */
+  @Override
+  public String getOwnDescription() {
+    return header("").toString();
+  }
+
+  private StringBuilder header(final String ind) {
+    final StringBuilder result = new StringBuilder(ind).append("+ MERGE BY $score DESC");
+    if (context.isProfiling())
+      result.append(" (").append(getCostFormatted()).append(")");
+    return result;
   }
 
   public List<ExecutionPlan> getSubExecutionPlans() {

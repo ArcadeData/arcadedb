@@ -784,7 +784,7 @@ public class FacetCollectStep extends AbstractExecutionStep {
     result.setProperty("type", getType());
     result.setProperty(InternalExecutionPlan.JAVA_TYPE, getClass().getName());
     result.setProperty("cost", getCost());
-    result.setProperty("description", getDescription());
+    result.setProperty("description", getOwnDescription());
     // the server's query profiler keeps this result for every plan it records: the figures of the facets, no value of the data
     if (facets != null)
       result.setProperty("facets", facets.toProfileJSON().toMap());
