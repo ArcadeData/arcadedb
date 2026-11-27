@@ -127,6 +127,9 @@ public class FromItem extends SimpleNode {
       identifier.toString(params, builder);
     } else if (resultSet != null)
       builder.append("resultSet");
+    else if (rids != null)
+      // #12733: the literal empty list FROM [], rendered so the statement text parses again
+      builder.append("[]");
 
     if (modifier != null)
       modifier.toString(params, builder);

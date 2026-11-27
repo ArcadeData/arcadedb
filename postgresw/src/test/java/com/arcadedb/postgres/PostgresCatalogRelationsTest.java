@@ -754,13 +754,14 @@ class PostgresCatalogRelationsTest {
       rows.assertGaveUpWithin(15_000, "one budget for the predicate over every row from a full match budget per row");
 
       // The same pattern in a sub-select correlated to every one of those rows: each outer row re-parses it into a fresh
-      // node with a fresh regex budget, and the statement is still refused within the bound - the per-match budget cuts
-      // each match, and the statement's work budget the number of re-parses (deeplyNestedSubSelectsAndJoins...).
+      // node, and the statement is still refused within the bound - the per-match budget cuts each match, and the regex
+      // budget of the statement what all of them read (PostgresCatalogStatementPatternWorkTest pins the matches that stay
+      // under the per-match budget).
       final StallAwareStopwatch correlated = StallAwareStopwatch.start();
       assertThatThrownBy(() -> PostgresCatalog.resolve("select c.relname from pg_class c where exists (select 1 from "
           + "pg_class d where d.oid = c.oid and d.relname ~ '^(.*)(.*)(.*)(.*)(.*)Y$')", database, USER))
           .isInstanceOf(PostgresCatalog.WorkLimitExceeded.class);
-      correlated.assertGaveUpWithin(15_000, "the statement work budget from a fresh regex budget per outer row");
+      correlated.assertGaveUpWithin(15_000, "the budget of the statement from a fresh regex budget per outer row");
     }
 
     // Regression: #10228

@@ -2431,6 +2431,37 @@ class PostgresTypeTest {
         .isInstanceOf(PostgresProtocolException.class);
   }
 
+  // Regression: #11838
+  @Test
+  void uuidParameterAcceptsEverySpellingPostgresAccepts() {
+    final String canonical = "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11";
+    // the spellings PostgreSQL's uuid input documents, hyphens after any group of four digits included
+    for (final String spelling : new String[] { "A0EEBC99-9C0B-4EF8-BB6D-6BB9BD380A11", "{a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11}",
+        "a0eebc999c0b4ef8bb6d6bb9bd380a11", "a0ee-bc99-9c0b-4ef8-bb6d-6bb9-bd38-0a11", "{a0eebc99-9c0b4ef8-bb6d6bb9-bd380a11}",
+        canonical })
+      assertThat(PostgresType.deserialize(2950, 0, spelling.getBytes(StandardCharsets.UTF_8))).as(spelling).isEqualTo(canonical);
+  }
+
+  // Regression: #11838
+  @Test
+  void uuidParameterRejectsWhatPostgresRejects() {
+    for (final String spelling : new String[] { "{a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11}",
+        "{a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11}}", "{{a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11}", "a0eeb-c99-9c0b-4ef8-bb6d-6bb9bd380a11",
+        "a0eebc99--9c0b-4ef8-bb6d-6bb9bd380a11", "-a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11-",
+        "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a1", "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a111", "g0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+        " a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a1\u0663", "", "{}" })
+      assertThatThrownBy(() -> PostgresType.deserialize(2950, 0, spelling.getBytes(StandardCharsets.UTF_8))).as(spelling)
+          .isInstanceOf(PostgresProtocolException.class);
+  }
+
+  // Regression: #11838
+  @Test
+  void uuidParameterReadsTheSixteenBytesOfTheBinaryFormat() {
+    final ByteBuffer bytes = ByteBuffer.allocate(16).putLong(0xa0eebc999c0b4ef8L).putLong(0xbb6d6bb9bd380a11L);
+    assertThat(PostgresType.deserialize(2950, 1, bytes.array())).isEqualTo("a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11");
+    assertThatThrownBy(() -> PostgresType.deserialize(2950, 1, new byte[15])).isInstanceOf(PostgresProtocolException.class);
+  }
+
   @Test
   void byteaRoundTripsThroughItsOwnTextFormat() {
     final byte[] payload = new byte[256];

@@ -31,6 +31,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.OptionalInt;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -91,6 +92,31 @@ class BenchRunnerTest {
   }
 
   @Test
+  void runsTheCasesOfTheContextScale() {
+    final Fake w = new Fake() {
+      @Override
+      public List<String> cases() {
+        return List.of("a", "b");
+      }
+
+      @Override
+      public List<String> cases(final Scale scale) {
+        return scale == Scale.S ? List.of("b") : cases();
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) {
+        return m(1);
+      }
+    };
+    final BenchRunner runner = new BenchRunner(1, 0, Duration.ofSeconds(10));
+    assertThat(runner.run(w, new WorkloadContext(null, Scale.S, 1L, new JSONObject()), null, l -> {
+    })).extracting(CaseResult::caseName).containsExactly("b");
+    assertThat(runner.run(w, CTX, null, l -> {
+    })).extracting(CaseResult::caseName).containsExactly("a", "b");
+  }
+
+  @Test
   void onCaseSeesEveryCaseInOrder() {
     final Fake w = new Fake() {
       @Override
@@ -137,6 +163,119 @@ class BenchRunnerTest {
     assertThat(r.metrics().get(0).values()).containsExactly(3, 4, 5);
     assertThat(r.metrics().get(0).median()).isEqualTo(4.0);
     assertThat(r.scale()).isEqualTo("XS");
+  }
+
+  @Test
+  void aWorkloadsOwnRepsAndWarmupWin() {
+    final Fake declaring = new Fake() {
+      @Override
+      public List<String> cases() {
+        return List.of("a");
+      }
+
+      @Override
+      public OptionalInt reps() {
+        return OptionalInt.of(3);
+      }
+
+      @Override
+      public OptionalInt warmup() {
+        return OptionalInt.of(1);
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) {
+        return m(calls.incrementAndGet());
+      }
+    };
+    final Fake silent = new Fake() {
+      @Override
+      public List<String> cases() {
+        return List.of("a");
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) {
+        return m(calls.incrementAndGet());
+      }
+    };
+    final BenchRunner runner = new BenchRunner(5, 2, Duration.ofSeconds(10));
+
+    final CaseResult own = runner.run(declaring, CTX, n -> true).get(0);
+    assertThat(declaring.calls.get()).isEqualTo(4);
+    assertThat(own.status()).isEqualTo(CaseResult.Status.OK);
+    assertThat(own.metrics().get(0).values()).containsExactly(2, 3, 4);
+    // the run file records the repetitions the case really ran, not the run's
+    assertThat(own.reps()).isEqualTo(3);
+    assertThat(own.warmup()).isEqualTo(1);
+    assertThat(own.toJSON().getInt("reps")).isEqualTo(3);
+    assertThat(own.toJSON().getInt("warmup")).isEqualTo(1);
+
+    final CaseResult run = runner.run(silent, CTX, n -> true).get(0);
+    assertThat(silent.calls.get()).isEqualTo(7);
+    assertThat(run.metrics().get(0).values()).containsExactly(3, 4, 5, 6, 7);
+    assertThat(run.reps()).isEqualTo(5);
+    assertThat(run.warmup()).isEqualTo(2);
+  }
+
+  @Test
+  void anInvalidDeclaredRepetitionFailsTheCase() {
+    for (final int[] declared : new int[][] { { 0, 1 }, { 3, -1 } }) {
+      final Fake w = new Fake() {
+        @Override
+        public List<String> cases() {
+          return List.of("a");
+        }
+
+        @Override
+        public OptionalInt reps() {
+          return OptionalInt.of(declared[0]);
+        }
+
+        @Override
+        public OptionalInt warmup() {
+          return OptionalInt.of(declared[1]);
+        }
+
+        @Override
+        public Measurement measure(final WorkloadContext ctx, final String caseName) {
+          return m(calls.incrementAndGet());
+        }
+      };
+      final CaseResult r = new BenchRunner(5, 2, Duration.ofSeconds(10)).run(w, CTX, n -> true).get(0);
+      assertThat(r.status()).isEqualTo(CaseResult.Status.FAILED);
+      assertThat(r.error()).contains(declared[0] < 1 ? "declares reps 0, must be at least 1" : "declares warmup -1, must not be negative");
+      assertThat(w.calls.get()).isZero();
+    }
+  }
+
+  @Test
+  void aFailedCaseRecordsTheWorkloadsOwnReps() {
+    final Fake w = new Fake() {
+      @Override
+      public List<String> cases() {
+        return List.of("a");
+      }
+
+      @Override
+      public OptionalInt reps() {
+        return OptionalInt.of(3);
+      }
+
+      @Override
+      public OptionalInt warmup() {
+        return OptionalInt.of(1);
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) {
+        throw new IllegalStateException("boom");
+      }
+    };
+    final CaseResult r = new BenchRunner(5, 2, Duration.ofSeconds(10)).run(w, CTX, n -> true).get(0);
+    assertThat(r.status()).isEqualTo(CaseResult.Status.FAILED);
+    assertThat(r.reps()).isEqualTo(3);
+    assertThat(r.warmup()).isEqualTo(1);
   }
 
   @Test

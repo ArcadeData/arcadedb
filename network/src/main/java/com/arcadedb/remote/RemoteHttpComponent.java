@@ -805,7 +805,11 @@ public class RemoteHttpComponent extends RWLockContext {
                 + ": a hop in front of the server answered 503 (" + e.getMessage()
                 + "), possibly after forwarding the request, so the server may already have applied it. It is not sent again,"
                 + " because a replay could apply it twice", e);
-        }
+        } else if (this instanceof RemoteDatabase sessionDb && sessionDb.getSessionId() != null)
+          // The server itself answered a request of a remote transaction (issue #13405). A failure while the request ran rolls
+          // the session's transaction back, so a resend in that session is refused, or runs without the work it lost: the
+          // answer goes to the caller, and the retry is the transaction owner's (RemoteDatabase.transaction() re-runs the block)
+          throw e;
         // Transient server-side condition (election in progress, snapshot install) - retry the SAME
         // server after a delay. Bounded by the election budget only, never by maxRetry, so the FIXED
         // strategy's maxRetry of 1 does not reduce this to a single attempt.

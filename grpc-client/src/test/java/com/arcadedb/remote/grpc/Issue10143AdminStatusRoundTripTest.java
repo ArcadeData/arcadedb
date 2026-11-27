@@ -19,11 +19,16 @@
 package com.arcadedb.remote.grpc;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseOperationInProgressException;
+import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.exception.SchemaException;
+import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.exception.ValidationException;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.remote.RemoteAlreadyExistsException;
 import com.arcadedb.remote.RemoteException;
@@ -159,6 +164,34 @@ class Issue10143AdminStatusRoundTripTest {
 
     assertThat(wire.getStatus().getCode()).isEqualTo(Status.Code.INTERNAL);
     assertThat(GrpcClientErrorMapper.toAdminException(wire, "create user", true)).isInstanceOf(RemoteException.class);
+  }
+
+  /**
+   * Issue #12550: an engine refusal no arm of the admin table names is answered from its {@code ErrorCategory}, as the data
+   * plane answers it, and it shares a status with an admin arm: {@code ALREADY_EXISTS} with a taken user, token or database
+   * name, {@code NOT_FOUND} with a missing user. The class-name trailer is what keeps the client from reading one as the
+   * other, here for the failure an import raises on the caller's data, wrapped as the control plane wraps it.
+   */
+  @Test
+  void anEngineRefusalAnsweredByItsCategoryIsNotReadAsAnAdminArm() {
+    final ArcadeDbGrpcAdminService service = adminService();
+    final Map<Exception, Class<? extends Throwable>> types = new LinkedHashMap<>();
+    types.put(new DuplicatedKeyException("User[email]", "[bob@example.com]", null), DuplicatedKeyException.class);
+    types.put(new SchemaException("Type 'Missing' was not found"), SchemaException.class);
+    types.put(new ValidationException("Property 'age' is mandatory"), ValidationException.class);
+    types.put(new TimeoutException("Timeout on locking the database"), TimeoutException.class);
+
+    for (final Map.Entry<Exception, Class<? extends Throwable>> refusal : types.entrySet()) {
+      final String name = refusal.getKey().getClass().getSimpleName();
+      final StatusException wire = AdminStatusTestBridge.toStatus(service, "importDatabase",
+          new CommandExecutionException("Error importing database 'shop'", refusal.getKey()));
+
+      assertThat(wire.getStatus().getCode()).as("%s is not a server fault", name).isNotEqualTo(Status.Code.INTERNAL);
+      assertThat(GrpcClientErrorMapper.isNameTaken(wire)).as("%s is not a taken user, token or database name", name).isFalse();
+      for (final boolean write : new boolean[] { true, false })
+        assertThat(GrpcClientErrorMapper.toAdminException(wire, "import database", write)).as("%s, write=%s", name, write)
+            .isExactlyInstanceOf(refusal.getValue()).isNotInstanceOf(RemoteAlreadyExistsException.class);
+    }
   }
 
   @Test

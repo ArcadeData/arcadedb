@@ -128,6 +128,10 @@ project builds on the previous one.
   repetition, a latency case runs at least 1,000 operations per repetition. Phase 1 S sizes that break the rule are raised
   (first suspects: vector build 20k, full-text build 50k); a unit test per workload asserts its S size against the rule's
   inputs where it can, and a first dispatched S run checks the rest.
+  Measured on the S nightlies of 2026-11-24..26: vector build S 20k -> 80k (1.0 s on the JVM), kNN queries S 200 -> 1,000,
+  facet queries per repetition S 200 -> 1,000, tx-insert rows S 200k -> 500k (1,000 batches of 500); full-text build (15 s)
+  already passes. The bulk import is **left out at S** (a workload may answer its cases per scale): 2M rows import in 4.5 s
+  on the JVM at M, so S would need more rows than M, and its S repetitions spread 27%. M measures it every Saturday.
 
 ### 3. Workloads
 
@@ -171,6 +175,8 @@ their ports (other workloads keep today's server).
 **Open-loop ramp** (`ramp`, project 4). On the graph OLTP point lookup: arrivals on a fixed schedule, latency measured from
 the scheduled start (no coordinated omission), the rate raised in steps of 25% until p99 over 50 ms, errors over 0.1% or
 dropped arrivals. Metric `knee_per_s` (higher is better) and the p99 at the knee.
+The ramp runs from M up (every Saturday), not at S: one ramp took about 5 minutes at S on a laptop and the case runs four,
+which the weeknight S lane (close to its 240-minute budget once every phase 2 workload runs) has no room for.
 
 **HA** (`ha`, project 5). Three server containers on one Docker network (`ContainersTestTemplate` HA settings), the server
 cores split in three cpusets, the client on its own cores. On one host the network is a loopback bridge: the numbers track

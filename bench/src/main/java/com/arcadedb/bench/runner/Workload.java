@@ -18,7 +18,11 @@
  */
 package com.arcadedb.bench.runner;
 
+import com.arcadedb.bench.workload.Scale;
+
 import java.util.List;
+import java.util.Map;
+import java.util.OptionalInt;
 
 /**
  * A named group of benchmark cases.
@@ -26,7 +30,29 @@ import java.util.List;
 public interface Workload {
   String name();
 
+  /** Every case of the workload, at any scale. */
   List<String> cases();
+
+  /**
+   * The cases a run at this scale measures. A case that cannot measure anything at a scale (shorter than its own jitter) is left
+   * out there rather than recorded as noise.
+   */
+  default List<String> cases(final Scale scale) {
+    return cases();
+  }
+
+  /**
+   * The measured repetitions of each case of this workload, overriding the run's; empty to take the run's. A workload whose
+   * single repetition is long (a whole ramp) declares fewer.
+   */
+  default OptionalInt reps() {
+    return OptionalInt.empty();
+  }
+
+  /** The discarded warm-ups of each case of this workload, overriding the run's; empty to take the run's. */
+  default OptionalInt warmup() {
+    return OptionalInt.empty();
+  }
 
   void prepare(WorkloadContext ctx, String caseName) throws Exception;
 
@@ -34,6 +60,15 @@ public interface Workload {
    * Runs one repetition and returns one value per metric.
    */
   Measurement measure(WorkloadContext ctx, String caseName) throws Exception;
+
+  /**
+   * Server settings this workload needs (setting name to value), for example the plugins of a wire protocol. A key declared here
+   * replaces the default of the same name, it does not extend it: declaring {@code arcadedb.server.plugins} drops the plugins the
+   * default list holds unless they are named again. The server of each workload is started with them, and so is its replacement after a death.
+   */
+  default Map<String, String> serverSettings() {
+    return Map.of();
+  }
 
   default void teardown(WorkloadContext ctx) {
   }

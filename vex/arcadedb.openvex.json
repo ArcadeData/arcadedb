@@ -1,0 +1,8 @@
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "@id": "https://github.com/ArcadeData/arcadedb/vex/arcadedb.openvex.json",
+  "author": "Arcade Data Ltd",
+  "timestamp": "2026-11-26T00:00:00Z",
+  "version": 1,
+  "statements": []
+}

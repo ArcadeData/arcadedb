@@ -48,6 +48,8 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
   private boolean inEdgesAssigned;
   // #12320: the heads a traversal read on this instance (OUT_HEAD_READ, IN_HEAD_READ), see isEdgeListHeadRead()
   private byte    edgeListHeadsRead;
+  // #12642: built by ImmutableVertex.modify() from content read off the transaction's own image of the page, see markReadFromOwnImage()
+  private boolean readFromOwnImage;
 
   private static final byte OUT_HEAD_READ = 1;
   private static final byte IN_HEAD_READ  = 2;
@@ -137,13 +139,27 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
   /** The head of the outgoing list, read by a traversal: recorded, see {@link #isEdgeListHeadRead(boolean)}. */
   public RID getOutEdgesHeadChunk() {
     edgeListHeadsRead |= OUT_HEAD_READ;
+    if (readFromOwnImage)
+      ImmutableVertex.recordEdgeListHeadReadFromOwnImage(database, rid, true);
     return outEdges;
   }
 
   /** The head of the incoming list, read by a traversal: recorded, see {@link #isEdgeListHeadRead(boolean)}. */
   public RID getInEdgesHeadChunk() {
     edgeListHeadsRead |= IN_HEAD_READ;
+    if (readFromOwnImage)
+      ImmutableVertex.recordEdgeListHeadReadFromOwnImage(database, rid, false);
     return inEdges;
+  }
+
+  /**
+   * Marks this copy as built from content read off the transaction's own image of the vertex's page (issue #12642), as
+   * {@link ImmutableVertex#markReadFromOwnImage()} does for the vertex it was copied from. The instance bit
+   * {@link #isEdgeListHeadRead(boolean)} reaches the commit only when this copy is saved; a head read off a copy that never is
+   * must be recorded on the transaction, whose check of the slot it read decides on it.
+   */
+  void markReadFromOwnImage() {
+    readFromOwnImage = true;
   }
 
   @Override

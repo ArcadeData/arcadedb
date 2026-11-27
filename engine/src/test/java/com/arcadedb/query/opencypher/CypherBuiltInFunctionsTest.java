@@ -49,8 +49,13 @@ import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -702,6 +707,35 @@ class CypherBuiltInFunctionsTest extends TestHelper {
   }
 
   @Test
+  void dateFormatPointInTimeIgnoresUnit() {
+    final StatelessFunction fn = CypherFunctionRegistry.get("date.format");
+    final long millis = 1705314600000L;
+    final Object[] points = { new Date(millis), Instant.ofEpochMilli(millis),
+        ZonedDateTime.ofInstant(Instant.ofEpochMilli(millis), ZoneId.systemDefault()),
+        LocalDateTime.ofInstant(Instant.ofEpochMilli(millis), ZoneId.systemDefault()) };
+    final String expected = (String) fn.execute(new Object[] { millis, "ms", "yyyy-MM-dd" }, null);
+    for (final Object point : points) {
+      assertThat(fn.execute(new Object[] { point, "ms", "yyyy-MM-dd" }, null)).isEqualTo(expected);
+      assertThat(fn.execute(new Object[] { point, "s", "yyyy-MM-dd" }, null)).isEqualTo(expected);
+      assertThat(fn.execute(new Object[] { point, "d", "yyyy-MM-dd" }, null)).isEqualTo(expected);
+      assertThatThrownBy(() -> fn.execute(new Object[] { point, "bogus", "yyyy-MM-dd" }, null)).isInstanceOf(RuntimeException.class);
+    }
+  }
+
+  @Test
+  void dateFormatNumericCountIsStillScaled() {
+    final StatelessFunction fn = CypherFunctionRegistry.get("date.format");
+    final String expected = (String) fn.execute(new Object[] { 1705314600000L, "ms", "yyyy-MM-dd" }, null);
+    assertThat(fn.execute(new Object[] { 1705314600L, "s", "yyyy-MM-dd" }, null)).isEqualTo(expected);
+  }
+
+  @Test
+  void dateFormatNumericOverflowIsAnError() {
+    final StatelessFunction fn = CypherFunctionRegistry.get("date.format");
+    assertThatThrownBy(() -> fn.execute(new Object[] { Long.MAX_VALUE, "d", "yyyy-MM-dd" }, null)).isInstanceOf(ArithmeticException.class);
+  }
+
+  @Test
   void dateField() {
     final StatelessFunction fn = CypherFunctionRegistry.get("date.field");
     // Test extracting year from a timestamp
@@ -780,10 +814,10 @@ class CypherBuiltInFunctionsTest extends TestHelper {
     final StatelessFunction decompress = CypherFunctionRegistry.get("util.decompress");
 
     final String original = "Hello, World! This is a test string for compression.";
-    final String compressed = (String) compress.execute(new Object[] { original, "gzip" }, null);
-    assertThat(compressed).isNotNull();
+    final byte[] compressed = (byte[]) compress.execute(new Object[] { original, Map.of("compression", "GZIP") }, null);
+    assertThat(compressed).isNotEmpty();
 
-    final String decompressed = (String) decompress.execute(new Object[] { compressed, "gzip" }, null);
+    final String decompressed = (String) decompress.execute(new Object[] { compressed, Map.of("compression", "GZIP") }, null);
     assertThat(decompressed).isEqualTo(original);
   }
 
