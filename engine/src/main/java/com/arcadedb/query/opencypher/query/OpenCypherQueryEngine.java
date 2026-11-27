@@ -153,7 +153,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
       // it stays idempotent while still reporting the wrapped statement's operation types (issue #9313).
       final String stripped = stripLeadingComments(query);
       final boolean explain = stripped.regionMatches(true, 0, "EXPLAIN ", 0, 8);
-      final String actual = explain || stripped.regionMatches(true, 0, "PROFILE ", 0, 8) ? stripped.substring(8).trim() : query;
+      final String actual = explain || stripped.regionMatches(true, 0, "PROFILE ", 0, 8) ? stripped.substring(8).trim() : stripCypherPreparser(query);
 
       // Use statement cache to avoid re-parsing
       // The same lookup the execution makes, so the literals of the text are extracted the same way and the cache holds one
@@ -239,7 +239,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
    */
   @Override
   public DDLClassification classifyDDL(final String query) {
-    return database.getCypherStatementCache().getParameterized(query).statement().statement() instanceof CypherDDLStatement ?
+    return database.getCypherStatementCache().getParameterized(stripCypherPreparser(query)).statement().statement() instanceof CypherDDLStatement ?
         DDLClassification.DDL :
         DDLClassification.NOT_DDL;
   }
@@ -317,19 +317,40 @@ public class OpenCypherQueryEngine implements QueryEngine {
   }
 
   /**
-   * Trims the query and removes the line and block comments that precede the first token, so a
-   * commented EXPLAIN or PROFILE statement is still recognised by its prefix.
+   * Trims the query and removes what precedes the first token of the statement: line and block comments, and Neo4j's
+   * {@code CYPHER [version] [option=value ...]} preparser prefix, so a commented EXPLAIN or PROFILE statement is still recognised
+   * by its prefix and a statement sent as {@code CYPHER 5 MATCH ...} (what the Neo4j drivers' consumers, such as
+   * {@code @neo4j/graphql}, send) parses as the statement it prefixes.
    */
   static String stripLeadingComments(final String query) {
-    int i = 0;
+    final int start = skipWhitespaceAndComments(query, 0);
+    final int body = skipCypherPreparser(query, start);
+    return query.substring(body == start ? start : skipWhitespaceAndComments(query, body)).trim();
+  }
+
+  /**
+   * Removes Neo4j's {@code CYPHER [version] [option=value ...]} preparser prefix, the text that selects the Cypher version and the
+   * planner options of the statement that follows it (e.g. {@code CYPHER 5}, {@code CYPHER 25 runtime=slotted}). ArcadeDB has a
+   * single Cypher dialect and no planner options, so the prefix selects nothing and is dropped. Returns the query itself, with
+   * no copy, when it carries no such prefix.
+   */
+  public static String stripCypherPreparser(final String query) {
+    if (query == null)
+      return null;
+    final int start = skipWhitespaceAndComments(query, 0);
+    final int body = skipCypherPreparser(query, start);
+    return body == start ? query : query.substring(body);
+  }
+
+  /** The index of the first character that is neither whitespace nor part of a line or block comment, from {@code from}. */
+  private static int skipWhitespaceAndComments(final String query, final int from) {
+    int i = from;
     final int len = query.length();
-    boolean stripped = false;
     while (i < len) {
       final char c = query.charAt(i);
       if (Character.isWhitespace(c))
         i++;
       else if (c == '/' && i + 1 < len && query.charAt(i + 1) == '/') {
-        stripped = true;
         // a line comment ends at \n or at a bare \r
         i += 2;
         while (i < len && query.charAt(i) != '\n' && query.charAt(i) != '\r')
@@ -338,15 +359,52 @@ public class OpenCypherQueryEngine implements QueryEngine {
         final int end = query.indexOf("*/", i + 2);
         if (end < 0)
           break;
-        stripped = true;
         i = end + 2;
       } else
         break;
     }
-    // no leading comment: nothing to strip beyond the trim
-    if (!stripped)
-      return query.trim();
-    return query.substring(i).trim();
+    return i;
+  }
+
+  /**
+   * The index at which the statement starts after a {@code CYPHER [version] [option=value ...]} prefix that begins at {@code from},
+   * or {@code from} when the text there is not such a prefix. The version is a number and an option is {@code name=value}, each a
+   * whitespace-delimited word; the first word that is neither is the first word of the statement.
+   */
+  private static int skipCypherPreparser(final String query, final int from) {
+    final int len = query.length();
+    if (!query.regionMatches(true, from, "CYPHER", 0, 6) || from + 6 >= len || !Character.isWhitespace(query.charAt(from + 6)))
+      return from;
+    int i = from + 6;
+    while (true) {
+      int word = i;
+      while (word < len && Character.isWhitespace(query.charAt(word)))
+        word++;
+      int end = word;
+      while (end < len && !Character.isWhitespace(query.charAt(end)))
+        end++;
+      if (word == end || !isPreparserWord(query, word, end))
+        return word;
+      i = end;
+    }
+  }
+
+  private static boolean isPreparserWord(final String query, final int from, final int to) {
+    boolean digits = true;
+    for (int i = from; i < to; i++)
+      if (!Character.isDigit(query.charAt(i))) {
+        digits = false;
+        break;
+      }
+    if (digits)
+      return true;
+    final int equals = query.indexOf('=', from);
+    if (equals <= from || equals >= to - 1)
+      return false;
+    for (int i = from; i < equals; i++)
+      if (!Character.isLetterOrDigit(query.charAt(i)) && query.charAt(i) != '_')
+        return false;
+    return true;
   }
 
   /**

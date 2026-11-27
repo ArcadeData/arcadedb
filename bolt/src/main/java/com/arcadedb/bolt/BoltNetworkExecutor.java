@@ -897,7 +897,9 @@ public class BoltNetworkExecutor extends Thread {
 
     resolveRequestDatabase(db);
 
-    final String query = message.getQuery();
+    // Neo4j's `CYPHER 5` preparser prefix selects nothing here: dropped before the query is analyzed, so it is classified as a read
+    // or a write like the statement it prefixes
+    final String query = OpenCypherQueryEngine.stripCypherPreparser(message.getQuery());
 
     final BoltQueryStream stream = new BoltQueryStream(nextQid);
 
