@@ -1051,6 +1051,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             while (rs.hasNext()) {
 
               Result result = rs.next();
+              if (emitted == 0)
+                out.addAllColumnNames(projectionColumns(result));
 
               if (result.isElement()) {
                 affected++;
@@ -1884,6 +1886,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         while (resultSet.hasNext()) {
 
           Result result = resultSet.next();
+          if (count == 0)
+            resultBuilder.addAllColumnNames(projectionColumns(result));
 
           // THE ROW BY ITS SHAPE, NOT ITS CONTENT: SEE LOG_SHOW_VALUES (#9984)
           if (LogManager.instance().isLoggable(this, Level.FINE))
@@ -2582,6 +2586,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // (previously the final full batch went out with is_last_batch=false and no terminal followed).
     QueryResult pending = null;
     final FacetResults facets;
+    // the first row's, on every batch that carries rows (issue #13464)
+    List<String> columns = null;
 
     try (ResultSet rs = db.query(language, request.getQuery(),
         GrpcTypeConverter.convertParameters(request.getParametersMap()))) {
@@ -2603,6 +2609,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           safeOnNext(scso, cancelled, pending);
           pending = null;
         }
+
+        if (columns == null)
+          columns = projectionColumns(r);
+        if (inBatch == 0)
+          batch.addAllColumnNames(columns);
 
         // The row, not the record behind it: a SELECT *, !name row must not stream the excluded column back and a
         // SELECT *, x AS y row must keep its alias, exactly as ExecuteQuery answers them (issue #11942)
@@ -2673,6 +2684,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     final int maxMaterializedRows = serverConfiguration().getValueAsInteger(
         GlobalConfiguration.SERVER_GRPC_STREAM_MAX_MATERIALIZED_ROWS);
     final FacetResults facets;
+    // the first row's, on every batch (issue #13464)
+    List<String> columns = List.of();
 
     try (ResultSet rs = db.query(language, request.getQuery(),
         GrpcTypeConverter.convertParameters(request.getParametersMap()))) {
@@ -2682,6 +2695,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           return;
 
         Result r = rs.next();
+        if (all.isEmpty())
+          columns = projectionColumns(r);
 
         // The row, not the record behind it, as in streamCursor (issue #11942)
         all.add(convertResultToGrpcRecord(r, db, projectionConfig, encodingBudget));
@@ -2714,7 +2729,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         return;
 
       int end = Math.min(i + batchSize, all.size());
-      QueryResult.Builder b = QueryResult.newBuilder();
+      QueryResult.Builder b = QueryResult.newBuilder().addAllColumnNames(columns);
       for (int j = i; j < end; j++)
         b.addRecords(all.get(j));
 
@@ -6475,6 +6490,21 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    */
   GrpcRecord convertResultToGrpcRecord(Result result, Database db, ProjectionConfig projectionConfig) {
     return convertResultToGrpcRecord(result, db, projectionConfig, newEncodingBudget());
+  }
+
+  /**
+   * The column names of a projection row in projection order, which GrpcRecord.properties (a protobuf map) cannot carry (issue #13464).
+   * A row that is a single node or relationship (RETURN n) goes out as that record, whose properties are not columns: its one column
+   * is named by the projection, so a client can wrap the record under it. A record row a projection reshaped (SELECT *, x AS y) goes
+   * out as its projected columns, which it lists in order. A plain record row (SELECT FROM T) has no columns, only properties.
+   */
+  private static List<String> projectionColumns(final Result result) {
+    if (!result.isElement())
+      return new ArrayList<>(result.getPropertyNames());
+    if (result.getMetadata(FinalProjectionStep.PROJECTION_NAME_METADATA) instanceof String name)
+      return List.of(name);
+    final Set<String> columns = result.getPropertyNames();
+    return columns.equals(result.toElement().getPropertyNames()) ? List.of() : new ArrayList<>(columns);
   }
 
   /**
