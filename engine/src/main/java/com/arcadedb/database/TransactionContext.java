@@ -1219,6 +1219,11 @@ public class TransactionContext implements Transaction {
     return newRecords.size();
   }
 
+  /** How many new records the context holds room for: what it keeps between transactions is bounded (issue #13479). */
+  int getNewRecordsCapacity() {
+    return newRecords.capacity();
+  }
+
   int getInsertReservationCount() {
     return insertReservationCount;
   }
