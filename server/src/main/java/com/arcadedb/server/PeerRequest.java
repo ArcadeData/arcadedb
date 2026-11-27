@@ -182,7 +182,7 @@ public final class PeerRequest {
     final String problem = UserNameCheck.carriedNameProblem(forwardedUser);
     if (problem != null)
       throw new IllegalArgumentException(
-          "The principal a peer request acts for cannot be named in a header: the user name " + problem + " (" + url + ")");
+          "The principal a peer request acts for cannot be named in a header: the user name " + problem);
     return true;
   }
 

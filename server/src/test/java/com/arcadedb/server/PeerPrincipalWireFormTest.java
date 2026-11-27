@@ -1,5 +1,5 @@
 /*
- * Copyright \u00a9 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -86,7 +86,7 @@ class PeerPrincipalWireFormTest {
       accepted++;
       final HttpResponse<String> answer = client.send(builder.GET().build(),
           HttpResponse.BodyHandlers.ofString(StandardCharsets.ISO_8859_1));
-      assertThat(answer.body()).as("the principal '%s' as the listener read it", printable(name)).isEqualTo("[" + name + "]");
+      assertThat(answer.body()).as("the principal '%s' as the listener read it", PeerRequestTest.printable(name)).isEqualTo("[" + name + "]");
     }
 
     assertThat(accepted).as("the scan reached names PeerRequest accepts").isGreaterThan(ALPHABET.length);
@@ -117,14 +117,5 @@ class PeerPrincipalWireFormTest {
       previous = current;
     }
     return names;
-  }
-
-  private static String printable(final String name) {
-    final StringBuilder printable = new StringBuilder();
-    for (int i = 0; i < name.length(); i++) {
-      final char c = name.charAt(i);
-      printable.append(c == ' ' ? '_' : c < 0x20 || c > 0x7e ? String.format("\\u%04x", (int) c) : String.valueOf(c));
-    }
-    return printable.toString();
   }
 }

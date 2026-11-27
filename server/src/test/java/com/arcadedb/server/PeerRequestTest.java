@@ -287,7 +287,7 @@ class PeerRequestTest {
     assertThat(built.headers().firstValue(PeerRequest.FORWARDED_USER_HEADER)).isEmpty();
   }
 
-  private static String printable(final String name) {
+  static String printable(final String name) {
     final StringBuilder printable = new StringBuilder();
     for (int i = 0; i < name.length(); i++) {
       final char c = name.charAt(i);
