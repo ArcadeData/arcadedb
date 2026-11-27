@@ -2987,6 +2987,14 @@ public class LocalSchema implements Schema {
     if (definition.getActionType() == Trigger.ActionType.JAVASCRIPT || definition.getActionType() == Trigger.ActionType.JAVA)
       database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SECURITY);
 
+    // A body that does not parse is refused here, while the caller can still be told (issue #12904): accepted, it failed every
+    // later write on the type. Outside recordFileChanges, so the first JavaScript context is not built under the schema lock. A
+    // trigger loaded from the schema file is not checked, so one stored before the check existed still lets the database open
+    if (definition.getActionType() == Trigger.ActionType.SQL)
+      SQLTriggerExecutor.checkSyntax(database, definition.getName(), definition.getActionCode());
+    else if (definition.getActionType() == Trigger.ActionType.JAVASCRIPT)
+      ScriptTriggerExecutor.checkSyntax(database, definition.getName(), definition.getActionCode());
+
     recordFileChanges(() -> {
       // Validate trigger does not already exist
       if (triggers.containsKey(definition.getName())) {

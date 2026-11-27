@@ -247,6 +247,18 @@ public class GraalPolyglotEngine implements AutoCloseable {
     }
   }
 
+  /**
+   * Compiles {@code script} without running it, so a syntax error surfaces as a {@link PolyglotException} whose
+   * {@link PolyglotException#isSyntaxError()} is true, and nothing the script does takes effect.
+   */
+  public void parse(final String script) {
+    final Source source = Source.newBuilder(language, script, "src." + language).buildLiteral();
+
+    synchronized (this) {
+      context.parse(source);
+    }
+  }
+
   public void setAttribute(final String name, final Object value) {
     context.getBindings(language).putMember(name, value);
     context.getPolyglotBindings().putMember(name, value);

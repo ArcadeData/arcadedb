@@ -23,6 +23,8 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.Result;
@@ -44,6 +46,21 @@ public class SQLTriggerExecutor implements TriggerExecutor {
   public SQLTriggerExecutor(final String triggerName, final String sql) {
     this.triggerName = triggerName;
     this.sql = sql;
+  }
+
+  /**
+   * Refuses a body that does not parse, where the trigger is created (issue #12904): accepted, it failed every later write on
+   * the type. Parsed through the statement cache the trigger's own execution looks up, so the check costs nothing at the first
+   * firing.
+   *
+   * @throws CommandSQLParsingException when the body is not a valid SQL statement
+   */
+  public static void checkSyntax(final DatabaseInternal database, final String triggerName, final String sql) {
+    try {
+      database.getStatementCache().getParameterized(sql);
+    } catch (final CommandParsingException e) {
+      throw new CommandSQLParsingException("SQL trigger '" + triggerName + "' does not parse: " + e.getMessage(), e, sql);
+    }
   }
 
   @Override
