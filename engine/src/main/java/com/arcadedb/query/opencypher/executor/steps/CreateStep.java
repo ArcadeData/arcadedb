@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.DeferredExistenceChecks;
+import com.arcadedb.database.DocumentValidator;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
@@ -42,6 +43,7 @@ import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.*;
+import com.arcadedb.schema.DocumentType;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -461,15 +463,17 @@ public class CreateStep extends AbstractExecutionStep {
     }
 
     final int patternProperties = vertex.getPropertyNames().size();
-    int assignedBySet = 0;
-    if (absorbedSetItems != null && nodePattern.getVariable() != null) {
-      final List<SetClause.SetItem> folded = absorbedSetItems.get(nodePattern.getVariable());
-      if (folded != null)
-        assignedBySet = NewNodeSetFolding.apply(folded, vertex, currentResult, evaluator, context);
-    }
+    final List<SetClause.SetItem> folded =
+        absorbedSetItems != null && nodePattern.getVariable() != null ? absorbedSetItems.get(nodePattern.getVariable()) : null;
 
     final long startSave = context.isProfiling() ? System.nanoTime() : 0;
-    vertex.save();
+    final int assignedBySet;
+    if (folded != null)
+      assignedBySet = NewNodeSetFolding.applyAndSave(folded, vertex, currentResult, evaluator, context);
+    else {
+      assignedBySet = 0;
+      vertex.save();
+    }
 
     final QueryStatistics stats = context.getStatistics();
     stats.incNodesCreated();
@@ -511,9 +515,11 @@ public class CreateStep extends AbstractExecutionStep {
     final Object[] edgeProperties;
     if (relPattern.hasProperties()) {
       if (relPattern.getPropertiesParameterName() != null)
-        edgeProperties = buildPropertiesFromParameter(relPattern.getPropertiesParameterName());
+        edgeProperties = buildPropertiesFromParameter(context.getDatabase().getSchema().getType(type),
+            relPattern.getPropertiesParameterName());
       else
-        edgeProperties = buildEdgeProperties(relPattern.getProperties(), currentResult);
+        edgeProperties = buildEdgeProperties(context.getDatabase().getSchema().getType(type), relPattern.getProperties(),
+            currentResult);
     } else
       edgeProperties = null;
     if (context.isProfiling())
@@ -571,9 +577,12 @@ public class CreateStep extends AbstractExecutionStep {
           value = expr.evaluate(currentResult, context);
       }
 
-      // In Cypher, null property values are not stored
+      // In Cypher, null property values are not stored, so a null for a NOTNULL property is refused here: the validator
+      // would never see it (issue #13227)
       if (value != null)
         document.set(key, convertTemporalForStorage(value, key, rawValue));
+      else
+        DocumentValidator.requireNullAllowed(document.getType(), key, null);
     }
   }
 
@@ -589,6 +598,8 @@ public class CreateStep extends AbstractExecutionStep {
         final Object value = entry.getValue();
         if (value != null)
           document.set(entry.getKey(), convertTemporalForStorage(value, entry.getKey(), parameterName));
+        else
+          DocumentValidator.requireNullAllowed(document.getType(), entry.getKey(), null);
       }
     }
   }
@@ -614,7 +625,8 @@ public class CreateStep extends AbstractExecutionStep {
    * - ParameterReference objects (to be resolved from context parameters)
    * - Expression objects (to be evaluated in the context of the current result)
    */
-  private Object[] buildEdgeProperties(final Map<String, Object> properties, final Result currentResult) {
+  private Object[] buildEdgeProperties(final DocumentType edgeType, final Map<String, Object> properties,
+      final Result currentResult) {
     final List<Object> keyValues = new ArrayList<>(properties.size() * 2);
     for (final Map.Entry<String, Object> entry : properties.entrySet()) {
       // Intern property names to reduce string allocations in bulk operations
@@ -641,11 +653,12 @@ public class CreateStep extends AbstractExecutionStep {
           value = expr.evaluate(currentResult, context);
       }
 
-      // In Cypher, null property values are not stored
+      // In Cypher, null property values are not stored, and one for a NOTNULL property is refused (issue #13227)
       if (value != null) {
         keyValues.add(key);
         keyValues.add(convertTemporalForStorage(value, key, rawValue));
-      }
+      } else
+        DocumentValidator.requireNullAllowed(edgeType, key, null);
     }
     return keyValues.toArray();
   }
@@ -655,7 +668,7 @@ public class CreateStep extends AbstractExecutionStep {
    * runtime. Used for bare parameter properties syntax (e.g., CREATE (a)-[:REL $props]->(b)).
    */
   @SuppressWarnings("unchecked")
-  private Object[] buildPropertiesFromParameter(final String parameterName) {
+  private Object[] buildPropertiesFromParameter(final DocumentType edgeType, final String parameterName) {
     final Object paramValue = context.getInputParameters().get(parameterName);
     if (!(paramValue instanceof Map))
       return null;
@@ -666,7 +679,8 @@ public class CreateStep extends AbstractExecutionStep {
       if (value != null) {
         keyValues.add(entry.getKey());
         keyValues.add(convertTemporalForStorage(value, entry.getKey(), parameterName));
-      }
+      } else
+        DocumentValidator.requireNullAllowed(edgeType, entry.getKey(), null);
     }
     return keyValues.toArray();
   }

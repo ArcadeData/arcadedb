@@ -151,6 +151,9 @@ public class TimeSeriesBucket extends PaginatedComponent {
   private int[]                   nullBits;
   // Per-row scratch for the null bitmap the append loop writes; a component is appended to by one transaction at a time.
   private byte[]                  nullBitmapScratch;
+  // The most samples one compaction read decoded at once (see getLargestCompactionRead). Written by the compaction of the shard,
+  // which compactionMutex serializes.
+  private volatile int            largestCompactionRead;
   // Indexed by the ordinal among non-timestamp columns: whether that column is a 4-byte dictionary id.
   private boolean[]                     dictEncoded;
   // The ordinals of the dictionary-encoded columns, so the ingest path can walk only those.
@@ -416,21 +419,31 @@ public class TimeSeriesBucket extends PaginatedComponent {
    * Appends samples to the mutable bucket within the current transaction, reading them straight off a
    * primitive row source so a caller holding primitive data never boxes a value (issue #5474).
    * <p>
+   * Interns the batch's new tag values first, before a single data page is touched: interning commits
+   * its own transaction, nested in the current one, which keeps the dictionary pages out of this
+   * transaction's page set and, with it, out of any MVCC conflict with the rows about to be written.
+   * The shard does not come through here: it interns before it begins its append transaction, so an
+   * append costs one level of nesting whatever its tag values (issue #12807), and then calls
+   * {@link #appendInternedSamples}.
+   */
+  public void appendSamples(final TimeSeriesRowSource source) throws IOException {
+    internTagValues(source);
+    appendInternedSamples(source);
+  }
+
+  /**
+   * Appends samples whose tag values {@link #internTagValues} has interned, within the current transaction.
+   * <p>
    * The page bookkeeping is hoisted out of the per-sample loop: the header page is resolved once and
    * its counters are folded in registers until the end of the batch, and the active data page is kept
    * across samples until it fills. Doing it per sample cost three {@code PageId} allocations and three
-   * transaction map lookups for every point written - more garbage than the boxing this method
-   * removes.
+   * transaction map lookups for every point written - more garbage than the boxing the primitive row
+   * source removes.
    */
-  public void appendSamples(final TimeSeriesRowSource source) throws IOException {
+  void appendInternedSamples(final TimeSeriesRowSource source) throws IOException {
     final int sampleCount = source.size();
     if (sampleCount == 0)
       return;
-
-    // Resolve tag ids first, before a single data page is touched. Interning commits its own nested
-    // transaction, so running it up front keeps the dictionary pages out of this transaction's page
-    // set and, with it, out of any MVCC conflict with the rows we are about to write.
-    internTagValues(source, sampleCount);
 
     final TransactionContext tx = database.getTransaction();
     final MutablePage headerPage = tx.getPageToModify(new PageId(database, fileId, 0), pageSize, false);
@@ -475,7 +488,7 @@ public class TimeSeriesBucket extends PaginatedComponent {
         // length-prefixed, which is the only encoding the reader can walk past (issue #5475).
         final int fixedSize = col.getFixedSize();
         if (dictEncoded[colIdx]) {
-          // Every value was interned above, so this lookup always resolves.
+          // Every value was interned before this method ran, and an id is never taken back, so this lookup always resolves.
           dataPage.writeInt(colOffset, tagDictionary.getId(source.getStringValue(i, colIdx)));
           colOffset += DICT_ID_SIZE;
         } else if (fixedSize > 0) {
@@ -513,16 +526,18 @@ public class TimeSeriesBucket extends PaginatedComponent {
   }
 
   /**
-   * Assigns a dictionary id to every tag value in the batch that does not already have one.
+   * Assigns a dictionary id to every tag value in the batch that does not already have one, committing the
+   * new ones in the dictionary's own transaction (see {@link TimeSeriesTagDictionary#internAll}).
    * <p>
    * Steady state costs one lookup per distinct run of values and no transaction at all: a tag repeats
    * heavily within a batch, so the per-column {@code lastSeen} reference check absorbs runs before the
    * map is consulted, and after warm-up nothing is ever missing.
    */
-  private void internTagValues(final TimeSeriesRowSource source, final int sampleCount) throws IOException {
+  void internTagValues(final TimeSeriesRowSource source) throws IOException {
     if (dictColumns.length == 0)
       return;
 
+    final int sampleCount = source.size();
     List<String> missing = null;
     for (final int colIdx : dictColumns) {
       String lastSeen = null;
@@ -1332,6 +1347,17 @@ public class TimeSeriesBucket extends PaginatedComponent {
   }
 
   /**
+   * Waits, at most {@code timeoutMs}, until no entry of another node that the replication layer has accepted but this node has
+   * not applied yet holds a version of the header page (issue #12470): every append touches it, so a commit of it - the compaction
+   * flag - is refused for as long as one is in flight. See {@code PageManager.awaitReservedVersionApplied}.
+   *
+   * @return {@code false} when the wait gave up, {@code true} otherwise (always at once off a replicated leader)
+   */
+  boolean awaitHeaderPageApplied(final long timeoutMs) throws IOException {
+    return database.getPageManager().awaitReservedVersionApplied(new PageId(database, fileId, 0), pageSize, timeoutMs);
+  }
+
+  /**
    * Returns true if a compaction was in progress (crash recovery check). A file with no header page has
    * nothing to recover, so it answers false.
    */
@@ -1385,8 +1411,8 @@ public class TimeSeriesBucket extends PaginatedComponent {
 
   /**
    * Reads samples from data pages fromPage..toPage using the current transaction.
-   * Used by Phase 4 of lock-free compaction (under write lock) to read the partial
-   * last page(s) that arrived after the Phase 0 snapshot.
+   * Compaction calls it one window of pages at a time, so the caller decides how many samples it holds at once.
+   * The samples are decoded straight into the column arrays it returns, with no intermediate row per sample.
    *
    * @param fromPage first data page to read (inclusive, ≥ 1)
    * @param toPage   last data page to read (inclusive, ≥ fromPage)
@@ -1394,16 +1420,46 @@ public class TimeSeriesBucket extends PaginatedComponent {
    * @return parallel arrays [long[] timestamps, Object[] col1, ...], or null if empty
    */
   public Object[] readPagesRangeForCompaction(final int fromPage, final int toPage) throws IOException {
-    final List<Object[]> allRows = new ArrayList<>();
+    if (toPage < fromPage)
+      return null;
+    final TransactionContext tx = database.getTransaction();
+    final BasePage[] pages = new BasePage[toPage - fromPage + 1];
+    int total = 0;
     for (int pageNum = fromPage; pageNum <= toPage; pageNum++) {
-      final BasePage page = database.getTransaction().getPage(new PageId(database, fileId, pageNum), pageSize);
-      final int sampleCount = page.readShort(DATA_SAMPLE_COUNT_OFFSET) & 0xFFFF;
-      if (sampleCount == 0)
-        continue;
-      for (int row = 0; row < sampleCount; row++)
-        allRows.add(readRow(page, DATA_ROWS_OFFSET + row * rowSize, null));
+      final BasePage page = tx.getPage(new PageId(database, fileId, pageNum), pageSize);
+      pages[pageNum - fromPage] = page;
+      total += page.readShort(DATA_SAMPLE_COUNT_OFFSET) & 0xFFFF;
     }
-    return allRows.isEmpty() ? null : rowsToCompactionArrays(allRows);
+    if (total == 0)
+      return null;
+    if (total > largestCompactionRead)
+      largestCompactionRead = total;
+
+    final int totalCols = columns.size();
+    final long[] timestamps = new long[total];
+    final Object[] result = new Object[totalCols];
+    result[0] = timestamps;
+    final Object[][] colArrays = new Object[totalCols - 1][];
+    for (int c = 0; c < colArrays.length; c++) {
+      colArrays[c] = new Object[total];
+      result[c + 1] = colArrays[c];
+    }
+
+    int index = 0;
+    for (final BasePage page : pages) {
+      final int sampleCount = page.readShort(DATA_SAMPLE_COUNT_OFFSET) & 0xFFFF;
+      for (int row = 0; row < sampleCount; row++)
+        readRowInto(page, DATA_ROWS_OFFSET + row * rowSize, timestamps, colArrays, index++);
+    }
+    return result;
+  }
+
+  /**
+   * The most samples one {@link #readPagesRangeForCompaction} call has decoded at once in the life of this bucket: what a
+   * compaction holds of the mutable pages at a time. Read by tests.
+   */
+  int getLargestCompactionRead() {
+    return largestCompactionRead;
   }
 
   /**
@@ -1998,6 +2054,24 @@ public class TimeSeriesBucket extends PaginatedComponent {
       }
     }
     return result;
+  }
+
+  /**
+   * {@link #readRow} of every column, written at {@code index} of the compaction column arrays instead of into a row of its own.
+   */
+  private void readRowInto(final BasePage page, final int rowOffset, final long[] timestamps, final Object[][] colArrays,
+      final int index) {
+    timestamps[index] = page.readLong(rowOffset);
+    int colOffset = rowOffset + valuesOffset;
+    int colIdx = 0;
+    for (int c = 0; c < columns.size(); c++) {
+      final ColumnDefinition col = columns.get(c);
+      if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+        continue;
+      colArrays[colIdx][index] = isNullAt(page, rowOffset, colIdx) ? null : readColumnValue(page, colOffset, col, colIdx);
+      colOffset += getColumnStorageSize(page, colOffset, col, colIdx);
+      colIdx++;
+    }
   }
 
   /**

@@ -181,6 +181,51 @@ public final class DatasetGenerator {
     return sb.toString();
   }
 
+  /** The terms of the broad full-text corpus: few enough that a query of {@link #BROAD_QUERY_TERMS} of them matches about 45%. */
+  static final String[] BROAD_VOCABULARY = broadVocabulary();
+  static final int      BROAD_QUERY_TERMS = 6;
+  private static final int BROAD_DELETED_PERCENT = 10;
+
+  private static String[] broadVocabulary() {
+    final String[] result = new String[100];
+    for (int i = 0; i < result.length; i++)
+      result[i] = "tk" + (i < 10 ? "0" : "") + i;
+    return result;
+  }
+
+  /** {@code words} terms drawn uniformly, with repetition, from {@link #BROAD_VOCABULARY}. */
+  public String broadText(final int words) {
+    final SplittableRandom random = new SplittableRandom(seed);
+    final StringBuilder sb = new StringBuilder(words * 5);
+    for (int i = 0; i < words; i++) {
+      if (i > 0)
+        sb.append(' ');
+      sb.append(BROAD_VOCABULARY[random.nextInt(BROAD_VOCABULARY.length)]);
+    }
+    return sb.toString();
+  }
+
+  /** An OR of {@link #BROAD_QUERY_TERMS} distinct terms of the broad vocabulary. */
+  public static String broadQuery(final SplittableRandom random) {
+    final boolean[] used = new boolean[BROAD_VOCABULARY.length];
+    final StringBuilder sb = new StringBuilder(BROAD_QUERY_TERMS * 8);
+    for (int n = 0; n < BROAD_QUERY_TERMS; ) {
+      final int term = random.nextInt(BROAD_VOCABULARY.length);
+      if (used[term])
+        continue;
+      used[term] = true;
+      if (n++ > 0)
+        sb.append(" OR ");
+      sb.append(BROAD_VOCABULARY[term]);
+    }
+    return sb.toString();
+  }
+
+  /** Whether the post with this number has {@code deleted_at} set: about {@value #BROAD_DELETED_PERCENT}% of them. */
+  public static boolean broadDeleted(final long seed, final int post) {
+    return new SplittableRandom(seed * 31 + post).nextInt(100) < BROAD_DELETED_PERCENT;
+  }
+
   // Box-Muller
   private static double gaussian(final SplittableRandom random) {
     final double u1 = 1.0 - random.nextDouble();

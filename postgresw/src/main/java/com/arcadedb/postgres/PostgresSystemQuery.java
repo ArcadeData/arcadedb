@@ -78,12 +78,16 @@ public class PostgresSystemQuery {
    * The parentheses are optional for every function rather than per-function: PostgreSQL spells some of
    * these as keywords ({@code current_user}) and some as calls ({@code version()}), and being stricter here
    * would only reject a query this protocol can still answer correctly.
+   * <p>
+   * The text is the client's, and a run of blanks in it is consumed once: every quantifier over blanks is possessive, and the
+   * blanks before the optional parentheses belong to that group, so the one that follows is not left to share them. Quantifiers
+   * that give back what they took try every split of a run between them, which grows with the square of its length.
    */
   private static final Pattern SYSTEM_QUERY = Pattern.compile(
-      "^SELECT\\s+(?:PG_CATALOG\\s*\\.\\s*)?"
+      "^SELECT\\s++(?:PG_CATALOG\\s*+\\.\\s*+)?"
           + "(VERSION|CURRENT_SCHEMA|CURRENT_DATABASE|CURRENT_CATALOG|CURRENT_USER|SESSION_USER|CURRENT_ROLE|USER)\\b"
-          + "\\s*(?:\\(\\s*\\))?"
-          + "(?:\\s+(?:AS\\s+)?(?:\"([^\"]*)\"|([A-Za-z_][A-Za-z0-9_$]*)))?\\s*$",
+          + "(?:\\s*+\\(\\s*+\\))?+"
+          + "(?:\\s++(?:AS\\s++)?+(?:\"([^\"]*+)\"|([A-Za-z_][A-Za-z0-9_$]*+)))?+\\s*+$",
       Pattern.CASE_INSENSITIVE);
 
   public final Function function;

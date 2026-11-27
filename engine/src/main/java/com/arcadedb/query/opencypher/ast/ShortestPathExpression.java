@@ -217,11 +217,10 @@ public class ShortestPathExpression implements Expression {
     if (pathRids == null || pathRids.isEmpty())
       return null;
 
-    // Endpoints resolving to the same vertex yield the zero-length path, whose admissibility is
-    // HopBounds.acceptsSelfPath()'s call rather than accepts(0)'s (issue #7017); every longer answer is
-    // checked against both declared bounds.
+    // Every answer is checked against both declared bounds, the zero-length path of endpoints resolving to the same
+    // vertex included: it answers only a minimum of zero (issues #7017, #11913).
     final int hops = pathRids.size() - 1;
-    if (hops == 0 ? !bounds.acceptsSelfPath() : !bounds.accepts(hops))
+    if (!bounds.accepts(hops))
       return null;
 
     // Resolve vertex RIDs and find connecting edges to build a proper path

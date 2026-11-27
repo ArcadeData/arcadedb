@@ -26,12 +26,14 @@ import com.arcadedb.exception.CommandParameterMissingException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.literal.LiteralParameterizer;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalExecutionPlan;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.SqlAstInspector;
 
 import com.arcadedb.query.OperationType;
+import com.arcadedb.query.ProfiledLimitScope;
 import com.arcadedb.schema.TimeSeriesTypeBuilder;
 import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.utility.NumberUtils;
@@ -66,13 +68,18 @@ public class Statement extends SimpleNode {
   // Memo of what the statements nested in this one do (issue #9628): a reflective walk of the (immutable once parsed)
   // tree, so computed once per parsed instance. Transient so the AST walkers never mistake it for part of the tree.
   // Valid because nothing adds a statement to a parsed tree after it is classified: rewrites happen on the text before
-  // parsing (the HTTP automatic LIMIT is appended to the command string) and planners work on copy(), which starts with
-  // no memo.
+  // parsing and planners work on copy(), which starts with no memo.
   private transient volatile NestedClassification nestedClassification;
   // Memo of positionalParameterBounds(): the same reflective walk of the immutable tree, once per parsed instance
   private transient volatile ParameterBounds positionalParameterBounds;
   // Memo of placeholders(): the ? and :name nodes of the tree, in the order the walk meets them, or null when it cannot be read
   private transient volatile InputParameter[] placeholders;
+  // Set while the statement is built, before it is handed out, on a statement written with more literals than a shape records
+  // (issue #12605, see excludeFromPlanCache()). A copy of a statement whose plans can reach the cache carries it, since the
+  // planners work on copies of the nested statements: SELECT (its own plan) and UPDATE/DELETE (their source plan) do. A statement
+  // type that starts caching a plan of its own must be marked where the AST builder creates it (SQLASTBuilder.planned) and carry
+  // the mark in its copy() too
+  transient boolean excludedFromPlanCache;
 
   /**
    * How many positional values a statement must be bound to ({@code required}) and may be bound to ({@code accepted}).
@@ -292,12 +299,18 @@ public class Statement extends SimpleNode {
    * concurrent DDL recreated it, and a DDL that keeps dropping and recreating it can take that one away too, attempt after
    * attempt (issue #9615). The last attempt therefore plans without the key indexes of the types it reads, which no DDL can take
    * away under it: a scan answers what such an index would have, slower.
+   *
+   * @param rowCap the rows the caller of the statement reads at most, handed to the plan of every attempt before the first row is
+   *               pulled (see {@link com.arcadedb.query.ResultRowCapScope}, issue #12016); {@code 0} for none
    */
-  protected ResultSet openResultSetPlanningAgainOnStaleIndex(final IntFunction<InternalExecutionPlan> planner) {
+  protected ResultSet openResultSetPlanningAgainOnStaleIndex(final IntFunction<InternalExecutionPlan> planner, final int rowCap) {
     for (int attempt = 1; ; attempt++) {
       InternalExecutionPlan plan = null;
       try {
         plan = planner.apply(attempt);
+        // Before the first row: the result set below pulls it (issue #12016)
+        if (rowCap > 0)
+          plan.applyRowCap(rowCap);
         return new LocalResultSet(plan);
       } catch (final IndexException e) {
         if (attempt >= STALE_INDEX_PLAN_MAX_ATTEMPTS)
@@ -512,6 +525,25 @@ public class Statement extends SimpleNode {
   }
 
   /**
+   * Keeps the plans of this statement, and of every statement nested in it, out of the execution plan cache: the statement was
+   * parsed from a text with more literals than {@link LiteralParameterizer#MAX_LITERALS}, which the statement cache keeps out
+   * too (issue #12350). Every key a plan of it could be cached under - its own text, the rendered read side of an UPDATE or
+   * DELETE, the rendered text of a LET subquery - can hold every literal, so only an exact resend could hit the entry, while the
+   * plan holds the tree for as long as it lives (issue #12605). The literals can be in any nested statement, so the AST builder
+   * calls this on each SELECT, UPDATE and DELETE as it creates it, and the parser on the statement it hands out: no walk of the
+   * finished tree is needed, which for such a text is tens of thousands of nodes on every execution, and could not mark anything
+   * where the fields of the tree cannot be read reflectively. Called while the statement is built only, before it is handed out.
+   */
+  public void excludeFromPlanCache() {
+    excludedFromPlanCache = true;
+  }
+
+  /** Whether {@link #excludeFromPlanCache()} was called on this statement. */
+  public boolean isExcludedFromPlanCache() {
+    return excludedFromPlanCache;
+  }
+
+  /**
    * Refuses positional values that do not match the placeholders of the statements, before any of them runs (issue #10721). A value
    * no placeholder reads was dropped without a word - a list spread into several values for one {@code IN ?} answered fewer rows -
    * and a placeholder with no value was bound to {@code null}. A {@code ?} and a {@code :name} each take the value at their position
@@ -700,6 +732,10 @@ public class Statement extends SimpleNode {
    * @param params the parameters bound to this execution, keyed as {@link InputParameter#getValue(Map)} reads them; may be null
    */
   protected long tighterProfiledLimit(final DatabaseInternal database, final Map<String, Object> params) {
+    // A STATEMENT RUN AS A PART OF ONE ALREADY CAPPED - THE BODY OF A FUNCTION AN openCypher STATEMENT CALLS - READS EVERY ROW
+    // IT MATCHES: THE OUTER STATEMENT CAPS WHAT IT ANSWERS (ISSUE #12888)
+    if (ProfiledLimitScope.isActive())
+      return -1L;
     final long profiled = database.getResultSetLimit();
     if (profiled < 0)
       return -1L;
@@ -766,6 +802,19 @@ public class Statement extends SimpleNode {
     final Statement statement = copy();
     statement.setLimit(new Limit().setValue(NumberUtils.saturateToInt(profiledLimit)));
     return statement;
+  }
+
+  /**
+   * Writes the {@code resultSetLimit} of the current user's groups into this statement's LIMIT where it is tighter than its own,
+   * as {@link #copyWithTighterProfiledLimit} does into a copy. Only for a statement no other user or execution shares: one a
+   * script parsed for this execution and plans without the query engine, for the reason {@link #tighterProfiledLimit} gives.
+   *
+   * @param params the parameters bound to this execution, which a {@code LIMIT :n} or {@code LIMIT ?} reads; may be null
+   */
+  public final void applyTighterProfiledLimit(final DatabaseInternal database, final Map<String, Object> params) {
+    final long profiledLimit = tighterProfiledLimit(database, params);
+    if (profiledLimit > -1)
+      setLimit(new Limit().setValue(NumberUtils.saturateToInt(profiledLimit)));
   }
 
   /**

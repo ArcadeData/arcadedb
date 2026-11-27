@@ -1,0 +1,117 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.6",
+  "serialNumber": "urn:uuid:33333333-3333-4333-8333-333333333333",
+  "version": 1,
+  "metadata": {
+    "tools": {
+      "components": [
+        {
+          "type": "library",
+          "name": "cyclonedx-maven-plugin",
+          "version": "2.9.3"
+        }
+      ]
+    },
+    "component": {
+      "type": "library",
+      "bom-ref": "pkg:maven/com.arcadedb/arcadedb-gremlin@26.12.1?type=jar",
+      "group": "com.arcadedb",
+      "name": "arcadedb-gremlin",
+      "version": "26.12.1",
+      "publisher": "Arcade Data Ltd",
+      "purl": "pkg:maven/com.arcadedb/arcadedb-gremlin@26.12.1?type=jar"
+    }
+  },
+  "components": [
+    {
+      "type": "library",
+      "bom-ref": "pkg:maven/com.arcadedb/arcadedb-engine@26.12.1?type=jar",
+      "group": "com.arcadedb",
+      "name": "arcadedb-engine",
+      "version": "26.12.1",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "purl": "pkg:maven/com.arcadedb/arcadedb-engine@26.12.1?type=jar"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:maven/org.apache.tinkerpop/gremlin-core@3.7.4?type=jar",
+      "group": "org.apache.tinkerpop",
+      "name": "gremlin-core",
+      "version": "3.7.4",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "purl": "pkg:maven/org.apache.tinkerpop/gremlin-core@3.7.4?type=jar"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:maven/org.apache.groovy/groovy@4.0.27?type=jar",
+      "group": "org.apache.groovy",
+      "name": "groovy",
+      "version": "4.0.27",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "purl": "pkg:maven/org.apache.groovy/groovy@4.0.27?type=jar"
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "pkg:maven/com.arcadedb/arcadedb-gremlin@26.12.1?type=jar",
+      "dependsOn": [
+        "pkg:maven/com.arcadedb/arcadedb-engine@26.12.1?type=jar",
+        "pkg:maven/org.apache.tinkerpop/gremlin-core@3.7.4?type=jar"
+      ]
+    },
+    {
+      "ref": "pkg:maven/com.arcadedb/arcadedb-engine@26.12.1?type=jar",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:maven/org.apache.tinkerpop/gremlin-core@3.7.4?type=jar",
+      "dependsOn": [
+        "pkg:maven/org.apache.groovy/groovy@4.0.27?type=jar"
+      ]
+    },
+    {
+      "ref": "pkg:maven/org.apache.groovy/groovy@4.0.27?type=jar",
+      "dependsOn": []
+    }
+  ]
+}

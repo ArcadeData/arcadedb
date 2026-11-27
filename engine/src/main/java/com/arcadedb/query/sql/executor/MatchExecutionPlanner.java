@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
@@ -27,7 +28,9 @@ import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.parser.AndBlock;
 import com.arcadedb.query.sql.parser.BaseExpression;
+import com.arcadedb.query.sql.parser.BooleanExpression;
 import com.arcadedb.query.sql.parser.Bucket;
+import com.arcadedb.query.sql.parser.BucketList;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.FieldMatchPathItem;
 import com.arcadedb.query.sql.parser.FromClause;
@@ -55,6 +58,7 @@ import com.arcadedb.query.sql.parser.Unwind;
 import com.arcadedb.query.sql.parser.WhereClause;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.Pair;
 
 import java.util.*;
@@ -147,8 +151,12 @@ public class MatchExecutionPlanner {
         .filter(x -> x.getValue() >= 0 && x.getValue() < threshold && matchedDependencies(aliasFilters.get(x.getKey())).isEmpty()
             && !ridReadsMatched(x.getKey()) && !recursiveTargets.contains(x.getKey()))
         .map(x -> x.getKey()).collect(Collectors.toSet());
-    if (estimatedRootEntries.containsValue(0L)) {
+    // AN OPTIONAL NODE WITH NOTHING TO MATCH IS BOUND TO null, IT DOES NOT EMPTY THE RESULT (ISSUE #12749)
+    if (hasMandatoryEmptyAlias(estimatedRootEntries)) {
       result.chain(new EmptyStep(context));
+      // the SKIP step is what refuses a negative SKIP, also when no row can come (issue #12683), as on a SELECT folded empty
+      if (skip != null)
+        result.chain(new SkipExecutionStep(skip, context));
       return result;
     }
 
@@ -203,9 +211,9 @@ public class MatchExecutionPlanner {
         result.chain(new UnwindStep(unwind, context));
       }
 
-      if (this.skip != null && skip.getValue(context) >= 0) {
+      // a negative SKIP is refused by the step, as on the projection branch below (issue #12683)
+      if (this.skip != null)
         result.chain(new SkipExecutionStep(skip, context));
-      }
       if (this.limit != null && limit.getValue(context) >= 0) {
         result.chain(new LimitExecutionStep(limit, context));
       }
@@ -259,7 +267,7 @@ public class MatchExecutionPlanner {
       final String attribute = item.getRecordAttr();
       if (attribute == null || isReturnedColumn(attribute))
         continue;
-      throw new CommandExecutionException("ORDER BY " + attribute
+      throw new CommandSQLParsingException("ORDER BY " + attribute
           + " has no meaning on the rows of this MATCH: its RETURN builds new rows out of the matched aliases, which have no "
           + attribute + " of their own. Order by <alias>." + attribute + " or by a column of the RETURN instead, for example "
           + "RETURN a." + attribute + " AS key ... ORDER BY key");
@@ -583,7 +591,16 @@ public class MatchExecutionPlanner {
     // Add all the remaining aliases after all the suggested start points.
     remainingStarts.addAll(pattern.aliasToNode.keySet());
 
-    final Set<String> rootCandidates = estimatedRootEntries.keySet();
+    // A NODE WITH NO rid:, type: OR bucket: HAS NO ESTIMATE, BUT IT CAN START A PATTERN TOO, FROM EVERY VERTEX (ISSUE #12743): LEFT
+    // OUT, AN EDGE WALKED ONLY FORWARD WOULD NOT WAIT FOR SUCH A SOURCE AND WOULD BE WALKED BACKWARDS FROM ITS TARGET. NOT ONE
+    // WHOSE where: READS ANOTHER ALIAS OF THIS PATTERN THROUGH $matched: IT STARTS NOTHING BEFORE THAT ALIAS IS BOUND, SO AN EDGE
+    // THAT WAITED FOR IT WOULD BE LEFT TO A ROOT SCAN THAT REJECTS EVERY CANDIDATE, WHERE THE WALK FROM THE TARGET ANSWERS THE
+    // MATCH. AN ALIAS BOUND BY ANOTHER SUB-PATTERN IS NOT IN THE DEPENDENCIES: THE OUTER TUPLE SUPPLIES IT
+    final Set<String> rootCandidates = new HashSet<>(estimatedRootEntries.keySet());
+    for (final String alias : pattern.aliasToNode.keySet())
+      if (aliasRids.get(alias) == null && aliasTypes.get(alias) == null && aliasBuckets.get(alias) == null
+          && remainingDependencies.get(alias).isEmpty())
+        rootCandidates.add(alias);
     while (resultingSchedule.size() < pattern.numOfEdges) {
       // Start a new depth-first pass, adding all nodes with satisfied dependencies.
       // 1. Find a starting vertex for the depth-first pass. A node that an edge walked only forward leads to waits for that
@@ -1111,6 +1128,18 @@ public class MatchExecutionPlanner {
     }
   }
 
+  private boolean hasMandatoryEmptyAlias(final Map<String, Long> estimatedRootEntries) {
+    for (final Map.Entry<String, Long> entry : estimatedRootEntries.entrySet()) {
+      if (entry.getValue() != 0L)
+        continue;
+      final PatternNode node = pattern.aliasToNode.get(entry.getKey());
+      // AN ALIAS WITH NO PATTERN NODE IS TREATED AS MANDATORY: THE SAFE DEFAULT IS THE EMPTY RESULT THE PLANNER ALWAYS GAVE
+      if (node == null || !node.isOptionalNode())
+        return true;
+    }
+    return false;
+  }
+
   private void addPrefetchSteps(final SelectExecutionPlan result, final Set<String> aliasesToPrefetch,
       final CommandContext context) {
     for (final String alias : aliasesToPrefetch)
@@ -1128,6 +1157,13 @@ public class MatchExecutionPlanner {
    * answers no rows. Without a RID the type is the fetch, so its indexes serve the {@code where:}, and the bucket is a filter
    * on it. The checks run on the record rather than at planning time because the RID can be a parameter or an
    * expression, resolved per execution of a cached plan.
+   * <p>
+   * A node with none of the three is every vertex, as an unlabelled openCypher {@code MATCH (n)} is (issue #12743): the fetch
+   * is the buckets of every vertex type. Buckets rather than types, because a polymorphic scan of each type would visit a
+   * vertex whose type has two vertex supertypes twice. The bucket list is read from the schema at planning time, like the
+   * buckets of a {@code type:}, and a schema change invalidates the cached plan. Every vertex type, not only the readable ones:
+   * the scan reads each bucket through the per-bucket gate, so a user who may not read one vertex type is refused the statement,
+   * as by {@code MATCH (n)} and {@code SELECT FROM V}, rather than answered a silent subset.
    */
   private InternalExecutionPlan createRootPlan(final String alias, final CommandContext context) {
     final String typeName = aliasTypes.get(alias);
@@ -1142,6 +1178,20 @@ public class MatchExecutionPlanner {
       fromItem.setIdentifier(new Identifier(typeName));
     else if (bucketName != null)
       fromItem.setBucket(new Bucket(bucketName));
+    else {
+      final BucketList vertexBuckets = new BucketList();
+      for (final DocumentType type : context.getDatabase().getSchema().getTypes())
+        if (type instanceof VertexType)
+          // var: THE ENGINE BUCKET SHARES ITS SIMPLE NAME WITH THE PARSER NODE IMPORTED ABOVE
+          for (final var bucket : type.getBuckets(false))
+            vertexBuckets.buckets.add(new Identifier(bucket.getName()));
+      if (vertexBuckets.buckets.isEmpty()) {
+        final SelectExecutionPlan nothing = new SelectExecutionPlan(context, 0);
+        nothing.chain(new EmptyStep(context));
+        return nothing;
+      }
+      fromItem.setBucketList(vertexBuckets);
+    }
     final FromClause from = new FromClause();
     from.setItem(fromItem);
 
@@ -1177,7 +1227,9 @@ public class MatchExecutionPlanner {
     assignDefaultAliases(this.matchExpressions);
     pattern = new Pattern();
     for (final MatchExpression expr : this.matchExpressions) {
-      pattern.addExpression(expr.copy());
+      // NOT A COPY: rebindFilters() below gives every occurrence of an alias the where: of the others, and it has to reach the items
+      // the pattern's edges traverse, or a node reached through an occurrence that does not carry its where: is not filtered by it
+      pattern.addExpression(expr);
     }
 
     final Map<String, WhereClause> aliasFilters = new LinkedHashMap<>();
@@ -1193,17 +1245,53 @@ public class MatchExecutionPlanner {
     this.aliasBuckets = aliasClusters;
     this.aliasRids = aliasRids;
 
-    rebindFilters(aliasFilters);
+    rebindFilters();
   }
 
-  private void rebindFilters(final Map<String, WhereClause> aliasFilters) {
+  /**
+   * An alias written in several patterns is one node, so the where: of every occurrence constrains it, whichever occurrence the walk binds it
+   * through. Each occurrence gets its own where: ANDed with the where:s of the other occurrences of its alias. A where: that reads
+   * {@code $depth} is the one exception: it belongs to the recursive hop it is written on (the depth of its walk), and means nothing on
+   * another occurrence of the alias, where no walk has given {@code $depth} a value.
+   * <p>
+   * {@code aliasFilters} (see {@link #addAliases}) holds the same merge once per alias, {@code $depth} included, and is what the root
+   * fetch, the reverse walk ({@code EdgeTraversal.leftFilter}) and the dependencies read. The two have to answer the same where: for a
+   * node, so a change to how the where:s of an alias are combined belongs in both places.
+   */
+  private void rebindFilters() {
+    final Map<String, List<MatchFilter>> occurrences = new LinkedHashMap<>();
     for (final MatchExpression expression : matchExpressions) {
-      WhereClause newFilter = aliasFilters.get(expression.getOrigin().getAlias());
-      expression.getOrigin().setFilter(newFilter);
+      occurrences.computeIfAbsent(expression.getOrigin().getAlias(), k -> new ArrayList<>()).add(expression.getOrigin());
+      for (final MatchPathItem item : expression.getItems())
+        occurrences.computeIfAbsent(item.getFilter().getAlias(), k -> new ArrayList<>()).add(item.getFilter());
+    }
 
-      for (final MatchPathItem item : expression.getItems()) {
-        newFilter = aliasFilters.get(item.getFilter().getAlias());
-        item.getFilter().setFilter(newFilter);
+    // the where: of every occurrence as it was written, read before any occurrence is rebound
+    final Map<MatchFilter, WhereClause> written = new IdentityHashMap<>();
+    for (final List<MatchFilter> sameAlias : occurrences.values())
+      for (final MatchFilter occurrence : sameAlias)
+        written.put(occurrence, occurrence.getFilter());
+
+    for (final List<MatchFilter> sameAlias : occurrences.values()) {
+      if (sameAlias.size() < 2)
+        continue;
+      for (final MatchFilter occurrence : sameAlias) {
+        final List<BooleanExpression> others = new ArrayList<>();
+        for (final MatchFilter other : sameAlias) {
+          final WhereClause where = written.get(other);
+          if (other != occurrence && where != null && where.getBaseExpression() != null && !readsDepth(where))
+            others.add(where.getBaseExpression());
+        }
+        if (others.isEmpty())
+          continue;
+        final WhereClause own = written.get(occurrence);
+        final AndBlock combined = new AndBlock();
+        if (own != null && own.getBaseExpression() != null)
+          combined.getSubBlocks().add(own.getBaseExpression());
+        combined.getSubBlocks().addAll(others);
+        final WhereClause rebound = new WhereClause();
+        rebound.setBaseExpression(combined);
+        occurrence.setFilter(rebound);
       }
     }
   }
