@@ -24,7 +24,11 @@ import io.micrometer.core.instrument.Timer;
 import org.junit.jupiter.api.Test;
 
 import java.net.HttpURLConnection;
+import java.net.URI;
 import java.net.URL;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Base64;
@@ -158,6 +162,35 @@ class HttpRedMetricsIT extends BaseGraphServerTest {
         .filter(db -> db != null && db.startsWith("nosuchdb"))
         .count();
     assertThat(inventedDbMeters).isZero();
+  }
+
+  @Test
+  void requestMethodsOutsideTheStandardSetCollapseToBoundedMethodTag() throws Exception {
+    // The method tag of the RED timer takes a bounded set of values: the standard methods, and one constant for
+    // every other token of the request line.
+    final HttpClient client = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).build();
+    for (int i = 0; i < 50; i++) {
+      final HttpRequest request = HttpRequest.newBuilder(URI.create(getServerHttpUrl("/probe/" + i)))
+          .method("XMETHOD" + i, HttpRequest.BodyPublishers.noBody()).build();
+      client.send(request, HttpResponse.BodyHandlers.discarding());
+    }
+
+    // Every one of them lands on the single bounded value. Summed over every meter carrying the tag and polled,
+    // because the timer is recorded after the response was read.
+    await().atMost(SETTLE_TIMEOUT).pollInterval(POLL_INTERVAL).untilAsserted(() -> {
+      final Collection<Timer> collapsed = Metrics.globalRegistry.find("arcadedb.http.requests")
+          .tag("path", "unmatched").tag("method", "OTHER").timers();
+      assertThat(collapsed).isNotEmpty();
+      assertThat(collapsed.stream().mapToLong(Timer::count).sum()).isGreaterThanOrEqualTo(50L);
+    });
+
+    // Cardinality guard: no timer may carry one of the made-up methods. Checked after the poll, so every one of
+    // the 50 requests has been recorded by the time the registry is read.
+    final long inventedMethodMeters = Metrics.globalRegistry.find("arcadedb.http.requests").timers().stream()
+        .map(t -> t.getId().getTag("method"))
+        .filter(m -> m != null && m.startsWith("XMETHOD"))
+        .count();
+    assertThat(inventedMethodMeters).isZero();
   }
 
   private void hitGet(final String path) throws Exception {

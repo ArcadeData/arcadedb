@@ -126,9 +126,23 @@ public class CachedPage {
   }
 
   public MutablePage useAsMutable() {
+    return useAsMutable(null);
+  }
+
+  /**
+   * The same private copy, written into {@code recycled} when that is an array of the page's length, instead of into a new one: for a
+   * caller that owns an array nothing reads any more, such as the stale image of a page it is about to replace.
+   */
+  public MutablePage useAsMutable(final byte[] recycled) {
     final byte[] array = this.content.getByteBuffer().array();
-    // COPY THE CONTENT, SO CHANGES DOES NOT AFFECT IMMUTABLE COPY
-    return new MutablePage(pageId, size, Arrays.copyOf(array, array.length), version, content.size());
+    final byte[] copy;
+    if (recycled != null && recycled.length == array.length) {
+      System.arraycopy(array, 0, recycled, 0, array.length);
+      copy = recycled;
+    } else
+      // COPY THE CONTENT, SO CHANGES DOES NOT AFFECT IMMUTABLE COPY
+      copy = Arrays.copyOf(array, array.length);
+    return new MutablePage(pageId, size, copy, version, content.size());
   }
 
   public long getLastAccessed() {

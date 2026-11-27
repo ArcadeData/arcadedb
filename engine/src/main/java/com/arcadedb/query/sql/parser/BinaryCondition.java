@@ -48,20 +48,42 @@ public class BinaryCondition extends BooleanExpression {
    * so a record does not walk the expression again. A benign race: two threads compute the same answer.
    */
   private          byte   rightLiteralState = ConstantOperandConversion.UNKNOWN;
+  /**
+   * Each operand, evaluated once per execution when it is a call over constants that answers one value for the execution, such as
+   * {@code date('2024-06-01', 'yyyy-MM-dd')} (issue #13523). Built at first use.
+   */
+  private transient volatile ConstantCallOperand leftOperand;
+  private transient volatile ConstantCallOperand rightOperand;
 
   public BinaryCondition() {
   }
 
   @Override
   public Boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
-    return compare(context, left.execute(currentRecord, context), right.execute(currentRecord, context));
+    return compare(context, leftOperand().execute(currentRecord, context), rightOperand().execute(currentRecord, context));
   }
 
   @Override
   public Boolean evaluate(final Result currentRecord, final CommandContext context) {
-    final Object leftVal = left.execute(currentRecord, context);
-    final Object rightVal = right.execute(currentRecord, context);
+    final Object leftVal = leftOperand().execute(currentRecord, context);
+    final Object rightVal = rightOperand().execute(currentRecord, context);
     return compare(context, leftVal, rightVal);
+  }
+
+  ConstantCallOperand leftOperand() {
+    final ConstantCallOperand current = leftOperand;
+    final ConstantCallOperand operand = ConstantCallOperand.of(current, left);
+    if (operand != current)
+      leftOperand = operand;
+    return operand;
+  }
+
+  ConstantCallOperand rightOperand() {
+    final ConstantCallOperand current = rightOperand;
+    final ConstantCallOperand operand = ConstantCallOperand.of(current, right);
+    if (operand != current)
+      rightOperand = operand;
+    return operand;
   }
 
   /**

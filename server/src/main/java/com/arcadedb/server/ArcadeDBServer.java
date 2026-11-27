@@ -1210,6 +1210,10 @@ public class ArcadeDBServer {
   static void installCardinalityMeterFilters(final MeterRegistry.Config config) {
     // arcadedb.http.requests / path: the handler already collapses unmatched URIs to a constant (issue #5025).
     config.meterFilter(MeterFilter.maximumAllowableTags("arcadedb.http.requests", "path", 100, MeterFilter.deny()));
+    // arcadedb.http.requests / method: the handler already collapses a method outside the standard set onto a
+    // constant, so the bound is the standard methods plus that constant.
+    config.meterFilter(MeterFilter.maximumAllowableTags("arcadedb.http.requests", "method",
+        AbstractServerHttpHandler.MAX_METHOD_TAG_VALUES, MeterFilter.deny()));
     // arcadedb.http.requests / db: the handler already collapses a {database} path parameter naming no existing
     // database onto a constant, but database name churn - or a future route exposing another free segment as
     // "db" - must not be able to grow the registry either (issue #6805).

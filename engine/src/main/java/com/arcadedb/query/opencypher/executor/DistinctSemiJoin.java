@@ -106,7 +106,7 @@ public final class DistinctSemiJoin {
       "distance", "duration", "duration_between", "e", "elementid", "endnode", "exists", "exp", "floor", "format",
       "haversin", "head", "id", "isempty", "isnan", "isnormalized", "keys", "labels", "last", "left", "length", "ln",
       "local_datetime", "local_time", "localdatetime", "localtime", "log", "log10", "lower", "ltrim", "map.clean",
-      "map.flatten", "map.fromlists", "map.frompairs", "map.groupby", "map.merge", "map.mergelist", "map.removekey",
+      "map.flatten", "map.fromlists", "map.frompairs", "map.groupby", "map.groupbymulti", "map.merge", "map.mergelist", "map.removekey",
       "map.removekeys", "map.setkey", "map.sortedproperties", "map.submap", "map.unflatten", "map.values",
       "math.cosh", "math.maxdouble", "math.maxlong", "math.minlong", "math.round", "math.sigmoid",
       "math.sigmoidprime", "math.sinh", "math.tanh", "max", "min", "node.degree", "node.degree.in", "node.degree.out",

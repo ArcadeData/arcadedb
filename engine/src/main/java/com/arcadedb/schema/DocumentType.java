@@ -300,17 +300,12 @@ public interface DocumentType {
   boolean existsPolymorphicProperty(String propertyName);
 
   default Property getPolymorphicPropertyIfExists(final String propertyName) {
-    Property prop = getPropertyIfExists(propertyName);
+    final Property prop = getPropertyIfExists(propertyName);
     if (prop != null)
       return prop;
 
-    for (final DocumentType superType : getSuperTypes()) {
-      prop = superType.getPolymorphicPropertyIfExists(propertyName);
-      if (prop != null)
-        return prop;
-    }
-
-    return null;
+    // each type above once, whatever the number of paths that lead up to it, up to the first that declares the property
+    return TypeHierarchy.findInSuperTypes(this, superType -> superType.getPropertyIfExists(propertyName));
   }
 
   Property getPropertyIfExists(String propertyName);

@@ -24,6 +24,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.IndexSearchInfo;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.utility.DateUtils;
 
@@ -46,20 +47,43 @@ public class BetweenCondition extends BooleanExpression {
    */
   private          byte   lowerLiteralState = ConstantOperandConversion.UNKNOWN;
   private          byte   upperLiteralState = ConstantOperandConversion.UNKNOWN;
+  /**
+   * Each bound, evaluated once per execution when it is a call over constants that answers one value for the execution, such as
+   * {@code date('2024-06-01', 'yyyy-MM-dd')} (issue #13523). Built at first use.
+   */
+  private transient volatile ConstantCallOperand lowerOperand;
+  private transient volatile ConstantCallOperand upperOperand;
 
   public BetweenCondition() {
   }
 
   @Override
   public Boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
-    return evaluate(first.execute(currentRecord, context), second.execute(currentRecord, context), third.execute(currentRecord, context),
-        context);
+    return evaluate(first.execute(currentRecord, context), boundOperand(true).execute(currentRecord, context),
+        boundOperand(false).execute(currentRecord, context), context);
   }
 
   @Override
   public Boolean evaluate(final Result currentRecord, final CommandContext context) {
-    return evaluate(first.execute(currentRecord, context), second.execute(currentRecord, context), third.execute(currentRecord, context),
-        context);
+    return evaluate(first.execute(currentRecord, context), boundOperand(true).execute(currentRecord, context),
+        boundOperand(false).execute(currentRecord, context), context);
+  }
+
+  /**
+   * The operand a bound is evaluated through: once per execution when it is a call over constants (issue #13523).
+   *
+   * @param lower true for the lower bound, false for the upper one
+   */
+  ConstantCallOperand boundOperand(final boolean lower) {
+    final ConstantCallOperand current = lower ? lowerOperand : upperOperand;
+    final ConstantCallOperand operand = ConstantCallOperand.of(current, lower ? second : third);
+    if (operand != current) {
+      if (lower)
+        lowerOperand = operand;
+      else
+        upperOperand = operand;
+    }
+    return operand;
   }
 
   /**
@@ -75,7 +99,8 @@ public class BetweenCondition extends BooleanExpression {
     // makes the comparison undefined, not an error: report "not between" rather than let the raw conversion
     // failure (e.g. NumberFormatException) escape (#5900). That verdict is false even when the other bound is null
     // An integer value is compared with a numeric bound as it is, as >= and <= compare it: converted to the value's class, 11.5
-    // read as 11 and 3e9 wrapped around (issue #9021)
+    // read as 11 and 3e9 wrapped around (issue #9021). So is a number against an infinity or NaN, which a decimal has no form
+    // for: the conversion refused it and the answer was "not between" for every row (issue #12694)
     final boolean integralValue = firstValue instanceof Integer || firstValue instanceof Long || firstValue instanceof Short
         || firstValue instanceof Byte;
     // A DATE against a datetime bound is that day at midnight, not the bound narrowed to its day (issue #10206), so
@@ -84,7 +109,7 @@ public class BetweenCondition extends BooleanExpression {
     final int lowerOrder = secondValue == null ? DateUtils.NOT_NUMBER_AND_TEMPORAL : DateUtils.compareNumberAndTemporal(firstValue, secondValue);
     final int upperOrder = thirdValue == null ? DateUtils.NOT_NUMBER_AND_TEMPORAL : DateUtils.compareNumberAndTemporal(firstValue, thirdValue);
     Object lowerValue = firstValue;
-    if (secondValue != null && lowerOrder == DateUtils.NOT_NUMBER_AND_TEMPORAL && !(integralValue && secondValue instanceof Number)) {
+    if (secondValue != null && lowerOrder == DateUtils.NOT_NUMBER_AND_TEMPORAL && !comparedAsNumbers(firstValue, integralValue, secondValue)) {
       lowerValue = DateUtils.dateAsMidnightAgainst(firstValue, secondValue);
       secondValue = ConstantOperandConversion.convertOrNull(
           ConstantOperandConversion.isStringToConvert(firstValue, secondValue) && isBoundConstant(true) ? boundConversion(context, true) : null,
@@ -93,7 +118,7 @@ public class BetweenCondition extends BooleanExpression {
         return false;
     }
     Object upperValue = firstValue;
-    if (thirdValue != null && upperOrder == DateUtils.NOT_NUMBER_AND_TEMPORAL && !(integralValue && thirdValue instanceof Number)) {
+    if (thirdValue != null && upperOrder == DateUtils.NOT_NUMBER_AND_TEMPORAL && !comparedAsNumbers(firstValue, integralValue, thirdValue)) {
       upperValue = DateUtils.dateAsMidnightAgainst(firstValue, thirdValue);
       thirdValue = ConstantOperandConversion.convertOrNull(
           ConstantOperandConversion.isStringToConvert(firstValue, thirdValue) && isBoundConstant(false) ? boundConversion(context, false) : null,
@@ -109,6 +134,16 @@ public class BetweenCondition extends BooleanExpression {
     if (Boolean.FALSE.equals(lower) || Boolean.FALSE.equals(upper))
       return false;
     return lower == null || upper == null ? null : Boolean.TRUE;
+  }
+
+  /**
+   * Whether a bound is read as the number it is, without being converted to the class of the value it bounds. Either side being
+   * an infinity or NaN qualifies: converted, a decimal past the double range reads as the infinity it overflows to, so an
+   * infinite value was between 0 and 1E+400, which {@code >=} and {@code <=} deny (issue #12694).
+   */
+  private static boolean comparedAsNumbers(final Object value, final boolean integralValue, final Object bound) {
+    return bound instanceof Number number && (integralValue || (value instanceof Number valueNumber && (!Type.isFinite(number)
+        || !Type.isFinite(valueNumber))));
   }
 
   /**

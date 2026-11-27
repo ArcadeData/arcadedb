@@ -44,7 +44,14 @@ final class ITSupport {
   }
 
   static List<CaseResult> run(final Workload w, final ServerUnderTest server, final JSONObject params) {
-    return new BenchRunner(2, 1, Duration.ofMinutes(5)).run(w, new WorkloadContext(server, Scale.XS, 42L, params), n -> true);
+    return run(w, server, params, 2, 1);
+  }
+
+  /** As {@link #run(Workload, ServerUnderTest, JSONObject)} with the run's own repetitions and warm-ups. */
+  static List<CaseResult> run(final Workload w, final ServerUnderTest server, final JSONObject params, final int reps,
+      final int warmup) {
+    return new BenchRunner(reps, warmup, Duration.ofMinutes(5)).run(w, new WorkloadContext(server, Scale.XS, 42L, params),
+        n -> true);
   }
 
   static Metric metric(final CaseResult result, final String name) {
