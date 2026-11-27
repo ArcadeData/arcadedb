@@ -1109,7 +1109,7 @@ public class ClusterAlerts {
               + "or a token revoked while it was away may still be good here.")
           .put("recommendation", (status.armed()
               ? "Re-run 'connect cluster' or re-POST /api/v1/cluster/peer for this node to reissue the seed, "
-              : "Restart this node or re-POST it to /api/v1/cluster/peer on any member to ask the leader again, ")
+              : "Restart this node or re-POST it to /api/v1/cluster/peer on any other member to ask the leader again, ")
               + "or reissue the change. Raise arcadedb.ha.securityConvergenceReadinessTimeout to hold readiness longer.");
     else
       alert.put("severity", SEVERITY_WARNING)
@@ -1118,8 +1118,8 @@ public class ClusterAlerts {
               + "until it does, or until arcadedb.ha.securityConvergenceReadinessTimeout expires and the node reports "
               + "READY while enforcing its own copies.")
           .put("recommendation", "Nothing to do while it converges. If it does not, the leader has not seeded this node: "
-              + (status.armed() ? "re-POST it to /api/v1/cluster/peer on any member." :
-              "restart it, or re-POST it to /api/v1/cluster/peer on any member, to ask the leader again."));
+              + (status.armed() ? "re-POST it to /api/v1/cluster/peer on any other member." :
+              "restart it, or re-POST it to /api/v1/cluster/peer on any other member, to ask the leader again."));
     alert.put("details", new JSONObject()
         .put("unconvergedDocuments", namesArray(status.unconvergedDocuments()))
         .put("armed", status.armed())
