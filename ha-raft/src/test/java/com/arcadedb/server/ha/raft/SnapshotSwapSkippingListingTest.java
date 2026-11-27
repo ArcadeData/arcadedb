@@ -420,6 +420,31 @@ class SnapshotSwapSkippingListingTest {
     assertThat(Files.readString(orphan)).isEqualTo("old-dictionary");
   }
 
+  // Regression for #13618: a snapshot file every listing hides is still cleared before the originals come back
+  @Test
+  void rollbackClearsASnapshotFileNoListingShows(@TempDir final Path databasesDir) throws IOException {
+    final Path dbDir = databasesDir.resolve("drill");
+    final Path snapshotBackup = dbDir.resolve(SnapshotInstaller.SNAPSHOT_BACKUP_DIR);
+    write(dbDir, snapshot());
+    final Map<String, Long> manifest = new HashMap<>();
+    for (final Map.Entry<String, String> file : snapshot().entrySet())
+      manifest.put(file.getKey(), (long) file.getValue().length());
+    SnapshotInstaller.writeInstalledFilesManifest(dbDir, manifest);
+    write(snapshotBackup, originals());
+    Files.writeString(dbDir.resolve(SnapshotInstaller.SNAPSHOT_PENDING_FILE), "");
+    Files.writeString(dbDir.resolve(SnapshotInstaller.SNAPSHOT_SWAP_STATE_FILE), "ROLLING_BACK");
+
+    // The snapshot's v1 dictionary is missing from every listing of the live directory.
+    final String hidden = "dictionary.0.65536.v1.dict";
+    SnapshotInstaller.directoryListingForTesting = (dir, entries) -> dir.equals(dbDir) ?
+        entries.stream().filter(entry -> !entry.getFileName().toString().equals(hidden)).toList() :
+        entries;
+    SnapshotInstaller.recoverPendingSnapshotSwaps(databasesDir);
+
+    assertThat(dbDir.resolve(hidden)).as("no snapshot-only dictionary is left next to the restored originals").doesNotExist();
+    assertThat(databaseFiles(dbDir)).isEqualTo(originals());
+  }
+
   // Regression for #13618: recovery's own listing of the staging cannot hide a staged file and get the install accepted
   @Test
   void recoveryDoesNotTrustAnEmptyListingOfTheStaging(@TempDir final Path databasesDir) throws IOException {

@@ -1500,11 +1500,11 @@ public final class SnapshotInstaller {
         originalToKeep :
         unbackedOriginal(dbPath, dbPath.resolve(SNAPSHOT_NEW_DIR), backupDir);
     final List<String> orphaned = new ArrayList<>();
-    // Drained, not walked once (issue #13618): a snapshot file a single walk missed (a dictionary of another version,
-    // say) stayed live next to the restored originals, and the engine refused the directory as two files on one id.
-    drainDirectory(dbPath, SnapshotInstaller::isLiveDatabaseEntry, entry -> {
+    final boolean[] keptInBackup = { false };
+    final EntryAction clear = entry -> {
       if (uncertain.test(entry)) {
         if (originalToKeep != null) {
+          keptInBackup[0] = true;
           Files.move(entry, backupDir.resolve(entry.getFileName().toString()));
           LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
               "Snapshot rollback of %s kept original '%s', which no earlier listing showed, by moving it to the backup", null,
@@ -1518,7 +1518,24 @@ public final class SnapshotInstaller {
         FileUtils.deleteRecursively(entry.toFile());
       else
         Files.delete(entry);
-    });
+    };
+    // Drained, not walked once (issue #13618): a snapshot file a single walk missed (a dictionary of another version,
+    // say) stayed live next to the restored originals, and the engine refused the directory as two files on one id.
+    drainDirectory(dbPath, SnapshotInstaller::isLiveDatabaseEntry, clear);
+    // An empty listing does not prove the snapshot's files are gone: every entry the manifest names is looked up directly,
+    // so none can stay live next to the originals the restore brings back (issue #13618).
+    final Set<String> snapshotEntries = snapshotEntryNames(dbPath, dbPath.resolve(SNAPSHOT_NEW_DIR));
+    if (snapshotEntries != null)
+      for (final String name : new TreeSet<>(snapshotEntries)) {
+        final Path entry = dbPath.resolve(name);
+        if (isLiveDatabaseEntry(entry) && Files.exists(entry, LinkOption.NOFOLLOW_LINKS))
+          clear.apply(entry);
+      }
+    // The moves above may hold the only copy of an original: durable before the caller publishes RESTORING.
+    if (keptInBackup[0])
+      fsyncDirectory(backupDir);
+    if (!orphaned.isEmpty())
+      fsyncDirectory(dbPath.resolve(SNAPSHOT_ORPHANS_DIR));
     if (!orphaned.isEmpty())
       LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
           "Snapshot rollback of %s found %d live entries the retained backup does not hold and the snapshot did not install: "
@@ -3122,18 +3139,7 @@ public final class SnapshotInstaller {
    */
   private static Predicate<Path> unbackedOriginal(final Path dbDir, final Path newDir, final Path backupDir)
       throws IOException {
-    Map<String, Long> expected = readInstalledFilesManifest(dbDir);
-    if (expected == null && Files.isDirectory(newDir))
-      expected = readInstalledFilesManifest(newDir);
-    final Set<String> snapshotEntries;
-    if (expected != null) {
-      snapshotEntries = new HashSet<>();
-      for (final String path : expected.keySet()) {
-        final int slash = path.indexOf('/');
-        snapshotEntries.add(slash < 0 ? path : path.substring(0, slash));
-      }
-    } else
-      snapshotEntries = null;
+    final Set<String> snapshotEntries = snapshotEntryNames(dbDir, newDir);
     return entry -> {
       final String name = entry.getFileName().toString();
       if (!isLiveDatabaseEntry(entry) || Files.exists(backupDir.resolve(name), LinkOption.NOFOLLOW_LINKS))
@@ -3145,6 +3151,24 @@ public final class SnapshotInstaller {
       return (snapshotEntries != null && !snapshotEntries.contains(name))
           || Files.exists(newDir.resolve(name), LinkOption.NOFOLLOW_LINKS);
     };
+  }
+
+  /**
+   * The top-level names of the entries the snapshot holds, from its manifest (live in {@code dbDir}, or still staged in
+   * {@code newDir}), or null when there is none (an install that predates it).
+   */
+  private static Set<String> snapshotEntryNames(final Path dbDir, final Path newDir) throws IOException {
+    Map<String, Long> expected = readInstalledFilesManifest(dbDir);
+    if (expected == null && Files.isDirectory(newDir))
+      expected = readInstalledFilesManifest(newDir);
+    if (expected == null)
+      return null;
+    final Set<String> names = new HashSet<>();
+    for (final String path : expected.keySet()) {
+      final int slash = path.indexOf('/');
+      names.add(slash < 0 ? path : path.substring(0, slash));
+    }
+    return names;
   }
 
   /** Moves every live entry {@code original} accepts (see {@link #unbackedOriginal}) to {@code backupDir} (issue #13618). */
