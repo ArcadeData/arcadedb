@@ -102,12 +102,19 @@ class LSMTreeIndexIntegralKeyLookupTest extends TestHelper {
         assertThat(cursor.hasNext()).isFalse();
       }
 
-      final Object neighbour = keyType == Type.LONG ? (Object) (((Long) keys.get(i)) + absentOffset) : (Object) (((Integer) keys.get(i)) + (int) absentOffset);
+      final Object neighbour = neighbourOf(keys.get(i), absentOffset);
       if (!present.contains(neighbour) && !wrapped(keys.get(i), neighbour))
         try (final IndexCursor cursor = database.lookupByKey(typeName, "id", neighbour)) {
           assertThat(cursor.hasNext()).as("key %s is not in the index", neighbour).isFalse();
         }
     }
+  }
+
+  /** The key {@code offset} above {@code key}, of the same class (it may overflow: see {@link #wrapped}). */
+  private static Object neighbourOf(final Object key, final long offset) {
+    if (key instanceof Long k)
+      return k + offset;
+    return (Integer) key + (int) offset;
   }
 
   private static boolean wrapped(final Object key, final Object neighbour) {

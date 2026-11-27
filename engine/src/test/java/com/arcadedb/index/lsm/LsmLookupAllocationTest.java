@@ -42,6 +42,7 @@ import java.nio.ByteOrder;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.function.IntFunction;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -114,6 +115,149 @@ class LsmLookupAllocationTest extends TestHelper {
       cursor.close();
     }
     return (threads.getThreadAllocatedBytes(threadId) - before) / GET_LOOKUPS;
+  }
+
+  // ===== Issue #13021 =====
+  /*
+   * Issue #13021: the comparison of a search key with an entry of an index page read the stored LONG/INTEGER key back as a boxed
+   * Long/Integer - one allocation per bisection step of every page a lookup visits, and per entry of a run of equal keys walked by
+   * a non-unique lookup. The stored number is now read as a primitive. The keys are kept out of the Long/Integer cache (-128..127),
+   * where boxing would allocate nothing and the test would prove nothing. The bound is one byte per comparison: a box is 16.
+   */
+  private static final int COMPARISON_ROUNDS = 3;
+  private static final int COMPARISONS       = 50_000;
+
+  @Test
+  @DisplayName("#13021 a page search compares a LONG key without boxing the stored one")
+  void aPageSearchComparesALongKeyWithoutBoxing() throws IOException {
+    assertComparisonsDoNotAllocate("WideKey", Type.LONG, i -> 5_000_000_000L + i * 7_919L);
+  }
+
+  @Test
+  @DisplayName("#13021 a page search compares an INTEGER key without boxing the stored one")
+  void aPageSearchComparesAnIntegerKeyWithoutBoxing() throws IOException {
+    assertComparisonsDoNotAllocate("NarrowKey", Type.INTEGER, i -> 1_000_000 + i * 7_919);
+  }
+
+  @Test
+  @DisplayName("#13021 the walk of a run of equal LONG keys does not box the stored ones")
+  void theWalkOfARunOfEqualLongKeysDoesNotBox() throws IOException {
+    final long key = 5_000_000_000L;
+    final int run = 200;
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("RunKey", 1).createProperty("id", Type.LONG);
+      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "RunKey", "id");
+    });
+    // one transaction per row: a transaction puts all the RIDs of one key as a single entry, a run needs one entry each
+    for (int i = 0; i < run; i++)
+      database.transaction(() -> database.newDocument("RunKey").set("id", key).save());
+
+    final LSMTreeIndexMutable mutable = bucketMutableOf("RunKey[id]");
+    database.begin();
+    try {
+      final int pageNum = fullestPage(mutable);
+      final BasePage page = readPage(mutable, pageNum);
+      final int count = mutable.getCount(page);
+      assertThat(count).as("the run is on one page").isEqualTo(run);
+
+      final Binary buffer = new Binary(page.slice());
+      final int startIndexArray = mutable.getHeaderSize(pageNum);
+      final Object[] keys = new Object[] { key };
+      final ThreadMXBean threads = (ThreadMXBean) ManagementFactory.getThreadMXBean();
+      final long threadId = Thread.currentThread().threadId();
+      final int walks = COMPARISONS / run;
+
+      for (int round = 0; round < COMPARISON_ROUNDS; round++) {
+        // no assertion inside the measured loop: it would allocate
+        int wrong = 0;
+        final long before = threads.getThreadAllocatedBytes(threadId);
+        for (int i = 0; i < walks; i++) {
+          if (mutable.findLastEntryOfSameKey(count, buffer, keys, startIndexArray, 0) != count - 1)
+            ++wrong;
+          if (mutable.findFirstEntryOfSameKey(buffer, keys, startIndexArray, count - 1) != 0)
+            ++wrong;
+        }
+        final long allocated = threads.getThreadAllocatedBytes(threadId) - before;
+
+        assertThat(wrong).as("walks that did not reach the end of the run").isZero();
+        if (round == COMPARISON_ROUNDS - 1)
+          assertThat(allocated).as("bytes of %d walks over a run of %d equal keys", walks * 2, run).isLessThan((long) walks * 2 * run);
+      }
+    } finally {
+      database.rollback();
+    }
+  }
+
+  private void assertComparisonsDoNotAllocate(final String typeName, final Type keyType, final IntFunction<Object> keyOf)
+      throws IOException {
+    final int rows = 2_000;
+    database.transaction(() -> {
+      database.getSchema().createDocumentType(typeName, 1).createProperty("id", keyType);
+      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, typeName, "id");
+    });
+    database.transaction(() -> {
+      for (int i = 0; i < rows; i++)
+        database.newDocument(typeName).set("id", keyOf.apply(i)).save();
+    });
+
+    final LSMTreeIndexMutable mutable = bucketMutableOf(typeName + "[id]");
+    database.begin();
+    try {
+      final int pageNum = fullestPage(mutable);
+      final BasePage page = readPage(mutable, pageNum);
+      final int count = mutable.getCount(page);
+      assertThat(count).as("entries on the page searched").isGreaterThan(100);
+
+      final Binary buffer = new Binary(page.slice());
+      final int startIndexArray = mutable.getHeaderSize(pageNum);
+      final Object[] lower = new Object[] { keyOf.apply(-1) };
+      final Object[] higher = new Object[] { keyOf.apply(rows) };
+      final ThreadMXBean threads = (ThreadMXBean) ManagementFactory.getThreadMXBean();
+      final long threadId = Thread.currentThread().threadId();
+
+      for (int round = 0; round < COMPARISON_ROUNDS; round++) {
+        // no assertion inside the measured loop: it would allocate
+        int wrong = 0;
+        final long before = threads.getThreadAllocatedBytes(threadId);
+        for (int i = 0; i < COMPARISONS; i += 2) {
+          final int mid = i % count;
+          if (mutable.compareKey(buffer, startIndexArray, lower, mid, count) >= 0)
+            ++wrong;
+          if (mutable.compareKey(buffer, startIndexArray, higher, mid, count) <= 0)
+            ++wrong;
+        }
+        final long allocated = threads.getThreadAllocatedBytes(threadId) - before;
+
+        assertThat(wrong).as("comparisons that did not order the key below the first and above the last entry").isZero();
+        if (round == COMPARISON_ROUNDS - 1)
+          assertThat(allocated).as("bytes of %d comparisons of a %s key", COMPARISONS, keyType).isLessThan(COMPARISONS);
+      }
+    } finally {
+      database.rollback();
+    }
+  }
+
+  private LSMTreeIndexMutable bucketMutableOf(final String indexName) {
+    return ((LSMTreeIndex) ((TypeIndex) database.getSchema().getIndexByName(indexName)).getIndexesOnBuckets()[0]).getMutableIndex();
+  }
+
+  private BasePage readPage(final LSMTreeIndexMutable mutable, final int pageNum) throws IOException {
+    return ((DatabaseInternal) database).getPageManager()
+        .getImmutablePage(new PageId((DatabaseInternal) database, mutable.getFileId(), pageNum), mutable.getPageSize(), false, false);
+  }
+
+  /** The page of the mutable index that holds the most entries: the one a bisection takes the most steps over. */
+  private int fullestPage(final LSMTreeIndexMutable mutable) throws IOException {
+    int fullest = 0;
+    int fullestCount = -1;
+    for (int p = 0; p < mutable.getTotalPages(); p++) {
+      final int count = mutable.getCount(readPage(mutable, p));
+      if (count > fullestCount) {
+        fullest = p;
+        fullestCount = count;
+      }
+    }
+    return fullest;
   }
 
   // ===== Issue #10654 =====
