@@ -3879,16 +3879,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           totals[0] += samples.size();
           totals[1] += report.written();
           totals[2] += report.dropped();
-          unknownTypes.addAll(report.unknownTypes());
-          nonTimeSeriesTypes.addAll(report.nonTimeSeriesTypes());
-          unavailableTypes.addAll(report.unavailableTypes());
           // Capped across the stream as the gateway caps it per call, so a long stream cannot grow the summary
-          for (final String key : report.undeclaredKeys())
-            if (undeclaredKeys.size() < TimeSeriesGateway.MAX_REPORTED_UNDECLARED_KEYS)
-              undeclaredKeys.add(key);
-          for (final String value : report.unreadableValues())
-            if (unreadableValues.size() < TimeSeriesGateway.MAX_REPORTED_UNREADABLE_VALUES)
-              unreadableValues.add(value);
+          addCapped(unknownTypes, report.unknownTypes(), TimeSeriesGateway.MAX_REPORTED_TYPES);
+          addCapped(nonTimeSeriesTypes, report.nonTimeSeriesTypes(), TimeSeriesGateway.MAX_REPORTED_TYPES);
+          addCapped(unavailableTypes, report.unavailableTypes(), TimeSeriesGateway.MAX_REPORTED_TYPES);
+          addCapped(undeclaredKeys, report.undeclaredKeys(), TimeSeriesGateway.MAX_REPORTED_UNDECLARED_KEYS);
+          addCapped(unreadableValues, report.unreadableValues(), TimeSeriesGateway.MAX_REPORTED_UNREADABLE_VALUES);
 
           call.request(1);
         } catch (final Exception e) {
@@ -3952,6 +3948,18 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         out.onCompleted();
       }
     };
+  }
+
+  /**
+   * Adds the entries of {@code source} to {@code target} while it holds fewer than {@code cap}: the names a write stream's summary
+   * carries come from the client, and the stream is as long as the client keeps it open.
+   */
+  private static void addCapped(final Set<String> target, final Set<String> source, final int cap) {
+    for (final String entry : source) {
+      if (target.size() >= cap)
+        return;
+      target.add(entry);
+    }
   }
 
   /**

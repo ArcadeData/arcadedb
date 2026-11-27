@@ -20,11 +20,13 @@ package com.arcadedb.server.grpc;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.engine.timeseries.TimeSeriesGateway;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import io.grpc.Channel;
 import io.grpc.ClientInterceptors;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
+import io.grpc.stub.StreamObserver;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
@@ -35,7 +37,9 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.TimeZone;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -488,6 +492,120 @@ public class GrpcTimeSeriesIT extends BaseGrpcServerTest {
           .setUsername("root")
           .setPassword(DEFAULT_PASSWORD_FOR_TESTS)
           .build();
+    }
+  }
+
+  /**
+   * The summary of the client-streaming {@code TimeSeriesWriteStream} RPC names the measurements it set aside, and those names come
+   * from the client: however long the stream runs, the summary holds a bounded number of them, each of a bounded length, while
+   * {@code dropped} still counts every point. Every chunk here names fewer types than one call may report, so only a bound kept
+   * across the chunks holds the summary down.
+   */
+  @Nested
+  class WriteStreamReportedNames {
+    private static final int CHUNKS           = 8;
+    private static final int POINTS_PER_CHUNK = 60;
+
+    private ManagedChannel                          channel;
+    private ArcadeDbServiceGrpc.ArcadeDbServiceStub stub;
+
+    @BeforeEach
+    void setupGrpcClient() {
+      channel = ManagedChannelBuilder.forAddress("localhost", getServerGrpcPort()).usePlaintext().build();
+      final Channel authenticatedChannel = ClientInterceptors.intercept(channel,
+          new GrpcTestAuthInterceptor("root", DEFAULT_PASSWORD_FOR_TESTS, getDatabaseName()));
+      stub = ArcadeDbServiceGrpc.newStub(authenticatedChannel);
+    }
+
+    @AfterEach
+    void shutdownGrpcClient() throws InterruptedException {
+      try {
+        if (channel != null) {
+          channel.shutdown();
+          channel.awaitTermination(5, TimeUnit.SECONDS);
+        }
+      } finally {
+        GlobalConfiguration.SERVER_PLUGINS.setValue("");
+      }
+    }
+
+    @Test
+    void unknownTypesOfALongStreamAreReportedUpToTheCapAndEveryPointIsCounted() throws Exception {
+      final TimeSeriesWriteSummary summary = writeStream("missing", CHUNKS, POINTS_PER_CHUNK);
+
+      assertThat(summary.getUnknownTypesList()).hasSize(TimeSeriesGateway.MAX_REPORTED_TYPES);
+      assertThat(summary.getUnknownTypesList()).startsWith("missing0", "missing1");
+      assertThat(summary.getReceived()).isEqualTo(CHUNKS * POINTS_PER_CHUNK);
+      assertThat(summary.getWritten()).isZero();
+      assertThat(summary.getDropped()).isEqualTo(CHUNKS * POINTS_PER_CHUNK);
+    }
+
+    @Test
+    void nonTimeSeriesTypesOfALongStreamAreReportedUpToTheCapAndEveryPointIsCounted() throws Exception {
+      final Database database = getServerDatabase(0, getDatabaseName());
+      for (int i = 0; i < CHUNKS * POINTS_PER_CHUNK; i++)
+        database.getSchema().createDocumentType("plain" + i);
+
+      final TimeSeriesWriteSummary summary = writeStream("plain", CHUNKS, POINTS_PER_CHUNK);
+
+      assertThat(summary.getNonTimeSeriesTypesList()).hasSize(TimeSeriesGateway.MAX_REPORTED_TYPES);
+      assertThat(summary.getUnknownTypesList()).isEmpty();
+      assertThat(summary.getDropped()).isEqualTo(CHUNKS * POINTS_PER_CHUNK);
+    }
+
+    @Test
+    void aLongTypeNameIsReportedCut() throws Exception {
+      final TimeSeriesWriteSummary summary = writeStream("m".repeat(1_000_000), 1, 1);
+
+      assertThat(summary.getDropped()).isEqualTo(1);
+      assertThat(summary.getUnknownTypesList()).singleElement()
+          .satisfies(name -> assertThat(name).hasSize(TimeSeriesGateway.MAX_REPORTED_NAME_LENGTH + 3).endsWith("..."));
+    }
+
+    /** Streams {@code chunks} chunks of {@code pointsPerChunk} points, each point naming its own type {@code prefix + n}, n counting up. */
+    private TimeSeriesWriteSummary writeStream(final String prefix, final int chunks, final int pointsPerChunk) throws Exception {
+      final AtomicReference<TimeSeriesWriteSummary> summary = new AtomicReference<>();
+      final AtomicReference<Throwable> failure = new AtomicReference<>();
+      final CountDownLatch done = new CountDownLatch(1);
+
+      final StreamObserver<TimeSeriesWriteChunk> requests = stub.timeSeriesWriteStream(new StreamObserver<>() {
+        @Override
+        public void onNext(final TimeSeriesWriteSummary value) {
+          summary.set(value);
+        }
+
+        @Override
+        public void onError(final Throwable t) {
+          failure.set(t);
+          done.countDown();
+        }
+
+        @Override
+        public void onCompleted() {
+          done.countDown();
+        }
+      });
+
+      // One distinct name per point when the prefix is a short one; the long-name case sends a single point under the prefix itself
+      final boolean numbered = prefix.length() < 100;
+      int n = 0;
+      for (int c = 0; c < chunks; c++) {
+        final TimeSeriesWriteChunk.Builder chunk = TimeSeriesWriteChunk.newBuilder()
+            .setDatabase(getDatabaseName())
+            .setCredentials(DatabaseCredentials.newBuilder().setUsername("root").setPassword(DEFAULT_PASSWORD_FOR_TESTS));
+        for (int p = 0; p < pointsPerChunk; p++, n++)
+          chunk.addPoints(TimeSeriesPoint.newBuilder()
+              .setType(numbered ? prefix + n : prefix)
+              .setTimestamp(1_000L + n)
+              .putFields("v", GrpcValue.newBuilder().setDoubleValue(1.5).build()));
+        requests.onNext(chunk.build());
+      }
+      requests.onCompleted();
+
+      assertThat(done.await(60, TimeUnit.SECONDS)).as("the stream must end with its summary").isTrue();
+      assertThat(failure.get()).isNull();
+      assertThat(summary.get()).isNotNull();
+      return summary.get();
     }
   }
 }
