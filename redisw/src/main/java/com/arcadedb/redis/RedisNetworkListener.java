@@ -34,6 +34,8 @@ import java.util.logging.Level;
 public class RedisNetworkListener extends Thread {
   private final        ArcadeDBServer      server;
   private final        ServerSocketFactory socketFactory;
+  /** Adds TLS over each accepted socket, or null when the listener speaks plain RESP. */
+  private final        RedisSslHelper      sslHelper;
   private volatile     MultiAddressServerSocket serverSocket;
   private volatile     boolean             active          = true;
   private static final int                 protocolVersion = -1;
@@ -47,10 +49,16 @@ public class RedisNetworkListener extends Thread {
   }
 
   public RedisNetworkListener(final ArcadeDBServer server, final ServerSocketFactory iSocketFactory, final String iHostName, final String iHostPortRange) {
+    this(server, iSocketFactory, null, iHostName, iHostPortRange);
+  }
+
+  public RedisNetworkListener(final ArcadeDBServer server, final ServerSocketFactory iSocketFactory, final RedisSslHelper sslHelper,
+      final String iHostName, final String iHostPortRange) {
     super(server.getServerName() + " RedisW listening at " + iHostName + ":" + iHostPortRange);
 
     this.server = server;
     this.socketFactory = iSocketFactory;
+    this.sslHelper = sslHelper;
     // Built here rather than at field initialisation so the cap comes from THIS server's configuration; the
     // setting is SCOPE.SERVER and the GlobalConfiguration enum only ever carries a -D or an environment
     // variable (issue #7233).
@@ -78,7 +86,8 @@ public class RedisNetworkListener extends Thread {
           }
 
           // One thread and one file descriptor are committed here, before the client has proved anything: past
-          // the cap the socket is closed straight away rather than being given either (issue #6412).
+          // the cap the socket is closed straight away rather than being given either (issue #6412). The gate is handed
+          // the plain socket: TLS is layered over it below
           final PreAuthConnectionGate.Ticket ticket = preAuthGate.accept(socket);
           if (ticket == null) {
             preAuthGate.logRefusal(this, socket.getRemoteSocketAddress());
@@ -93,8 +102,11 @@ public class RedisNetworkListener extends Thread {
           socket.setPerformancePreferences(0, 2, 1);
 
           try {
+            // The TLS handshake is not started here: it runs on the first read of the connection, on its own thread
+            final Socket connectionSocket = sslHelper != null ? sslHelper.wrapWithTls(socket) : socket;
+
             // CREATE A NEW PROTOCOL INSTANCE
-            final RedisNetworkExecutor connection = new RedisNetworkExecutor(server, socket, ticket);
+            final RedisNetworkExecutor connection = new RedisNetworkExecutor(server, connectionSocket, ticket);
             startConnection(connection);
           } catch (final Throwable e) {
             // The executor never started, so nothing will hand the permit back for it or close its socket.
