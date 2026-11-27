@@ -221,7 +221,9 @@ public final class ContractionHierarchy {
       if (hierarchy == null)
         continue;
       anyMatch = true;
-      if (provider.coversVertexType(null) && provider.isReady())
+      // Only on a view the user may read all of, as the registry lookups select one
+      if (provider.coversVertexType(null) && GraphTraversalProviderRegistry.isReadableByCurrentUser(database, provider)
+          && provider.isReady())
         return hierarchy;
     }
     if (!anyMatch)

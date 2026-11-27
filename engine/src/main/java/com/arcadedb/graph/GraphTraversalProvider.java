@@ -19,6 +19,7 @@
 package com.arcadedb.graph;
 
 import com.arcadedb.database.RID;
+import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.util.function.IntConsumer;
 
@@ -122,6 +123,19 @@ public interface GraphTraversalProvider {
    * Returns the name of this provider.
    */
   String getName();
+
+  /**
+   * Whether {@code user} may read every record this provider holds: the vertices and edges of every type it covers, in every
+   * bucket. A provider answers a query on behalf of the user who runs it without loading a record, so it skips the per-bucket
+   * read check the record path makes; it is offered only to a user who would pass that check for all of it, and any other user is
+   * answered from the records ({@link GraphTraversalProviderRegistry}). A {@code null} user (embedded use, an internal caller) may
+   * read everything.
+   * <p>
+   * The default allows only a {@code null} user: a provider that cannot tell what it holds is never served to a bound user.
+   */
+  default boolean isReadableBy(final SecurityDatabaseUser user) {
+    return user == null;
+  }
 
   /**
    * Returns true if this provider covers the given vertex type.

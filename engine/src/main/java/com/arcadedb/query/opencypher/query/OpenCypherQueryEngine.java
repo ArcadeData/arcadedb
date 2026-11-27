@@ -625,8 +625,10 @@ public class OpenCypherQueryEngine implements QueryEngine {
     final DatabaseInternal execDb = executionDatabase(statement);
 
     // A transaction holding uncommitted changes gets no Graph Analytical View: a cached plan may carry one it would
-    // read past those changes, and a plan built now carries none, so it must not reach the cache either
-    if (!explain && !profile && !GraphTraversalProviderRegistry.isWithheld(execDb)) {
+    // read past those changes, and a plan built now carries none, so it must not reach the cache either. The same holds for a user
+    // a view is withheld from because the user may not read all it holds: a cached plan may carry it, and a plan built now does not
+    if (!explain && !profile && !GraphTraversalProviderRegistry.isWithheld(execDb)
+        && !GraphTraversalProviderRegistry.isWithheldFromCurrentUser(execDb)) {
       // Only use plan cache for normal execution (not explain/profile)
       final PhysicalPlan physicalPlan = database.getCypherPlanCache().get(queryString);
       // A cached plan that reads a view no longer usable (gone stale, dropped), or that walks the records because a view was

@@ -18,7 +18,9 @@
  */
 package com.arcadedb.graph;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.security.SecurityHelper;
 
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -70,7 +72,20 @@ public final class GraphViewPins {
     if (provider == null)
       return null;
     final GraphViewPins pins = context != null ? context.getGraphViewPins() : null;
-    return pins != null ? pins.pin(provider) : pinAlone(provider);
+    if (pins == null)
+      return pinAlone(provider);
+    final GraphTraversalProvider pinned = pins.pins.get(provider);
+    if (pinned != null)
+      return pinned;
+    // The first read of the view by this statement: a plan may hold a view it was built with for another user, which this one
+    // may not read all of. The lookups never select such a view for this user, and the plans that hold one are not reused for
+    // this user, so this only stops a plan that slipped past both
+    final Database database = context.getDatabase();
+    if (database != null && !GraphTraversalProviderRegistry.isReadableByCurrentUser(database, provider))
+      throw new SecurityException(
+          "User '" + SecurityHelper.currentUser(database).getName() + "' is not allowed to read every record of the graph view '"
+              + provider.getName() + "'");
+    return pins.pin(provider);
   }
 
   /**

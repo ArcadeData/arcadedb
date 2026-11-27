@@ -1245,7 +1245,9 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     GraphTraversalProvider found = null;
     while (found == null && iterator.hasNext()) {
       final GraphTraversalProvider p = iterator.next();
-      if (p.coversEdgeType(null) && p.coversVertexType(null) && p.isReady())
+      // Only a view the user may read all of, as the registry lookup above selects one
+      if (p.coversEdgeType(null) && p.coversVertexType(null) && GraphTraversalProviderRegistry.isReadableByCurrentUser(db, p)
+          && p.isReady())
         found = p;
     }
     return found;

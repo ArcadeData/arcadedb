@@ -119,6 +119,8 @@ class SchemaPresentationReadableWalkCensusTest {
       Map.entry("graph/olap/CSRBuilder#concreteEdgeTypes", GAV_INTERNAL),
       Map.entry("graph/olap/CSRBuilder#concreteVertexTypes", GAV_INTERNAL),
       Map.entry("graph/olap/GraphAnalyticalView#coversEdgeType", GAV_INTERNAL),
+      Map.entry("graph/olap/GraphAnalyticalView#coveredBucketIds",
+          "resolves the buckets of the types the view covers, to check the bound user against each: answers a yes/no, describes no type"),
       Map.entry("graph/olap/GraphAnalyticalView#coversEveryEdge", GAV_INTERNAL),
       Map.entry("graph/olap/GraphAnalyticalView#holdsJoinedEdgeTypes", GAV_INTERNAL),
       Map.entry("graph/olap/GraphAnalyticalView#joinedVertexTypes", GAV_INTERNAL),
