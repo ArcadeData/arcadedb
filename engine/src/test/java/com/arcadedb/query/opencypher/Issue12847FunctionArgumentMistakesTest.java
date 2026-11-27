@@ -28,9 +28,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
- * Regression test for #12847: caller mistakes in a function or procedure argument answered HTTP 500. {@code trim(null, ...)}
- * answers null like any function with a null input; the others raise one of the two exception types the HTTP layer answers
- * 400 ({@link InvalidArgumentException} or {@link IllegalArgumentException}), naming the argument or the missing index.
+ * Regression test for #12847: caller mistakes in a function or procedure argument answered HTTP 500. They now raise one of the
+ * two exception types the HTTP layer answers 400 ({@link InvalidArgumentException} or {@link IllegalArgumentException}), naming
+ * the argument or the missing index. The required numeric arguments of {@code algo.kShortestPaths}, {@code algo.allSimplePaths}
+ * and {@code path.expand} were read with the same unchecked cast as the {@code algo.randomWalk} one the issue reports, so they
+ * are pinned here too. {@code trim(null, ...)} was already fixed by #12744 and is kept only as a guard for the issue's shape.
  */
 class Issue12847FunctionArgumentMistakesTest extends TestHelper {
 
@@ -70,6 +72,36 @@ class Issue12847FunctionArgumentMistakesTest extends TestHelper {
   }
 
   @Test
+  void pathProceduresRefuseANonNumberOrNullRequiredNumber() {
+    assertClientError("MATCH (a:P {id: 1}), (b:P {id: 2}) CALL algo.kShortestPaths(a, b, 'x') YIELD * RETURN count(*)",
+        "algo.kShortestPaths(): k must be a number, got String");
+    assertClientError("MATCH (a:P {id: 1}), (b:P {id: 2}) CALL algo.kShortestPaths(a, b, null) YIELD * RETURN count(*)",
+        "algo.kShortestPaths(): k cannot be null");
+    assertClientError("MATCH (a:P {id: 1}), (b:P {id: 2}) CALL algo.allSimplePaths(a, b, 'K', [1]) YIELD * RETURN count(*)",
+        "maxDepth must be a number, got ArrayList");
+    assertClientError("MATCH (a:P {id: 1}), (b:P {id: 2}) CALL algo.allSimplePaths(a, b, 'K', null) YIELD * RETURN count(*)",
+        "maxDepth cannot be null");
+    assertClientError("MATCH (n:P {id: 1}) CALL path.expand(n, 'K>', '', 'x', 2) YIELD path RETURN count(*)",
+        "path.expand(): minDepth must be a number, got String");
+    assertClientError("MATCH (n:P {id: 1}) CALL path.expand(n, 'K>', '', 1, null) YIELD path RETURN count(*)",
+        "path.expand(): maxDepth cannot be null");
+
+    // the well-formed calls still answer
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH (a:P {id: 1}), (b:P {id: 2}) CALL algo.kShortestPaths(a, b, 1, 'K') YIELD path RETURN count(*) AS c")) {
+      assertThat(rs.next().<Number>getProperty("c").longValue()).isEqualTo(1L);
+    }
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH (a:P {id: 1}), (b:P {id: 2}) CALL algo.allSimplePaths(a, b, 'K', 3) YIELD path RETURN count(*) AS c")) {
+      assertThat(rs.next().<Number>getProperty("c").longValue()).isEqualTo(1L);
+    }
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH (n:P {id: 1}) CALL path.expand(n, 'K>', '', 1, 2) YIELD path RETURN count(*) AS c")) {
+      assertThat(rs.next().<Number>getProperty("c").longValue()).isEqualTo(1L);
+    }
+  }
+
+  @Test
   void facetSearchValuesWithoutAColumnarIndexIsAClientError() {
     assertClientError("RETURN facet.searchValues('P', 'name', 'a', 5) AS v", "facet.searchValues: no COLUMNAR index on P.name");
     assertClientError("RETURN facet.searchValues('K', '', {}, 0) AS v", "facet.searchValues: no COLUMNAR index on K.");
@@ -99,9 +131,8 @@ class Issue12847FunctionArgumentMistakesTest extends TestHelper {
       }
     });
     assertThat(error).as(cypher).isNotNull();
-    final Throwable clientError = CauseChain.find(error, InvalidArgumentException.class) != null ?
-        CauseChain.find(error, InvalidArgumentException.class) :
-        CauseChain.find(error, IllegalArgumentException.class);
+    final Throwable invalidArgument = CauseChain.find(error, InvalidArgumentException.class);
+    final Throwable clientError = invalidArgument != null ? invalidArgument : CauseChain.find(error, IllegalArgumentException.class);
     assertThat(clientError).as(cypher + " -> " + error).isNotNull();
     assertThat(clientError.getMessage()).as(cypher).contains(message);
   }

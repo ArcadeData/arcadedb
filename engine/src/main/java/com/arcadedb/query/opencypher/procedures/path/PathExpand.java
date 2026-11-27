@@ -82,8 +82,8 @@ public class PathExpand extends AbstractPathProcedure {
     validateArgs(args);
 
     final Vertex startNode = extractVertex(args[0], "startNode");
-    final int minDepth = Math.max(0, NumberUtils.saturateToInt((Number) args[3]));
-    final int requestedMaxDepth = NumberUtils.saturateToInt((Number) args[4]);
+    final int minDepth = Math.max(0, NumberUtils.saturateToInt(requiredNumberArg(args, 3, "minDepth")));
+    final int requestedMaxDepth = NumberUtils.saturateToInt(requiredNumberArg(args, 4, "maxDepth"));
     final int maxDepth = requestedMaxDepth < 0 ? Integer.MAX_VALUE : requestedMaxDepth;
 
     if (maxDepth < minDepth) {

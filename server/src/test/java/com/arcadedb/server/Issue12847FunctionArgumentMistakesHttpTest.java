@@ -36,6 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class Issue12847FunctionArgumentMistakesHttpTest extends BaseGraphServerTest {
 
+  // already fixed by #12744: kept as a guard for the shape the issue lists
   @Test
   void trimWithANullModeAnswersNull() throws Exception {
     testEachServer(serverIndex -> {
@@ -52,6 +53,10 @@ class Issue12847FunctionArgumentMistakesHttpTest extends BaseGraphServerTest {
           IllegalArgumentException.class, "algo.randomWalk(): steps must be a number, got String");
       assertAnswer(serverIndex, "MATCH (n:P12847 {id: 1}) CALL algo.randomWalk(n, [[1]], [null]) YIELD * RETURN count(*)",
           IllegalArgumentException.class, "algo.randomWalk(): steps must be a number");
+      assertAnswer(serverIndex, "MATCH (n:P12847 {id: 1}) CALL algo.randomWalk(n, null, 'K12847') YIELD * RETURN count(*)",
+          IllegalArgumentException.class, "algo.randomWalk(): steps cannot be null");
+      assertAnswer(serverIndex, "MATCH (n:P12847 {id: 1}) CALL path.expand(n, 'K12847>', '', 'x', 2) YIELD path RETURN count(*)",
+          IllegalArgumentException.class, "path.expand(): minDepth must be a number, got String");
       assertAnswer(serverIndex, "RETURN facet.searchValues('P12847', 'name', 'a', 5) AS v", InvalidArgumentException.class,
           "facet.searchValues: no COLUMNAR index on P12847.name");
       assertAnswer(serverIndex, "CALL db.index.fulltext.queryRelationships('K12847[x]', null) YIELD * RETURN count(*)",
