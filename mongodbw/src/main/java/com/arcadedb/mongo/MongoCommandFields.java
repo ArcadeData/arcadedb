@@ -32,8 +32,10 @@ import java.util.Set;
  * The fields of the commands the MongoDB plugin runs itself, and what it does with each (issue #11778). Every handler used to read
  * the fields it implements and answer {@code ok:1} whatever else the command carried, so a {@code collation}, a {@code hint} with a
  * {@code max}, a {@code returnKey} or a misspelled field was acknowledged and ignored, and the client was handed the result of
- * another command than the one it sent. {@code createIndexes} already refuses what it cannot honour (issue #11446): this is the
- * same rule for {@code find}, {@code count}, {@code aggregate}, {@code update}, {@code delete} and {@code create}.
+ * another command than the one it sent. {@code createIndexes} already refuses the index options it cannot honour (issue #11446):
+ * this is the same rule for the fields of every command {@link MongoDBDatabaseWrapper#handleCommand} dispatches, which checks them
+ * here before the handler runs. {@code insert} and the fields around the specifications of {@code createIndexes} were the two
+ * left unchecked (issue #12625).
  * <p>
  * A field of a command is one of:
  * <ul>
@@ -69,7 +71,8 @@ final class MongoCommandFields {
   private static final Set<String> FALSE_IS_DEFAULT = Set.of("tailable", "awaitData", "returnKey", "showRecordId", "explain", "capped",
       "upsertSupplied", "temp", "isTimeseriesNamespace", "needsMerge", "fromMongos", "fromRouter", "isMapReduceCommand", "readOnce",
       "allowSpeculativeMajorityRead", "recordPreImages", "bypassEmptyTsReplacement", "rawData", "mirrored",
-      "isClusterQueryWithoutShardKeyCmd", "recordIdsReplicated", "$_requestResumeToken", "$_requestReshardingResumeToken");
+      "isClusterQueryWithoutShardKeyCmd", "recordIdsReplicated", "ignoreUnknownIndexOptions", "$_requestResumeToken",
+      "$_requestReshardingResumeToken");
 
   /** The document and array fields that mean nothing when they are empty. */
   private static final Set<String> EMPTY_IS_DEFAULT = Set.of("hint", "min", "max", "let", "arrayFilters", "validator", "storageEngine",
@@ -113,6 +116,19 @@ final class MongoCommandFields {
       "delete.deletes", new Table(
           Set.of("q", "limit"),
           Set.of("collation", "hint", "sampleId"), false),
+      // the fields of every write (mongod's WriteCommandRequestBase), as update and delete have them. There is no validator to
+      // bypass, so bypassDocumentValidation changes nothing (issue #12625)
+      "insert", new Table(
+          Set.of("insert", "documents", "ordered", "bypassDocumentValidation"),
+          Set.of("collectionUUID", "encryptionInformation", "isTimeseriesNamespace", "bypassEmptyTsReplacement", "stmtIds", "rawData",
+              "$_originalQuery", "$_originalCollation"), true),
+      // what an index is and is not allowed to be is checked on each specification (issue #11446): these are the fields of the
+      // command around them. "v" is the format version of the index on disk, which a built index cannot miss, as on a
+      // specification. A commit quorum is refused as a mongod that is not a member of a replica set refuses it (issue #12625)
+      "createIndexes", new Table(
+          Set.of("createIndexes", "indexes", "v"),
+          Set.of("commitQuorum", "ignoreUnknownIndexOptions", "collectionUUID", "encryptionInformation", "isTimeseriesNamespace",
+              "rawData"), true),
       "create", new Table(
           Set.of("create"),
           Set.of("capped", "autoIndexId", "idIndex", "size", "max", "storageEngine", "validator", "validationLevel", "validationAction",
@@ -130,6 +146,9 @@ final class MongoCommandFields {
    */
   static void check(final String context, final Document document) {
     final Table table = TABLES.get(context);
+    if (table == null)
+      // a command dispatched without a table would acknowledge whatever it does not read (issue #12625)
+      throw new IllegalStateException("The MongoDB command '" + context + "' has no table of the fields it accepts");
     for (final Map.Entry<String, Object> entry : document.entrySet()) {
       final String field = entry.getKey();
       if (table.accepted.contains(field) || (table.command && GENERIC.contains(field)))

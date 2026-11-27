@@ -1637,10 +1637,14 @@ modifier
 
 /**
  * Input parameter (?, :name, $1)
+ *
+ * Any word names a parameter after the colon, the keywords included: nothing else in the grammar puts a keyword right after
+ * a colon that begins an expression, and ":before" beside a working ":after" was a syntax error (#12140). The keywords the
+ * identifier rule does not take are those of mapKeyword, which a map key admits for the same reason, and MAXDEPTH.
  */
 inputParameter
     : HOOK
-    | COLON (identifier | FROM)
+    | COLON (identifier | MAXDEPTH | mapKeyword)
     | DOLLAR INTEGER_LITERAL
     ;
 

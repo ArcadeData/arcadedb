@@ -72,7 +72,7 @@ import java.util.stream.Stream;
 public final class BenchMain {
   /** Starts the server under test; a seam so tests run without Docker. */
   interface ServerFactory {
-    ServerUnderTest start(String image, String cpuset, int memLimitGb, String heap);
+    ServerUnderTest start(String image, String cpuset, int memLimitGb, String heap, Map<String, String> settings);
 
     /** Why the server no longer answers, null while it does; a seam so a test can script a death. */
     default String deathReason(final ServerUnderTest server) {
@@ -98,7 +98,7 @@ public final class BenchMain {
 
   public static void main(final String[] args) {
     System.exit(run(args, WorkloadRegistry.all(),
-        (image, cpuset, memLimitGb, heap) -> ServerUnderTest.start(image, cpuset, memLimitGb, heap, new HashMap<>()), System.out));
+        ServerUnderTest::start, System.out));
   }
 
   static int run(final String[] args, final List<Workload> registry, final ServerFactory serverFactory, final PrintStream out) {
@@ -464,6 +464,10 @@ public final class BenchMain {
     // the results of the workloads already finished; the one running is added by the runner's callback
     final List<CaseResult> results = new ArrayList<>();
     for (final Workload w : selected) {
+      // a workload that measures nothing at this scale gets no server: starting and stopping a container for it costs time
+      // and records nothing
+      if (w.cases(scale).isEmpty())
+        continue;
       if (runner.hasAbandonedWorker()) {
         // the runner records every case as not started; a server started now would only compete with the stuck worker
         results.addAll(runner.run(w, new WorkloadContext(null, scale, seed, params), null, file.onCase(results)));
@@ -471,10 +475,10 @@ public final class BenchMain {
       }
       final ServerUnderTest server;
       try {
-        server = serverFactory.start(image, serverCpus, memLimitGb, heap);
+        server = serverFactory.start(image, serverCpus, memLimitGb, heap, w.serverSettings());
       } catch (final Throwable t) {
-        for (final String caseName : w.cases())
-          results.add(new CaseResult(w.name(), caseName, scale.name(), params, reps, warmup, List.of(), CaseResult.Status.FAILED,
+        for (final String caseName : w.cases(scale))
+          results.add(new CaseResult(w.name(), caseName, scale.name(), params, runner.repsOf(w), runner.warmupOf(w), List.of(), CaseResult.Status.FAILED,
               "server start failed: " + t.getClass().getName() + ": " + t.getMessage()));
         file.write(results, false);
         continue;
@@ -483,7 +487,7 @@ public final class BenchMain {
         file.serverConfig = orFallback(server::config, new JSONObject(), "server config");
         file.imageInfo = orFallback(server::imageInfo, null, "image info");
       }
-      final Guard guard = new Guard(serverFactory, server, w.name(), file, image, serverCpus, memLimitGb, heap, scale, seed, params);
+      final Guard guard = new Guard(serverFactory, server, w.name(), file, image, serverCpus, memLimitGb, heap, w.serverSettings(), scale, seed, params);
       try {
         results.addAll(runner.run(w, new WorkloadContext(server, scale, seed, params), guard, null, file.onCase(results)));
       } finally {
@@ -516,6 +520,7 @@ public final class BenchMain {
     private final String          cpus;
     private final int             memLimitGb;
     private final String          heap;
+    private final Map<String, String> settings;
     private final Scale           scale;
     private final long            seed;
     private final JSONObject      params;
@@ -525,7 +530,7 @@ public final class BenchMain {
     private       String          death;
 
     Guard(final ServerFactory factory, final ServerUnderTest server, final String workload, final RunFile file, final String image,
-        final String cpus, final int memLimitGb, final String heap, final Scale scale, final long seed, final JSONObject params) {
+        final String cpus, final int memLimitGb, final String heap, final Map<String, String> settings, final Scale scale, final long seed, final JSONObject params) {
       this.factory = factory;
       this.server = server;
       this.workload = workload;
@@ -534,6 +539,7 @@ public final class BenchMain {
       this.cpus = cpus;
       this.memLimitGb = memLimitGb;
       this.heap = heap;
+      this.settings = settings;
       this.scale = scale;
       this.seed = seed;
       this.params = params;
@@ -549,7 +555,7 @@ public final class BenchMain {
     public WorkloadContext restart() {
       close(workload + "#" + ++replaced);
       death = null;
-      server = factory.start(image, cpus, memLimitGb, heap);
+      server = factory.start(image, cpus, memLimitGb, heap, settings);
       return new WorkloadContext(server, scale, seed, params);
     }
 

@@ -1,0 +1,15 @@
+name: x
+on:
+  workflow_dispatch:
+    inputs:
+      attach_to_release:
+        type: boolean
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require main
+        if: ${{ github.ref != 'refs/heads/main' }}
+        run: echo "refusing to sign off main"
+      - name: Sign
+        run: cosign sign --yes img

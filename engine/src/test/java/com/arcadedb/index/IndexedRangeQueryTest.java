@@ -1421,6 +1421,10 @@ class IndexedRangeQueryTest {
       STORED.put("STRING", "abc");
       STORED.put("DATE", LocalDate.of(2020, 1, 1));
       STORED.put("DATETIME", LocalDateTime.of(2020, 1, 1, 0, 0));
+      // Whole-value keys (issue #12792). A singleton list, so that the SQL coercion of a scalar into the list it is compared with
+      // (li = 7 against [7]) is on the grid
+      STORED.put("LIST", List.of(7));
+      STORED.put("MAP", Map.of("a", 7));
 
       OPERANDS.put("String", "zzz");
       OPERANDS.put("NumericString", "5");
@@ -1450,7 +1454,9 @@ class IndexedRangeQueryTest {
         "DECIMAL", List.of("Boolean", "LocalDate", "LocalDateTime", "List", "Map"),
         "STRING", List.of("List", "Map"),
         "DATE", List.of("Boolean", "List", "Map", "NumericString"),
-        "DATETIME", List.of("Boolean", "List", "Map", "NumericString"));
+        "DATETIME", List.of("Boolean", "List", "Map", "NumericString"),
+        "LIST", List.of("String", "NumericString", "Integer", "Long", "Double", "BigDecimal", "Boolean", "LocalDate", "LocalDateTime", "Map"),
+        "MAP", List.of("String", "NumericString", "Integer", "Long", "Double", "BigDecimal", "Boolean", "LocalDate", "LocalDateTime", "List"));
 
     /** SQL shapes, {@code :x} the operand and {@code :v} what the property holds, so an IN can hold one element that matches. */
     private static final List<String> SQL_EQUALITIES = List.of("p = :x", "p IN [:x]", "p IN [:x, :v]", "p IN :x");
@@ -1530,7 +1536,9 @@ class IndexedRangeQueryTest {
           database.command("sql", "CREATE PROPERTY " + type + ".id INTEGER").close();
           database.command("sql", "CREATE PROPERTY " + type + ".p " + property).close();
         }
-        database.command("sql", "CREATE INDEX ON I_" + property + " (p) " + indexKind).close();
+        // A HASH index refuses a LIST or MAP key: the whole-value types are indexed by an LSM tree only
+        final boolean hashOfWholeValue = indexKind.endsWith("_HASH") && (property.equals("LIST") || property.equals("MAP"));
+        database.command("sql", "CREATE INDEX ON I_" + property + " (p) " + (hashOfWholeValue ? "UNIQUE" : indexKind)).close();
         database.transaction(() -> {
           for (final String prefix : new String[] { "I_", "N_" })
             database.newVertex(prefix + property).set("id", 1).set("p", stored.getValue()).save();

@@ -106,7 +106,7 @@ public class SQLFunctionAverage extends SQLAggregatedFunction {
       return null;
     // NOT A BigDecimal: THE MEAN IS THE double TOTAL OVER THE COUNT, WITHOUT BOXING THE TOTAL FIRST
     if (!sum.isDecimal())
-      return sum.doubleValue() / total;
+      return sum.doubleMean(total);
     return computeAverage(sum.get(), total, decimalInput);
   }
 
@@ -124,7 +124,7 @@ public class SQLFunctionAverage extends SQLAggregatedFunction {
     if (count == 0)
       return null;
     if (!sum.isDecimal())
-      return sum.doubleValue() / count;
+      return sum.doubleMean(count);
     return computeAverage(sum.get(), count, decimalInput);
   }
 
@@ -141,10 +141,10 @@ public class SQLFunctionAverage extends SQLAggregatedFunction {
   @Override
   public void mergePartial(final SQLAggregatedFunction other) {
     final SQLFunctionAverage partial = (SQLFunctionAverage) other;
-    final Number partialSum = partial.sum.get();
-    if (partialSum == null)
+    if (partial.sum.isEmpty())
       return;
-    sum.add(partialSum);
+    // THE PARTIAL'S EXACT FLOATING-POINT SUM, NOT ITS ROUNDED TOTAL: THE MERGE ORDER CANNOT CHANGE THE RESULT (#12696)
+    sum.merge(partial.sum);
     total += partial.total;
     decimalInput |= partial.decimalInput;
   }
@@ -172,5 +172,11 @@ public class SQLFunctionAverage extends SQLAggregatedFunction {
 
     // ALL OTHER NUMERIC TYPES AVERAGE AS A DOUBLE SO INTEGER/LONG SUMS ARE NOT TRUNCATED (e.g. avg(1, 2) -> 1.5).
     return iSum.doubleValue() / iTotal;
+  }
+
+  /** Pure over its rows and arguments (issue #6190): a statement that holds the call keeps its execution plan. */
+  @Override
+  public boolean isDeterministic() {
+    return true;
   }
 }

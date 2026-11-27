@@ -202,7 +202,7 @@ final class CypherStepBuilder {
     final List<MatchClause> currentSegmentMatchClauses = new ArrayList<>();
     // See buildExecutionStepsWithOrder(): the same read/write barrier analysis, over the same clause list
     // (issue #7171). This path never sees a CALL or a FOREACH, so only CREATE and MERGE are weighed here.
-    final CypherEagernessAnalyzer eagerness = CypherEagernessAnalyzer.forStatement(statement);
+    final CypherEagernessAnalyzer eagerness = CypherEagernessAnalyzer.forStatement(statement, parameters);
     final Set<String> optimizerBoundVariables = new HashSet<>();
     if (clausesInOrder != null) {
       for (final ClauseEntry entry : clausesInOrder) {
@@ -320,7 +320,9 @@ final class CypherStepBuilder {
         case WITH: {
           final WithClause withClause = entry.getTypedClause();
           currentStep = EagerBarriers.withLimitBarrier(currentStep, context, eagerness, functionFactory, withClause);
-          currentStep = buildWithStepForOptimizer(withClause, currentStep, context, functionFactory);
+          // The rows reach the first WITH in the order of an index when the physical plan answers its ORDER BY (issue #12141)
+          currentStep = buildWithStepForOptimizer(withClause, currentStep, context, functionFactory,
+              physicalPlan.isFirstWithIndexOrdered() && withClause == firstWith(clausesInOrder));
           EagerBarriers.markDrainOnZeroLimit(currentStep, withClause, eagerness);
           eagerness.observeClause(entry, false, optimizerBoundVariables);
           if (withClause.hasAggregations())
@@ -597,7 +599,7 @@ final class CypherStepBuilder {
 
     // Shape of everything read so far, weighed against each write clause's own shape to decide where an
     // eager read/write barrier has to go so the query never reads back what it just created (issue #7171).
-    final CypherEagernessAnalyzer eagerness = CypherEagernessAnalyzer.forStatement(statement);
+    final CypherEagernessAnalyzer eagerness = CypherEagernessAnalyzer.forStatement(statement, parameters);
 
     // Both count push-downs answer from the schema and the CSR arrays alone: they read the statement's patterns and
     // never look at the incoming rows. That makes the enumerating form of them wrong the moment the seed row binds
@@ -1170,6 +1172,15 @@ final class CypherStepBuilder {
    */
   private AbstractExecutionStep addWithOrderSkipLimit(final WithClause withClause, AbstractExecutionStep currentStep,
       final CommandContext context, final CypherFunctionFactory functionFactory) {
+    return addWithOrderSkipLimit(withClause, currentStep, context, functionFactory, false);
+  }
+
+  /**
+   * @param orderedByIndex whether the rows already arrive in the order of the ORDER BY, read from an index (issue #12141): the
+   *                       sort is left out, the SKIP, LIMIT and projection stay
+   */
+  private AbstractExecutionStep addWithOrderSkipLimit(final WithClause withClause, AbstractExecutionStep currentStep,
+      final CommandContext context, final CypherFunctionFactory functionFactory, final boolean orderedByIndex) {
     final boolean ordered = withClause.getOrderByClause() != null;
     if (!ordered && !withClause.hasAggregations())
       return currentStep;
@@ -1180,7 +1191,7 @@ final class CypherStepBuilder {
     final Integer limitVal = withClause.getLimit() != null ?
         evaluator.evaluateSkipLimit(withClause.getLimit(), new ResultInternal(), context) : null;
 
-    if (ordered) {
+    if (ordered && !orderedByIndex) {
       // Top-K keeps SKIP + LIMIT rows so enough survive the skip; a sum past int range sorts everything instead
       Integer topKVal = null;
       if (limitVal != null) {
@@ -1227,7 +1238,7 @@ final class CypherStepBuilder {
    */
   private AbstractExecutionStep buildWithStepForOptimizer(final WithClause withClause,
       AbstractExecutionStep currentStep, final CommandContext context,
-      final CypherFunctionFactory functionFactory) {
+      final CypherFunctionFactory functionFactory, final boolean orderedByIndex) {
     if (withClause.hasAggregations()) {
       if (withClause.hasNonAggregations()) {
         // Try to fuse aggregation into the GAVFusedChainOperator for parallel count(*)
@@ -1265,7 +1276,15 @@ final class CypherStepBuilder {
       currentStep = withStep;
     }
 
-    return addWithOrderSkipLimit(withClause, currentStep, context, functionFactory);
+    return addWithOrderSkipLimit(withClause, currentStep, context, functionFactory, orderedByIndex);
+  }
+
+  /** The first WITH of {@code clausesInOrder}, or null. */
+  private static WithClause firstWith(final List<ClauseEntry> clausesInOrder) {
+    for (final ClauseEntry entry : clausesInOrder)
+      if (entry.getType() == ClauseEntry.ClauseType.WITH)
+        return entry.getTypedClause();
+    return null;
   }
 
   /**
@@ -1831,7 +1850,7 @@ final class CypherStepBuilder {
     // single-segment by construction, so the whole MATCH list is the read footprint for both writes below.
     // legacyBoundVariables already holds every variable the MATCH clauses above bound, which is what tells a
     // CREATE/MERGE node that names an existing entity from one that creates a new one.
-    final CypherEagernessAnalyzer eagerness = CypherEagernessAnalyzer.forStatement(statement);
+    final CypherEagernessAnalyzer eagerness = CypherEagernessAnalyzer.forStatement(statement, parameters);
     for (final MatchClause matchClause : statement.getMatchClauses())
       eagerness.observeRead(matchClause);
 

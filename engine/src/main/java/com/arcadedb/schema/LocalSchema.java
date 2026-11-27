@@ -648,6 +648,17 @@ public class LocalSchema implements Schema {
    */
   public void load(final ComponentFile.MODE mode, final boolean initialize, final boolean deferTimeSeriesEngines)
       throws IOException {
+    load(mode, initialize, deferTimeSeriesEngines, Collections.emptySet());
+  }
+
+  /**
+   * @param retiringFileIds files the new generation must not have, that the previous one still reads from until the barrier
+   *                        replaces it: those of a replicated compaction an HA replica retires only once this load has
+   *                        published (issue #12358). Left out of the components this load builds, as if already deleted
+   */
+  public void load(final ComponentFile.MODE mode, final boolean initialize, final boolean deferTimeSeriesEngines,
+      final Set<Integer> retiringFileIds) throws IOException {
+    Objects.requireNonNull(retiringFileIds, "retiringFileIds");
     // Claim the staging window FIRST. beginStagedPublication() refuses a load that overlaps another, and a refusal
     // has to leave the schema exactly as it found it.
     // stageFileIds=true: the previous generation keeps its file-id slots until the barrier, which is what keeps the
@@ -716,7 +727,7 @@ public class LocalSchema implements Schema {
         throw new ConfigurationException("Dictionary file not found in database directory");
 
       for (final ComponentFile file : filesToOpen) {
-        if (file != null && !Dictionary.DICT_EXT.equals(file.getFileExtension())) {
+        if (file != null && !Dictionary.DICT_EXT.equals(file.getFileExtension()) && !retiringFileIds.contains(file.getFileId())) {
           final Component pf = componentFactory.createComponent(file, mode);
 
           if (pf != null)
@@ -2962,10 +2973,11 @@ public class LocalSchema implements Schema {
     // merely UPDATE_SCHEMA - mirroring the DEFINE FUNCTION ... LANGUAGE js gate (GHSA-vwjc-v7x7-cm6g) and closing
     // the UPDATE_SCHEMA -> server-admin escalation (GHSA-38pf-6hp2-pxww). A declarative SQL trigger is not host
     // code and keeps the standard schema-level protection.
+    // The trigger is a schema object too, so the schema permission is asked of the one that creates host code as well: the security
+    // permission is asked on top of it, never instead of it.
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
     if (definition.getActionType() == Trigger.ActionType.JAVASCRIPT || definition.getActionType() == Trigger.ActionType.JAVA)
       database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SECURITY);
-    else
-      database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
     recordFileChanges(() -> {
       // Validate trigger does not already exist
@@ -4868,7 +4880,9 @@ public class LocalSchema implements Schema {
   private void openTimeSeriesEngine(final LocalTimeSeriesType tsType) {
     try {
       tsType.initEngine();
-    } catch (final IOException e) {
+    } catch (final IOException | SchemaException e) {
+      // A SchemaException is the name of a stored type that the files of its engine cannot be built on (LocalTimeSeriesType.checkValidName),
+      // handled like the failure below.
       // Register the type anyway rather than letting it vanish from the schema (issue #6356): the
       // exception this catches means one derived file (a .ts.sealed most commonly, rebuildable under HA
       // by recompacting the replicated mutable pages) failed to open, not that the type or its mutable
@@ -5629,6 +5643,12 @@ public class LocalSchema implements Schema {
       // cluster's) state, so there is nothing to publish. Its one caller is the schema-file loader, which already
       // holds this schema's monitor
       return restoreSchemaMembersFromJSONLocked(root, source);
+
+    // Every member of a file handed to the engine is a schema object, exactly as when it is created by hand, so the schema
+    // permission is asked before any of them is installed: a principal narrowed to leave the schema as it found it (or one that
+    // never had the permission) gets the members of a file refused as it gets each of them refused one by one. The members of host
+    // code are asked UPDATE_SECURITY on top of this, one by one, below
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
     // Issue #9764: an imported file is a schema change, so it runs inside a schema recording session, which saves the
     // schema and, under Raft HA, ships it as a SCHEMA_ENTRY. A bare saveConfiguration() reached this node's schema.json
@@ -7691,15 +7711,36 @@ public class LocalSchema implements Schema {
   }
 
   /**
-   * Refuses to hand {@code bucket} to the type {@code typeName} when another type owns it. The one place the verdict and its
-   * wording live: {@code addBucket} gives it after the fact, and {@link TypeBuilder} asks for it before it registers a type,
-   * so a refusal leaves no half-built type behind (issue #10317).
+   * The type that keeps the bucket {@code bucketId} for its own use, in the published graph: the paired bucket of its EXTERNAL
+   * values, an edge-list bucket of one of its vertex buckets, a bucket of its super-node stripe pool. A bucket a type owns is
+   * the one the type's own list answers with, so it is found here as well. {@code null} while a load is assembling the graph:
+   * the load restores what was saved, and the maps it builds are not the ones a statement reads.
+   */
+  LocalDocumentType getBucketInvolvedBy(final int bucketId) {
+    if (isStagingPublication())
+      return null;
+    if (bucketTypeMapsStale)
+      rebuildBucketTypeMap();
+    return published.bucketId2InvolvedTypeMap().get(bucketId);
+  }
+
+  /**
+   * Refuses to hand {@code bucket} to the type {@code typeName} when another type owns it, or keeps it for its own use. The one
+   * place the verdict and its wording live: {@code addBucket} gives it after the fact, and {@link TypeBuilder} asks for it before
+   * it registers a type, so a refusal leaves no half-built type behind (issue #10317).
    */
   void checkBucketIsFree(final String typeName, final Bucket bucket) {
     final LocalDocumentType owner = getBucketOwner(bucket.getFileId());
     if (owner != null)
       throw new SchemaException("Cannot add the bucket '" + bucket.getName() + "' to the type '" + typeName
           + "', because the bucket is already associated to the type '" + owner.getName() + "'");
+
+    // An internal bucket of a type answers to that type for the per-file permissions only while no type owns it: taking it as
+    // a bucket of its own would hand it to the new type
+    final LocalDocumentType user = getBucketInvolvedBy(bucket.getFileId());
+    if (user != null)
+      throw new SchemaException("Cannot add the bucket '" + bucket.getName() + "' to the type '" + typeName
+          + "', because the bucket is an internal bucket of the type '" + user.getName() + "'");
   }
 
   /** What the published bucket maps hold that a full rebuild would not, or null when they agree (checked under -ea). */

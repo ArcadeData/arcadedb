@@ -80,6 +80,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ErrorConcealment;
 import com.arcadedb.server.ServerControlPlane;
+import com.arcadedb.server.StandaloneTransactionControl;
 import com.arcadedb.server.network.PreAuthConnectionGate;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.security.ServerSecurityException;
@@ -269,7 +270,19 @@ public class BoltNetworkExecutor extends Thread {
       // Main message loop
       while (state != State.DISCONNECTED) {
         try {
-          final byte[] messageData = input.readMessage();
+          final byte[] messageData;
+          try {
+            messageData = input.readMessage();
+          } catch (final EOFException | SocketException | SocketTimeoutException e) {
+            // The peer went away, or the bounded pre-authentication wait ran out: the clauses below already end the connection
+            // for these, without a reply
+            throw e;
+          } catch (final IOException e) {
+            // The read stopped part way through a message (a size limit, a malformed frame, a broken transport), so the next
+            // byte on the stream is not the start of a request and there is no way to find where one starts: end the connection
+            closeAfterUnreadableMessage(e);
+            break;
+          }
           if (messageData.length == 0) {
             continue;
           }
@@ -344,6 +357,27 @@ public class BoltNetworkExecutor extends Thread {
       releasePreAuthTicket();
       cleanup();
     }
+  }
+
+  /**
+   * Ends the connection after {@link BoltChunkedInput#readMessage()} failed with something other than the peer going away.
+   * The failure leaves the stream anywhere inside the message (a chunk or a frame refused for its declared size is not even
+   * read), so what follows it is not framed as a request. Reading on, or reading the rest of the message to get back in step,
+   * would take bytes the peer chose for the start of the next request, or read without a bound. The peer is told once, best
+   * effort, and the caller leaves the loop, which closes the socket.
+   */
+  private void closeAfterUnreadableMessage(final IOException cause) {
+    final String reason = Objects.requireNonNullElse(cause.getMessage(), "the message is not readable");
+    if (isPreAuthentication())
+      logPeerError("BOLT closing the connection: an incoming message could not be read: %s", reason);
+    else
+      LogManager.instance().log(this, Level.WARNING, "BOLT closing the connection: an incoming message could not be read: %s", reason);
+    try {
+      sendFailure(BoltException.PROTOCOL_ERROR, loggedClientMessage(reason));
+    } catch (final IOException e) {
+      // The peer is gone or not reading: nobody left to tell
+    }
+    state = State.DISCONNECTED;
   }
 
   /**
@@ -707,13 +741,14 @@ public class BoltNetworkExecutor extends Thread {
   }
 
   /**
-   * Rolls back the explicit transaction, if any, and forgets it. Never throws: it runs on the teardown paths,
-   * where a rollback failure must not stop the rest of the teardown.
+   * Rolls back the explicit transaction, if any, and forgets it. Every level of the transaction of this connection's thread is
+   * rolled back, nested ones included, so a RESET, a LOGOFF, a new LOGON and the close all leave the connection without an open
+   * transaction. Never throws: it runs on the teardown paths, where a rollback failure must not stop the rest of the teardown.
    */
   private void rollbackExplicitTransaction() {
-    if (explicitTransaction && database != null) {
+    if (database != null) {
       try {
-        database.rollback();
+        database.rollbackAllNested();
       } catch (final Exception e) {
         // WARNING, not FINE: teardown carries on either way, but a rollback that threw may have left the
         // transaction only half cleaned up, which is worth seeing in the log.
@@ -863,10 +898,6 @@ public class BoltNetworkExecutor extends Thread {
     resolveRequestDatabase(db);
 
     final String query = message.getQuery();
-    final Map<String, Object> params = message.getParameters();
-
-    if (debug)
-      LogManager.instance().log(this, Level.FINE, "BOLT executing: %s with params %s (db=%s)", query, params, databaseName);
 
     final BoltQueryStream stream = new BoltQueryStream(nextQid);
 
@@ -877,6 +908,22 @@ public class BoltNetworkExecutor extends Thread {
     // connection's GQL session to the thread context, which the engine reads for SESSION statements.
     if (!ensureDatabase())
       return;
+
+    // The transaction of a connection is the one its BEGIN, COMMIT and ROLLBACK messages manage: the statement of the same name
+    // is not a way to begin or end it. Refused before anything runs, in READY and inside a transaction alike
+    if (StandaloneTransactionControl.isTransactionControl(database, "opencypher", query)) {
+      sendFailure(BoltErrorCodes.SEMANTIC_ERROR, "A transaction control statement is not accepted as a query: use the BEGIN, COMMIT "
+          + "and ROLLBACK messages of the protocol (the transaction functions of the driver)");
+      state = State.FAILED;
+      return;
+    }
+
+    // The first read of the parameters turns them into the values the engine binds: only a RUN that every check above let
+    // through pays for it. It comes before the time budget below is taken, so the conversion is part of what the budget spent
+    final Map<String, Object> params = message.getParameters();
+
+    if (debug)
+      LogManager.instance().log(this, Level.FINE, "BOLT executing: %s with params %s (db=%s)", query, params, databaseName);
 
     // The time this statement may run (issue #11392): what is left of the explicit transaction's timeout, or the auto-commit
     // query's own tx_timeout. A transaction already past its timeout runs nothing more
@@ -895,7 +942,7 @@ public class BoltNetworkExecutor extends Thread {
       // issue #7946, so SHOW DATABASES WHERE name = $dbName - Neo4j's bootstrap existence check - answered with
       // every database on the server no matter what was bound.
       try {
-        applySystemQueryTail(query, params, stream);
+        applySystemQueryTail(query, params, stream, statementTimeoutMs);
       } catch (final CommandParsingException e) {
         stream.close(this, "RUN failure");
         // Through the category, which keeps a genuine parsing failure's own title (classifyParsingError) and lets a failure that
@@ -974,10 +1021,7 @@ public class BoltNetworkExecutor extends Thread {
       // The budget the engine enforces on the statement (arcadedb.command.timeout), published right before the statement's
       // context is built - after the admission wait, which is not the statement's - so the rows a later PULL reads run against
       // the same deadline. The earlier of the two wins, as for Postgres statement_timeout
-      if (statementTimeoutMs > 0) {
-        final long databaseTimeout = database.getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_TIMEOUT);
-        CommandTimeoutOverride.set(databaseTimeout > 0 ? Math.min(databaseTimeout, statementTimeoutMs) : statementTimeoutMs);
-      }
+      publishStatementTimeout(statementTimeoutMs);
 
       // Use command() for writes, query() for reads.
       // An AUTO-COMMIT write commits here, at RUN, not at the end of its stream as the Bolt specification has it: a RESET or a
@@ -1324,7 +1368,7 @@ public class BoltNetworkExecutor extends Thread {
     try {
       closeAllStreams("ROLLBACK");
       if (database != null) {
-        database.rollback();
+        database.rollbackAllNested();
       }
       explicitTransaction = false;
 
@@ -1646,21 +1690,44 @@ public class BoltNetworkExecutor extends Thread {
    * (see {@link ShowCommandTail}), including the client's own parameters.
    * <p>
    * A command with no tail - by far the common case - costs one lexer pass and nothing else.
+   * <p>
+   * A tail is a query of the engine, so it runs as the statements of the normal path do: after the admission gate, listed
+   * with the running statements where it can be terminated, and under the time budget of the statement.
    */
-  private void applySystemQueryTail(final String query, final Map<String, Object> params, final BoltQueryStream stream) {
-    if (stream.syntheticResults == null || stream.fields == null)
+  private void applySystemQueryTail(final String query, final Map<String, Object> params, final BoltQueryStream stream,
+      final long statementTimeoutMs) {
+    if (stream.syntheticResults == null || stream.fields == null || !ShowCommandTail.hasTail(query))
       return;
 
-    // apply() answers with the table unchanged when the command has no tail, so it is called unconditionally
-    // rather than after a hasTail() that would tokenize the query a second time.
-    final ShowCommandTail.Table table = ShowCommandTail.apply(database, query, stream.fields, stream.syntheticResults,
-        params);
-    if (table.rows() == stream.syntheticResults && table.fields() == stream.fields)
-      return;
+    final ShowCommandTail.Table table;
+    try (final QueryAdmissionGate.Ticket admission = QueryAdmissionGate.getInstance().admit();
+        final RunningQuery runningQuery = server.getRunningQueries().open(database.getName(), user != null ? user.getName() : null,
+            "bolt", null, null, RunningQuery.Client.of(connectionId, socket.getRemoteSocketAddress()))) {
+      runningQuery.setStatement("opencypher", query);
+      try (final RunningQuery.Binding binding = runningQuery.bind()) {
+        publishStatementTimeout(statementTimeoutMs);
+        table = ShowCommandTail.apply(database, query, stream.fields, stream.syntheticResults, params);
+      } finally {
+        CommandTimeoutOverride.clear();
+      }
+    }
 
     stream.fields = table.fields();
     // Copied into a list PULL may consume destructively: it removes each row as it sends it.
     stream.syntheticResults = new ArrayList<>(table.rows());
+  }
+
+  /**
+   * Publishes the budget the statement about to run may take, on this thread, for the engine to enforce on it: the earlier of
+   * the statement's own ({@code tx_timeout}, or what is left of the explicit transaction's) and the database's
+   * {@code arcadedb.command.timeout}, as for Postgres statement_timeout. Does nothing for a statement with no budget of its own.
+   * The caller clears it when the statement's work is over.
+   */
+  private void publishStatementTimeout(final long statementTimeoutMs) {
+    if (statementTimeoutMs > 0) {
+      final long databaseTimeout = database.getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_TIMEOUT);
+      CommandTimeoutOverride.set(databaseTimeout > 0 ? Math.min(databaseTimeout, statementTimeoutMs) : statementTimeoutMs);
+    }
   }
 
   /**
@@ -2028,6 +2095,9 @@ public class BoltNetworkExecutor extends Thread {
     // it back to READY serving the previous user. "Authentication did not succeed" always means no principal and the bounded
     // pre-authentication read timeout armed, as LOGOFF leaves it.
     final boolean wasAuthenticated = user != null;
+    if (wasAuthenticated)
+      // The transaction of the connection ends before the principal changes
+      rollbackExplicitTransaction();
     user = null;
 
     ServerSecurityUser authenticated = null;

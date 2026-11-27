@@ -139,7 +139,12 @@ public class SQLFunctionSum extends SQLAggregatedFunction {
   @Override
   public void mergePartial(final SQLAggregatedFunction other) {
     final SQLFunctionSum that = (SQLFunctionSum) other;
-    sum(that.sum.get());
+    if (!that.sum.isEmpty()) {
+      if (durationSum != null)
+        throw mixedInput();
+      // THE PARTIAL'S EXACT FLOATING-POINT SUM, NOT ITS ROUNDED TOTAL: THE MERGE ORDER CANNOT CHANGE THE RESULT (#12696)
+      sum.merge(that.sum);
+    }
     if (that.durationSum != null)
       sum(that.durationSum);
   }
@@ -149,5 +154,11 @@ public class SQLFunctionSum extends SQLAggregatedFunction {
     // SQL: SUM over an empty group or an all-NULL group is NULL, not 0 (issue #9351). Same answer as avg/min/max and
     // as the time-series push-down.
     return durationSum != null ? durationSum : sum.get();
+  }
+
+  /** Pure over its rows and arguments (issue #6190): a statement that holds the call keeps its execution plan. */
+  @Override
+  public boolean isDeterministic() {
+    return true;
   }
 }

@@ -29,7 +29,7 @@ import java.util.Set;
 
 /**
  * What a catalog query does to the values of its rows once they are computed (issue #10228): combines the arms
- * of a set operation, tells two rows apart for DISTINCT, GROUP BY and count(DISTINCT), orders values, and computes
+ * of a set operation (telling two rows apart by {@link PostgresCatalogRowKey}), orders values, and computes
  * an aggregate over a group. Nothing here knows where the rows came from.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -40,16 +40,22 @@ final class PostgresCatalogRowSets {
 
   /**
    * Combines the rows of a set operation's arms, in SQL's precedence: INTERSECT binds tighter than UNION and
-   * EXCEPT, which associate to the left.
+   * EXCEPT, which associate to the left. The arms are left as they were.
+   * <p>
+   * The work of every step is charged to {@code budget} before the step runs, by the rows it reads: a chain that costs more than the
+   * statement may stops there. A run of UNION or UNION ALL steps grows one list, and a run of UNION steps keeps one set of the rows
+   * it holds, so such a chain costs the rows of its arms and not the square of their number.
+   *
+   * @param budget the work budget of the statement
    */
   static List<List<Object>> combine(final List<String> operators, final List<Boolean> all,
-      final List<List<List<Object>>> arms) {
+      final List<List<List<Object>>> arms, final PostgresCatalogJoin.Budget budget) {
     final List<List<List<Object>>> terms = new ArrayList<>();
     final List<Integer> termOperators = new ArrayList<>();
     List<List<Object>> current = arms.get(0);
     for (int i = 0; i < operators.size(); i++) {
       if ("INTERSECT".equals(operators.get(i)))
-        current = combine("INTERSECT", all.get(i), current, arms.get(i + 1));
+        current = intersectOrExcept("INTERSECT", all.get(i), current, arms.get(i + 1), budget);
       else {
         terms.add(current);
         termOperators.add(i);
@@ -59,11 +65,54 @@ final class PostgresCatalogRowSets {
     terms.add(current);
 
     List<List<Object>> combined = terms.get(0);
+    // whether combined is a list of this method's own, which a step may grow, and the keys of its rows when it has no duplicate
+    boolean owned = false;
+    Set<PostgresCatalogRowKey> keys = null;
     for (int t = 0; t < termOperators.size(); t++) {
       final int i = termOperators.get(t);
-      combined = combine(operators.get(i), all.get(i), combined, terms.get(t + 1));
+      final List<List<Object>> right = terms.get(t + 1);
+
+      if (!"UNION".equals(operators.get(i))) {
+        combined = intersectOrExcept(operators.get(i), all.get(i), combined, right, budget);
+        owned = true;
+        keys = null;
+      } else if (all.get(i)) {
+        if (owned)
+          budget.charge(right.size());
+        else {
+          charge(budget, combined.size(), right.size());
+          final List<List<Object>> grown = new ArrayList<>(combined.size() + right.size());
+          grown.addAll(combined);
+          combined = grown;
+          owned = true;
+        }
+        combined.addAll(right);
+        if (!right.isEmpty())
+          keys = null;
+      } else {
+        if (keys == null) {
+          // the rows so far are kept once each, and their keys are what the next steps compare with
+          charge(budget, combined.size(), right.size());
+          final Set<PostgresCatalogRowKey> seen = new HashSet<>();
+          final List<List<Object>> distinct = new ArrayList<>(combined.size() + right.size());
+          for (final List<Object> row : combined)
+            if (seen.add(PostgresCatalogRowKey.of(row)))
+              distinct.add(row);
+          combined = distinct;
+          owned = true;
+          keys = seen;
+        } else
+          budget.charge(right.size());
+        for (final List<Object> row : right)
+          if (keys.add(PostgresCatalogRowKey.of(row)))
+            combined.add(row);
+      }
     }
     return combined;
+  }
+
+  private static void charge(final PostgresCatalogJoin.Budget budget, final int left, final int right) {
+    budget.charge((int) Math.min((long) left + right, Integer.MAX_VALUE));
   }
 
   /**
@@ -130,33 +179,23 @@ final class PostgresCatalogRowSets {
     return allIntegral ? (Object) integral : (Object) real;
   }
 
-  /** One set operation over two row lists, with SQL's duplicate rules: without ALL the result has no duplicate. */
-  private static List<List<Object>> combine(final String operator, final boolean all, final List<List<Object>> left,
-      final List<List<Object>> right) {
-    final List<List<Object>> result = new ArrayList<>(left.size() + right.size());
+  /**
+   * An INTERSECT or an EXCEPT over two row lists, with SQL's duplicate rules: without ALL the result has no duplicate. It reads every
+   * row of both lists, which is charged before it does.
+   */
+  private static List<List<Object>> intersectOrExcept(final String operator, final boolean all, final List<List<Object>> left,
+      final List<List<Object>> right, final PostgresCatalogJoin.Budget budget) {
+    charge(budget, left.size(), right.size());
+    final List<List<Object>> result = new ArrayList<>();
 
-    if ("UNION".equals(operator)) {
-      if (all) {
-        result.addAll(left);
-        result.addAll(right);
-        return result;
-      }
-      final Set<List<Object>> seen = new HashSet<>();
-      for (final List<List<Object>> side : List.of(left, right))
-        for (final List<Object> row : side)
-          if (seen.add(distinctKey(row)))
-            result.add(row);
-      return result;
-    }
-
-    final Map<List<Object>, Integer> inRight = new HashMap<>();
+    final Map<PostgresCatalogRowKey, Integer> inRight = new HashMap<>();
     for (final List<Object> row : right)
-      inRight.merge(distinctKey(row), 1, Integer::sum);
+      inRight.merge(PostgresCatalogRowKey.of(row), 1, Integer::sum);
 
-    final Set<List<Object>> emitted = new HashSet<>();
+    final Set<PostgresCatalogRowKey> emitted = new HashSet<>();
     final boolean intersect = "INTERSECT".equals(operator);
     for (final List<Object> row : left) {
-      final List<Object> key = distinctKey(row);
+      final PostgresCatalogRowKey key = PostgresCatalogRowKey.of(row);
       final int count = inRight.getOrDefault(key, 0);
       if (all) {
         // The ALL forms are bag operations: each row of the right side matches one row of the left at most.
@@ -168,24 +207,6 @@ final class PostgresCatalogRowSets {
         result.add(row);
     }
     return result;
-  }
-
-  /**
-   * The key two rows are compared by when a set operation, DISTINCT, GROUP BY or count(DISTINCT) decides whether
-   * they are the same row. Numbers compare by value, as in SQL: the literal {@code 1} is a Long and an OID is an
-   * Integer, and {@code List.equals} would tell them apart.
-   */
-  static List<Object> distinctKey(final List<Object> values) {
-    List<Object> key = null;
-    for (int i = 0; i < values.size(); i++) {
-      final Object value = values.get(i);
-      if (!(value instanceof Number number) || value instanceof Long)
-        continue;
-      if (key == null)
-        key = new ArrayList<>(values);
-      key.set(i, numberKey(number));
-    }
-    return key == null ? values : key;
   }
 
   /**
