@@ -151,10 +151,12 @@ final class MatchStepBuilder {
     // once per node. Scoped to a leading, non-optional MATCH (no prior input row) so it never
     // interacts with input-driven reverse-traversal or OPTIONAL null semantics. Cartesian product is
     // commutative, so the result set is unchanged.
-    final List<PathPattern> pathPatterns = (!isOptional && stepBeforeMatch == null
+    List<PathPattern> pathPatterns = (!isOptional && stepBeforeMatch == null
         && matchClause.getPathPatterns().size() > 1)
         ? reorderIndependentComponents(matchClause.getPathPatterns())
         : matchClause.getPathPatterns();
+    // Never written back to the parsed clause: the patterns this clause walks back to front go in a copy
+    boolean pathPatternsCopied = false;
 
     // Extract ID filters from WHERE clause (if present) for pushdown optimization
     final WhereClause whereClause = matchClause.hasWhereClause() ? matchClause.getWhereClause() :
@@ -163,6 +165,14 @@ final class MatchStepBuilder {
     AbstractExecutionStep matchChainStart = null;
 
     for (int patternIndex = 0; patternIndex < pathPatterns.size(); patternIndex++) {
+      // Issue #13621: a chain of fixed-length hops from an unbound node to one the row already holds is walked from the bound end
+      if (startsFromBoundLastNode(pathPatterns.get(patternIndex), stepBeforeMatch, whereClause, boundVariables, matchVariables)) {
+        if (!pathPatternsCopied) {
+          pathPatterns = new ArrayList<>(pathPatterns);
+          pathPatternsCopied = true;
+        }
+        pathPatterns.set(patternIndex, PatternGraph.reversed(pathPatterns.get(patternIndex)));
+      }
       final PathPattern pathPattern = pathPatterns.get(patternIndex);
 
       if (pathPattern.isSingleNode()) {
@@ -987,6 +997,62 @@ final class MatchStepBuilder {
       return false;
     final CypherReferencedVariables referenced = CypherReferencedVariables.of(expression);
     return referenced.isComplete() && boundBefore.containsAll(referenced.getNames());
+  }
+
+  /**
+   * Whether a chain of two or more fixed-length hops is planned back to front (issue #13621): its first node is new to the row
+   * and its last node is one the row already holds, so the written order starts from a scan of every vertex the first node
+   * allows, repeated for every input row, and expands all of them to find the few that reach the bound node. Read from the
+   * bound node the same chain is a walk of its relationships. A single hop has its own rules (the bound-target reversal below
+   * and issue #12149). A chain with a path variable or a path mode keeps the written order, which is the order of the path it
+   * binds, and so does one with a variable-length or quantified hop, whose relationship lists follow the written direction.
+   * A first node an index seek or an id answers stays where it is: one lookup per row is no worse than the walk. So does one
+   * that carries what only a node step checks (an inline WHERE, dynamic labels, a parameter map of properties), as the
+   * reversed chain reaches it through a hop, and so does a chain whose other nodes or relationships read a variable of the chain
+   * in a property map or an inline WHERE, which the reversed chain would check before it binds that variable.
+   */
+  private boolean startsFromBoundLastNode(final PathPattern pathPattern, final AbstractExecutionStep stepBeforeMatch,
+      final WhereClause whereClause, final Set<String> boundVariables, final Set<String> matchVariables) {
+    if (stepBeforeMatch == null || pathPattern instanceof ShortestPathPattern || pathPattern.hasPathVariable()
+        || pathPattern.getPathMode() != null || pathPattern.getRelationshipCount() < 2)
+      return false;
+    for (final RelationshipPattern relationship : pathPattern.getRelationships())
+      if (relationship instanceof QuantifiedPathPattern || relationship.isVariableLength())
+        return false;
+
+    final String lastVar = pathPattern.getLastNode().getVariable();
+    if (lastVar == null || !(boundVariables.contains(lastVar) || matchVariables.contains(lastVar)))
+      return false;
+
+    final NodePattern first = pathPattern.getFirstNode();
+    final String firstVar = first.getVariable();
+    if (firstVar != null && (boundVariables.contains(firstVar) || matchVariables.contains(firstVar)))
+      return false;
+    if (first.hasWhereExpression() || first.hasDynamicLabels() || first.getPropertiesParameterName() != null)
+      return false;
+    if (isUniquelyKeyed(first) && readsOnlyEarlierClauses(first.getProperties(), boundVariables))
+      return false;
+    // Every map the reversed chain checks before it reaches the first node may read only what the row holds when the chain
+    // starts: one naming a variable of the chain (`(b {id: a.id})`, `[:R {w: a.x}]`) would be checked before that variable is bound
+    final Set<String> boundBefore;
+    if (matchVariables.isEmpty())
+      boundBefore = boundVariables;
+    else {
+      boundBefore = new HashSet<>(boundVariables);
+      boundBefore.addAll(matchVariables);
+    }
+    for (int i = 0; i < pathPattern.getRelationshipCount(); i++) {
+      final RelationshipPattern relationship = pathPattern.getRelationship(i);
+      final NodePattern node = pathPattern.getNode(i + 1);
+      if (relationship.hasWhereExpression() || node.hasWhereExpression()
+          || !readsOnlyEarlierClauses(relationship.getProperties(), boundBefore)
+          || !readsOnlyEarlierClauses(node.getProperties(), boundBefore))
+        return false;
+    }
+    if (firstVar == null)
+      return true;
+    final BooleanExpression where = whereClause != null ? whereClause.getConditionExpression() : null;
+    return plan.extractIdFilter(whereClause, firstVar) == null && !isUniquelyKeyedByWhere(first, firstVar, where, boundVariables);
   }
 
   /**
