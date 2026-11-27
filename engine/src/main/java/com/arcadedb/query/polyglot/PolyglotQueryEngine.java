@@ -20,6 +20,7 @@ package com.arcadedb.query.polyglot;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.CallerUser;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
@@ -305,8 +306,11 @@ public class PolyglotQueryEngine implements QueryEngine {
         return task.call();
       }
     };
+    // The same goes for the user: what the script does through the bound database is checked against the user who issued
+    // the command, not against a pool thread that has none
+    final Callable asCaller = CallerUser.bind(database, bound);
     // IF NOT INITIALIZED, EXECUTE AS SOON AS THE SERVICE STARTS
-    final Future future = userCodeExecutor.submit(bound);
+    final Future future = userCodeExecutor.submit(asCaller);
     if (future == null)
       return null;
 
