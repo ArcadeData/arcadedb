@@ -40,17 +40,32 @@ class GeoAntipodalDistanceIssue12972Test {
 
   @Test
   void antipodesOfAWholeGridOfPointsAreHalfTheEarthApart() {
+    // counted with primitives and asserted once: an AssertJ assertion per point would allocate millions of objects
     int measured = 0;
+    int wrong = 0;
+    double firstWrongX = 0;
+    double firstWrongY = 0;
+    double firstWrongRadians = 0;
     for (int lon = -18_000; lon < 18_000; lon += 7) {
       for (int lat = -9_000; lat <= 9_000; lat += 13) {
         final double x = lon / 100.0;
         final double y = lat / 100.0;
         final double radians = GeoUtils.haversineRadians(x, y, x > 0 ? x - 180 : x + 180, -y);
-        assertThat(radians).as("antipode of %s,%s", x, y).isCloseTo(Math.PI, within(1e-6));
+        // written so that NaN counts as wrong
+        if (!(Math.abs(radians - Math.PI) <= 1e-6)) {
+          if (wrong == 0) {
+            firstWrongX = x;
+            firstWrongY = y;
+            firstWrongRadians = radians;
+          }
+          ++wrong;
+        }
         ++measured;
       }
     }
-    assertThat(measured).isGreaterThan(300_000);
+    assertThat(measured).isGreaterThan(7_000_000);
+    assertThat(wrong).as("antipodes not pi radians apart, the first at %s,%s answered %s", firstWrongX, firstWrongY,
+        firstWrongRadians).isZero();
   }
 
   @Test

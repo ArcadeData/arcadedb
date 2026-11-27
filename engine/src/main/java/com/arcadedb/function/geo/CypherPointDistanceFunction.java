@@ -20,6 +20,7 @@ package com.arcadedb.function.geo;
 
 import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.sql.geo.GeoUtils;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.Map;
@@ -154,13 +155,11 @@ public class CypherPointDistanceFunction implements StatelessFunction {
     return f instanceof Number n ? n : null;
   }
 
-  private double haversineDistance(final double lat1, final double lon1, final double lat2, final double lon2) {
-    final double dLat = Math.toRadians(lat2 - lat1);
-    final double dLon = Math.toRadians(lon2 - lon1);
-    // near the antipodes the sum rounds a few ULPs above 1, where sqrt(1 - a) is NaN (issue #12972)
-    final double a = Math.min(1.0, Math.pow(Math.sin(dLat / 2), 2)
-        + Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2))
-        * Math.pow(Math.sin(dLon / 2), 2));
-    return 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)) * EARTH_RADIUS_M;
+  /**
+   * The one haversine implementation the SQL geo functions use too, so a fix to it reaches both languages: the antipodal NaN
+   * of issue #12972 was there twice because the formula was copied here.
+   */
+  private static double haversineDistance(final double lat1, final double lon1, final double lat2, final double lon2) {
+    return GeoUtils.haversineRadians(lon1, lat1, lon2, lat2) * EARTH_RADIUS_M;
   }
 }
