@@ -420,6 +420,31 @@ class SnapshotSwapSkippingListingTest {
     assertThat(Files.readString(orphan)).isEqualTo("old-dictionary");
   }
 
+  // Regression for #13618: recovery's own listing of the staging cannot hide a staged file and get the install accepted
+  @Test
+  void recoveryDoesNotTrustAnEmptyListingOfTheStaging(@TempDir final Path databasesDir) throws IOException {
+    final Path dbDir = databasesDir.resolve("drill");
+    final Path snapshotNew = dbDir.resolve(SnapshotInstaller.SNAPSHOT_NEW_DIR);
+    final Path snapshotBackup = dbDir.resolve(SnapshotInstaller.SNAPSHOT_BACKUP_DIR);
+    final Map<String, String> live = new LinkedHashMap<>(snapshot());
+    final String kept = "Link5_0.105.65536.v0.bucket";
+    live.remove(kept);
+    write(dbDir, live);
+    write(snapshotNew, Map.of(kept, "new-5"));
+    SnapshotInstaller.writeInstalledFilesManifest(snapshotNew, Map.of(kept, 5L));
+    Files.writeString(snapshotNew.resolve(SnapshotInstaller.SNAPSHOT_COMPLETE_FILE), "");
+    write(snapshotBackup, originals());
+    Files.writeString(dbDir.resolve(SnapshotInstaller.SNAPSHOT_PENDING_FILE), "");
+    Files.writeString(dbDir.resolve(SnapshotInstaller.SNAPSHOT_SWAP_STATE_FILE), "INSTALLED");
+
+    // Every listing of the staging comes back empty: only the non-recursive delete can tell it is not.
+    SnapshotInstaller.directoryListingForTesting = (dir, entries) -> dir.equals(snapshotNew) ? List.of() : entries;
+    SnapshotInstaller.recoverPendingSnapshotSwaps(databasesDir);
+
+    assertThat(databaseFiles(dbDir)).as("the incomplete install is rolled back to the originals").isEqualTo(originals());
+    assertThat(snapshotBackup).doesNotExist();
+  }
+
   // Regression for #13618: recovery never accepts an install whose staging still holds staged files
   @Test
   void recoveryRollsBackAnInstallWhoseStagingStillHoldsFiles(@TempDir final Path databasesDir) throws IOException {

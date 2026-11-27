@@ -1486,8 +1486,7 @@ public final class SnapshotInstaller {
    * a backup so files that exist only in a failed snapshot are not left behind. Not transactional: a
    * crash partway leaves dbPath partially cleared, but the caller keeps the {@code .snapshot-pending}
    * marker on failure so {@link #recoverPendingSnapshotSwaps} restores the backup on the next startup.
-   */
-  /**
+   * <p>
    * Only an entry that is not of uncertain origin is deleted (issue #13618): one {@link #unbackedOriginal} accepts (the
    * backup does not hold it, and the snapshot does not name it or still has it staged) may be an original that no listing
    * of the swap showed. With {@code originalToKeep}, the swap's own rollback, nothing has opened the directory, so such an
@@ -2056,7 +2055,7 @@ public final class SnapshotInstaller {
     // A staging that still holds a staged entry is an install that did not finish (issue #13618): the swap refused to
     // delete it, so whatever it holds never went live, the manifest itself included. Never accepted, whatever opens.
     final Map<String, Long> expected = readInstalledFilesManifest(dbDir);
-    final String mismatch = Files.isDirectory(snapshotNew) && hasStagedSnapshotFiles(snapshotNew) ?
+    final String mismatch = stagingStillHoldsFiles(dbDir, snapshotNew) ?
         "'" + SNAPSHOT_NEW_DIR + "' still holds staged files" :
         expected != null ? installedFileMismatches(expected, dbDir) : null;
     if (mismatch == null && snapshotOpens(dbDir))
@@ -2177,9 +2176,29 @@ public final class SnapshotInstaller {
   }
 
   private static boolean hasStagedSnapshotFiles(final Path snapshotNew) throws IOException {
-    try (final DirectoryStream<Path> staged = Files.newDirectoryStream(snapshotNew,
-        entry -> !entry.getFileName().toString().equals(SNAPSHOT_COMPLETE_FILE))) {
-      return staged.iterator().hasNext();
+    return !listEntries(snapshotNew, entry -> !entry.getFileName().toString().equals(SNAPSHOT_COMPLETE_FILE)).isEmpty();
+  }
+
+  /**
+   * Whether the staging of a swap that rolled forward still holds a staged entry, the sign of an install that did not
+   * finish (issue #13618). A listing that finds one is enough to say yes; one that finds none is not enough to say no, so
+   * when the swap recorded a phase the answer is the server's: the staging is removed with a non-recursive delete, which
+   * a directory still holding an entry refuses. Without a recorded phase (a legacy swap) the staging and its completion
+   * marker still classify the layout, so they are only listed.
+   */
+  private static boolean stagingStillHoldsFiles(final Path dbDir, final Path snapshotNew) throws IOException {
+    if (!Files.isDirectory(snapshotNew, LinkOption.NOFOLLOW_LINKS))
+      return false;
+    if (hasStagedSnapshotFiles(snapshotNew))
+      return true;
+    if (readSwapPhase(dbDir) == null)
+      return false;
+    try {
+      deleteDrainedDirectory(snapshotNew, SNAPSHOT_COMPLETE_FILE);
+      return false;
+    } catch (final IOException e) {
+      LogManager.instance().log(SnapshotInstaller.class, Level.WARNING, "%s", null, e.getMessage());
+      return true;
     }
   }
 
@@ -3118,6 +3137,10 @@ public final class SnapshotInstaller {
     return entry -> {
       final String name = entry.getFileName().toString();
       if (!isLiveDatabaseEntry(entry) || Files.exists(backupDir.resolve(name), LinkOption.NOFOLLOW_LINKS))
+        return false;
+      // The columnar projection is never shipped in a snapshot and is rebuilt from the data: the roll-forward writes its
+      // rebuild marker, and deleting it loses nothing.
+      if (ColumnarStore.ROOT_DIR.equals(name))
         return false;
       return (snapshotEntries != null && !snapshotEntries.contains(name))
           || Files.exists(newDir.resolve(name), LinkOption.NOFOLLOW_LINKS);
