@@ -19,6 +19,11 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandSemanticException;
+import com.arcadedb.query.sql.parser.FromClause;
+import com.arcadedb.query.sql.parser.FromItem;
+import com.arcadedb.query.sql.parser.Identifier;
+import com.arcadedb.query.sql.parser.SelectStatement;
 import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.Test;
 
@@ -26,6 +31,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for #12743: a SQL MATCH whose root node has no {@code type:} (and no {@code rid:}) failed with a bare
@@ -142,6 +148,33 @@ class Issue12743MatchRootWithoutTypeTest extends TestHelper {
         MATCH {type: MB, as: seed, where: (id = 2)},
               {as: n0, where: (id < $matched.seed.id)}.out('MR'){type: MC, as: n1, while: ($depth < 2), where: ($depth = 2)}
         RETURN n0.id AS a, n1.id AS b ORDER BY a, b""")).isEqualTo(List.of("1-3"));
+  }
+
+  /**
+   * A SELECT target the planner has no fetch for is a semantic error of the statement (HTTP 400), not a bare
+   * {@link UnsupportedOperationException} (HTTP 500), which is what the untyped MATCH root used to reach.
+   */
+  @Test
+  void selectTargetWithNoFetchIsASemanticError() {
+    final FromItem empty = new FromItem();
+    assertThatThrownBy(() -> planSelectFrom(empty)).isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("Unsupported target");
+
+    // ONE CHILD THAT IS NOT A $variable: THE OTHER BRANCH THAT USED TO RAISE THE BARE EXCEPTION
+    final FromItem oneChild = new FromItem();
+    oneChild.jjtAddChild(new Identifier("notAVariable"), 0);
+    assertThatThrownBy(() -> planSelectFrom(oneChild)).isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("Unsupported target");
+  }
+
+  private void planSelectFrom(final FromItem item) {
+    final FromClause from = new FromClause();
+    from.setItem(item);
+    final SelectStatement select = new SelectStatement();
+    select.setTarget(from);
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+    select.createExecutionPlanNoCache(context);
   }
 
   private long count(final String match) {
