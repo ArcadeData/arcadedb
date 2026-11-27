@@ -8053,6 +8053,8 @@ public class SelectExecutionPlanner {
         return new BucketIdSet(db.getSchema(),
             typez.getBuckets(true).stream().mapToInt(com.arcadedb.engine.Bucket::getFileId).toArray());
       }
+      // only a $variable target gets here (a type target returned above): it names no bucket, the RIDs it resolved to were added
+      // to the target instead
       return buckets;
     }
 

@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.LocalDocumentType;
 
 import java.util.NoSuchElementException;
 
@@ -140,13 +141,18 @@ public class FilterByTypeStep extends AbstractExecutionStep {
    * The type is the one the name resolved to when the statement was planned, recognised by identity first (issue #12758):
    * {@code ALTER TYPE T NAME Tr} publishes the new name while the type still answers to the old one, so a statement on {@code T}
    * planned or still running in between read records whose type is called {@code Tr}, and a comparison of the names alone kept
-   * none of them. A subtype is recognised by the name the type has now. Every step that decides for this one (a SKIP passing
-   * over index entries, a parallel worker, the facets) asks here, so that they keep the same records.
+   * none of them. A subtype is recognised by identity too, walking the record type's super types: a name read there could be
+   * either of the two the renamed type answers to. The name is only a fallback that can add a record, never reject one: it covers
+   * a target that resolved to no type, and a record type the planned type is not an ancestor of by identity (a type dropped and
+   * created again under the name while a plan of the old one runs). Every step that decides for this one (a SKIP passing over
+   * index entries, a parallel worker, the facets) asks here, so that they keep the same records.
    */
   boolean accepts(final DocumentType recordType) {
     if (recordType == null)
       return false;
     if (recordType == type)
+      return true;
+    if (type != null && recordType instanceof LocalDocumentType local && local.inheritsFrom(type))
       return true;
     return recordType.isSubTypeOf(type != null ? type.getName() : identifier.getStringValue());
   }

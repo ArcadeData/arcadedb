@@ -1868,4 +1868,61 @@ class TypeRenameTest {
         }
     }
   }
+
+  /**
+   * Regression for #12758, without threads: a statement planned on {@code T} keeps reading after {@code ALTER TYPE T NAME Tr} has
+   * run in full, between two pages of its result. The type check after an index fetch compared the name the statement used with
+   * the name the records' type had by then, so every row after the rename was dropped. It now recognises the type it planned by
+   * identity, for the records of the type and for those of a subtype, whose lineage it walks by identity too.
+   */
+  @Nested
+  class AStatementThatKeepsReadingAcrossARename extends TestHelper {
+    // SEVERAL PAGES OF A LocalResultSet: THE RENAME RUNS AFTER THE FIRST PAGE WAS SERVED AND BEFORE THE NEXT ONE IS PLANNED
+    private static final int ROWS = 1000;
+
+    @Test
+    void theRowsOfTheTypeAfterTheRenameAreKept() {
+      assertEveryRowIsReadAcrossTheRename("T12758D", "T12758D");
+    }
+
+    @Test
+    void theRowsOfASubtypeAfterTheRenameOfTheTargetAreKept() {
+      database.command("sql", "CREATE DOCUMENT TYPE C12758D EXTENDS T12758D");
+      assertEveryRowIsReadAcrossTheRename("T12758D", "C12758D");
+    }
+
+    @Override
+    protected void beginTest() {
+      database.command("sql", "CREATE DOCUMENT TYPE T12758D");
+      database.command("sql", "CREATE PROPERTY T12758D.id INTEGER");
+      database.command("sql", "CREATE INDEX ON T12758D (id) NOTUNIQUE");
+    }
+
+    private void assertEveryRowIsReadAcrossTheRename(final String target, final String recordType) {
+      database.transaction(() -> {
+        for (int i = 0; i < ROWS; i++)
+          database.newDocument(recordType).set("id", i).save();
+      });
+
+      long rows = 0;
+      try (final ResultSet rs = database.query("sql", "SELECT FROM `" + target + "` WHERE id >= 0")) {
+        // NOT VACUOUS: THE ROWS COME FROM THE INDEX AND PASS THE TYPE CHECK THAT FOLLOWS IT
+        final String plan = rs.getExecutionPlan().get().prettyPrint(0, 2);
+        assertThat(plan).contains("FETCH FROM INDEX").contains("FILTER ITEMS BY TYPE");
+
+        assertThat(rs.hasNext()).isTrue();
+        rs.next();
+        ++rows;
+
+        database.command("sql", "ALTER TYPE `" + target + "` NAME `" + target + "r`");
+        assertThat(database.getSchema().existsType(target)).isFalse();
+
+        while (rs.hasNext()) {
+          rs.next();
+          ++rows;
+        }
+      }
+      assertThat(rows).isEqualTo(ROWS);
+    }
+  }
 }
