@@ -101,6 +101,7 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
         extractInt(n, "maxIterations", 1) : 10;
     final double tolerance = config != null && config.get("tolerance") instanceof Number n ?
         n.doubleValue() : 0.0001;
+    requireNonNegativeFinite("tolerance", tolerance);
     final String weightProperty = config != null ? (String) config.get("weightProperty") : null;
 
     final Database db = context.getDatabase();

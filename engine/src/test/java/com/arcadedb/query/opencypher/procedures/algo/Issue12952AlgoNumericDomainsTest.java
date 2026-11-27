@@ -118,6 +118,28 @@ class Issue12952AlgoNumericDomainsTest extends TestHelper {
       assertThat(count("CALL algo.slpa({threshold: " + value + ", iterations: 5, seed: 1}) YIELD node RETURN count(*) AS c")).isEqualTo(3);
   }
 
+  @Test
+  void louvainRefusesAToleranceThatIsNegativeOrNotFinite() {
+    for (final String value : new String[] { "0.0/0.0", "-1", "-0.000001" })
+      assertClientError("CALL algo.louvain({tolerance: " + value + "}) YIELD node RETURN count(*)",
+          "algo.louvain(): tolerance must be a finite number, not negative");
+    assertClientError("CALL algo.louvain({tolerance: $t}) YIELD node RETURN count(*)", Map.of("t", Double.POSITIVE_INFINITY),
+        "algo.louvain(): tolerance must be a finite number, not negative");
+    for (final String value : new String[] { "0.0", "0.5" })
+      assertThat(count("CALL algo.louvain({tolerance: " + value + "}) YIELD node RETURN count(*) AS c")).as(value).isEqualTo(3);
+  }
+
+  @Test
+  void leidenRefusesAResolutionThatIsNegativeOrNotFinite() {
+    for (final String value : new String[] { "0.0/0.0", "-1", "-0.000001" })
+      assertClientError("CALL algo.leiden('K', 5, " + value + ") YIELD nodeId RETURN count(*)",
+          "algo.leiden(): resolution must be a finite number, not negative");
+    assertClientError("CALL algo.leiden('K', 5, $r) YIELD nodeId RETURN count(*)", Map.of("r", Double.POSITIVE_INFINITY),
+        "algo.leiden(): resolution must be a finite number, not negative");
+    for (final String value : new String[] { "0.0", "1.0", "2.5" })
+      assertThat(count("CALL algo.leiden('K', 5, " + value + ") YIELD nodeId RETURN count(*) AS c")).as(value).isEqualTo(3);
+  }
+
   private long count(final String cypher) {
     try (final ResultSet rs = database.query("opencypher", cypher)) {
       return rs.next().<Number>getProperty("c").longValue();
