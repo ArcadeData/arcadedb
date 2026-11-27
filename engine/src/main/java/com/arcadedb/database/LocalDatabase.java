@@ -138,8 +138,12 @@ import java.nio.channels.ClosedByInterruptException;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
+import java.nio.file.DirectoryIteratorException;
+import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
@@ -497,16 +501,58 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       if (afterDropCloseHook != null)
         afterDropCloseHook.accept(this);
 
+      final File databaseDirectory = new File(databasePath);
       executeInWriteLock(() -> {
-        FileUtils.deleteRecursively(new File(databasePath));
+        FileUtils.deleteRecursively(databaseDirectory);
         return null;
       });
+
+      // THE DELETE ONLY LOGS WHAT IT COULD NOT REMOVE (ISSUE #12865): A DROP THAT LEFT FILES BEHIND MUST NOT REPORT SUCCESS, OR THE
+      // CALLER IS TOLD THE DATABASE IS GONE WHILE create() OF THE PATH IS REFUSED AS "ALREADY EXISTS" AND open() BRINGS THE DATA
+      // BACK. CHECKED WHILE THE PATH IS STILL HELD IN THE REGISTRY, SO NO create() CAN PUT NEW FILES THERE IN BETWEEN. AN EMPTY
+      // DIRECTORY LEFT BEHIND (A MOUNT POINT, A PARENT THAT REFUSES THE UNLINK) HOLDS NO DATABASE AND IS NOT A FAILURE
+      checkDatabaseDirectoryIsGone(databaseDirectory.toPath());
     } finally {
       // WHATEVER BECAME OF THE DELETE: NOTHING IS LEFT TO KEEP THE PATH FOR. A DROP THAT LOST THE CLOSING CAS TO A CONCURRENT
       // close() HAS NOTHING TO UNREGISTER, THAT CLOSE DID IT
       if (registrationKept)
         unregisterClosedInstance();
     }
+  }
+
+  /**
+   * Throws when the directory of the database is still there with any entry in it, or cannot be inspected: only a directory
+   * that is gone (NoSuchFileException) or empty holds no database. File.exists() and File.list() are not enough, because they
+   * answer "absent" or null for a directory they are not allowed to look at (an unreadable directory, an ancestor without
+   * search permission), where the delete removed nothing either.
+   */
+  private void checkDatabaseDirectoryIsGone(final Path databaseDirectory) {
+    final List<String> leftOver = new ArrayList<>();
+    try (final DirectoryStream<Path> entries = Files.newDirectoryStream(databaseDirectory)) {
+      for (final Path entry : entries)
+        leftOver.add(entry.getFileName().toString());
+    } catch (final NoSuchFileException e) {
+      return;
+    } catch (final IOException | DirectoryIteratorException e) {
+      throw new DatabaseOperationException(
+          "Database '" + databasePath + "' was closed but its files could not be deleted: its directory cannot be inspected (" + e
+              + ")", e);
+    }
+
+    if (leftOver.isEmpty())
+      return;
+
+    Collections.sort(leftOver);
+    final int listed = Math.min(leftOver.size(), 10);
+    final StringBuilder buffer = new StringBuilder();
+    for (int i = 0; i < listed; i++) {
+      if (i > 0)
+        buffer.append(", ");
+      buffer.append(leftOver.get(i));
+    }
+    if (leftOver.size() > listed)
+      buffer.append(" and ").append(leftOver.size() - listed).append(" more");
+    throw new DatabaseOperationException("Database '" + databasePath + "' was closed but its files could not be deleted: " + buffer);
   }
 
   /**
