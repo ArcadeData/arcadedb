@@ -1006,7 +1006,8 @@ final class MatchStepBuilder {
    * binds, and so does one with a variable-length or quantified hop, whose relationship lists follow the written direction.
    * A first node an index seek or an id answers stays where it is: one lookup per row is no worse than the walk. So does one
    * that carries what only a node step checks (an inline WHERE, dynamic labels, a parameter map of properties), as the
-   * reversed chain reaches it through a hop.
+   * reversed chain reaches it through a hop, and so does a chain whose other nodes or relationships read a variable of the chain
+   * in a property map or an inline WHERE, which the reversed chain would check before it binds that variable.
    */
   private boolean startsFromBoundLastNode(final PathPattern pathPattern, final AbstractExecutionStep stepBeforeMatch,
       final WhereClause whereClause, final Set<String> boundVariables, final Set<String> matchVariables) {
@@ -1029,6 +1030,23 @@ final class MatchStepBuilder {
       return false;
     if (isUniquelyKeyed(first) && readsOnlyEarlierClauses(first.getProperties(), boundVariables))
       return false;
+    // Every map the reversed chain checks before it reaches the first node may read only what the row holds when the chain
+    // starts: one naming a variable of the chain (`(b {id: a.id})`, `[:R {w: a.x}]`) would be checked before that variable is bound
+    final Set<String> boundBefore;
+    if (matchVariables.isEmpty())
+      boundBefore = boundVariables;
+    else {
+      boundBefore = new HashSet<>(boundVariables);
+      boundBefore.addAll(matchVariables);
+    }
+    for (int i = 0; i < pathPattern.getRelationshipCount(); i++) {
+      final RelationshipPattern relationship = pathPattern.getRelationship(i);
+      final NodePattern node = pathPattern.getNode(i + 1);
+      if (relationship.hasWhereExpression() || node.hasWhereExpression()
+          || !readsOnlyEarlierClauses(relationship.getProperties(), boundBefore)
+          || !readsOnlyEarlierClauses(node.getProperties(), boundBefore))
+        return false;
+    }
     if (firstVar == null)
       return true;
     final BooleanExpression where = whereClause != null ? whereClause.getConditionExpression() : null;

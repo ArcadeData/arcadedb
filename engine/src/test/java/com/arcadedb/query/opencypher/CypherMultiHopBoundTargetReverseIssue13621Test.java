@@ -80,7 +80,7 @@ class CypherMultiHopBoundTargetReverseIssue13621Test {
       // the last forum holds no post: its OPTIONAL MATCH finds nothing
       database.command("opencypher", "UNWIND range(0, $n - 1) AS i MATCH (f:Forum {id: i % ($f - 1)}), (p:Person {id: (i * 7) % $p}) "
           + "CREATE (f)-[:CONTAINER_OF]->(:Post {id: i})-[:HAS_CREATOR]->(p)", Map.of("n", POSTS, "f", FORUMS, "p", PERSONS));
-      database.command("opencypher", "UNWIND range(0, $p - 2) AS i MATCH (a:Person {id: i}), (b:Person {id: i + 1}) CREATE (a)-[:KNOWS]->(b)",
+      database.command("opencypher", "UNWIND range(0, $p - 2) AS i MATCH (a:Person {id: i}), (b:Person {id: i + 1}) CREATE (a)-[:KNOWS {w: i}]->(b)",
           Map.of("p", PERSONS));
     });
   }
@@ -192,6 +192,40 @@ class CypherMultiHopBoundTargetReverseIssue13621Test {
         MATCH (p)<-[:KNOWS]-(b)<-[:KNOWS]-(a), (x)-[:KNOWS]->(a)
         RETURN a.id AS a, b.id AS b, x.id AS x""";
     assertThat(rows(query, "a", "b", "x")).isEqualTo(rows(written, "a", "b", "x"));
+  }
+
+  @Test
+  void aMapReadingAVariableOfTheChainKeepsTheWrittenOrder() {
+    // the reversed chain would check these maps before it binds a: the written order is the one that can read them
+    final String nodeMap = """
+        MATCH (p:Person {id: 3})
+        WITH p
+        MATCH (a)-[:KNOWS]->(b:Person {id: a.id + 1})-[:KNOWS]->(p)
+        RETURN a.id AS a, b.id AS b""";
+    assertThat(rows(nodeMap, "a", "b")).containsExactly("1:2");
+
+    final String relationshipMap = """
+        MATCH (p:Person {id: 3})
+        WITH p
+        MATCH (a)-[:KNOWS {w: a.id}]->(b)-[:KNOWS]->(p)
+        RETURN a.id AS a, b.id AS b""";
+    assertThat(rows(relationshipMap, "a", "b")).containsExactly("1:2");
+
+    final String relationshipWhere = """
+        MATCH (p:Person {id: 3})
+        WITH p
+        MATCH (a)-[k:KNOWS WHERE k.w = a.id]->(b)-[:KNOWS]->(p)
+        RETURN a.id AS a, b.id AS b""";
+    assertThat(rows(relationshipWhere, "a", "b")).containsExactly("1:2");
+
+    // a map that reads only what the row holds before the chain is still walked from the bound end
+    final String earlierClause = """
+        MATCH (p:Person {id: 3})
+        WITH p, 1 AS w
+        MATCH (a)-[:KNOWS {w: w}]->(b)-[:KNOWS]->(p)
+        RETURN a.id AS a, b.id AS b""";
+    assertThat(profile(earlierClause)).doesNotContain("MATCH NODE (a");
+    assertThat(rows(earlierClause, "a", "b")).containsExactly("1:2");
   }
 
   private List<String> expectedPostCounts() {
