@@ -62,9 +62,11 @@ import static com.google.gson.stream.JsonToken.END_OBJECT;
 
 /**
  * When the import owns the transaction ({@link ImporterContext#importOwnsTransaction}), {@code parseRecords} commits
- * every record in a transaction of its own, so {@code -onRowError skip} can discard one record without touching the
- * others. When the caller already holds a transaction, the records are created in it and nothing here commits: a
- * nested commit is independently durable, so the caller's rollback would not take them back (issue #8171).
+ * every {@code -commitEvery} records (issue #12739): an import that fails keeps the batches already committed and rolls
+ * back the one in flight, and says so. Under {@code -onRowError skip} it commits every record in a transaction of its
+ * own instead, so one record can be discarded without touching the others. When the caller already holds a
+ * transaction, the records are created in it and nothing here commits: a nested commit is independently durable, so
+ * the caller's rollback would not take them back (issue #8171).
  * {@code -onRowError skip} is refused in that case, since discarding one record would mean rolling back the caller's.
  * See {@link ImporterSettings#isSkipOnRowError()} for the full contract.
  */
@@ -95,9 +97,9 @@ public class JSONImporterFormat implements FormatImporter {
 
         if (mapping == null && token == BEGIN_ARRAY) {
           // A TOP-LEVEL ARRAY WITH NO MAPPING: EVERY OBJECT IN IT IS A RECORD, IMPORTED AS AN ANONYMOUS DOCUMENT LIKE THE
-          // SINGLE TOP-LEVEL OBJECT BELOW, EACH IN ITS OWN TRANSACTION SO -onRowError skip CAN DISCARD ONE. IT USED TO
-          // REACH parseRecord() AND DIE ON "Expected BEGIN_OBJECT but was BEGIN_ARRAY", AND THE SNIFFER, WHICH DID NOT
-          // KNOW '[' EITHER, DECLARED THE FILE CSV AND IMPORTED NOTHING (ISSUE #10754)
+          // SINGLE TOP-LEVEL OBJECT BELOW, EACH IN ITS OWN TRANSACTION UNDER -onRowError skip, SO IT CAN DISCARD ONE. IT
+          // USED TO REACH parseRecord() AND DIE ON "Expected BEGIN_OBJECT but was BEGIN_ARRAY", AND THE SNIFFER, WHICH DID
+          // NOT KNOW '[' EITHER, DECLARED THE FILE CSV AND IMPORTED NOTHING (ISSUE #10754)
           parseRecords(reader, parser, database, settings, context, null, false);
           // THE RECORDS OF THE ARRAY ARE IN: SAYING SO NOW IS THE ONLY WAY LEFT NOT TO DROP WHAT FOLLOWS IT IN SILENCE (ISSUE #11729)
           if (!endsAfterTopLevelValue(reader))
@@ -210,7 +212,7 @@ public class JSONImporterFormat implements FormatImporter {
     final TransactionContext[] ownTx = { null };
 
     // Whether the transaction the records land in belongs to the import, as opposed to the caller's, and so whether
-    // the loop may commit it per record and at the end. A nested commit() is independently durable, so beginning and
+    // the loop may commit it as it goes and at the end. A nested commit() is independently durable, so beginning and
     // committing our own level inside a caller's transaction made every record survive the caller's rollback
     // (issue #8171). Read once, here, before anything below opens a transaction: after that one is always active.
     // When the caller owns it, the records are created in the caller's transaction and the caller decides when, and
@@ -237,103 +239,152 @@ public class JSONImporterFormat implements FormatImporter {
     JSONObject mappingObject;
 
     long recordIndex = 0;
-    while (true) {
-      final JsonToken next;
-      try {
-        next = reader.peek();
-      } catch (final RuntimeException e) {
-        // Right here, the active transaction is this loop's own level, just begun and not yet touched by anything
-        // else this iteration (either parseRecords()'s initial database.begin() or this loop's own, at the end of
-        // the previous iteration), so rolling it back is right - txOpen says so and is true on every path that
-        // reaches this line.
-        ImporterTransactions.rollbackOwnTransaction(database, txOpen, ownTx);
-        throw e;
-      }
-      if (next != BEGIN_OBJECT) {
-        if (next != END_ARRAY)
-          // NAMED HERE: reader.endArray() BELOW WOULD REFUSE IT TOO, BUT AS "Expected END_ARRAY but was NUMBER". THE
-          // TRANSACTION THIS LOOP HOLDS IS ROLLED BACK BY parseRecords()'s CATCH
-          throw new ImportException(
-              "Cannot import the JSON array entry at " + reader.getPath() + ": it is a " + next + ", only an object is a record");
-        break;
-      }
-      ++recordIndex;
+    // "abort" mode on a transaction the import owns commits every -commitEvery records. "skip" mode commits every record on its
+    // own: only a rollback that takes back no other record can keep the rest of the file importable.
+    final boolean batched = ownsTransaction && !settings.isSkipOnRowError();
+    // The records read into the batch in flight, the failing one included, and the records the batch commits made durable
+    long pendingRecords = 0;
+    long committedRecords = 0;
+    // createRecord()/convertMap() count a new document/vertex/edge as soon as it is allocated, well before save()/commit(),
+    // either of which can still fail: these are the counters as they stood at the beginning of what a failure takes back, so a
+    // rolled-back record does not leak into the summary. That is the batch in flight when the loop commits in batches, and the
+    // record being read otherwise ("skip" mode, or a caller's transaction, which nothing here rolls back).
+    long documentsBefore = context.createdDocuments.get();
+    long verticesBefore = context.createdVertices.get();
+    long edgesBefore = context.createdEdges.get();
+    // Whether the array was imported to its end. Read in the finally, NOT in a catch: a truncated or malformed source
+    // (IOException), an array entry that is not an object and a refused last commit all leave the loop without passing
+    // through the per-record handler, and each of them takes back the batch in flight like a failing record does
+    boolean completed = false;
+    try {
+      while (true) {
+        if (!batched) {
+          documentsBefore = context.createdDocuments.get();
+          verticesBefore = context.createdVertices.get();
+          edgesBefore = context.createdEdges.get();
+        }
 
-      if (mappingValue instanceof JSONObject object) {
-        mappingObject = object;
-        ignore = false;
-      } else
-        mappingObject = null;
-
-      // Set by parseRecord()/parseArray() if a nested BEGIN_OBJECT/BEGIN_ARRAY recursion failed somewhere below this
-      // record: the only safe way to discard that partial write is to roll back this whole top-level record's own
-      // transaction below.
-      final AtomicBoolean recordFailed = new AtomicBoolean();
-
-      // createRecord()/convertMap() count a new document/vertex/edge as soon as it is allocated, well before
-      // save()/commit(), either of which can still fail - snapshot the counters so a rolled-back record can have
-      // its counts undone below instead of leaking into the summary.
-      final long createdDocumentsBefore = context.createdDocuments.get();
-      final long createdVerticesBefore = context.createdVertices.get();
-      final long createdEdgesBefore = context.createdEdges.get();
-
-      try {
-        final Object record = parseRecord(reader, settings, context, database, mappingObject, ignore, recordFailed);
-        if (recordFailed.get())
-          throw new ImportException("A nested object/array failed to import, skipping the whole record", null);
-
-        // ONLY A RECORD WITH NO MAPPING AT ALL IS AN ANONYMOUS DOCUMENT. WITH A MAPPING OBJECT, a Map COMING BACK
-        // MEANS createRecord() REFUSED THE RECORD (MISSING @cat/@type, UNRESOLVABLE @type, OR AN EDGE DEFERRED TO
-        // THE MAPPING PHASE) - MATERIALIZING IT INTO settings.documentTypeName SAVED EXACTLY WHAT THE IMPORTER HAD
-        // JUST LOGGED AS SKIPPED (ISSUE #6812)
-        if (record instanceof Map && mappingObject == null)
-          saveAnonymousRecord(database, settings, context, (Map<String, Object>) record);
-
-        // The flag is cleared BEFORE the call (a commit that pops our nested level leaves somebody else's transaction
-        // on top, issue #7860) and restored when the commit is refused without popping it, so the catch below still
-        // rolls it back (issue #11208)
-        if (ownsTransaction)
-          ImporterTransactions.commitOwnTransaction(database, txOpen, ownTx[0]);
-      } catch (final RuntimeException e) {
-        ImporterTransactions.rollbackOwnTransaction(database, txOpen, ownTx);
-
-        context.createdDocuments.set(createdDocumentsBefore);
-        context.createdVertices.set(createdVerticesBefore);
-        context.createdEdges.set(createdEdgesBefore);
-
-        if (!settings.isSkipOnRowError())
+        final JsonToken next;
+        try {
+          next = reader.peek();
+        } catch (final RuntimeException e) {
+          // Right here, the active transaction is this loop's own level (either parseRecords()'s initial database.begin()
+          // or this loop's own, after the last commit), so rolling it back is right - txOpen says so and is true on every
+          // path that reaches this line.
+          ImporterTransactions.rollbackOwnTransaction(database, txOpen, ownTx);
           throw e;
+        }
+        if (next != BEGIN_OBJECT) {
+          if (next != END_ARRAY)
+            // NAMED HERE: reader.endArray() BELOW WOULD REFUSE IT TOO, BUT AS "Expected END_ARRAY but was NUMBER". THE
+            // TRANSACTION THIS LOOP HOLDS IS ROLLED BACK BY parseRecords()'s CATCH
+            throw new ImportException(
+                "Cannot import the JSON array entry at " + reader.getPath() + ": it is a " + next + ", only an object is a record");
+          break;
+        }
+        ++recordIndex;
+        ++pendingRecords;
 
-        // The underlying JsonReader is positioned right after the offending record, so it's safe to continue with
-        // the next array entry.
-        logSkippedRecord("JSON record #" + recordIndex, e);
-        context.errors.incrementAndGet();
+        if (mappingValue instanceof JSONObject object) {
+          mappingObject = object;
+          ignore = false;
+        } else
+          mappingObject = null;
+
+        // Set by parseRecord()/parseArray() if a nested BEGIN_OBJECT/BEGIN_ARRAY recursion failed somewhere below this
+        // record: the only safe way to discard that partial write is to roll back this whole top-level record's own
+        // transaction below.
+        final AtomicBoolean recordFailed = new AtomicBoolean();
+
+        try {
+          final Object record = parseRecord(reader, settings, context, database, mappingObject, ignore, recordFailed);
+          if (recordFailed.get())
+            throw new ImportException("A nested object/array failed to import, skipping the whole record", null);
+
+          // ONLY A RECORD WITH NO MAPPING AT ALL IS AN ANONYMOUS DOCUMENT. WITH A MAPPING OBJECT, a Map COMING BACK
+          // MEANS createRecord() REFUSED THE RECORD (MISSING @cat/@type, UNRESOLVABLE @type, OR AN EDGE DEFERRED TO
+          // THE MAPPING PHASE) - MATERIALIZING IT INTO settings.documentTypeName SAVED EXACTLY WHAT THE IMPORTER HAD
+          // JUST LOGGED AS SKIPPED (ISSUE #6812)
+          if (record instanceof Map && mappingObject == null)
+            saveAnonymousRecord(database, settings, context, (Map<String, Object>) record);
+
+          // The flag is cleared BEFORE the call (a commit that pops our nested level leaves somebody else's transaction
+          // on top, issue #7860) and restored when the commit is refused without popping it, so the catch below still
+          // rolls it back (issue #11208). In "abort" mode only every -commitEvery records: one commit per record made a
+          // large array import dominated by the write-ahead log and the page flush, not by parsing (issue #12739).
+          // A -commitEvery of zero or less has no batch to fill, so every record commits, as it did before.
+          if (ownsTransaction && (!batched || pendingRecords >= settings.commitEvery)) {
+            ImporterTransactions.commitOwnTransaction(database, txOpen, ownTx[0]);
+            if (batched) {
+              committedRecords += pendingRecords;
+              documentsBefore = context.createdDocuments.get();
+              verticesBefore = context.createdVertices.get();
+              edgesBefore = context.createdEdges.get();
+            }
+            pendingRecords = 0;
+          }
+        } catch (final RuntimeException e) {
+          ImporterTransactions.rollbackOwnTransaction(database, txOpen, ownTx);
+
+          // The finally below restores the counters and reports a partial import
+          if (!settings.isSkipOnRowError())
+            throw e;
+
+          context.createdDocuments.set(documentsBefore);
+          context.createdVertices.set(verticesBefore);
+          context.createdEdges.set(edgesBefore);
+          pendingRecords = 0;
+
+          // The underlying JsonReader is positioned right after the offending record, so it's safe to continue with
+          // the next array entry.
+          logSkippedRecord("JSON record #" + recordIndex, e);
+          context.errors.incrementAndGet();
+        }
+
+        // By liveness, not by the flag alone: a listener or trigger of a record that resolved the import's transaction
+        // leaves the flag set, and the next record of the batch would then be saved with no transaction begun
+        if (ownsTransaction && !ImporterTransactions.isOwnTransactionLive(database, txOpen[0], ownTx[0]))
+          ImporterTransactions.beginOwnTransaction(database, txOpen, ownTx);
+
+        // recordIndex, NOT context.parsed: parseRecord() increments context.parsed for every nested object it
+        // recurses into too (a BEGIN_OBJECT property, or a BEGIN_OBJECT array entry via parseArray()), so a record
+        // with even one nested object pushed context.parsed two past where this array's own entry count actually
+        // was, making the cap trip after fewer TOP-LEVEL records than requested. recordIndex is incremented exactly
+        // once per top-level array object above, which is what '-parsingLimitEntries N' means here - the same '>='
+        // as XMLImporterFormat.load()'s cap (ISSUE #7341): the record that trips it is still imported, so N of them
+        // land, not N-1. reader.endArray() below requires the array to be fully consumed first, so whatever records
+        // the limit left unread are skipped rather than parsed (#7482). parser.getPosition(), not the more precise
+        // per-token position XMLImporterFormat uses: Gson's JsonReader does its own internal buffering the same way
+        // the XML fix worked around, so this byte budget carries the same "coarse as one buffer full" caveat.
+        if ((settings.parsingLimitEntries > 0 && recordIndex >= settings.parsingLimitEntries)
+            || (settings.parsingLimitBytes > 0 && parser.getPosition() > settings.parsingLimitBytes)) {
+          while (reader.hasNext())
+            reader.skipValue();
+          break;
+        }
       }
 
+      // Outside the per-record try: a refusal here reaches parseRecords()'s catch, which finds the flag restored and rolls
+      // back. It carries the last, partial batch, which the finally below takes out of the counters
       if (ownsTransaction)
-        ImporterTransactions.beginOwnTransaction(database, txOpen, ownTx);
+        ImporterTransactions.commitOwnTransaction(database, txOpen, ownTx[0]);
+      completed = true;
+    } finally {
+      if (!completed) {
+        // What the report calls "created" has to be what survived. The import's own transaction in flight is rolled back
+        // above or by parseRecords()'s catch, on every path that reaches this line; under a caller's transaction the record
+        // that failed is the one left out, as it always was
+        context.createdDocuments.set(documentsBefore);
+        context.createdVertices.set(verticesBefore);
+        context.createdEdges.set(edgesBefore);
 
-      // recordIndex, NOT context.parsed: parseRecord() increments context.parsed for every nested object it
-      // recurses into too (a BEGIN_OBJECT property, or a BEGIN_OBJECT array entry via parseArray()), so a record
-      // with even one nested object pushed context.parsed two past where this array's own entry count actually
-      // was, making the cap trip after fewer TOP-LEVEL records than requested. recordIndex is incremented exactly
-      // once per top-level array object above, which is what '-parsingLimitEntries N' means here - the same '>='
-      // as XMLImporterFormat.load()'s cap (ISSUE #7341): the record that trips it is still imported, so N of them
-      // land, not N-1. reader.endArray() below requires the array to be fully consumed first, so whatever records
-      // the limit left unread are skipped rather than parsed (#7482). parser.getPosition(), not the more precise
-      // per-token position XMLImporterFormat uses: Gson's JsonReader does its own internal buffering the same way
-      // the XML fix worked around, so this byte budget carries the same "coarse as one buffer full" caveat.
-      if ((settings.parsingLimitEntries > 0 && recordIndex >= settings.parsingLimitEntries)
-          || (settings.parsingLimitBytes > 0 && parser.getPosition() > settings.parsingLimitBytes)) {
-        while (reader.hasNext())
-          reader.skipValue();
-        break;
+        if (committedRecords > 0)
+          LogManager.instance().log(this, Level.WARNING,
+              "JSON import failed: the import is PARTIAL - %,d records were made durable by earlier batch commits and stay on "
+                  + "the disk, the other %,d read since the last commit were rolled back", null, committedRecords,
+              pendingRecords);
       }
     }
-
-    // Outside any try: a refusal here reaches parseRecords()'s catch, which finds the flag restored and rolls back
-    if (ownsTransaction)
-      ImporterTransactions.commitOwnTransaction(database, txOpen, ownTx[0]);
 
     reader.endArray();
   }

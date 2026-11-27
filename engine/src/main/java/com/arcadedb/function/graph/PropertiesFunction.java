@@ -21,6 +21,7 @@ package com.arcadedb.function.graph;
 import com.arcadedb.database.Document;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
@@ -51,6 +52,7 @@ public class PropertiesFunction implements StatelessFunction {
     checkArity(args);
     if (args[0] == null)
       return null;
+    DeletedEntityMarker.checkNotDeleted(args[0]);
     if (args[0] instanceof Document) {
       final Document doc = (Document) args[0];
       final Map<String, Object> props = new LinkedHashMap<>();

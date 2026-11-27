@@ -48,21 +48,7 @@ public final class StandaloneTransactionControl {
    * caller.
    */
   public static void refuse(final Database database, final String language, final String command) {
-    if (database == null || command == null || language == null || !LANGUAGES.contains(language.toLowerCase(Locale.ENGLISH))
-        || !startsWithTransactionControl(command))
-      return;
-
-    final boolean transactionControl;
-    try {
-      transactionControl = database.getQueryEngine(language).analyze(command.trim()).isTransactionControl();
-    } catch (final Exception e) {
-      // Not a single statement the parser accepts (a script sent as "sql", a typo): the execution reports it, or runs it, as before
-      LogManager.instance().log(StandaloneTransactionControl.class, Level.FINE,
-          "Could not analyze the command to look for a transaction control: %s", e, e.getMessage());
-      return;
-    }
-
-    if (transactionControl)
+    if (isTransactionControl(database, language, command))
       throw new CommandSemanticException("'" + command.trim()
           + "' cannot run as a command of its own outside a transaction: each such request runs in its own transaction, which it "
           + "would begin, commit or roll back alone. Use the transaction API of the client (RemoteDatabase.begin() or "
@@ -71,21 +57,50 @@ public final class StandaloneTransactionControl {
   }
 
   /**
+   * Whether {@code command}, in {@code language} (SQL or openCypher), is a transaction control statement: the test {@link #refuse}
+   * applies, for a protocol that words its own refusal. A text that does not start with one of the four words costs no parse, and a
+   * text the parser does not accept is not one (the execution reports it, or runs it, as before).
+   */
+  public static boolean isTransactionControl(final Database database, final String language, final String command) {
+    if (database == null || command == null || language == null || !LANGUAGES.contains(language.toLowerCase(Locale.ENGLISH))
+        || !startsWithTransactionControl(command))
+      return false;
+
+    try {
+      return database.getQueryEngine(language).analyze(command.trim()).isTransactionControl();
+    } catch (final Exception e) {
+      // Not a single statement the parser accepts (a script sent as "sql", a typo): the execution reports it, or runs it, as before
+      LogManager.instance().log(StandaloneTransactionControl.class, Level.FINE,
+          "Could not analyze the command to look for a transaction control: %s", e, e.getMessage());
+      return false;
+    }
+  }
+
+  /**
    * A prefix test, so every other command pays no parse: the text starts with BEGIN, START, COMMIT or ROLLBACK, also behind an
    * EXPLAIN or PROFILE prefix. SQL PROFILE and both openCypher prefixes run the transaction control they wrap; the engine's own
-   * {@code isTransactionControl()} then decides, so a SQL EXPLAIN, which only plans, is not refused.
+   * {@code isTransactionControl()} then decides, so a SQL EXPLAIN, which only plans, is not refused. A text that starts with USE
+   * (the openCypher clause that names a graph, which the grammar accepts in front of a transaction control) is worth the parse too.
    * <p>
    * The probe must let through every text the engines read as a transaction control, or the statement runs as before: it skips
-   * the comments of both languages (an openCypher {@code //} line comment too) and any number of prefixes, since SQL accepts
-   * {@code PROFILE PROFILE BEGIN}. It scans the text in place and allocates nothing.
+   * the comments of both languages (an openCypher {@code //} line comment too), the whitespace of both and any number of
+   * prefixes, since SQL accepts {@code PROFILE PROFILE BEGIN}. It scans the text in place and allocates nothing.
    */
   private static boolean startsWithTransactionControl(final String command) {
     final int length = command.length();
     int start = skipLeadingSpaceAndComments(command, 0);
     while ((command.regionMatches(true, start, "explain", 0, 7) || command.regionMatches(true, start, "profile", 0, 7))
-        && length > start + 7 && Character.isWhitespace(command.charAt(start + 7)))
+        && length > start + 7 && isSpace(command.charAt(start + 7)))
       start = skipLeadingSpaceAndComments(command, start + 7);
     return startsWithTransactionControlWord(command, start);
+  }
+
+  /**
+   * The whitespace of the openCypher lexer, which is wider than {@link Character#isWhitespace}: the no-break spaces, the next
+   * line character and the other Unicode separators count too. A superset of what SQL skips, which costs a parse at most.
+   */
+  private static boolean isSpace(final char c) {
+    return Character.isWhitespace(c) || Character.isSpaceChar(c) || c == '\u0085';
   }
 
   /**
@@ -97,7 +112,7 @@ public final class StandaloneTransactionControl {
     final int length = command.length();
     int pos = from;
     while (pos < length) {
-      if (Character.isWhitespace(command.charAt(pos)))
+      if (isSpace(command.charAt(pos)))
         ++pos;
       else if (command.startsWith("/*", pos)) {
         final int end = command.indexOf("*/", pos + 2);
@@ -113,11 +128,13 @@ public final class StandaloneTransactionControl {
   }
 
   /**
-   * Matches the four words as bare prefixes, so a text like "beginning" or "started" passes the probe too. That is deliberate: the
-   * probe only decides whether the text is worth a parse, and the engine's own {@code isTransactionControl()} decides afterwards.
+   * Matches the four words, and USE, as bare prefixes, so a text like "beginning" or "started" passes the probe too. That is
+   * deliberate: the probe only decides whether the text is worth a parse, and the engine's own {@code isTransactionControl()}
+   * decides afterwards.
    */
   private static boolean startsWithTransactionControlWord(final String command, final int start) {
     return command.regionMatches(true, start, "begin", 0, 5) || command.regionMatches(true, start, "start", 0, 5)
-        || command.regionMatches(true, start, "commit", 0, 6) || command.regionMatches(true, start, "rollback", 0, 8);
+        || command.regionMatches(true, start, "commit", 0, 6) || command.regionMatches(true, start, "rollback", 0, 8)
+        || command.regionMatches(true, start, "use", 0, 3);
   }
 }

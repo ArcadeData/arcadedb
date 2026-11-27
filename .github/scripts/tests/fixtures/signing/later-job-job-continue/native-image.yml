@@ -1,0 +1,23 @@
+name: Native Image
+on:
+  workflow_dispatch:
+    inputs:
+      attach_to_release:
+        type: boolean
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Push per-arch image
+        run: docker push "arcadedata/arcadedb:${VERSION}-native-amd64"
+  sign-native-images:
+    needs: docker
+    continue-on-error: true
+    if: ${{ github.event_name == 'release' || inputs.attach_to_release }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Refuse to sign off main
+        if: ${{ inputs.attach_to_release && github.ref != 'refs/heads/main' }}
+        run: exit 1
+      - name: Sign
+        run: cosign sign --yes "arcadedata/arcadedb@${DIGEST}"

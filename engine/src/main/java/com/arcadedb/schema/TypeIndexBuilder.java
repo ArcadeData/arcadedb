@@ -409,9 +409,10 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     // IndexMetadata so it propagates to each per-bucket index and ultimately to
     // {@link LocalDocumentType#addIndexInternal} which reads it when minting the TypeIndex.
     // Without this hop the manual name is dropped and the auto-derived
-    // typeName + "[propertyNames]" form is used (issue #4139).
+    // typeName + "[propertyNames]" form is used (issue #4139). Only a name that differs from the derived one travels (issue #12774):
+    // a REBUILD hands the derived name back, and the metadata outlives a rename of the type.
     if (indexName != null && !indexName.isEmpty())
-      metadata.typeIndexName = indexName;
+      metadata.typeIndexName = LocalDocumentType.manualIndexName(metadata.typeName, metadata.propertyNames, indexType, indexName);
 
     final LocalSchema schema = database.getSchema().getEmbedded();
 

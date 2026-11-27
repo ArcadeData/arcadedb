@@ -72,11 +72,18 @@ final class FullTextTopKSearch {
 
   /**
    * The best {@code limit} matches of the query with their scores, or every match without a limit ({@code limit < 1}); null when
-   * the query is not a disjunction of terms or the filter has a predicate on the records, for the caller to take the general path.
+   * the query is not a disjunction of terms, alone or ANDed with required terms (see {@link FullTextQueryExecutor#termShape}), or
+   * the filter has a predicate on the records, for the caller to take the general path.
    */
   static Map<RID, Float> search(final List<LSMTreeFullTextIndex> bucketIndexes, final String queryText, final int limit,
       final WorkGuard guard, final List<String> restrictedFields, final RIDFilter ridFilter) {
-    return search(bucketIndexes, queryText, limit, guard, restrictedFields, ridFilter, null);
+    return search(bucketIndexes, queryText, limit, guard, restrictedFields, ridFilter, null, null);
+  }
+
+  /** As {@link #search(List, String, int, WorkGuard, List, RIDFilter)}, taking the postings from {@code reuse} when it holds them. */
+  static Map<RID, Float> search(final List<LSMTreeFullTextIndex> bucketIndexes, final String queryText, final int limit,
+      final WorkGuard guard, final List<String> restrictedFields, final RIDFilter ridFilter, final FullTextPostingsReuse reuse) {
+    return search(bucketIndexes, queryText, limit, guard, restrictedFields, ridFilter, null, reuse);
   }
 
   /**
@@ -85,6 +92,12 @@ final class FullTextTopKSearch {
    */
   static Map<RID, Float> search(final List<LSMTreeFullTextIndex> bucketIndexes, final String queryText, final int limit,
       final WorkGuard guard, final List<String> restrictedFields, final RIDFilter ridFilter, final long[] exactScores) {
+    return search(bucketIndexes, queryText, limit, guard, restrictedFields, ridFilter, exactScores, null);
+  }
+
+  private static Map<RID, Float> search(final List<LSMTreeFullTextIndex> bucketIndexes, final String queryText, final int limit,
+      final WorkGuard guard, final List<String> restrictedFields, final RIDFilter ridFilter, final long[] exactScores,
+      final FullTextPostingsReuse reuse) {
     // a predicate on the records decides some buckets only once their records are loaded, which no limit here can wait for
     if (ridFilter != null && ridFilter.hasRecordPredicate())
       return null;
@@ -92,24 +105,31 @@ final class FullTextTopKSearch {
     if (!first.isBM25())
       return null;
 
-    final LinkedHashMap<String, Float> tokens = new FullTextQueryExecutor(first, guard, restrictedFields, null).termDisjunction(
+    final FullTextQueryExecutor.TermShape shape = new FullTextQueryExecutor(first, guard, restrictedFields, null).termShape(
         queryText);
-    if (tokens == null)
+    if (shape == null)
       return null;
+    final LinkedHashMap<String, Float> tokens = shape.tokens();
 
     final int tokenCount = tokens.size();
     final String[] tokenKeys = tokens.keySet().toArray(new String[0]);
+    // the tokens every match must hold (a query of terms ANDed with a disjunction, such as a tenant term in front of keywords)
+    final boolean[] required = new boolean[tokenCount];
+    for (int t = 0; t < tokenCount; ++t)
+      required[t] = shape.required().contains(tokenKeys[t]);
 
     // Pass one: every posting of every token in every bucket, read once. A bucket the filter rejects is read too: its share of the
     // document frequencies is what keeps the scores of the others those of the unfiltered search
-    final LSMTreeIndexPostings[][] postings = new LSMTreeIndexPostings[bucketIndexes.size()][tokenCount];
+    final FullTextPostingsReuse.Read reused = reuse != null ? reuse.get(bucketIndexes, tokenKeys) : null;
+    final LSMTreeIndexPostings[][] postings =
+        reused != null ? reused.postings() : new LSMTreeIndexPostings[bucketIndexes.size()][tokenCount];
     final long[] documentFrequencies = new long[tokenCount];
     for (int b = 0; b < bucketIndexes.size(); ++b) {
       final LSMTreeFullTextIndex ftIndex = bucketIndexes.get(b);
       final int bucketId = ftIndex.getAssociatedBucketId();
       for (int t = 0; t < tokenCount; ++t) {
         guard.check();
-        final LSMTreeIndexPostings read = ftIndex.readPostings(tokenKeys[t]);
+        final LSMTreeIndexPostings read = reused != null ? postings[b][t] : ftIndex.readPostings(tokenKeys[t]);
         // the walk orders a bucket's documents by position alone: postings of another bucket (sorted first by bucket, so they show
         // at an end) are left to the general path
         if (read.size() > 0 && (read.bucketIds()[0] != bucketId || read.bucketIds()[read.size() - 1] != bucketId))
@@ -119,14 +139,24 @@ final class FullTextTopKSearch {
       }
     }
 
-    final Map<String, Long> frequencies = new HashMap<>(tokenCount);
-    for (int t = 0; t < tokenCount; ++t)
-      if (documentFrequencies[t] > 0)
-        frequencies.put(tokenKeys[t], documentFrequencies[t]);
-    // One bucket is searched with its own statistics, as the general path searches it; several share the type-wide ones
-    final BM25ScoringContext context = bucketIndexes.size() == 1 ?
-        first.bucketScoringContext(frequencies) :
-        FullTextSearch.createScoringContext(bucketIndexes, frequencies);
+    final BM25ScoringContext context;
+    if (reused != null)
+      // the statistics the postings were scored with by the limited search: a commit since then moved the corpus, and the postings
+      // read before it with the statistics read after it would rank the rest of the answer in another order than its first rows
+      context = reused.context();
+    else {
+      final Map<String, Long> frequencies = new HashMap<>(tokenCount);
+      for (int t = 0; t < tokenCount; ++t)
+        if (documentFrequencies[t] > 0)
+          frequencies.put(tokenKeys[t], documentFrequencies[t]);
+      // One bucket is searched with its own statistics, as the general path searches it; several share the type-wide ones
+      context = bucketIndexes.size() == 1 ?
+          first.bucketScoringContext(frequencies) :
+          FullTextSearch.createScoringContext(bucketIndexes, frequencies);
+      // only a limited search is continued: the complete search that answers every match has nothing to leave
+      if (reuse != null && limit > 0)
+        reuse.put(bucketIndexes, tokenKeys, new FullTextPostingsReuse.Read(postings, context));
+    }
 
     final double[] idf = new double[tokenCount];
     final double[] boosts = new double[tokenCount];
@@ -138,7 +168,7 @@ final class FullTextTopKSearch {
     // Pass two: every bucket against the one heap
     final TopK top = new TopK(limit, first.getDatabase());
     final FullTextIndexMetadata metadata = first.getFullTextMetadata();
-    final Scorer scorer = new Scorer(top, guard, ridFilter, idf, boosts, context.avgDocLength(), metadata.getBm25K1(),
+    final Scorer scorer = new Scorer(top, guard, ridFilter, idf, boosts, required, context.avgDocLength(), metadata.getBm25K1(),
         metadata.getBm25B());
     for (int bucket = 0; bucket < bucketIndexes.size(); ++bucket) {
       final LSMTreeFullTextIndex ftIndex = bucketIndexes.get(bucket);
@@ -170,6 +200,8 @@ final class FullTextTopKSearch {
     // the BM25 inputs of the whole search, the same for every bucket
     private final double[]  idf;
     private final double[]  boosts;
+    // per token, whether every match must hold it: its list is never walked, only probed, and its bound is always counted
+    private final boolean[] requiredToken;
     private final double    avgdl;
     private final double    k1;
     private final double    b;
@@ -186,15 +218,18 @@ final class FullTextTopKSearch {
     private final int[]     shortestByFrequency = new int[64];
     private       int       ticks;
     private       long      exactScores;
+    // the largest contributions the required lists of the bucket being scored add to a document together
+    private       double    requiredBound;
 
     private Scorer(final TopK top, final WorkGuard guard, final RIDFilter ridFilter, final double[] idf, final double[] boosts,
-        final double avgdl, final double k1, final double b) {
+        final boolean[] requiredToken, final double avgdl, final double k1, final double b) {
       this.tokenCount = idf.length;
       this.top = top;
       this.guard = guard;
       this.ridFilter = ridFilter;
       this.idf = idf;
       this.boosts = boosts;
+      this.requiredToken = requiredToken;
       this.avgdl = avgdl;
       this.k1 = k1;
       this.b = b;
@@ -203,13 +238,21 @@ final class FullTextTopKSearch {
     private void scoreBucket(final LSMTreeFullTextIndex ftIndex, final int bucketId, final LSMTreeIndexPostings[] postings) {
       // The lists of this bucket that hold a posting, and the largest contribution of each
       int lists = 0;
-      for (final LSMTreeIndexPostings p : postings)
-        if (p.size() > 0)
+      int optionalLists = 0;
+      for (int t = 0; t < tokenCount; ++t) {
+        if (postings[t].size() > 0) {
           ++lists;
-      if (lists == 0)
+          if (!requiredToken[t])
+            ++optionalLists;
+        } else if (requiredToken[t])
+          // a required token no document of this bucket holds: no document of it matches
+          return;
+      }
+      if (optionalLists == 0)
         return;
 
       final int[] token = new int[lists];
+      final boolean[] required = new boolean[lists];
       listOfToken = new int[tokenCount];
       positions = new long[lists][];
       tfs = new int[lists][];
@@ -217,6 +260,7 @@ final class FullTextTopKSearch {
       sizes = new int[lists];
       final double[] maxima = new double[lists];
       int l = 0;
+      double boundRequired = 0.0;
       for (int t = 0; t < tokenCount; ++t) {
         final LSMTreeIndexPostings p = postings[t];
         if (p.size() == 0) {
@@ -225,44 +269,60 @@ final class FullTextTopKSearch {
         }
         listOfToken[t] = l;
         token[l] = t;
+        required[l] = requiredToken[t];
         positions[l] = p.positions();
         tfs[l] = p.termFrequencies();
         docLengths[l] = p.documentLengths();
         sizes[l] = p.size();
         maxima[l] = largestContribution(l, t);
+        if (required[l])
+          boundRequired += Math.max(0.0, maxima[l]);
         ++l;
       }
+      // a required list adds its contribution ahead of the walked ones, out of token order: the score is computed again, in order
+      final boolean hasRequired = optionalLists < lists;
+      this.requiredBound = boundRequired;
 
-      // Ascending by maximum: the lists that cannot reach the threshold together are a prefix of this order
-      final int[] order = new int[lists];
-      for (int i = 0; i < lists; ++i)
-        order[i] = i;
-      for (int i = 1; i < lists; ++i) {
-        final int current = order[i];
-        int j = i - 1;
-        while (j >= 0 && maxima[order[j]] > maxima[current]) {
+      // Ascending by maximum: the optional lists that cannot reach the threshold together are a prefix of this order. A required
+      // list is not in it: every document holds it, so it is probed, never walked
+      final int[] order = new int[optionalLists];
+      int placed = 0;
+      for (int list = 0; list < lists; ++list) {
+        if (required[list])
+          continue;
+        int j = placed - 1;
+        while (j >= 0 && maxima[order[j]] > maxima[list]) {
           order[j + 1] = order[j];
           --j;
         }
-        order[j + 1] = current;
+        order[j + 1] = list;
+        ++placed;
       }
-      // boundBelow[i] bounds what the lists order[0..i-1] can add to a document
-      final double[] boundBelow = new double[lists + 1];
-      for (int i = 0; i < lists; ++i)
+      // boundBelow[i] bounds what the optional lists order[0..i-1] can add to a document
+      final double[] boundBelow = new double[optionalLists + 1];
+      for (int i = 0; i < optionalLists; ++i)
         boundBelow[i + 1] = boundBelow[i] + Math.max(0.0, maxima[order[i]]);
 
-      // the place of each list in that order: a list is walked when its place is not below the count of probed lists
+      // the place of each optional list in that order: a list is walked when its place is not below the count of probed lists;
+      // a required list is never walked
       final int[] rank = new int[lists];
-      for (int i = 0; i < lists; ++i)
+      for (int list = 0; list < lists; ++list)
+        rank[list] = -1;
+      for (int i = 0; i < optionalLists; ++i)
         rank[order[i]] = i;
+      final int[] requiredOrder = new int[lists - optionalLists];
+      int r = 0;
+      for (int list = 0; list < lists; ++list)
+        if (required[list])
+          requiredOrder[r++] = list;
 
       final int[] cursors = new int[lists];
-      int nonEssential = nonEssentialLists(boundBelow, lists);
+      int nonEssential = nonEssentialLists(boundBelow, optionalLists);
 
       while (true) {
         // the window starts at the next document of the essential lists: one only the other lists hold cannot reach the threshold
         long start = Long.MAX_VALUE;
-        for (int i = nonEssential; i < lists; ++i) {
+        for (int i = nonEssential; i < optionalLists; ++i) {
           final int list = order[i];
           if (cursors[list] < sizes[list] && positions[list][cursors[list]] < start)
             start = positions[list][cursors[list]];
@@ -274,6 +334,7 @@ final class FullTextTopKSearch {
         // The walked lists in token order (lists are numbered in token order), so a position's sum adds the contributions in the
         // order the general path adds them: with no probed list, which is always the case without a limit, it is the exact score
         for (int list = 0; list < lists; ++list) {
+          // a probed list, or a required one (rank -1), is not walked
           if (rank[list] < nonEssential)
             continue;
           final int t = token[list];
@@ -308,6 +369,19 @@ final class FullTextTopKSearch {
             final long document = start + slot;
 
             double partial = windowScores[slot];
+            // the required lists first: a document one of them lacks is no match
+            boolean missing = false;
+            for (final int list : requiredOrder) {
+              final int cursor = advance(positions[list], cursors[list], sizes[list], document);
+              cursors[list] = cursor;
+              if (cursor >= sizes[list] || positions[list][cursor] != document) {
+                missing = true;
+                break;
+              }
+              partial += contribution(token[list], tfs[list][cursor], docLengths[list][cursor]);
+            }
+            if (missing)
+              continue;
             boolean reachable = top.mayEnter(partial + boundBelow[nonEssential]);
             for (int i = nonEssential - 1; reachable && i >= 0; --i) {
               final int list = order[i];
@@ -321,7 +395,7 @@ final class FullTextTopKSearch {
               continue;
 
             // probed lists add their contributions out of token order: such a document is scored again, in order
-            final float score = (float) (nonEssential == 0 ? partial : exactScore(document));
+            final float score = (float) (nonEssential == 0 && !hasRequired ? partial : exactScore(document));
             if (!top.beats(score, bucketId, document))
               continue;
             if (ridFilter != null && !ridFilter.accepts(new DatabaseRID(ftIndex.getDatabase(), bucketId, document)))
@@ -331,7 +405,7 @@ final class FullTextTopKSearch {
         }
 
         // a higher threshold turns more lists into probed ones; the window just walked used the lists it started with
-        nonEssential = nonEssentialLists(boundBelow, lists);
+        nonEssential = nonEssentialLists(boundBelow, optionalLists);
       }
     }
 
@@ -397,7 +471,8 @@ final class FullTextTopKSearch {
     /** How many of the lists, in ascending order of maximum, cannot reach the threshold together. */
     private int nonEssentialLists(final double[] boundBelow, final int lists) {
       int count = 0;
-      while (count < lists && !top.mayEnter(boundBelow[count + 1]))
+      // what the lists below can add to a document, with what the required lists add to every one
+      while (count < lists && !top.mayEnter(boundBelow[count + 1] + requiredBound))
         ++count;
       return count;
     }

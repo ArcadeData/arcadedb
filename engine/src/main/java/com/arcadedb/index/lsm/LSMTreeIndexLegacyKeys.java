@@ -85,7 +85,7 @@ final class LSMTreeIndexLegacyKeys {
    */
   private static IndexCursor withLegacyEntries(final LSMTreeIndex index, final Object[] convertedKeys, final Object[] legacyKeys,
       final int limit) {
-    final List<IndexCursorEntry> entries = ConsistentKeyLookup.readConsistently(index.getDatabase().getPageManager(), index.getName(),
+    final List<IndexCursorEntry> entries = ConsistentKeyLookup.readConsistently(index.getDatabase(), index.getName(),
         () -> readWithLegacyEntries(index, convertedKeys, legacyKeys, limit));
     return toCursor(index, convertedKeys, entries, limit);
   }

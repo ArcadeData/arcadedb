@@ -316,4 +316,61 @@ class CypherApocRelationshipPatternTest {
       }
     }
   }
+
+  /**
+   * Regression tests for issue #12674: {@code node.degree} counted a self loop twice when the pattern follows both directions
+   * (APOC, and ArcadeDB's own {@code COUNT { (n)-[:S]-() }}, count it once), and read APOC's trailing incoming marker
+   * {@code 'S<'} as a type name. The expected values are what Neo4j 2026.10.1 with APOC answers on
+   * {@code (a)-[:S]->(a), (a)-[:S]->(b), (c)-[:S]->(a)}.
+   */
+  @Nested
+  class Issue12674SelfLoopDegree extends TestHelper {
+
+    @BeforeEach
+    void createGraph() {
+      database.transaction(() -> database.command("opencypher", """
+          CREATE (a:N {id: 0})-[:S]->(a), (a)-[:S]->(:N {id: 1}), (:N {id: 2})-[:S]->(a)"""));
+    }
+
+    @Test
+    void aSelfLoopCountsOnceInBothDirections() {
+      assertThat(degree("apoc.node.degree(n)")).isEqualTo(3L);
+      assertThat(degree("apoc.node.degree(n, '')")).isEqualTo(3L);
+      assertThat(degree("apoc.node.degree(n, 'S')")).isEqualTo(3L);
+      assertThat(degree("apoc.node.degree(n, 'S|S')")).isEqualTo(6L);
+      assertThat(degree("node.degree(n, 'S', 'BOTH')")).isEqualTo(3L);
+      assertThat(degree("COUNT { (n)-[:S]-() }")).isEqualTo(3L);
+      // one direction holds the self loop once already
+      assertThat(degree("apoc.node.degree(n, 'S>')")).isEqualTo(2L);
+      assertThat(degree("apoc.node.degree(n, '<S')")).isEqualTo(2L);
+      assertThat(degree("apoc.node.degree.in(n)")).isEqualTo(2L);
+      assertThat(degree("apoc.node.degree.out(n)")).isEqualTo(2L);
+    }
+
+    @Test
+    void aTrailingLessThanIsIncoming() {
+      assertThat(degree("apoc.node.degree(n, 'S<')")).isEqualTo(2L);
+      assertThat(degree("apoc.node.degree(n, 'S<|S>')")).isEqualTo(4L);
+      try (final ResultSet rs = database.query("opencypher",
+          "MATCH (n:N {id: 1}) CALL apoc.path.expand(n, 'S<', null, 1, 1) YIELD path RETURN count(*) AS r")) {
+        assertThat(((Number) rs.next().getProperty("r")).longValue()).isEqualTo(1L);
+      }
+    }
+
+    @Test
+    void aUnidirectionalSelfLoopCountsOnce() {
+      database.command("sql", "CREATE EDGE TYPE U UNIDIRECTIONAL");
+      database.transaction(() -> database.command("opencypher", """
+          MATCH (a:N {id: 0}), (b:N {id: 1}) CREATE (a)-[:U]->(a), (a)-[:U]->(b), (b)-[:U]->(a)"""));
+      assertThat(degree("apoc.node.degree(n, 'U')")).isEqualTo(3L);
+      assertThat(degree("apoc.node.degree(n, 'U<')")).isEqualTo(2L);
+      assertThat(degree("COUNT { (n)-[:U]-() }")).isEqualTo(3L);
+    }
+
+    private long degree(final String expression) {
+      try (final ResultSet rs = database.query("opencypher", "MATCH (n:N {id: 0}) RETURN " + expression + " AS r")) {
+        return ((Number) rs.next().getProperty("r")).longValue();
+      }
+    }
+  }
 }

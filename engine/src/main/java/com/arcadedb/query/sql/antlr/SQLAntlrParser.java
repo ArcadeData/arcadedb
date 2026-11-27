@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.antlr;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.query.literal.LiteralParameterizer;
 import com.arcadedb.query.sql.grammar.SQLLexer;
 import com.arcadedb.query.sql.grammar.SQLParser;
 import com.arcadedb.query.sql.parser.Expression;
@@ -132,12 +133,17 @@ public record SQLAntlrParser(Database database) {
       }
 
       // Build AST
-      final SQLASTBuilder builder = new SQLASTBuilder();
+      // The parser has read the whole text (the rule ends in EOF), so every token is in the stream: a bulk text is known before
+      // the tree is built, and the builder keeps each statement it creates out of the plan cache (issue #12605)
+      final boolean bulk = holdsMoreLiteralsThanAShape(tokens);
+      final SQLASTBuilder builder = new SQLASTBuilder(bulk);
       final Statement stmt = (Statement) builder.visit(parseTree);
 
       // Set original statement text (used for caching and error messages)
       if (stmt != null) {
         stmt.originalStatementAsString = sqlText;
+        if (bulk)
+          stmt.excludeFromPlanCache();
       }
 
       return new ParsedTree(stmt, parseTree);
@@ -195,7 +201,11 @@ public record SQLAntlrParser(Database database) {
       }
 
       // Build AST
-      final SQLASTBuilder builder = new SQLASTBuilder();
+      // A script is parsed on every execution, never through the statement cache, so the plan cache is the only one its
+      // statements can reach. The literals are counted over the whole script, so a bulk script keeps all of its statements out,
+      // nested ones included, as the builder creates them (issue #12605)
+      final boolean bulk = holdsMoreLiteralsThanAShape(tokens);
+      final SQLASTBuilder builder = new SQLASTBuilder(bulk);
       final List<Statement> statements = (List<Statement>) builder.visit(parseTree);
 
       // Set original statement text for each statement
@@ -204,6 +214,8 @@ public record SQLAntlrParser(Database database) {
           // For now, set the entire script as the original text
           // TODO: Track individual statement positions
           stmt.originalStatementAsString = sqlScript;
+          if (bulk)
+            stmt.excludeFromPlanCache();
         }
       }
 
@@ -334,6 +346,15 @@ public record SQLAntlrParser(Database database) {
   @Override
   public Database database() {
     return database;
+  }
+
+  /**
+   * Whether the text holds more literals than a shape records, counted as the SQL literal scan counts them (see
+   * {@link LiteralParameterizer#holdsMoreLiteralsThanAShape}). Such a text is the data of a bulk write written in: its statement
+   * is kept out of the statement cache (issue #12350) and its plans out of the plan cache (issue #12605).
+   */
+  private static boolean holdsMoreLiteralsThanAShape(final CommonTokenStream tokens) {
+    return LiteralParameterizer.holdsMoreLiteralsThanAShape(tokens.getTokens(), SQLLiteralParameterizer::isCandidate);
   }
 
   /**

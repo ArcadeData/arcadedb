@@ -83,6 +83,11 @@ public interface Procedure {
    * Example: For merge.relationship, this would return ["rel"].
    * For algo.dijkstra, this would return ["path", "weight"].
    * </p>
+   * <p>
+   * An empty list (or {@code null}) declares a void procedure, as in Neo4j: Cypher's {@code CALL} step runs it once per input
+   * row, drains and closes its stream, discarding whatever rows it holds, and passes the input row on unchanged when another
+   * clause follows (issue #13537). A procedure whose rows matter must therefore declare the fields they carry.
+   * </p>
    *
    * @return list of yield field names
    */

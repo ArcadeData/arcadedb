@@ -23,6 +23,7 @@ package com.arcadedb.query.sql.executor;
  */
 
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.index.StaleIndexException;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -87,6 +88,11 @@ public class UpdateExecutionPlan extends SelectExecutionPlan {
         while (nextBlock.hasNext())
           result.add(nextBlock.next());
       }
+    } catch (final StaleIndexException e) {
+      // Issue #11835: a write is not planned again on a stale index as a SELECT is, it may already have written. It is refused
+      // with the retryable conflict, and the retry runs the whole statement again against the new schema
+      failure = e.asWriteConflict();
+      throw failure;
     } catch (final RuntimeException e) {
       failure = e;
       throw e;
