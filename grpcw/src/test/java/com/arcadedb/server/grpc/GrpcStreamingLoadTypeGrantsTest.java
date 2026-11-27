@@ -198,14 +198,75 @@ class GrpcStreamingLoadTypeGrantsTest extends BaseGraphServerTest {
     assertThat(countOf("Open")).isEqualTo(1);
 
     // the slot of the failed load was given back: the database takes the next load at once
-    final Outcome<GraphBatchResult> next = new Outcome<>();
-    final StreamObserver<GraphBatchChunk> again = service.graphBatchLoad(next);
-    runOnNewThread(() -> again.onNext(
-        GraphBatchChunk.newBuilder().setDatabase(NAME).setCredentials(credentials(ROOT, DEFAULT_PASSWORD_FOR_TESTS))
-            .addRecords(vertex("Open", "c")).build()));
-    runOnNewThread(again::onCompleted);
-    assertThat(next.error).isNull();
+    loadOpenVertexAsRoot("c");
     assertThat(countOf("Open")).isEqualTo(2);
+  }
+
+  @Test
+  void graphLoadEndedByTheClientWritesItsBufferedEdgesAsTheStreamUser() throws Exception {
+    final Outcome<GraphBatchResult> outcome = new Outcome<>();
+    final StreamObserver<GraphBatchChunk> stream = service.graphBatchLoad(outcome);
+
+    runOnNewThread(() -> stream.onNext(firstChunk(0).addRecords(vertex("Open", "a")).addRecords(vertex("Open", "b")).build()));
+    runOnNewThread(() -> stream.onNext(chunk().addRecords(edge("OpenLink", "a", "b")).build()));
+    assertThat(outcome.error).isNull();
+    // the end of the call lands on a thread that holds the operator: what the batch still buffers is written as the stream user
+    runOnThreadHoldingRoot(() -> stream.onError(Status.CANCELLED.asRuntimeException()));
+
+    assertThat(countOf("Open")).isEqualTo(2);
+    assertThat(countOf("OpenLink")).isEqualTo(1);
+    loadOpenVertexAsRoot("c");
+  }
+
+  @Test
+  void graphLoadEndedByTheClientDoesNotWriteWhatTheStreamUserMayNoLongerWrite() throws Exception {
+    final Outcome<GraphBatchResult> outcome = new Outcome<>();
+    final StreamObserver<GraphBatchChunk> stream = service.graphBatchLoad(outcome);
+
+    runOnNewThread(() -> stream.onNext(firstChunk(0).addRecords(vertex("Open", "a")).addRecords(vertex("Open", "b")).build()));
+    runOnNewThread(() -> stream.onNext(chunk().addRecords(edge("OpenLink", "a", "b")).build()));
+    assertThat(outcome.error).as("the edge waits in the buffer of the batch until the stream ends").isNull();
+    // the group of the stream user loses the grant to create the edges it buffered
+    getServer(0).getSecurity().saveGroup(NAME, GROUP, new JSONObject().put("access", new JSONArray()).put("types", new JSONObject()
+        .put("*", new JSONObject().put("access", new JSONArray().put("readRecord")))
+        .put("Open", new JSONObject().put("access", new JSONArray().put("createRecord").put("readRecord").put("updateRecord")))));
+    getServer(0).getSecurity().updateSchema(getServer(0).getDatabaseForOperator(NAME).getEmbedded());
+    // the operator that holds the thread could write the edge: the stream user cannot, and the end of the call is not told
+    runOnThreadHoldingRoot(() -> stream.onError(Status.CANCELLED.asRuntimeException()));
+
+    assertThat(countOf("OpenLink")).isZero();
+    // the batch gave its slot back although it could not write what it buffered
+    loadOpenVertexAsRoot("c");
+    assertThat(countOf("Open")).isEqualTo(3);
+  }
+
+  @Test
+  void graphLoadEndedByTheClientAfterTheStreamUserWasDroppedWritesNothing() throws Exception {
+    final Outcome<GraphBatchResult> outcome = new Outcome<>();
+    final StreamObserver<GraphBatchChunk> stream = service.graphBatchLoad(outcome);
+
+    runOnNewThread(() -> stream.onNext(firstChunk(0).addRecords(vertex("Open", "a")).addRecords(vertex("Open", "b")).build()));
+    runOnNewThread(() -> stream.onNext(chunk().addRecords(edge("OpenLink", "a", "b")).build()));
+    assertThat(outcome.error).isNull();
+    getServer(0).getSecurity().dropUser(LOAD_USER);
+    runOnThreadHoldingRoot(() -> stream.onError(Status.CANCELLED.asRuntimeException()));
+
+    // the buffered edge was dropped with the batch: nobody is left to write it as
+    assertThat(countOf("OpenLink")).isZero();
+    loadOpenVertexAsRoot("c");
+    assertThat(countOf("Open")).isEqualTo(3);
+  }
+
+  @Test
+  void graphLoadEndedByTheClientBeforeItsFirstChunkLeavesTheDatabaseFree() throws Exception {
+    final Outcome<GraphBatchResult> outcome = new Outcome<>();
+    final StreamObserver<GraphBatchChunk> stream = service.graphBatchLoad(outcome);
+
+    runOnNewThread(() -> stream.onError(Status.CANCELLED.asRuntimeException()));
+
+    assertThat(outcome.error).isNull();
+    loadOpenVertexAsRoot("c");
+    assertThat(countOf("Open")).isEqualTo(1);
   }
 
   @Test
@@ -272,6 +333,18 @@ class GrpcStreamingLoadTypeGrantsTest extends BaseGraphServerTest {
       security.dropUser(LOAD_USER);
     security.createUser(new JSONObject().put("name", LOAD_USER).put("password", security.encodePassword(LOAD_PWD))
         .put("databases", new JSONObject().put(NAME, new JSONArray().put(GROUP))));
+  }
+
+  /** A whole load of one vertex by the operator: it only starts when the database has no other batch open. */
+  private void loadOpenVertexAsRoot(final String tempId) throws InterruptedException {
+    final Outcome<GraphBatchResult> next = new Outcome<>();
+    final StreamObserver<GraphBatchChunk> again = service.graphBatchLoad(next);
+    runOnNewThread(() -> again.onNext(
+        GraphBatchChunk.newBuilder().setDatabase(NAME).setCredentials(credentials(ROOT, DEFAULT_PASSWORD_FOR_TESTS))
+            .addRecords(vertex("Open", tempId)).build()));
+    runOnNewThread(again::onCompleted);
+    assertThat(next.error).isNull();
+    assertThat(next.completed).isTrue();
   }
 
   private static void assertRefused(final Outcome<?> outcome) {

@@ -6452,10 +6452,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    * nobody, runs without one.
    * <p>
    * The credentials of the later chunks are not read: the stream is one authenticated call, whoever it names.
+   * <p>
+   * Package-private so a test can state which users it binds, and which it refuses, without a stream behind it.
    *
    * @return the scope to close when the callback is done, which puts back the user the thread held
    */
-  private PrincipalScope bindCallbackPrincipal(final Database db, final String principal) {
+  PrincipalScope bindCallbackPrincipal(final Database db, final String principal) {
     final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.init((DatabaseInternal) db);
     final SecurityDatabaseUser previous = ctx.getCurrentUser();
 
@@ -6477,7 +6479,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   }
 
   /** The user a thread held before {@link #bindCallbackPrincipal} bound the one of a call, which {@link #close()} gives back. */
-  private static final class PrincipalScope implements AutoCloseable {
+  static final class PrincipalScope implements AutoCloseable {
     private final DatabaseContext.DatabaseContextTL ctx;
     private final SecurityDatabaseUser              previous;
 
