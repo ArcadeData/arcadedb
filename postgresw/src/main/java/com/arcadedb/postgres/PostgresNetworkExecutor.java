@@ -185,6 +185,8 @@ public class PostgresNetworkExecutor extends Thread {
    * received and not the length the message declared for it.
    */
   private static final int                                            BIND_VALUE_READ_STEP = 64 * 1024;
+  /** What a Bind message holds after its two names at the least: the three int16 counts of format codes, values and result formats. */
+  private static final int                                            BIND_MIN_FIELDS_LENGTH = 6;
   private static final Object[]                                       NO_PARAMETERS     = new Object[0];
   /** PostgreSQL itself caps a statement at 65535 parameters. */
   static final int                                                    MAX_STATEMENT_PARAMETERS = 65535;
@@ -3536,6 +3538,11 @@ public class PostgresNetworkExecutor extends Thread {
       bytesLeft -= lastStringBytes;
       final String sourcePreparedStatement = readString();
       bytesLeft -= lastStringBytes;
+      if (bytesLeft < BIND_MIN_FIELDS_LENGTH) {
+        // The names ran past the message, or left no room for the three counts that follow them
+        refuseMessageAndClose("bind message is shorter than its contents");
+        return;
+      }
 
       // THE DESTINATION PORTAL IS INVALIDATED BEFORE ANYTHING THAT CAN FAIL (issue #8071), the Bind-side twin of
       // parseCommand()'s rule for prepared statements (issue #7906). The registration further down runs only on
@@ -3583,7 +3590,8 @@ public class PostgresNetworkExecutor extends Thread {
       if (DEBUG)
         LogManager.instance().log(this, Level.INFO, "PSQL: bind paramFormatCount=%d (thread=%s)",
             paramFormatCount, Thread.currentThread().threadId());
-      if (paramFormatCount * 2L > bytesLeft) {
+      // What has to follow the format codes: the parameter count and the result format count
+      if (paramFormatCount * 2L + 4 > bytesLeft) {
         refuseMessageAndClose("bind message declares " + paramFormatCount + " parameter formats, more than its length holds");
         return;
       }
@@ -3598,8 +3606,8 @@ public class PostgresNetworkExecutor extends Thread {
 
       final int paramValuesCount = channel.readUnsignedShort();
       bytesLeft -= 2;
-      // A value takes at least its 4-byte length
-      if (paramValuesCount * 4L > bytesLeft) {
+      // A value takes at least its 4-byte length, and the result format count follows the values
+      if (paramValuesCount * 4L + 2 > bytesLeft) {
         refuseMessageAndClose("bind message declares " + paramValuesCount + " parameters, more than its length holds");
         return;
       }
@@ -3649,9 +3657,9 @@ public class PostgresNetworkExecutor extends Thread {
                 + server.getConfiguration().getValueAsInteger(GlobalConfiguration.POSTGRES_MAX_PARAM_SIZE) + ")");
             return;
           }
-          if (paramSize > bytesLeft) {
-            // The message has fewer bytes left than this value declares, so its bytes are not all in this message
-            refuseMessageAndClose("bind parameter " + (i + 1) + " declares " + paramSize + " bytes, but the message has " + Math.max(0L, bytesLeft)
+          // The value, the lengths of the values after it and the result format count all have to fit in what is left
+          if (paramSize + 4L * (paramValuesCount - i - 1) + 2 > bytesLeft) {
+            refuseMessageAndClose("bind parameter " + (i + 1) + " declares " + paramSize + " bytes, but the message has " + bytesLeft
                 + " left");
             return;
           }
@@ -3698,10 +3706,12 @@ public class PostgresNetworkExecutor extends Thread {
 
       if (DEBUG)
         LogManager.instance().log(this, Level.INFO, "PSQL: bind reading resultFormatCount (thread=%s)", Thread.currentThread().threadId());
-      final int resultFormatCount = channel.readShort();
+      final int resultFormatCount = channel.readUnsignedShort();
       bytesLeft -= 2;
-      if (resultFormatCount * 2L > bytesLeft) {
-        refuseMessageAndClose("bind message declares " + resultFormatCount + " result formats, more than its length holds");
+      // The result format codes are the last field: they take what is left of the message, no less and no more
+      if (resultFormatCount * 2L != bytesLeft) {
+        refuseMessageAndClose("bind message declares " + resultFormatCount + " result formats, but the message has " + bytesLeft
+            + " bytes left for them");
         return;
       }
       if (resultFormatCount > 0) {
@@ -3792,9 +3802,13 @@ public class PostgresNetworkExecutor extends Thread {
             channel.getDataInput().skipNBytes(sz);
         }
         if (drainedCleanly && !resultFormatSectionRead) {
-          final int resultFormatCount = channel.readShort();
-          for (int i = 0; i < resultFormatCount; i++)
-            channel.readUnsignedShort();
+          final int resultFormatCount = channel.readUnsignedShort();
+          bytesLeft -= 2;
+          if (resultFormatCount * 2L > bytesLeft)
+            // The codes are not all in this message: waiting for them would wait on the next one
+            drainedCleanly = false;
+          else
+            channel.getDataInput().skipNBytes(resultFormatCount * 2L);
         }
       } catch (final Exception ignored) {
         // If even the drain fails the channel is unrecoverable; the error response below
@@ -3864,13 +3878,19 @@ public class PostgresNetworkExecutor extends Thread {
       // ran and was committed. The same normalization queryCommand() applies to its own text.
       final String statementText = normalizeStatementText(readString());
       bytesLeft -= lastStringBytes;
+      if (bytesLeft < 2) {
+        // The strings ran past the message, or left no room for the count of parameter types
+        refuseMessageAndClose("parse message is shorter than its contents");
+        return;
+      }
       // The whole message is read before anything about the statement can be refused (its language marker below): a
       // refusal answered with the declared parameter types still unread would leave them to be read as the next message
       final int paramCount = channel.readUnsignedShort();
       bytesLeft -= 2;
-      // Each declared type takes 4 bytes of the message
-      if (paramCount * 4L > bytesLeft) {
-        refuseMessageAndClose("parse message declares " + paramCount + " parameter types, more than its length holds");
+      // The declared types are the last field: each takes 4 bytes, and they take what is left of the message, no less and no more
+      if (paramCount * 4L != bytesLeft) {
+        refuseMessageAndClose("parse message declares " + paramCount + " parameter types, but the message has " + bytesLeft
+            + " bytes left for them");
         return;
       }
       final long[] declaredTypes = new long[paramCount];

@@ -51,9 +51,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * The sizes a Bind message declares are held to the message that carries them: a parameter, or a count of parameters or format
- * codes, that does not fit in what the message has left is refused before any buffer is sized for it, and a value that does fit is
- * read as its bytes arrive, so a value delivered in several pieces binds exactly as one delivered at once.
+ * The sizes a Bind or Parse message declares are held to the message that carries them: a parameter, or a count of parameters,
+ * format codes or types, that does not fit in what the message has left - or leaves some of it unused - is refused before any
+ * buffer is sized for it, and a value that does fit is read as its bytes arrive, so a value delivered in several pieces binds
+ * exactly as one delivered at once.
  * <p>
  * A read that waits for bytes the message never carries is what these tests would hang on without the checks, so every socket has a
  * read timeout that turns the wait into a failure instead of a stuck build. The timeout is a hang detector, not a latency bound.
@@ -72,9 +73,10 @@ class PostgresBindMessageBoundsIT extends PostgresWireProtocolTestBase {
     getServerDatabase(0, getDatabaseName()).getSchema().getOrCreateDocumentType(TYPE_NAME);
   }
 
+  /** The last two cases leave no room for the result format count the message ends with. */
   @ParameterizedTest(name = "declared {0} bytes, {1} supplied")
-  @CsvSource({ "1048576, 0", "100, 10", "65537, 65536", "16777216, 1000" })
-  void aParameterLongerThanTheRestOfTheMessageIsRefused(final int declared, final int supplied) throws Exception {
+  @CsvSource({ "1048576, 0", "100, 10", "65537, 65536", "16777216, 1000", "10, 10", "0, 0" })
+  void aParameterThatDoesNotFitInTheRestOfTheMessageIsRefused(final int declared, final int supplied) throws Exception {
     try (final Socket socket = connectedSocket()) {
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
@@ -88,14 +90,14 @@ class PostgresBindMessageBoundsIT extends PostgresWireProtocolTestBase {
       body.write(new byte[supplied]);
       sendRawBind(out, body.toByteArray());
 
-      assertRefusedAndClosed(in);
+      assertRefusedAndClosed(in, SQLSTATE_PROTOCOL);
     }
 
     assertServerStillServesANewClient();
   }
 
   @ParameterizedTest(name = "{0}")
-  @ValueSource(strings = { "parameter format codes", "parameters", "result format codes" })
+  @ValueSource(strings = { "parameter format codes", "parameters", "result format codes", "no result format count", "too few result format codes" })
   void aCountThatDoesNotFitInTheMessageIsRefused(final String counted) throws Exception {
     try (final Socket socket = connectedSocket()) {
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
@@ -106,24 +108,74 @@ class PostgresBindMessageBoundsIT extends PostgresWireProtocolTestBase {
       readWireMessage(in); // ParseComplete
 
       final ByteArrayOutputStream body = switch (counted) {
-        case "parameter format codes" -> bindHeader(60_000, -1);
-        case "parameters" -> bindHeader(0, 60_000);
-        default -> {
+        case "parameter format codes" -> {
+          final ByteArrayOutputStream result = bindHeader(60_000, 0);
+          writeShort(result, 0); // result format count
+          yield result;
+        }
+        case "parameters" -> {
+          final ByteArrayOutputStream result = bindHeader(0, 60_000);
+          writeShort(result, 0); // result format count
+          yield result;
+        }
+        case "result format codes" -> {
           final ByteArrayOutputStream result = bindHeader(0, 0);
           writeShort(result, 30_000);
           yield result;
         }
+        case "too few result format codes" -> {
+          final ByteArrayOutputStream result = bindHeader(0, 0);
+          writeShort(result, 2);
+          writeShort(result, 1); // one code of the two
+          yield result;
+        }
+        // the message ends where the result format count should start
+        default -> bindHeader(0, 0);
       };
       sendRawBind(out, body.toByteArray());
 
-      assertRefusedAndClosed(in);
+      assertRefusedAndClosed(in, SQLSTATE_PROTOCOL);
     }
 
     assertServerStillServesANewClient();
   }
 
-  @Test
-  void aParseDeclaringMoreParameterTypesThanItsLengthHoldsIsRefused() throws Exception {
+  @ParameterizedTest(name = "{0}")
+  @ValueSource(strings = { "bind", "parse" })
+  void aMessageWithBytesLeftAfterItsLastFieldIsRefused(final String message) throws Exception {
+    try (final Socket socket = connectedSocket()) {
+      final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+      final DataInputStream in = new DataInputStream(socket.getInputStream());
+      authenticate(out, in);
+
+      if ("bind".equals(message)) {
+        sendParse(out, "", "SELECT 1");
+        readWireMessage(in); // ParseComplete
+
+        final ByteArrayOutputStream body = bindHeader(0, 0);
+        writeShort(body, 0); // result format count
+        body.write(0); // one byte more than the message has fields for
+        sendRawBind(out, body.toByteArray());
+      } else {
+        final ByteArrayOutputStream body = new ByteArrayOutputStream();
+        writeCString(body, ""); // statement name
+        writeCString(body, "SELECT 1");
+        writeShort(body, 0); // parameter types
+        body.write(0); // one byte more than the message has fields for
+        out.write(framed('P', body.toByteArray()));
+        out.flush();
+      }
+
+      assertRefusedAndClosed(in, SQLSTATE_PROTOCOL);
+    }
+
+    assertServerStillServesANewClient();
+  }
+
+  @ParameterizedTest(name = "{0}")
+  @ValueSource(strings = { "more parameter types than the message holds", "fewer parameter types than the message holds",
+      "no room for the parameter type count" })
+  void aParseWhoseSizesDoNotFitItsLengthIsRefused(final String shape) throws Exception {
     try (final Socket socket = connectedSocket()) {
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
@@ -132,11 +184,45 @@ class PostgresBindMessageBoundsIT extends PostgresWireProtocolTestBase {
       final ByteArrayOutputStream body = new ByteArrayOutputStream();
       writeCString(body, ""); // statement name
       writeCString(body, "SELECT 1");
-      writeShort(body, 60_000); // parameter types, none of which follows
+      switch (shape) {
+      case "more parameter types than the message holds" -> writeShort(body, 60_000); // none of which follows
+      case "fewer parameter types than the message holds" -> {
+        writeShort(body, 1);
+        writeInt(body, 0);
+        writeInt(body, 0); // a second type that was not declared
+      }
+      default -> {
+        // the message ends before the count
+      }
+      }
       out.write(framed('P', body.toByteArray()));
       out.flush();
 
-      assertRefusedAndClosed(in);
+      assertRefusedAndClosed(in, SQLSTATE_PROTOCOL);
+    }
+
+    assertServerStillServesANewClient();
+  }
+
+  @Test
+  void aResultFormatCountThatDoesNotFitIsRefusedAfterAParameterThatFailed() throws Exception {
+    try (final Socket socket = connectedSocket()) {
+      final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+      final DataInputStream in = new DataInputStream(socket.getInputStream());
+      authenticate(out, in);
+
+      sendParseWithTypes(out, "", "SELECT $1", UNSUPPORTED_TYPE);
+      readWireMessage(in); // ParseComplete
+
+      // The parameter fails to convert, so the rest of the message is skipped: its result format count claims codes it does not hold
+      final ByteArrayOutputStream body = bindHeader(0, 1);
+      final byte[] value = "1".getBytes(StandardCharsets.UTF_8);
+      writeInt(body, value.length);
+      body.write(value);
+      writeShort(body, 30_000);
+      sendRawBind(out, body.toByteArray());
+
+      assertRefusedAndClosed(in, null);
     }
 
     assertServerStillServesANewClient();
@@ -230,10 +316,11 @@ class PostgresBindMessageBoundsIT extends PostgresWireProtocolTestBase {
    * The answer to a refused message is an ErrorResponse naming the protocol, and the end of the connection: an end of stream, or a
    * reset when the client's unread bytes were still queued on the server's side when it closed.
    */
-  private static void assertRefusedAndClosed(final DataInputStream in) throws Exception {
+  private static void assertRefusedAndClosed(final DataInputStream in, final String expectedSqlState) throws Exception {
     final WireMessage answer = readWireMessage(in);
     assertThat(answer.type()).isEqualTo('E');
-    assertThat(errorFields(answer).get('C')).isEqualTo(SQLSTATE_PROTOCOL);
+    if (expectedSqlState != null)
+      assertThat(errorFields(answer).get('C')).isEqualTo(expectedSqlState);
     assertThatThrownBy(in::readUnsignedByte).isInstanceOfAny(EOFException.class, SocketException.class);
   }
 
