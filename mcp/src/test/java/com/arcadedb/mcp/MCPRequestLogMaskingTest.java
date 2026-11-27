@@ -126,6 +126,54 @@ class MCPRequestLogMaskingTest {
   }
 
   @Test
+  void anArgumentNamedLikeACredentialIsLoggedWholeMasked() {
+    final String logged = MCPDispatcher.formatArgs("query", new JSONObject()
+        .put("database", "db")
+        .put("password", VALUE)
+        .put("token", new JSONObject().put("a", VALUE).put("b", new JSONArray().put(VALUE)))
+        .put("api_key", 42));
+
+    assertThat(logged).doesNotContain(VALUE).doesNotContain("42");
+    assertThat(logged).isEqualTo("{database=\"db\", password=***, token=***, api_key=***}");
+  }
+
+  @Test
+  void aCredentialMemberHoldingAListOrARecordIsMaskedWhole() {
+    final JSONObject properties = new JSONObject()
+        .put("name", "bob")
+        .put("password", new JSONArray().put("first").put(VALUE))
+        .put("secret", new JSONObject().put("one", "a b").put("two", new JSONArray().put(VALUE).put("x y")))
+        .put("profile", new JSONObject().put("note", "kept").put("token", new JSONArray().put("p").put(VALUE)))
+        .put("items", new JSONArray().put(new JSONObject().put("api_key", new JSONArray().put("q").put(VALUE)).put("n", 1)));
+    final JSONObject args = new JSONObject().put("setProperties", properties);
+    final String before = args.toString();
+
+    final String logged = MCPDispatcher.formatArgs("upsert_entity", args);
+
+    assertThat(logged).doesNotContain(VALUE).doesNotContain("first").doesNotContain("a b").doesNotContain("x y");
+    assertThat(logged).contains("\"name\":\"bob\"").contains("\"note\":\"kept\"").contains("\"n\":1");
+    assertThat(args.toString()).as("the arguments the tool runs with are not touched").isEqualTo(before);
+  }
+
+  @Test
+  void aRecordNestedDeeplyIsLoggedWithoutFollowingItToTheEnd() {
+    JSONObject deepest = new JSONObject().put("password", new JSONArray().put("first").put(VALUE));
+    for (int i = 0; i < 500; i++)
+      deepest = new JSONObject().put("n", deepest);
+
+    final String logged = MCPDispatcher.formatArgs("upsert_entity", new JSONObject().put("setProperties", deepest));
+
+    assertThat(logged).doesNotContain(VALUE).doesNotContain("first");
+  }
+
+  @Test
+  void anArgumentNameWithALineBreakStaysOnItsLine() {
+    final String logged = MCPDispatcher.formatArgs("query", new JSONObject().put("limit\n2026-11-27 forged", 5));
+
+    assertThat(logged).doesNotContain("\n").isEqualTo("{limit\\n2026-11-27 forged=5}");
+  }
+
+  @Test
   void aTextWithoutAKeywordIsLoggedAsBefore() {
     assertThat(MCPDispatcher.formatArgs("query", new JSONObject().put("database", "db").put("query", "MATCH (n:Person) RETURN n.name LIMIT 5")))
         .isEqualTo("{database=\"db\", query=\"MATCH (n:Person) RETURN n.name LIMIT 5\"}");

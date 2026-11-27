@@ -50,7 +50,11 @@ import com.arcadedb.mcp.tools.UpsertRelationshipTool;
 import com.arcadedb.mcp.tools.VectorSearchTool;
 import com.arcadedb.server.security.ServerSecurityUser;
 
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
+import java.util.List;
 import java.util.Set;
 import java.util.function.Predicate;
 import java.util.logging.Level;
@@ -73,6 +77,9 @@ public class MCPDispatcher {
   private static final int    LOGGED_TEXT_LENGTH = 100;
   /** How far past {@link #LOGGED_TEXT_LENGTH} the request log looks for a value that starts before the cut and ends after it. */
   private static final int    LOGGED_TEXT_MARGIN = 256;
+  /** How deep the request log follows a record argument to replace the members named like a credential; deeper is not shown. */
+  private static final int    MAX_LOGGED_DEPTH   = 32;
+  private static final String LOGGED_TOO_DEEP    = "...";
 
   /** What a reply says about a value nested too deeply to be written out: the call fails, the transport goes on serving. */
   static final String NESTING_TOO_DEEP_MESSAGE = "the value is nested too deeply to be processed";
@@ -532,8 +539,11 @@ public class MCPDispatcher {
    */
   private String clientMessage(final String message, final Throwable cause) {
     final boolean concealing = ErrorConcealment.isConcealing(server);
-    return ErrorConcealment.clientMessage(concealing, this, "MCP[" + transport + "]",
-        concealing ? maskedForLog(message, cause) : message, cause);
+    if (!concealing)
+      return ErrorConcealment.clientMessage(false, this, "MCP[" + transport + "]", message, cause);
+    // A server fault is logged with its trace, which is the one case the concealment hands the failure itself to the logger
+    return ErrorConcealment.clientMessage(true, this, "MCP[" + transport + "]", maskedForLog(message, cause),
+        ErrorCategory.of(cause) == ErrorCategory.SERVER ? maskedForTrace(cause) : cause);
   }
 
   /**
@@ -543,6 +553,31 @@ public class MCPDispatcher {
    */
   private static String maskedForLog(final String message, final Throwable cause) {
     return RunningQuery.maskCredentials(message != null && !message.isBlank() ? message : ErrorConcealment.describe(cause));
+  }
+
+  /**
+   * {@code failure} as the server log may carry the trace of it: the same frames and the same chain of causes, with the message of
+   * every throwable of the chain masked ({@link #maskedForLog}), because the logger prints them all and a message can quote the
+   * statement it refused. The copies are plain {@link RuntimeException}s that name the class they stand for, so the log still says
+   * what failed and where; the failure itself is untouched.
+   */
+  private static Throwable maskedForTrace(final Throwable failure) {
+    final List<Throwable> chain = new ArrayList<>();
+    final Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+    for (Throwable current = failure; current != null && chain.size() < MAX_LOGGED_DEPTH && seen.add(current); current = current.getCause())
+      chain.add(current);
+
+    Throwable masked = null;
+    for (int i = chain.size() - 1; i >= 0; i--) {
+      final Throwable original = chain.get(i);
+      final String message = original.getMessage();
+      final RuntimeException copy = new RuntimeException(
+          message != null ? original.getClass().getName() + ": " + RunningQuery.maskCredentials(message) : original.getClass().getName(),
+          masked);
+      copy.setStackTrace(original.getStackTrace());
+      masked = copy;
+    }
+    return masked;
   }
 
   /**
@@ -582,7 +617,7 @@ public class MCPDispatcher {
     else {
       // The trace when the message cannot say where it came from: a failure with none, or a fault of the server's own
       final boolean named = e.getMessage() != null && !e.getMessage().isBlank();
-      final Throwable trace = !named || ErrorCategory.of(e) == ErrorCategory.SERVER ? e : null;
+      final Throwable trace = !named || ErrorCategory.of(e) == ErrorCategory.SERVER ? maskedForTrace(e) : null;
       final String logged = named ? maskedForLog(detail, e) : e.getClass().getName();
       LogManager.instance().log(this, Level.WARNING, "MCP[%s] %s -> error: %s", trace, transport, operation, logged);
       text = detail;
@@ -669,6 +704,8 @@ public class MCPDispatcher {
    *   masked by the rule of the running-query listing ({@link RunningQuery#maskCredentials}): the value after
    *   {@code IDENTIFIED BY}, {@code PASSWORD}, {@code TOKEN} and the other keywords that introduce one. A text is masked
    *   before it is cut to its logged length, so the cut cannot split a value and leave its start in the line.</li>
+   *   <li>An argument, or a member of a record argument, whose NAME is one of those keywords is logged as {@code ***}
+   *   whatever it holds (a list, a record, a text with no keyword in it).</li>
    * </ul>
    * Nothing else is blanked: the rest of the arguments is caller data, which cannot be told apart from a secret without
    * guessing, and blanking it would leave the log unable to explain what a call did.
@@ -688,14 +725,17 @@ public class MCPDispatcher {
       // publishableValue leaves a value carrying no secret exactly as it was, so this neither blanks nor reshapes
       // an ordinary setting's value, and a non-String argument stays the type the branches below render.
       final Object value = redacted != null && "value".equals(key) ? publishableArgument(redacted, raw) : raw;
-      if (value instanceof String s)
-        sb.append(key).append("=\"").append(loggedText(s)).append('"');
+      sb.append(sanitizeForLog(key)).append('=');
+      if (isCredentialName(key))
+        sb.append("***");
+      else if (value instanceof String s)
+        sb.append('"').append(loggedText(s)).append('"');
       else if (value instanceof JSONArray array)
-        sb.append(key).append("=[").append(array.length()).append(" item(s)]");
+        sb.append('[').append(array.length()).append(" item(s)]");
       else if (value instanceof JSONObject object)
-        sb.append(key).append('=').append(RunningQuery.maskCredentials(object.toString()));
+        sb.append(loggedRecord(object));
       else
-        sb.append(key).append("=").append(value);
+        sb.append(value);
     }
     return sb.append("}").toString();
   }
@@ -712,6 +752,45 @@ public class MCPDispatcher {
     if (looked.length() > LOGGED_TEXT_LENGTH)
       return looked.substring(0, LOGGED_TEXT_LENGTH) + "...";
     return partial ? looked + "..." : looked;
+  }
+
+  /**
+   * A record argument as the request log carries it: its JSON text, masked. When the mask finds something, the members whose name
+   * is a credential keyword are also replaced whole, in a copy (the arguments of the call are not touched): a member such as
+   * {@code "password":["a","b"]} has no single delimiter a text mask could end its value on. A record with nothing to mask is
+   * rendered as it is, with no copy.
+   */
+  private static String loggedRecord(final JSONObject record) {
+    final String text = record.toString();
+    if (RunningQuery.maskCredentials(text).equals(text))
+      return text;
+    return RunningQuery.maskCredentials(withoutCredentialMembers(record, 0).toString());
+  }
+
+  private static Object withoutCredentialMembers(final Object value, final int depth) {
+    if (value instanceof JSONObject record) {
+      if (depth >= MAX_LOGGED_DEPTH)
+        return LOGGED_TOO_DEEP;
+      final JSONObject copy = new JSONObject();
+      for (final String name : record.keySet())
+        copy.put(name, isCredentialName(name) ? "***" : withoutCredentialMembers(record.get(name), depth + 1));
+      return copy;
+    }
+    if (value instanceof JSONArray list) {
+      if (depth >= MAX_LOGGED_DEPTH)
+        return LOGGED_TOO_DEEP;
+      final JSONArray copy = new JSONArray(list.length());
+      for (int i = 0; i < list.length(); i++)
+        copy.put(withoutCredentialMembers(list.get(i), depth + 1));
+      return copy;
+    }
+    return value;
+  }
+
+  /** Whether {@code name} is one of the keywords {@link RunningQuery#maskCredentials} masks the value of, asked of the mask itself. */
+  private static boolean isCredentialName(final String name) {
+    final String probe = name + "=x";
+    return !probe.equals(RunningQuery.maskCredentials(probe));
   }
 
   /**

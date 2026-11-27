@@ -19,6 +19,7 @@
 package com.arcadedb.mcp;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.log.Logger;
 import com.arcadedb.serializer.json.JSONObject;
@@ -120,6 +121,36 @@ class MCPRequestLogStatementsTest extends BaseGraphServerTest {
     }
   }
 
+  /** The trace of a failure carries the message of every cause: the statement an engine fault quotes is masked there too. */
+  @Test
+  void theCauseChainOfAFailureIsLoggedMaskedInBothServerModes() throws Exception {
+    final String quoted = "ALTER USER bob SET PASSWORD '" + VALUE + "' CHANGE NOT REQUIRED";
+    final Exception failure = new RuntimeException("write failed",
+        new IllegalStateException("cannot apply: " + quoted, new RuntimeException(quoted)));
+    assertThat(ErrorCategory.of(failure)).isEqualTo(ErrorCategory.SERVER);
+
+    for (final String mode : new String[] { "development", "production" }) {
+      final List<String> lines = capturingLog(() -> withMode(mode, () -> new MCPDispatcher(getServer(0), config, "http")
+          .failureMessage("tools/call 'execute_command'", failure)));
+
+      assertThat(lines).as(mode).noneMatch(line -> line.contains(VALUE));
+      assertThat(lines).as(mode).anySatisfy(line -> assertThat(line).startsWith("production".equals(mode) ? "[SEVERE]" : "[WARNING]")
+          .contains("write failed").contains("java.lang.IllegalStateException: cannot apply: ALTER USER bob SET PASSWORD ***"));
+      assertThat(failure.getCause().getMessage()).as("the failure itself is untouched").contains(VALUE);
+    }
+  }
+
+  @Test
+  void aFailureWithoutAMessageIsLoggedWithTheMaskedMessageOfItsCause() throws Exception {
+    final Exception wrapper = new RuntimeException((String) null, new IllegalStateException("cannot apply: SET PASSWORD '" + VALUE + "'"));
+
+    final List<String> lines = capturingLog(() -> new MCPDispatcher(getServer(0), config, "http")
+        .failureMessage("tools/call 'execute_command'", wrapper));
+
+    assertThat(lines).noneMatch(line -> line.contains(VALUE));
+    assertThat(lines).anySatisfy(line -> assertThat(line).contains("SET PASSWORD ***").contains("java.lang.IllegalStateException"));
+  }
+
   @Test
   void aStatementWithoutACredentialIsLoggedAsItWas() throws Exception {
     final List<String> lines = capturingLog(() -> call("query", new JSONObject()
@@ -177,23 +208,24 @@ class MCPRequestLogStatementsTest extends BaseGraphServerTest {
         final Object arg1, final Object arg2, final Object arg3, final Object arg4, final Object arg5, final Object arg6, final Object arg7,
         final Object arg8, final Object arg9, final Object arg10, final Object arg11, final Object arg12, final Object arg13,
         final Object arg14, final Object arg15, final Object arg16, final Object arg17) {
-      record(message, exception, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14, arg15, arg16, arg17);
+      record(level, message, exception, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14, arg15, arg16,
+          arg17);
     }
 
     @Override
     public void log(final Object requester, final Level level, final String message, final Throwable exception, final String context,
         final Object... args) {
-      record(message, exception, args);
+      record(level, message, exception, args);
     }
 
-    private void record(final String message, final Throwable exception, final Object... args) {
+    private void record(final Level level, final String message, final Throwable exception, final Object... args) {
       String line;
       try {
         line = String.format(message, args);
       } catch (final RuntimeException e) {
         line = message;
       }
-      final StringBuilder text = new StringBuilder(line);
+      final StringBuilder text = new StringBuilder("[").append(level).append("] ").append(line);
       for (Throwable cause = exception; cause != null; cause = cause.getCause())
         text.append(" | ").append(cause);
       lines.add(text.toString());
