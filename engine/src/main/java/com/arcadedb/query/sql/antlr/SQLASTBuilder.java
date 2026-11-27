@@ -6085,6 +6085,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         stmt.insertBody = body;
       }
 
+    } catch (final CommandSQLParsingException e) {
+      // Already says what is wrong with the statement (a VALUES row of the wrong size): the same text INSERT gives
+      throw e;
     } catch (final Exception e) {
       throw new CommandSQLParsingException("Failed to build CREATE VERTEX statement: " + e.getMessage(), e);
     }

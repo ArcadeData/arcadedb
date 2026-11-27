@@ -47,6 +47,18 @@ class Issue12844InsertValuesRowsTest extends TestHelper {
     assertThat(count()).isZero();
   }
 
+  /** INSERT and CREATE VERTEX refuse the same mistake with the same message: the row, what it holds, what was expected. */
+  @Test
+  void theRefusalNamesTheRowAndIsNotWrappedByCreateVertex() {
+    for (final String sql : new String[] { "INSERT INTO V (a, b) VALUES (1, 2), (3, 4, 5)",
+        "CREATE VERTEX V (a, b) VALUES (1, 2), (3, 4, 5)" })
+      assertThatThrownBy(() -> database.transaction(() -> database.command("sql", sql).close())).as(sql)
+          .isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("The row 2 of VALUES holds 3 values for 2 fields")
+          .hasMessageNotContaining("Failed to build");
+
+    assertThat(count()).isZero();
+  }
+
   @Test
   void aRowWithFewerValuesThanFieldsIsRefused() {
     for (final String sql : new String[] { "INSERT INTO V (a, b) VALUES (1)", "INSERT INTO V (a, b) VALUES (1, 2), (3)",
