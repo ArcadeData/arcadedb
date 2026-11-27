@@ -144,9 +144,9 @@ class HttpAuthSessionManagerTest {
     // Session should be rejected even though idle timeout hasn't expired
     assertThat(manager.getSessionByToken(session.getToken())).isNull();
 
-    // Cleanup should also remove it
-    final int expired = manager.checkSessionsValidity();
-    assertThat(expired).isEqualTo(1);
+    // The refused lookup dropped it, so there is nothing left for the cleanup to remove
+    assertThat(manager.getActiveSessionCount()).isEqualTo(0);
+    assertThat(manager.checkSessionsValidity()).isEqualTo(0);
   }
 
   @Test
