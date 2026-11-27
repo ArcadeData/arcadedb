@@ -84,6 +84,7 @@ import com.arcadedb.query.sql.parser.WhereClause;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
+import com.arcadedb.schema.TypeHierarchy;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.server.ArcadeDBServer;
@@ -187,8 +188,11 @@ public class PostgresNetworkExecutor extends Thread {
   /** Shared between every path that refuses a statement inside an aborted transaction block (SQLSTATE 25P02). */
   private static final String                                         ABORTED_TRANSACTION_MESSAGE       =
       "current transaction is aborted, commands ignored until end of transaction block";
-  /** Case-insensitive {@code TO} separator for the {@code SET <param> TO <value>} syntax. */
-  private static final Pattern                                        SET_TO_SEPARATOR  = Pattern.compile("(?i)\\s+TO\\s+");
+  /**
+   * Case-insensitive {@code TO} separator for the {@code SET <param> TO <value>} syntax. A separator starts at the first blank of
+   * a run, so a long run of blanks that is not followed by {@code TO} is read once and not once per blank it holds.
+   */
+  private static final Pattern                                        SET_TO_SEPARATOR  = Pattern.compile("(?i)(?<!\\s)\\s++TO\\s++");
   /** Case-insensitive {@code SESSION}/{@code LOCAL} scope modifier leading a {@code SET} command (issue #6701). */
   private static final Pattern                                        SET_SCOPE_MODIFIER = Pattern.compile("(?i)^(SESSION|LOCAL)\\s+");
   private static final Pattern                                        SET_TIME_ZONE      = Pattern.compile("(?i)^TIME\\s+ZONE\\s+");
@@ -202,7 +206,6 @@ public class PostgresNetworkExecutor extends Thread {
    */
   private static final Pattern                                        SET_KEYWORD_FORM   = Pattern.compile(
       "(?is)^(?:(SESSION|LOCAL)\\s+)?(SESSION\\s+AUTHORIZATION|ROLE|NAMES|SCHEMA|SESSION\\s+CHARACTERISTICS\\s+AS\\s+TRANSACTION|TRANSACTION|CONSTRAINTS)\\s+(?!=|TO\\s)(.+)$");
-  private static final Pattern                                        SET_CONSTRAINTS_MODE = Pattern.compile("(?is)^(.+?)\\s+(DEFERRED|IMMEDIATE)$");
   private static final Pattern                                        TRANSACTION_MODE_SEPARATOR = Pattern.compile("[\\s,]+");
 
   private final ArcadeDBServer              server;
@@ -285,6 +288,12 @@ public class PostgresNetworkExecutor extends Thread {
    * {@code errorInTransaction} survives.
    */
   private boolean  skipUntilSync              = false;
+  /**
+   * The Syncs received on this connection: each closes one exchange of extended-protocol messages. Tells a statement a client
+   * parsed and bound in the same exchange from one it prepared on its own (issue #11838), see
+   * {@link PostgresPortal#preparedWhileRunning}.
+   */
+  private long     syncs                      = 0;
   /**
    * True while a simple-query message holding several statements is being run (issue #11483): its statements form one
    * implicit transaction block, as in PostgreSQL.
@@ -587,6 +596,7 @@ public class PostgresNetworkExecutor extends Thread {
     if (DEBUG)
       LogManager.instance().log(this, Level.INFO, "PSQL: sync (thread=%s)", Thread.currentThread().threadId());
 
+    ++syncs;
     if (skipUntilSync || errorInTransaction) {
       // DISCARDED PREVIOUS MESSAGES TILL THIS POINT. The block the discarded messages belonged to goes with
       // them: PostgreSQL rolls back the WHOLE run of extended-protocol messages this Sync terminates when any
@@ -839,12 +849,16 @@ public class PostgresNetworkExecutor extends Thread {
    * A client that describes a NAMED statement through a portal may keep that description for the statement and apply
    * it to every later Bind/Execute without describing again, which is what pgjdbc does from its prepareThreshold-th
    * execution on (issue #9009). The layout just announced is therefore recorded as the statement's own, so the later
-   * portals serialize their rows under it instead of under the columns of whichever rows they return.
+   * portals serialize their rows under it instead of under the columns of whichever rows they return. Only such a client's
+   * description promises a layout every record fits, and only it is recorded ({@link #mayKeepDescribedLayout}). The portal of a
+   * statement prepared on its own was typed from its own rows (v as an int4, say), which is no promise for the next portal's
+   * rows: recorded, it would hold a later 5000000000, bool or list to that int4 and a later Describe('S') would announce it
+   * (issue #11838). Such a statement's later portals are described again, each from its own rows.
    */
   private static void rememberDescribedLayout(final PostgresPortal portal) {
     final PostgresPortal statement = portal.statement;
-    if (statement == null || !statement.namedStatement || statement.columnsDescribed || portal.catalogQuery
-        || portal.columns == null || portal.columns.isEmpty())
+    if (!mayKeepDescribedLayout(portal) || statement.columnsDescribed || portal.catalogQuery || portal.columns == null
+        || portal.columns.isEmpty())
       return;
     // a copy: the portal keeps adjusting its own map, the statement's layout is a promise that must not move
     statement.columns = new LinkedHashMap<>(portal.columns);
@@ -966,24 +980,64 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   /**
+   * True when the client may keep the description of this portal for every later portal of its statement, executed with no
+   * Describe of its own: pgjdbc from its prepareThreshold-th execution, Npgsql's auto-prepare. Both prepare a statement in the
+   * exchange that first runs it, Parse, Bind, Describe('P') and Execute before one Sync, and so does node-postgres for a named
+   * query, which describes every portal but cannot be told apart from them. A row type promised to them for an undeclared
+   * property must hold for the rows of every later execution, whatever its parameters, which only text does (issue #9009): a
+   * schemaless property can hold an int4 in one record and an int8, a float8, a bool or a list in the next, and a 0A000 there,
+   * which only pgjdbc outside a transaction block answers by preparing again, failed every other client (issue #11838).
+   * <p>
+   * A statement prepared on its own, Parse (and maybe Describe('S')) then Sync, is described portal by portal from the rows, as
+   * the unnamed statement is: its client - libpq's PQexecPrepared, psycopg, pgx's ExecPrepared - describes each portal it runs,
+   * and the clients that keep one description for it (pgx's statement cache, Npgsql's Prepare(), asyncpg, tokio-postgres) keep
+   * the answer to that Describe('S'), which names the columns from the schema, undeclared properties as text, and which every
+   * later portal is held to ({@link PostgresPortal#columnsDescribed}).
+   * <p>
+   * <b>What a wrong guess costs.</b> The wire does not say what a client does with a description, so the split can be wrong in
+   * two directions:
+   * <ul>
+   * <li>A client that describes every portal is taken for one that keeps the first answer: node-postgres's named query, libpq in
+   * pipeline mode (psycopg's pipeline can put Parse and the first Bind before one Sync), a preparing exchange whose Bind an
+   * earlier error had the server skip (the flag is set before the skip, so it counts), a Bind sent before the Sync of its Parse
+   * for any other reason. The cost is the #9009 layout: an undeclared property read as text where a native type was possible.
+   * Text carries every value, so this never fails and never misreads a value, and it is what main answered for every named
+   * statement.</li>
+   * <li>A client that keeps one portal's description is taken for one that describes every portal: it would have to Parse
+   * and Sync on its own, describe a portal, then run later portals with no Describe of their own and decode them with that
+   * first answer. No driver known to do so: libpq always describes the portal it runs, and the drivers that keep a description
+   * either take it from Describe('S') (pinned to the schema, above) or prepare in the exchange that runs the statement (pgjdbc,
+   * Npgsql). Such a client would get each later portal under its own rows' types and could fail to decode one whose types
+   * changed: that direction is not covered, and no layout chosen at the first Describe('P') could cover it without giving up
+   * native types for libpq, since the two send the same messages until the later Execute.</li>
+   * </ul>
+   * The flag is settled by the first Bind of the exchange that parsed the statement, before that Bind's portal can be
+   * described, and a later exchange never changes it: every portal of one statement is classified the same way.
+   */
+  private static boolean mayKeepDescribedLayout(final PostgresPortal portal) {
+    return portal.statement != null && portal.statement.namedStatement && portal.statement.preparedWhileRunning;
+  }
+
+  /**
    * Resolves the columns a materialized portal must be announced under, from the rows it actually produced.
    * A catalog answer keeps its own columns, which are fixed by the catalog table being emulated rather than
    * by whichever rows happened to match; a query that came back empty falls back to the schema, so a client
    * probing a shape with {@code WHERE 1=0} or {@code LIMIT 0} still gets a typed result set.
    *
-   * @param announced true when these columns are about to be sent to the client in a RowDescription (Describe 'P'),
-   *                  which a client may keep for the statement: only then are the undeclared properties of a named
-   *                  statement held to the layout every record fits (issue #9009). Execute announces nothing, so
-   *                  it types the columns from the rows themselves.
+   * @param announced true when these columns are about to be sent to the client in a RowDescription (Describe 'P'). The
+   *                  undeclared properties are then held to the layout every record fits (issue #9009) when the client may
+   *                  keep that description for the statement's later portals: see {@link #mayKeepDescribedLayout}.
+   *                  Otherwise, and on an Execute, which announces nothing, the columns are typed from the rows themselves,
+   *                  as the unnamed statement's are (issue #11838).
    */
   private void resolvePortalColumns(final PostgresPortal portal, final boolean announced) {
     final List<Result> rows = portal.fullResultSet != null ? portal.fullResultSet : Collections.emptyList();
+    final boolean stableLayout = announced && mayKeepDescribedLayout(portal);
     if (!portal.catalogQuery || portal.columns == null)
-      portal.columns = getColumns(rows, resolveQueryTargetType(portal), resolveAliasToSourceProperty(portal),
-          announced && portal.statement != null && portal.statement.namedStatement);
+      portal.columns = getColumns(rows, resolveQueryTargetType(portal), resolveAliasToSourceProperty(portal), stableLayout);
     if (!portal.catalogQuery)
       applyDeclaredColumns(portal.sqlStatement, rows, portal.columns);
-    if (announced && portal.statement != null && portal.statement.namedStatement && !portal.catalogQuery)
+    if (stableLayout && !portal.catalogQuery)
       stabilizeProjectedUndeclaredColumns(portal.sqlStatement, resolveQueryTargetType(portal), portal.columns);
     if (portal.columns.isEmpty() && rows.isEmpty()) {
       final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(portal.query, portal.language,
@@ -2549,14 +2603,19 @@ public class PostgresNetworkExecutor extends Thread {
    * {@code HashSet}, whose iteration order would make an exported column order vary from run to run.
    */
   private static void collectDeclaredColumns(final DocumentType docType, final Map<String, PostgresType> columns) {
+    collectOwnDeclaredColumns(docType, columns);
+    // each super type once, whatever the number of paths that lead up to it
+    for (final DocumentType superType : TypeHierarchy.allSuperTypes(docType))
+      collectOwnDeclaredColumns(superType, columns);
+  }
+
+  private static void collectOwnDeclaredColumns(final DocumentType docType, final Map<String, PostgresType> columns) {
     for (final String propName : docType.getPropertyNames()) {
       final Property prop = docType.getProperty(propName);
       columns.putIfAbsent(propName, prop != null && prop.getType() != null
           ? PostgresType.getTypeFromArcade(prop.getType(), prop.getOfType())
           : PostgresType.VARCHAR);
     }
-    for (final DocumentType superType : docType.getSuperTypes())
-      collectDeclaredColumns(superType, columns);
   }
 
   /**
@@ -3493,6 +3552,9 @@ public class PostgresNetworkExecutor extends Thread {
       // If the prepared statement is missing/closed, use a consume-only throwaway portal to drain parameters
       // off the wire and avoid channel framing corruption, without resurrecting any previously bound portal.
       final PostgresPortal preparedStatement = preparedStatements.get(sourcePreparedStatement);
+      if (preparedStatement != null && preparedStatement.parsedAtSync == syncs)
+        // run by the exchange that parsed it, even when an earlier failure has that exchange skip this Bind (issue #11838)
+        preparedStatement.preparedWhileRunning = true;
       final PostgresPortal portal = preparedStatement != null ? PostgresPortal.bindFrom(preparedStatement) : new PostgresPortal("", "sql");
 
       if (DEBUG)
@@ -4024,6 +4086,7 @@ public class PostgresNetworkExecutor extends Thread {
       }
 
       portal.namedStatement = !portalName.isEmpty();
+      portal.parsedAtSync = syncs;
       preparedStatements.put(portalName, portal);
 
       // ParseComplete
@@ -4195,18 +4258,43 @@ public class PostgresNetworkExecutor extends Thread {
       }
       case "SESSION CHARACTERISTICS AS TRANSACTION" -> transactionModes(query, rest, "default_transaction_isolation");
       case "CONSTRAINTS" -> {
-        final Matcher mode = SET_CONSTRAINTS_MODE.matcher(rest);
-        if (!mode.matches())
+        final String named = constraintsBeforeMode(rest);
+        if (named == null)
           throw syntaxError(query);
-        final String constraints = mode.group(1).trim();
-        if (!"ALL".equalsIgnoreCase(constraints))
+        final String constraints = named.trim();
+        if (!"ALL".equalsIgnoreCase(constraints)) {
           // THIS SERVER HAS NO NAMED CONSTRAINTS FOR A SET CONSTRAINTS TO NAME, SO THE FIRST NAME IS UNDEFINED
+          final int comma = constraints.indexOf(',');
           throw new PostgresSessionSettings.SettingException(
-              "constraint \"" + constraints.split("\\s*,\\s*")[0] + "\" does not exist", "42704"); // undefined_object
+              "constraint \"" + (comma < 0 ? constraints : constraints.substring(0, comma).trim()) + "\" does not exist",
+              "42704"); // undefined_object
+        }
         yield PostgresSessionSettings.Assignment.NO_OP;
       }
       default -> null;
     };
+  }
+
+  /**
+   * What {@code rest} names before the {@code DEFERRED} or {@code IMMEDIATE} that ends it and the blanks in front of that, or null
+   * when it is not {@code <names> <blank> DEFERRED | IMMEDIATE}. Read from its end, so that a long run of blanks inside the names
+   * is passed once and not once per blank it holds.
+   */
+  private static String constraintsBeforeMode(final String rest) {
+    final int length = rest.length();
+    final int mode;
+    if (rest.regionMatches(true, length - 8, "DEFERRED", 0, 8))
+      mode = length - 8;
+    else if (rest.regionMatches(true, length - 9, "IMMEDIATE", 0, 9))
+      mode = length - 9;
+    else
+      return null;
+
+    int end = mode;
+    while (end > 0 && PostgresStatementText.isBlank(rest.charAt(end - 1)))
+      end--;
+    // a blank in front of the keyword, and something in front of the blanks
+    return end == mode || end == 0 ? null : rest.substring(0, end);
   }
 
   /**

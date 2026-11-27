@@ -35,6 +35,8 @@
     <description>Compute aggregated test code coverage</description>
     <packaging>pom</packaging>
     <properties>
+        <!-- Nothing here is published to Maven Central, so no SBOM is built for it. -->
+        <cyclonedx.skip>true</cyclonedx.skip>
         <maven.deploy.skip>true</maven.deploy.skip>
         <code.coverage.project.folder>${basedir}/../</code.coverage.project.folder>
         <code.coverage.overall.data.folder>${basedir}/target/</code.coverage.overall.data.folder>

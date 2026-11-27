@@ -247,6 +247,43 @@ public class Cypher25AntlrParser {
     return LiteralParameterizer.holdsMoreLiteralsThanAShape(tokens.getTokens(), CypherLiteralParameterizer::isCandidate);
   }
 
+  /**
+   * Checks that {@code tail} is exactly the {@code YIELD}/{@code WHERE} clause the grammar allows at the end of a {@code SHOW} or
+   * {@code TERMINATE} command ({@code showCommandYield}): {@code YIELD} items with their {@code ORDER BY}, {@code SKIP},
+   * {@code LIMIT} and {@code WHERE}, then an optional {@code RETURN}, or a lone {@code WHERE}. Nothing else follows it.
+   *
+   * @param tail the text of the clause, from its {@code YIELD} or {@code WHERE}
+   *
+   * @throws CommandParsingException if the text is not that clause
+   */
+  public void checkShowCommandYield(final String tail) {
+    final int maxExpressionDepth = ExpressionRewriter.maxExpressionDepth(database);
+    final int maxClauses = maxClauses(database);
+
+    try {
+      final CypherErrorListener errorListener = new CypherErrorListener();
+      final Cypher25Lexer lexer = new Cypher25Lexer(CharStreams.fromString(tail));
+      lexer.removeErrorListeners();
+      lexer.addErrorListener(errorListener);
+
+      final CommonTokenStream tokens = new CommonTokenStream(lexer);
+      final Cypher25Parser parser = new Cypher25Parser(tokens);
+      parser.removeErrorListeners();
+      parser.addErrorListener(errorListener);
+      parser.addParseListener(new CypherExpressionDepthGuard(maxExpressionDepth, maxClauses));
+
+      parser.showCommandYield();
+
+      final Token next = tokens.LT(1);
+      if (next.getType() != Token.EOF)
+        throw new CommandParsingException(String.format(Locale.ROOT,
+            "Unexpected input '%s' at line %d, column %d: only YIELD, WHERE and RETURN may follow a SHOW command", next.getText(),
+            next.getLine(), next.getCharPositionInLine()));
+    } catch (final StackOverflowError e) {
+      throw new CommandParsingException("Query is too deeply nested to be parsed (stack exhausted); simplify the query", e);
+    }
+  }
+
   private static boolean containsToken(final CommonTokenStream tokens, final int type) {
     for (final Token token : tokens.getTokens())
       if (token.getType() == type)

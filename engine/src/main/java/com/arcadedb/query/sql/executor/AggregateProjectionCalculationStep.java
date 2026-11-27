@@ -892,6 +892,18 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
     return result;
   }
 
+  /**
+   * The groups and the aggregate functions' accumulators are made when the step runs, and {@link #copy} builds a step with its own
+   * copy of the projection and GROUP BY, so a plan holding this step is reusable. The timeout is read off the statement text. The
+   * limit is evaluated from the LIMIT and SKIP at planning time, which is safe only because a statement with a LIMIT or a SKIP is
+   * never cached today: {@link LimitExecutionStep} and {@link SkipExecutionStep} are not cacheable. A change that makes them
+   * cacheable has to keep a LIMIT or SKIP read from a parameter out of the cache.
+   */
+  @Override
+  public boolean canBeCached() {
+    return true;
+  }
+
   @Override
   public ExecutionStep copy(final CommandContext context) {
     final AggregateProjectionCalculationStep copy = new AggregateProjectionCalculationStep(projection.copy(),

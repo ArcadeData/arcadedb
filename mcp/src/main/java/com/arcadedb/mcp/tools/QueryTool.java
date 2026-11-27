@@ -28,6 +28,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.mcp.MCPConfiguration;
+import com.arcadedb.mcp.MCPRefusalException;
 import com.arcadedb.server.security.ServerSecurityUser;
 
 import java.util.Collections;
@@ -93,7 +94,7 @@ public class QueryTool {
     final QueryEngine engine = MCPToolUtils.analyzableQueryEngine(database, language);
     final QueryEngine.AnalyzedQuery analyzed = engine.analyze(query);
     if (!analyzed.isIdempotent())
-      throw new SecurityException(
+      throw new MCPRefusalException(
           "Query contains write operations. Use execute_command tool instead of query tool");
 
     final JsonSerializer serializer = JsonSerializer.createJsonSerializer()

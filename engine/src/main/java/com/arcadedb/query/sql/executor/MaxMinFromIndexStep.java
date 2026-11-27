@@ -189,4 +189,9 @@ public class MaxMinFromIndexStep extends AbstractExecutionStep {
   public boolean canBeCached() {
     return true;
   }
+
+  @Override
+  public ExecutionStep copy(final CommandContext context) {
+    return new MaxMinFromIndexStep(index, alias, max, bucketIds, context);
+  }
 }

@@ -108,6 +108,10 @@ class TransactionContextStatementStateTest {
     // Issue #12483: the type of the last new relationship asked whether it has an exact-key index, a cache of that answer. The commit
     // reads the relationships it marks from newRecords, which a statement taken back truncates
     CLASSIFICATION.put("lastNewEdgeType", NOT_STATEMENT_STATE);
+    // Issue #12612: the values the second write of a record a restore creates gave its READONLY properties, filled only inside a
+    // readonly deferral, which the restore opens around its own saves and no statement opens. A value a write taken back left could only
+    // allow the value that write completed the record with, never a value nobody was allowed to write
+    CLASSIFICATION.put("readonlyValuesOfDeferredWrites", NOT_STATEMENT_STATE);
     CLASSIFICATION.put("attachments", DELEGATED);
     // Issue #10687: work owed by a change made BESIDE the transaction (a TIMESERIES write commits its own), which a statement taken
     // back does not undo either: the callback has to stay, as it stays through a rollback of the whole transaction
@@ -135,6 +139,10 @@ class TransactionContextStatementStateTest {
     CLASSIFICATION.put("requester", NOT_STATEMENT_STATE);
     CLASSIFICATION.put("statement", NOT_STATEMENT_STATE);
     CLASSIFICATION.put("pooledStatement", NOT_STATEMENT_STATE);
+    // The array of the page image a commit-time rebase just dropped, set and cleared inside that rebase: it exists only while the commit
+    // runs, when no statement is open (a rebase with one open leaves it null), so a statement taken back never meets it
+    CLASSIFICATION.put("spareBuffer", NOT_STATEMENT_STATE);
+    CLASSIFICATION.put("spareBufferPageId", NOT_STATEMENT_STATE);
     // Issue #10768: a final callback of the context the page manager calls when the commit starts publishing, holding no state
     CLASSIFICATION.put("markPublicationStarted", NOT_STATEMENT_STATE);
     // Issue #10588. bucketFirstWriteSequences: when the transaction first wrote to a bucket, to know which indexes bound since owe

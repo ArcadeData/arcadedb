@@ -62,8 +62,22 @@ public class ArcadeGremlin extends ArcadeQuery {
   private static final String RID_KEY  = "@rid";
   private static final String TYPE_KEY = "@type";
 
+  // WHETHER THIS RUNS FOR A STATEMENT OF THE QUERY ENGINE, SEE runAsStatement()
+  private boolean statement;
+
   protected ArcadeGremlin(final ArcadeGraph graph, final String query) {
     super(graph, query);
+  }
+
+  /**
+   * Tells that this runs for a statement of the query engine ({@code Database.command("gremlin", ...)}), which runs in the transaction
+   * of its caller or in the one the engine opens for it and commits once. Nothing in such a statement commits on its own account: an
+   * {@code io().read()} leaves to that transaction the commits its bulk reader would issue every batch (issue #13162, see
+   * {@link ArcadeIoRegistrationStrategy#forStatement()}). Run directly, as the graph API is, the reader keeps them.
+   */
+  public ArcadeGremlin runAsStatement() {
+    statement = true;
+    return this;
   }
 
   @Override
@@ -476,7 +490,7 @@ public class ArcadeGremlin extends ArcadeQuery {
   }
 
   private Iterator<?> executeStatement(final String gremlinEngine) throws ScriptException {
-    final Object result = evaluate(gremlinEngine, graph.traversal());
+    final Object result = evaluate(gremlinEngine, statement ? graph.statementTraversal() : graph.traversal());
     if (result instanceof GraphTraversal<?,?> traversal)
       return traversal;
 

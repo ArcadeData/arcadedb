@@ -32,6 +32,7 @@ import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalSchema;
+import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Type;
 
 import java.io.File;
@@ -211,6 +212,8 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
     if (mutableFormatVersion < TimeSeriesBucket.VERSION_DICTIONARY_TAGS || !hasDictionaryColumns(columns))
       return null;
 
+    // the dictionary file is named after the type
+    LocalTimeSeriesType.checkValidName(typeName);
     final String name = typeName + NAME_SUFFIX;
     final LocalSchema schema = (LocalSchema) database.getSchema();
 

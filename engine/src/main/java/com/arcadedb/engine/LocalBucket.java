@@ -1279,6 +1279,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         final TransactionContext transaction = database.getTransaction();
         final BasePage page = transaction.getPage(new PageId(database, file.getFileId(), pageId), pageSize);
         final boolean ownImage = transaction.trackScanOfPage(page);
+        // #12575: THE TRANSACTION THAT READ THE PAGE, HANDED TO EVERY RECORD OF IT AS ITS READ MARKER. A CALLBACK THAT COMMITS
+        // MID-PAGE LEAVES THE REST OF THE PAGE MARKED WITH THE TRANSACTION THAT READ IT, WHICH IS WHAT THE MARKER SAYS
+        final long readInTransaction = transaction.getBeginSequence();
         final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
 
         if (recordCountInPage > 0) {
@@ -1301,7 +1304,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
                 final Binary view = page.getImmutableView(recordContentPositionInPage, (int) recordSize);
 
-                if (!callback.onRecord(rid, view, ownImage))
+                if (!callback.onRecord(rid, view, ownImage, readInTransaction))
                   return;
 
               } else if (recordSize == RECORD_PLACEHOLDER_POINTER) {
@@ -1309,14 +1312,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                 final RID placeHolderPointer = new RID(fileId,
                         page.readLong(recordPositionInPage + recordHeaderSize));
                 final Binary view = getRecordInternal(placeHolderPointer, true, false);
-                if (view != null && !callback.onRecord(rid, view, ownImage))
+                if (view != null && !callback.onRecord(rid, view, ownImage, readInTransaction))
                   return;
               } else if (recordSize == FIRST_CHUNK) {
                 // LOAD THE ENTIRE RECORD IN CHUNKS. #6196: FIRST_CHUNK and not isChunkHead() - a scan hands out
                 // records, and the head chunk of a placeholder's CONTENT is not one. Its bytes reach the caller
                 // through the pointer branch above, under the RID the user knows, and exactly once.
                 final Binary view = loadMultiPageRecord(rid, page, recordPositionInPage, recordSize, recordHeaderSize);
-                if (!callback.onRecord(rid, view, ownImage))
+                if (!callback.onRecord(rid, view, ownImage, readInTransaction))
                   return;
               }
 
@@ -5657,6 +5660,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // replay writes the negative size marker back.
         final boolean slotTracked = slotCandidate && !(isPlaceHolder && slotInsertedHere)//
                 && !slotTx.isSlotRebasePagePoisoned(fileId, pageId);
+        // The bytes the slot held, when the pre-image below copied them: what a same-size overwrite is diffed against
+        byte[] storedBody = null;
         if (slotCandidate) {
           // Skip the pre-image + final-image copies on a page that is already poisoned (they would be discarded).
           if (slotTracked) {
@@ -5670,6 +5675,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                       buffer.getContentBeginOffset() + bufferSize);
               final byte[] baseBody = new byte[(int) recordSize[0]];
               page.readByteArray((int) (recordPositionInPage + recordSize[1]), baseBody, 0, baseBody.length);
+              storedBody = baseBody;
               slotTx.trackRebasableUpdate(fileId, pageId, positionInPage, baseBody, finalBody,
                       isPlaceHolder ? TransactionContext.SLOT_KIND_PLACEHOLDER_CONTENT : TransactionContext.SLOT_KIND_RECORD);
             }
@@ -5692,9 +5698,31 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         final boolean packedOverwrite = bufferSize + Binary.getNumberSpace(sizeMarker) == footprintBefore;
         final boolean previousPackedWrite = packedOverwrite && page.beginPackedWrite();
         try {
-          recordSize[1] = page.writeNumber(recordPositionInPage, sizeMarker);
+          // An overwrite of the same footprint that the pre-image above can be compared with writes only the bytes that differ: the
+          // first edge of a vertex changes the 12 bytes of one head pointer of a 4.5 KB record, and the page, the write-ahead log and
+          // the replicas had all been handed the whole record. The size marker is the same value (equal footprints mean equal sizes),
+          // so it is not written either. The page ends up byte for byte what the whole write left, and a record that differs nowhere
+          // is written whole as before.
+          int writeFrom = 0;
+          int writeTo = bufferSize;
+          final byte[] bodyBytes = buffer.getContent();
+          final int bodyBegin = buffer.getContentBeginOffset();
+          if (packedOverwrite && storedBody != null && storedBody.length == bufferSize) {
+            final int first = Arrays.mismatch(storedBody, 0, bufferSize, bodyBytes, bodyBegin, bodyBegin + bufferSize);
+            if (first >= 0) {
+              int last = bufferSize - 1;
+              while (storedBody[last] == bodyBytes[bodyBegin + last])
+                --last;
+              writeFrom = first;
+              writeTo = last + 1;
+            }
+          }
+          if (writeFrom > 0 || writeTo < bufferSize)
+            recordSize[1] = Binary.getNumberSpace(sizeMarker);
+          else
+            recordSize[1] = page.writeNumber(recordPositionInPage, sizeMarker);
           final int recordContentPositionInPage = (int) (recordPositionInPage + recordSize[1]);
-          page.writeByteArray(recordContentPositionInPage, buffer.getContent(), buffer.getContentBeginOffset(), bufferSize);
+          page.writeByteArray(recordContentPositionInPage + writeFrom, bodyBytes, bodyBegin + writeFrom, writeTo - writeFrom);
         } finally {
           if (packedOverwrite)
             page.endPackedWrite(previousPackedWrite);

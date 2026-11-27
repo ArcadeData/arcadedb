@@ -28,8 +28,9 @@ import java.util.List;
 /**
  * The strategy set every {@link ArcadeGraph} traversal source starts from. It differs from TinkerPop's default only in
  * refusing to drop the strategies that enforce what the caller is allowed: {@link ArcadeIoRegistrationStrategy}, the
- * permission to use the {@code io()} step, and {@link ArcadeResultSetLimitStrategy}, the cap of the rows a traversal answers
- * for a user whose security groups set a {@code resultSetLimit} (issue #13087).
+ * permission to use the {@code io()} step, {@link ArcadeResultSetLimitStrategy}, the cap of the rows a traversal answers
+ * for a user whose security groups set a {@code resultSetLimit} (issue #13087), and {@link ArcadeRegexStrategy}, the time limit
+ * of the regular expressions (arcadedb.command.regexTimeout).
  * <p>
  * {@code withoutStrategies(...)} is a source instruction the CALLER controls: it is part of a bytecode request, of a
  * gremlin-lang string and of the fluent API alike, and every one of those routes ends in
@@ -71,6 +72,7 @@ public class ArcadeTraversalStrategies extends DefaultTraversalStrategies {
    */
   public static boolean isPinned(final Class<? extends TraversalStrategy> strategyClass) {
     return strategyClass != null && (ArcadeIoRegistrationStrategy.class.isAssignableFrom(strategyClass)
-        || ArcadeResultSetLimitStrategy.class.isAssignableFrom(strategyClass));
+        || ArcadeResultSetLimitStrategy.class.isAssignableFrom(strategyClass)
+        || ArcadeRegexStrategy.class.isAssignableFrom(strategyClass));
   }
 }
