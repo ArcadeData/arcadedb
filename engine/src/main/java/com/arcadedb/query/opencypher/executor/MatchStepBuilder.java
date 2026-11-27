@@ -781,6 +781,10 @@ final class MatchStepBuilder {
         || !isTypeScannableEndpoint(tgtNode, false, whereClause, boundVariables, matchVariables)
         || !isTypeScanCheaperThanWalk(srcNode, edgeTypes))
       return null;
+    // A target a UNIQUE index pins is the cheaper start: one lookup and the relationships of one vertex (issue #12149)
+    if (startsFromUniquelyKeyedTarget(pathPattern, srcNode, srcNode.getVariable() != null ? srcNode.getVariable() : "  src",
+        whereClause, false, boundVariables, matchVariables))
+      return null;
 
     final String effectiveSourceVar = srcNode.getVariable() != null ? srcNode.getVariable()
         : ("  src" + nextAnonymousId());

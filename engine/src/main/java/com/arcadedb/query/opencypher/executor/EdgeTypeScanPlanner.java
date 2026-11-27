@@ -40,7 +40,9 @@ import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Schema;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Decides whether a single-hop relationship pattern can be driven from a scan of the buckets of its relationship types instead of
@@ -65,7 +67,8 @@ public final class EdgeTypeScanPlanner {
    * The edge types a scan of the relationship types reads, each once: a type that is a sub-type of another of the list is read by
    * that one's polymorphic scan and is left out, and a type that does not exist matches nothing.
    *
-   * @return the types, or null when one of the names is a vertex or document type
+   * @return the types, or null when no scan reads each edge once: one of the names is a vertex or document type, or two of the
+   *     types share a sub-type (a type under two parents), whose buckets the polymorphic scan of each of them would read
    */
   public static List<String> scanTypes(final Schema schema, final List<String> typeNames) {
     final List<EdgeType> types = new ArrayList<>(typeNames.size());
@@ -83,6 +86,14 @@ public final class EdgeTypeScanPlanner {
     for (final EdgeType type : types)
       if (!isSubTypeOfAnother(type, types))
         names.add(type.getName());
+
+    if (names.size() > 1) {
+      final Set<Integer> buckets = new HashSet<>();
+      for (final String name : names)
+        for (final Integer bucketId : schema.getType(name).getBucketIds(true))
+          if (!buckets.add(bucketId))
+            return null;
+    }
     return names;
   }
 

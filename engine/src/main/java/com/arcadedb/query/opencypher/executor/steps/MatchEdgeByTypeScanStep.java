@@ -19,12 +19,14 @@
 package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.InlineProperties;
+import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.Expression;
@@ -88,6 +90,8 @@ public class MatchEdgeByTypeScanStep extends AbstractExecutionStep implements Pa
 
   private boolean started;
   private boolean servedInParallel;
+  /** The rows of the parallel scan a result set of this step is reading, null when none is open. */
+  private ResultSet openParallelRows;
 
   /**
    * The single-hop pattern the scan binds: what the step-by-step plan and the cost-based plan's {@code EdgeTypeScan} both hand
@@ -169,9 +173,10 @@ public class MatchEdgeByTypeScanStep extends AbstractExecutionStep implements Pa
           // over in the sequential order
           final ParallelRecordScan scan = relationshipFilter != null || relationshipProperties != null ?
               planScan(context, List.of()) : null;
-          if (scan != null)
+          if (scan != null) {
             parallelRows = scan.pull(context);
-          else
+            trackParallelRows(parallelRows);
+          } else
             rows = new EdgeRows(null);
         }
 
@@ -180,8 +185,13 @@ public class MatchEdgeByTypeScanStep extends AbstractExecutionStep implements Pa
             guard.check();
             buffer.add(parallelRows.next());
           }
-          if (!parallelRows.hasNext())
+          // Asked only of a batch that is not full: hasNext() waits for the next row, or for the end of the scan, and a full
+          // batch (the one row of a LIMIT 1) must not wait for either
+          if (buffer.size() < n) {
             finished = true;
+            releaseParallelRows(parallelRows);
+            parallelRows = null;
+          }
           return;
         }
 
@@ -214,7 +224,7 @@ public class MatchEdgeByTypeScanStep extends AbstractExecutionStep implements Pa
       public void close() {
         // The workers of a parallel scan stop when its result set is closed
         if (parallelRows != null) {
-          parallelRows.close();
+          releaseParallelRows(parallelRows);
           parallelRows = null;
         }
         if (rows != null)
@@ -223,6 +233,35 @@ public class MatchEdgeByTypeScanStep extends AbstractExecutionStep implements Pa
         MatchEdgeByTypeScanStep.this.close();
       }
     };
+  }
+
+  /**
+   * Stops the workers of the parallel scan still open. A statement that stops reading early (a {@code LIMIT}, a client that
+   * closes its result set) closes the steps of the plan, not the result set this step handed out, and the workers of a scan
+   * nobody reads any more would stay parked on their full queues.
+   */
+  @Override
+  public void close() {
+    final ResultSet open = openParallelRows;
+    if (open != null) {
+      openParallelRows = null;
+      open.close();
+    }
+    super.close();
+  }
+
+  private void trackParallelRows(final ResultSet parallelRows) {
+    final ResultSet previous = openParallelRows;
+    openParallelRows = parallelRows;
+    if (previous != null)
+      previous.close();
+  }
+
+  /** Closes a parallel scan that is over, or that its reader gave up. */
+  private void releaseParallelRows(final ResultSet parallelRows) {
+    if (openParallelRows == parallelRows)
+      openParallelRows = null;
+    parallelRows.close();
   }
 
   /**
@@ -373,6 +412,12 @@ public class MatchEdgeByTypeScanStep extends AbstractExecutionStep implements Pa
      * an endpoint record is missing (a dangling edge left by a rollback or an HA resync), which the walk skips too.
      */
     private boolean bindEndpoints(final ResultInternal row, final Edge edge, final boolean reversed, final CommandContext context) {
+      // An endpoint of another type than the labels ask for is decided from its RID, before it is loaded: the walk from those
+      // labels never reads it, so a user who may not read its type is not refused for it (and the load is saved)
+      final Schema schema = context.getDatabase().getSchema();
+      if (!canCarryLabels(schema, reversed ? edge.getIn() : edge.getOut(), sourceFilter)
+          || !canCarryLabels(schema, reversed ? edge.getOut() : edge.getIn(), targetFilter))
+        return false;
       try {
         final Vertex source = reversed ? edge.getInVertex() : edge.getOutVertex();
         if (!sourceFilter.isEmpty() && !sourceFilter.matches(source, EMPTY_RESULT, context))
@@ -386,6 +431,12 @@ public class MatchEdgeByTypeScanStep extends AbstractExecutionStep implements Pa
       } catch (final RecordNotFoundException e) {
         return false;
       }
+    }
+
+    /** Whether the type of the bucket {@code vertex} is in can carry the labels of {@code filter}. */
+    private static boolean canCarryLabels(final Schema schema, final RID vertex, final EdgeIndexSeedPlanner.EndpointFilter filter) {
+      return filter.labels().isEmpty() || vertex == null
+          || Labels.matches(schema.getTypeByBucketId(vertex.getBucketId()), filter.labels(), filter.disjunction());
     }
 
     private ResultInternal edgeOnlyRow(final Edge edge) {

@@ -158,6 +158,23 @@ class CypherEdgeTypeScanAclIssue11874Test {
     assertThat(drain(statement, 23)).isEqualTo(1);
     assertThat(drain(statement, 100)).isZero();
     assertThat(explain(statement)).contains(TYPE_SCAN);
+
+    // an edge that starts at a Secret vertex is not one of an Open source: the walk from Open never reads that vertex, and
+    // the scan must not refuse the statement for it, whatever the isolation level
+    final String fromOpen = "MATCH (q:Open)-[e:K]->(p) WHERE e.w = $v RETURN id(q) AS r";
+    assertThat(explain(fromOpen)).contains(TYPE_SCAN);
+    for (final Database.TRANSACTION_ISOLATION_LEVEL level : Database.TRANSACTION_ISOLATION_LEVEL.values()) {
+      database.setTransactionIsolationLevel(level);
+      database.begin();
+      try {
+        assertThat(drain(fromOpen, 13)).as("%s", level).isZero();
+        assertThat(drain(fromOpen, 23)).as("%s", level).isEqualTo(1);
+        assertThat(drain(statement, 13)).as("%s", level).isZero();
+        assertThat(drain(statement, 3)).as("%s", level).isZero();
+      } finally {
+        database.rollback();
+      }
+    }
   }
 
   @Test

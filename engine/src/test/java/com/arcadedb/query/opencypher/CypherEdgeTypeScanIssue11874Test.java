@@ -151,6 +151,52 @@ class CypherEdgeTypeScanIssue11874Test {
     }
 
     @Test
+    void aSubTypeOfTwoOfTheTypesIsAnsweredOnce() {
+      // MC is under both MA and MB: a polymorphic scan of each would read its buckets twice, and bind each of its edges twice
+      database.command("sql", "CREATE EDGE TYPE MA");
+      database.command("sql", "CREATE EDGE TYPE MB");
+      database.command("sql", "CREATE EDGE TYPE MC EXTENDS MA, MB");
+      database.transaction(() -> {
+        final Vertex a = database.query("sql", "SELECT FROM P WHERE id = 1").next().getVertex().get();
+        final Vertex b = database.query("sql", "SELECT FROM P WHERE id = 2").next().getVertex().get();
+        for (int i = 0; i < 3; i++)
+          a.newEdge("MC", b).set("w", 1).save();
+        a.newEdge("MA", b).set("w", 1).save();
+        b.newEdge("MB", a).set("w", 1).save();
+      });
+
+      for (final String types : new String[] { "MA|MB", "MB|MA", "MA|MB|MC" }) {
+        final String query = "MATCH (a)-[e:" + types + "]->(b) WHERE e.w = 1 RETURN id(e) AS i, type(e) AS t";
+        assertThat(rows(query, Map.of())).as(types).hasSize(5)
+            .isEqualTo(rows(query.replace("WHERE e.w = 1", "WITH a, e, b WHERE e.w = 1"), Map.of()));
+        assertThat(count("MATCH ()-[e:" + types + "]->() RETURN count(e.w) AS c")).as(types).isEqualTo(5L);
+      }
+      // one of the two alone reads the sub-type once, and keeps the scan
+      assertSameAsWalk("MATCH ()-[e:MA]->() WHERE e.w = 1 RETURN count(e) AS c",
+          "MATCH ()-[e:MA]->() WITH e WHERE e.w = 1 RETURN count(e) AS c", Map.of());
+      assertThat(count("MATCH ()-[e:MA]->() WHERE e.w = 1 RETURN count(e) AS c")).isEqualTo(4L);
+    }
+
+    @Test
+    void aTargetAUniqueIndexPinsKeepsTheWalkBackFromIt() {
+      // one index lookup and the relationships of one vertex, where the scan reads every edge of the type (issue #12149)
+      database.command("sql", "CREATE PROPERTY Q.id INTEGER");
+      database.command("sql", "CREATE INDEX ON Q (id) UNIQUE");
+
+      for (final String query : new String[] {
+          "MATCH (a)-[e:K]->(b:Q {id: 1000}) WHERE e.w >= 0 OPTIONAL MATCH (b)-[:L]->(c) RETURN a.id AS a, e.w AS w, c.id AS c",
+          "MATCH (a)-[e:K]->(b:Q) WHERE e.w >= 0 AND b.id = 1000 OPTIONAL MATCH (b)-[:L]->(c) RETURN a.id AS a, e.w AS w, c.id AS c" }) {
+        assertThat(explain(query, Map.of())).as(query).doesNotContain(TYPE_SCAN);
+        assertThat(rows(query, Map.of())).as(query).isNotEmpty()
+            .isEqualTo(rows(query.replace("WHERE e.w >= 0", "WITH a, e, b WHERE e.w >= 0"), Map.of()));
+      }
+      // a target no unique index pins is no cheaper a start than the scan
+      assertThat(explain(
+          "MATCH (a)-[e:K]->(b:Q {grp: 1}) WHERE e.w >= 0 OPTIONAL MATCH (b)-[:L]->(c) RETURN a.id AS a, e.w AS w, c.id AS c",
+          Map.of())).contains(TYPE_SCAN);
+    }
+
+    @Test
     void everyPredicateThatRequiresAProperty() {
       for (final String predicate : new String[] { "e.w = $w", "e.w < 4", "$w <= e.w", "e.w IN $ws", "e.name CONTAINS '1'",
           "e.name ENDS WITH '2'", "e.name =~ 'n1.*'", "e.w = 1 OR e.name = 'n2'", "e.w = 3 AND e.name <> 'loop'" }) {
@@ -284,9 +330,9 @@ class CypherEdgeTypeScanIssue11874Test {
       assertThat(explain(spread, Map.of())).contains(TYPE_SCAN);
       final Result scanned = single(spread);
       final Result walked = single(spread.replace("RETURN", "WITH e RETURN"));
-      assertThat(new TreeSet<>(scanned.<List<Object>>getProperty("l")).toString()).isEqualTo(
-          new TreeSet<>(walked.<List<Object>>getProperty("l")).toString());
-      assertThat(scanned.<List<Object>>getProperty("l")).hasSameSizeAs(walked.<List<Object>>getProperty("l"));
+      // in any order, each value as many times: a scan that dropped an edge and read another twice would not pass
+      assertThat(scanned.<List<Object>>getProperty("l")).isNotEmpty()
+          .containsExactlyInAnyOrderElementsOf(walked.<List<Object>>getProperty("l"));
       assertThat(scanned.<Number>getProperty("sd").doubleValue()).isCloseTo(walked.<Number>getProperty("sd").doubleValue(),
           Offset.offset(1e-9));
       assertThat(scanned.<Number>getProperty("sp").doubleValue()).isCloseTo(walked.<Number>getProperty("sp").doubleValue(),
@@ -418,6 +464,16 @@ class CypherEdgeTypeScanIssue11874Test {
       assertThat(rows(noPredicate)).isEqualTo(sequential(noPredicate))
           .isEqualTo(rows("MATCH ()-[e:K]->() WITH e RETURN count(e.w) AS c, sum(e.id) AS s"))
           .containsExactly("c=" + EDGES + ", s=" + (long) EDGES * (EDGES - 1) / 2);
+    }
+
+    @Test
+    void aLimitTakesItsRowsAndStopsTheScan() {
+      final String limited = "MATCH (a)-[e:K]->(b) WHERE e.w = 3 RETURN e.id AS id LIMIT 1";
+      assertThat(profile(limited)).contains(TYPE_SCAN).contains("[parallel]");
+      for (int i = 0; i < 20; i++)
+        assertThat(rows(limited)).hasSize(1);
+      // the rows after a closed scan are those of a scan of its own
+      assertThat(rows("MATCH (a)-[e:K]->(b) WHERE e.w = 3 RETURN e.id AS id")).hasSize(EDGES / 10);
     }
 
     private long sumOfIdsWithW3() {
