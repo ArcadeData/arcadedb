@@ -34,6 +34,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -225,6 +226,33 @@ class SnapshotSwapSkippingListingTest {
 
     assertThat(databaseFiles(dbDir)).isEqualTo(snapshot());
     assertThat(snapshotNew).doesNotExist();
+  }
+
+  // Regression for #13618: a stale listing naming a staged file already installed does not move it to the backup
+  @Test
+  void staleListingOfAnInstalledFileDoesNotRescueIt(@TempDir final Path databasesDir) throws IOException {
+    final Path dbDir = databasesDir.resolve("drill");
+    final Path snapshotNew = dbDir.resolve(SnapshotInstaller.SNAPSHOT_NEW_DIR);
+    final Path snapshotBackup = dbDir.resolve(SnapshotInstaller.SNAPSHOT_BACKUP_DIR);
+    write(dbDir, originals());
+    write(snapshotNew, snapshot());
+    Files.writeString(snapshotNew.resolve(SnapshotInstaller.SNAPSHOT_COMPLETE_FILE), "");
+
+    // The second listing of the staging still names a file the first pass installed, and the snapshot-only v1 dictionary
+    // has no original to sit in the backup under its name.
+    final String installed = "dictionary.0.65536.v1.dict";
+    final AtomicInteger stagingListings = new AtomicInteger();
+    SnapshotInstaller.directoryListingForTesting = (dir, entries) -> {
+      if (!dir.equals(snapshotNew) || stagingListings.incrementAndGet() != 2)
+        return entries;
+      final List<Path> stale = new ArrayList<>(entries);
+      stale.add(dir.resolve(installed));
+      return stale;
+    };
+    SnapshotInstaller.atomicSwap(dbDir, snapshotNew, snapshotBackup);
+
+    assertThat(databaseFiles(dbDir)).as("the installed file stays live").isEqualTo(snapshot());
+    assertThat(databaseFiles(snapshotBackup)).as("the backup holds only originals").isEqualTo(originals());
   }
 
   // Regression for #13618: a listing that never stops naming a gone entry fails the swap, which restores the originals

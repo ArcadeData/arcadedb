@@ -2998,6 +2998,10 @@ public final class SnapshotInstaller {
           entry -> {
             final String name = entry.getFileName().toString();
             final Path target = dbDir.resolve(name);
+            // A stale listing can name a staged entry an earlier pass already installed: its live target is then the
+            // snapshot's own file, which must not be taken for an original. Skipped as stale by drainDirectory.
+            if (!Files.exists(entry, LinkOption.NOFOLLOW_LINKS))
+              throw new NoSuchFileException(entry.toString());
             // A live entry under a staged name that the backup does not hold is an original phase 1 did not see (its
             // listing missed it, issue #13618): phase 1 renames, so an original it moved is gone from dbDir, and a staged
             // name is installed once. It goes to the backup first rather than being overwritten.
