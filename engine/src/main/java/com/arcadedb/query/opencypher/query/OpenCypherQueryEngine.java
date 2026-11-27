@@ -150,7 +150,8 @@ public class OpenCypherQueryEngine implements QueryEngine {
     try {
       // EXPLAIN/PROFILE are prefixes the query()/command() paths strip before parsing, so the grammar never sees them.
       // PROFILE executes what it wraps, so it is classified exactly as the wrapped statement; EXPLAIN only plans, so
-      // it stays idempotent while still reporting the wrapped statement's operation types (issue #9313).
+      // it stays idempotent while still reporting the wrapped statement's operation types (issue #9313), unless planning
+      // evaluates a call to a function that is not confirmed to be a built-in one (see isPlanOnly()).
       final String stripped = stripLeadingComments(query);
       final boolean explain = stripped.regionMatches(true, 0, "EXPLAIN ", 0, 8);
       final String actual = explain || stripped.regionMatches(true, 0, "PROFILE ", 0, 8) ? stripped.substring(8).trim() : query;
@@ -163,7 +164,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
       return new AnalyzedQuery() {
         @Override
         public boolean isIdempotent() {
-          return explain || statement.isReadOnly();
+          return statement.isReadOnly() || isPlanOnly(explain, statement);
         }
 
         @Override
@@ -287,10 +288,11 @@ public class OpenCypherQueryEngine implements QueryEngine {
       if (!explain)
         checkParametersAreBound(parsed.parameters(), effectiveParameters);
 
-      // EXPLAIN never executes the underlying query, so the idempotency rule does not apply. PROFILE does execute it,
-      // so a write under PROFILE is refused here exactly like the bare write (issue #9313); Studio and the command
-      // path (database.command) are where a profiled write is legitimate (issue #4366).
-      if (!explain && !statement.isReadOnly())
+      // EXPLAIN does not execute the underlying query, so the idempotency rule does not apply to what it only plans. PROFILE
+      // does execute it, so a write under PROFILE is refused here exactly like the bare write (issue #9313); Studio and the
+      // command path (database.command) are where a profiled write is legitimate (issue #4366). The EXPLAIN of a statement
+      // whose planning evaluates a function that is not confirmed to be a built-in one is refused as the bare statement is.
+      if (!statement.isReadOnly() && !isPlanOnly(explain, statement))
         throw new QueryNotIdempotentException("Query '" + query + "' is not idempotent");
 
       // SHOW/TERMINATE TRANSACTIONS read no data and are answered by the server's registry, not by a plan (issue #9689)
@@ -314,6 +316,18 @@ public class OpenCypherQueryEngine implements QueryEngine {
   @Override
   public ResultSet query(final String query, final ContextConfiguration configuration, final Object... parameters) {
     return query(query, configuration, convertPositionalParameters(parameters));
+  }
+
+  /**
+   * Whether the statement is only planned, so it is answered as a read whatever it wraps: an EXPLAIN builds the steps of the
+   * statement and runs none of them. Building them still evaluates the expressions the steps need up front (SKIP, LIMIT, the
+   * top-K bound of an ORDER BY, the conditions of a conditional query), so a statement calling a function that is not confirmed
+   * to be a built-in one, which can be a {@code DEFINE FUNCTION} body, runs it while it is planned and is classified as it is
+   * when run (issue #6418). The answer is deliberately conservative: a call anywhere in the statement counts, not only one in
+   * the expressions evaluated up front, so that no shape of the statement has to be modelled here.
+   */
+  private static boolean isPlanOnly(final boolean explain, final CypherStatement statement) {
+    return explain && !statement.hasUnconfirmedFunctionCall();
   }
 
   /**
