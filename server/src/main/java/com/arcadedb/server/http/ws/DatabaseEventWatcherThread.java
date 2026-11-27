@@ -51,10 +51,11 @@ final public class DatabaseEventWatcherThread extends Thread {
 
   /**
    * Whether this watcher listens on {@code candidate}: the same embedded instance, whatever wraps it. The HA plugin re-wraps a
-   * registered database without opening a new one, and its listeners stay where they are (issue #10801).
+   * registered database without opening a new one, and its listeners stay where they are (issue #10801). A watcher whose thread
+   * ended listens on nothing: it unregistered its listeners on the way out, so it is not one to keep for a subscriber.
    */
   public boolean isWatching(final DatabaseInternal candidate) {
-    return embeddedOf(database) == candidate.getEmbedded();
+    return running && isAlive() && embeddedOf(database) == candidate.getEmbedded();
   }
 
   private static Database embeddedOf(final Database database) {
@@ -124,11 +125,20 @@ final public class DatabaseEventWatcherThread extends Thread {
         final var event = this.eventQueue.poll(500, TimeUnit.MILLISECONDS);
         if (event == null)
           continue;
-        this.eventBus.publish(event);
+
+        try {
+          this.eventBus.publish(event);
+        } catch (final RuntimeException e) {
+          // ONE CHANGE THAT FAILS TO PUBLISH MUST NOT END THE CHANGE STREAM OF THE WHOLE DATABASE: IT IS DROPPED, THE NEXT ONE IS TAKEN
+          LogManager.instance().log(this, Level.SEVERE, "Error while publishing a change event of database '%s'", e, database.getName());
+        }
       }
 
     } catch (final InterruptedException ignored) {
     } finally {
+      // Whatever ended the loop, this watcher takes no more events and is not taken for a live one by the bus
+      this.running = false;
+
       this.database.getEvents().unregisterListener((AfterRecordCreateListener) listener)
           .unregisterListener((AfterRecordUpdateListener) listener)
           .unregisterListener((AfterRecordDeleteListener) listener);

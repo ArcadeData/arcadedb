@@ -183,20 +183,32 @@ public class WebSocketEventBus {
   }
 
   public void publish(final ChangeEvent event) {
-    final Database recordDatabase = event.getRecord().getDatabase();
-    final var databaseName = recordDatabase.getName();
-    final var databaseSubscribers = this.subscribers.get(databaseName);
-    if (databaseSubscribers == null)
+    final Database recordDatabase;
+    final String databaseName;
+    final ConcurrentHashMap<UUID, EventWatcherSubscription> databaseSubscribers;
+    final int bucketId;
+    final String json;
+    try {
+      recordDatabase = event.getRecord().getDatabase();
+      databaseName = recordDatabase.getName();
+      databaseSubscribers = this.subscribers.get(databaseName);
+      if (databaseSubscribers == null)
+        return;
+
+      // The bucket of the record is what the per-type read grants are keyed on: resolved once for the whole fan-out
+      final RID identity = event.getRecord().getIdentity();
+      bucketId = identity != null ? identity.getBucketId() : -1;
+
+      // Serialize the event ONCE for the whole fan-out instead of once per subscriber: ChangeEvent.toJSON does a full
+      // record.toJSON(true) + String materialization, so per-subscriber serialization is O(N x record size) on the single
+      // watcher thread and can back up the bounded queue and drop events.
+      json = event.toJSON();
+    } catch (final RuntimeException e) {
+      // A change that cannot be prepared is skipped and the watcher thread goes on with the next one, as it does for a failure on
+      // one subscription (issue #4479)
+      LogManager.instance().log(this, Level.SEVERE, "Error while preparing a change event for publishing, the change is skipped", e);
       return;
-
-    // The bucket of the record is what the per-type read grants are keyed on: resolved once for the whole fan-out
-    final RID identity = event.getRecord().getIdentity();
-    final int bucketId = identity != null ? identity.getBucketId() : -1;
-
-    // Serialize the event ONCE for the whole fan-out instead of once per subscriber: ChangeEvent.toJSON does a full
-    // record.toJSON(true) + String materialization, so per-subscriber serialization is O(N x record size) on the single
-    // watcher thread and can back up the bounded queue and drop events.
-    final String json = event.toJSON();
+    }
 
     // onError may run on an XNIO IO thread after sendText returns, so the zombie collector must be thread-safe.
     final var zombieConnections = new ConcurrentLinkedQueue<UUID>();
