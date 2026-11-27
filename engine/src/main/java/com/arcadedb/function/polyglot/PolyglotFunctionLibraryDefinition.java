@@ -32,6 +32,7 @@ import java.util.List;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.locks.ReentrantLock;
 
 public abstract class PolyglotFunctionLibraryDefinition<T extends PolyglotFunctionDefinition> implements FunctionLibraryDefinition<T> {
   protected final Database                 database;
@@ -40,20 +41,56 @@ public abstract class PolyglotFunctionLibraryDefinition<T extends PolyglotFuncti
   protected final List<String>             allowedPackages;
   protected final ConcurrentMap<String, T> functions = new ConcurrentHashMap<>();
   /**
-   * Dedicated, never-reassigned lock so the monitor identity stays stable across an engine swap in reloadEngine():
-   * {@code synchronized} on the {@code polyglotEngine} field itself let a thread inside {@link #execute(Callback)}
-   * and a concurrent {@code reloadEngine()} lock two different monitors over what is meant to be a serialized
-   * engine, so a redefinition could close the engine underneath an in-flight call (issue #7006). A plain mutex -
-   * rather than a read-write lock - keeps every caller of {@link #execute(Callback)} serialized against every other
-   * caller too: the shared GraalVM {@code Context} does not support concurrent invocation without explicit
-   * multi-threaded access configuration, which is exactly the problem {@code PolyglotQueryEngine} already solved
-   * the same way for issue #6759.
+   * Serializes the rebuilds of the engine among themselves. A rebuild never waits for a call.
    */
-  private final    Object                  engineLock = new Object();
-  protected       GraalPolyglotEngine      polyglotEngine;
+  private final    Object                  reloadLock = new Object();
+  /**
+   * The engine the calls run on. Every call locks the engine it runs on, so the calls stay serialized against each other:
+   * the shared GraalVM {@code Context} does not support concurrent invocation without explicit multi-threaded access
+   * configuration (issues #6759, #7006). A rebuild publishes a new engine and retires this one, which is closed by the
+   * last call that holds it, never under a running call.
+   */
+  private volatile EngineHolder            current;
+  /**
+   * The engine a rebuild declares the functions into before it is published. Only its {@link EngineHolder#builder} uses
+   * it: any other thread that reads it goes on to {@link #current}.
+   */
+  private          EngineHolder            declaring;
 
   public interface Callback {
     Object execute(GraalPolyglotEngine polyglotEngine);
+  }
+
+  /** An engine and the lock its calls take. */
+  private static final class EngineHolder {
+    private final    GraalPolyglotEngine engine;
+    private final    Thread              builder;
+    private final    ReentrantLock       lock = new ReentrantLock();
+    private volatile boolean             retired;
+    // GUARDED BY lock
+    private          boolean             closed;
+
+    private EngineHolder(final GraalPolyglotEngine engine) {
+      this.engine = engine;
+      this.builder = Thread.currentThread();
+    }
+
+    /**
+     * Closes the engine once it is retired and no call holds it. A call still running on it closes it when it returns,
+     * since it checks {@link #retired} after it released the lock.
+     */
+    private void closeIfRetiredAndIdle() {
+      if (!retired || lock.isHeldByCurrentThread() || !lock.tryLock())
+        return;
+      try {
+        if (!closed) {
+          closed = true;
+          engine.close();
+        }
+      } finally {
+        lock.unlock();
+      }
+    }
   }
 
   protected PolyglotFunctionLibraryDefinition(final Database database, final String libraryName, final String language, final List<String> allowedPackages) {
@@ -61,46 +98,56 @@ public abstract class PolyglotFunctionLibraryDefinition<T extends PolyglotFuncti
     this.libraryName = libraryName;
     this.language = language;
     this.allowedPackages = allowedPackages;
-    this.polyglotEngine = GraalPolyglotEngine.newBuilder(database, PolyglotEngineManager.getInstance().getSharedEngine())
-        .setLanguage(language).setAllowedPackages(allowedPackages).build();
+    this.current = new EngineHolder(newEngine());
   }
 
   public PolyglotFunctionLibraryDefinition registerFunction(final T function) {
-    if (functions.putIfAbsent(function.getName(), function) != null)
-      throw new AlreadyExistsException(AlreadyExistsException.Kind.FUNCTION,
-          "Function '" + function.getName() + "' already defined in library '" + libraryName + "'");
+    synchronized (reloadLock) {
+      if (functions.putIfAbsent(function.getName(), function) != null)
+        throw new AlreadyExistsException(AlreadyExistsException.Kind.FUNCTION,
+            "Function '" + function.getName() + "' already defined in library '" + libraryName + "'");
 
-    try {
-      reloadEngine();
-    } catch (final RuntimeException e) {
-      // A broken definition (e.g. invalid JS) must not poison the whole library (issue #5121). Roll back the
-      // just-added function and rebuild the engine with the remaining (already valid) functions so they keep working
-      // and no map entry is ever left with a null library back-reference.
-      functions.remove(function.getName());
       try {
         reloadEngine();
-      } catch (final RuntimeException ignore) {
-        // best effort: the remaining functions were already valid, so this rebuild is expected to succeed
+      } catch (final RuntimeException e) {
+        // A broken definition (e.g. invalid JS) must not poison the whole library (issue #5121). The rebuilt engine was
+        // never published, so the current one still holds every remaining (already valid) function: dropping the
+        // just-added function from the map is all it takes.
+        functions.remove(function.getName());
+        throw e;
       }
-      throw e;
     }
-
     return this;
   }
 
   /**
-   * Rebuilds the polyglot engine and (re)declares every registered function into it. Any invalid definition makes this
-   * method throw, leaving the caller to decide how to recover.
+   * Builds a new polyglot engine, declares every registered function into it and publishes it. Nothing here waits for a
+   * call: the functions are declared before the engine is visible to any call, and the replaced engine is closed by the
+   * last call that holds it. Any invalid definition makes this method throw before the new engine is published, leaving
+   * the current one in place. Called under {@link #reloadLock}.
    */
   private void reloadEngine() {
-    synchronized (engineLock) {
-      // REGISTER ALL THE FUNCTIONS UNDER THE NEW ENGINE INSTANCE
-      this.polyglotEngine.close();
-      this.polyglotEngine = GraalPolyglotEngine.newBuilder(database, PolyglotEngineManager.getInstance().getSharedEngine())
-          .setLanguage(language).setAllowedPackages(allowedPackages).build();
+    final EngineHolder next = new EngineHolder(newEngine());
+    declaring = next;
+    try {
       for (final T f : functions.values())
         f.init(this);
+    } catch (final Throwable e) {
+      next.engine.close();
+      throw e;
+    } finally {
+      declaring = null;
     }
+
+    final EngineHolder previous = current;
+    current = next;
+    previous.retired = true;
+    previous.closeIfRetiredAndIdle();
+  }
+
+  private GraalPolyglotEngine newEngine() {
+    return GraalPolyglotEngine.newBuilder(database, PolyglotEngineManager.getInstance().getSharedEngine())
+        .setLanguage(language).setAllowedPackages(allowedPackages).build();
   }
 
   @Override
@@ -154,11 +201,30 @@ public abstract class PolyglotFunctionLibraryDefinition<T extends PolyglotFuncti
   }
 
   public Object execute(final Callback callback) {
-    synchronized (engineLock) {
-      final GraalPolyglotEngine engine = polyglotEngine;
-      // A function looping in the guest language never returns to the statement's checks: a terminate interrupts it
-      // (issue #9689)
-      return engine.runTerminable(RunningQuery.current(), "the function", () -> callback.execute(engine));
+    final EngineHolder beingDeclared = declaring;
+    if (beingDeclared != null && beingDeclared.builder == Thread.currentThread())
+      // A FUNCTION BEING DECLARED BY A REBUILD: THE NEW ENGINE IS NOT PUBLISHED YET, NO OTHER THREAD CAN REACH IT
+      return run(beingDeclared.engine, callback);
+
+    while (true) {
+      final EngineHolder holder = current;
+      holder.lock.lock();
+      try {
+        // A RETIRED ENGINE KEEPS SERVING THE CALL THAT WAS ALREADY RUNNING ON IT (A NESTED CALL), A NEW CALL TAKES THE
+        // CURRENT ONE
+        if (!holder.retired || holder.lock.getHoldCount() > 1)
+          return run(holder.engine, callback);
+      } finally {
+        holder.lock.unlock();
+        if (holder.retired)
+          holder.closeIfRetiredAndIdle();
+      }
     }
+  }
+
+  private static Object run(final GraalPolyglotEngine engine, final Callback callback) {
+    // A function looping in the guest language never returns to the statement's checks: a terminate interrupts it
+    // (issue #9689)
+    return engine.runTerminable(RunningQuery.current(), "the function", () -> callback.execute(engine));
   }
 }
