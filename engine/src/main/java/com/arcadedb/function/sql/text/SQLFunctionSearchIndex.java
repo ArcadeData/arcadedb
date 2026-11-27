@@ -34,6 +34,7 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.query.sql.parser.BinaryCompareOperator;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.FromClause;
+import com.arcadedb.query.sql.parser.SuffixIdentifier;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.schema.MultiTypeIndexes;
 import com.arcadedb.schema.Schema;
@@ -105,6 +106,8 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
       return false;
 
     // Verify the named index exists and is a full-text type index
+    if (readsRecordAttribute(oExpressions[0], context))
+      return false;
     final String indexName = resolveStringParam(oExpressions[0], context);
     if (indexName == null)
       return false;
@@ -248,5 +251,27 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
    */
   static Object resolveParam(final Expression expr, final CommandContext context) {
     return expr != null ? expr.execute((Identifiable) null, context) : null;
+  }
+
+  /**
+   * Whether the argument that names what to search (the index, the fields) reads a record attribute. With no record the
+   * attribute is null, and an expression can turn that null into the name of another index
+   * ({@code ifnull(@type, 'Other') + '[name]'}): the indexed fetch would then answer from an index the records do not name.
+   * Such a call is not served by the index and is evaluated per record. An argument that reads no attribute costs one more
+   * evaluation of it, once per plan.
+   */
+  static boolean readsRecordAttribute(final Expression expr, final CommandContext context) {
+    if (expr == null)
+      return false;
+    context.setCachedValue(SuffixIdentifier.RECORD_ATTRIBUTE_NEEDS_RECORD, SuffixIdentifier.IN_EVERY_READ);
+    try {
+      expr.execute((Identifiable) null, context);
+      return false;
+    } catch (final CommandExecutionException e) {
+      // the attribute was refused, or the argument fails for a reason the per-record evaluation reports
+      return true;
+    } finally {
+      context.setCachedValue(SuffixIdentifier.RECORD_ATTRIBUTE_NEEDS_RECORD, null);
+    }
   }
 }

@@ -134,6 +134,9 @@ public class SQLFunctionSearchFields extends SQLFunctionAbstract implements Inde
     if (!IndexableSQLFunction.selectsMatches(operator, right))
       return false;
     try {
+      // a field list read from a record attribute is the one of each record, not the one the missing record resolves to
+      if (oExpressions != null && oExpressions.length > 0 && SQLFunctionSearchIndex.readsRecordAttribute(oExpressions[0], context))
+        return false;
       return search(target, context, oExpressions) != null;
     } catch (final CommandExecutionException e) {
       return false;

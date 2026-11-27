@@ -59,9 +59,15 @@ public class SuffixIdentifier extends SimpleNode {
 
   /**
    * Key of the {@link CommandContext#getCachedValue(String) cached value} a caller sets to have a record attribute evaluated
-   * with no record refused instead of answered null. Set by the evaluation of a property default value (issue #6134).
+   * with no record refused instead of answered null. Any value refuses the read of the attribute from a record, the one that
+   * failed before issue #12795: the evaluation of a property default value sets it to keep failing (issue #6134). The value
+   * {@link #IN_EVERY_READ} also refuses the read from a row, which has always been null with no row: a planner sets it to
+   * learn whether an expression reads a record attribute at all.
    */
   public static final String RECORD_ATTRIBUTE_NEEDS_RECORD = "SuffixIdentifier.recordAttributeNeedsRecord";
+
+  /** See {@link #RECORD_ATTRIBUTE_NEEDS_RECORD}. */
+  public static final Object IN_EVERY_READ = new Object();
 
   public SuffixIdentifier() {
   }
@@ -258,6 +264,11 @@ public class SuffixIdentifier extends SimpleNode {
     if (currentRecord != null && recordAttribute != null) {
       return recordAttribute.evaluate(currentRecord, context);
     }
+
+    // No row has always been null here. Only a caller that asks about every read is refused
+    if (recordAttribute != null && context != null && context.getCachedValue(RECORD_ATTRIBUTE_NEEDS_RECORD) == IN_EVERY_READ)
+      throw new CommandExecutionException(
+          "The record attribute '" + recordAttribute.name + "' cannot be resolved because there is no current record");
 
     return null;
   }

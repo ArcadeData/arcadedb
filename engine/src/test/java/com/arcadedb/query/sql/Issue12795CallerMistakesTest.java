@@ -135,6 +135,23 @@ class Issue12795CallerMistakesTest extends TestHelper {
   }
 
   @Test
+  void aNameBuiltFromARecordAttributeNeverSelectsTheIndexItsMissingRecordResolvesTo() {
+    // with no record @type is null, and ifnull() turns it into the name of an index that exists: the plan must not search it
+    database.command("sql", "CREATE VERTEX TYPE Fallback");
+    database.command("sql", "CREATE PROPERTY Fallback.name STRING");
+    database.command("sql", "CREATE INDEX ON Fallback (name) FULL_TEXT");
+    database.transaction(() -> database.command("sql", "INSERT INTO Fallback SET name = 'a z'"));
+
+    final List<Result> rows = drain("SELECT FROM P WHERE SEARCH_INDEX(ifnull(@type, 'Fallback') + '[name]', 'a') = true");
+    assertThat(rows).hasSize(1);
+    assertThat(rows.get(0).<String>getProperty("name")).isEqualTo("a b");
+
+    // the field list of SEARCH_FIELDS, the same way: per record it names the field `P`, which has no index
+    assertThatThrownBy(() -> drain("SELECT FROM P WHERE SEARCH_FIELDS(ifnull(@type, 'name'), 'a') = true")).isInstanceOf(
+        InvalidArgumentException.class).hasMessageContaining("No full-text index found for fields: [P]");
+  }
+
+  @Test
   void searchArgumentsReadFromTheParentRowOfASubQueryStillSearchTheIndex() {
     // $parent.$current is known only when the sub-query runs, and is not a function of the record being searched: the call is
     // still answered by the index, with the value of the parent row
