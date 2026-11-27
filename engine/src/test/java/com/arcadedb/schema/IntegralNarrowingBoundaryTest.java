@@ -19,6 +19,7 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.ValueOutOfRangeException;
 import org.junit.jupiter.api.Test;
 
@@ -77,10 +78,6 @@ class IntegralNarrowingBoundaryTest extends TestHelper {
     };
   }
 
-  private static boolean isFinite(final Number value) {
-    return !(value instanceof Double d && (d.isNaN() || d.isInfinite())) && !(value instanceof Float f && (f.isNaN() || f.isInfinite()));
-  }
-
   @Test
   void aNumberIsAcceptedWhenItsTruncationIsInTheRangeOfTheProperty() {
     final DocumentType type = database.getSchema().createDocumentType("Holder");
@@ -118,9 +115,35 @@ class IntegralNarrowingBoundaryTest extends TestHelper {
     final DocumentType type = database.getSchema().createDocumentType("Holder");
     for (final Type target : RANGES.keySet()) {
       final Property property = type.createProperty("p_" + target.name().toLowerCase(), target);
-      for (final Number value : new Number[] { Double.NaN, Float.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, Float.POSITIVE_INFINITY, Float.NEGATIVE_INFINITY })
+      // NaN HAS NO TRUNCATION AT ALL: IT IS REFUSED AS INCONVERTIBLE, NOT AS OUT OF RANGE
+      for (final Number value : new Number[] { Double.NaN, Float.NaN })
         assertThatThrownBy(() -> Type.convert(database, value, target.getDefaultJavaType(), property)).as("%s <- %s", target, value)
-            .isInstanceOf(RuntimeException.class);
+            .isInstanceOf(IllegalArgumentException.class).isNotInstanceOf(ValueOutOfRangeException.class).hasMessageContaining("NaN");
+      for (final Number value : new Number[] { Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, Float.POSITIVE_INFINITY, Float.NEGATIVE_INFINITY })
+        assertThatThrownBy(() -> Type.convert(database, value, target.getDefaultJavaType(), property)).as("%s <- %s", target, value)
+            .isInstanceOf(ValueOutOfRangeException.class);
     }
+  }
+
+  /** The values of issue #13003, written to a LONG property of a stored document and read back. */
+  @Test
+  void aLongPropertyStoresTheTruncationOfADecimalAtTheEndsOfTheRange() {
+    database.getSchema().createDocumentType("Holder").createProperty("value", Type.LONG);
+
+    final RID[] rids = new RID[2];
+    database.transaction(() -> {
+      rids[0] = database.newDocument("Holder").set("value", new BigDecimal("9223372036854775807.5")).save().getIdentity();
+      rids[1] = database.newDocument("Holder").set("value", new BigDecimal("-9223372036854775808.5")).save().getIdentity();
+    });
+
+    assertThat(rids[0].asDocument().getLong("value")).isEqualTo(Long.MAX_VALUE);
+    assertThat(rids[1].asDocument().getLong("value")).isEqualTo(Long.MIN_VALUE);
+
+    // THE FIRST INTEGERS BEYOND THE RANGE ARE STILL REFUSED, WITH OR WITHOUT A FRACTION
+    for (final String beyond : new String[] { "9223372036854775808", "9223372036854775808.5", "-9223372036854775809", "-9223372036854775809.5" })
+      assertThatThrownBy(() -> database.transaction(() -> database.newDocument("Holder").set("value", new BigDecimal(beyond)).save())).as(beyond)
+          .isInstanceOf(IllegalArgumentException.class).hasCauseInstanceOf(ValueOutOfRangeException.class);
+
+    assertThat(database.countType("Holder", false)).isEqualTo(2);
   }
 }
