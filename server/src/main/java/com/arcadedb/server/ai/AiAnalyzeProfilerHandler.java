@@ -21,6 +21,7 @@ package com.arcadedb.server.ai;
 import com.arcadedb.Constants;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.BoundedHttpExchange;
+import com.arcadedb.query.RunningQuery;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
@@ -100,7 +101,7 @@ public class AiAnalyzeProfilerHandler extends AbstractServerHttpHandler {
 
     try {
       // Collect schemas for all databases referenced in profiler data
-      final JSONObject schemas = collectDatabaseSchemas(profilerData, user);
+      final JSONObject schemas = collectDatabaseSchemas(profilerData, user, AiRunningQuery.clientOf(exchange));
 
       if (source == AiPortal.Source.PORTAL)
         return analyzeThroughPortal(profilerData, schemas);
@@ -184,7 +185,8 @@ public class AiAnalyzeProfilerHandler extends AbstractServerHttpHandler {
    * Extracts unique database names from the profiler data (from queries and summary)
    * and fetches the schema for each one the user has access to.
    */
-  private JSONObject collectDatabaseSchemas(final JSONObject profilerData, final ServerSecurityUser user) {
+  private JSONObject collectDatabaseSchemas(final JSONObject profilerData, final ServerSecurityUser user,
+      final RunningQuery.Client client) {
     final JSONObject schemas = new JSONObject();
     final Set<String> dbNames = new HashSet<>();
 
@@ -218,7 +220,8 @@ public class AiAnalyzeProfilerHandler extends AbstractServerHttpHandler {
       if (!user.canAccessToDatabase(dbName))
         continue;
       try {
-        schemas.put(dbName, SchemaInfo.forUser(server, user, dbName));
+        schemas.put(dbName, AiRunningQuery.run(server, user, client, dbName, false, AiRunningQuery.PROTOCOL, "get_schema",
+            () -> SchemaInfo.forUser(server, user, dbName)));
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.FINE, "Could not fetch schema for database '%s': %s", dbName, e.getMessage());
       }
