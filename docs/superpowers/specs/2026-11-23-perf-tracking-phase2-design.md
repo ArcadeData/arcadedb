@@ -195,8 +195,15 @@ the run file records the cpusets as shared.
 **Mixed phase, hybrid retrieval, soak** (project 6).
 - `mixed`: ingest, search, compaction, DDL, time-series inserts and vector churn at once; per operation p99 and the longest
   gap with no commit (ms, lower is better).
+  The laptop S run (JVM image, 90 s window, 1 warm-up and 3 repetitions) took about 7 minutes with the case `ok`; `mixed`
+  stays at S pending the perf-01 S run. It publishes the operations each loop completed (`<loop>_ops`, unit `operations`,
+  never judged) so the 1,000 operations rule can be checked there.
+  Known shortfall: at the 90 s S window the laptop ran 762-987 ingest and 495-670 vector churn operations per measured
+  repetition (an operation is a batch of 100 inserts or 50 updates), under the 1,000 operations rule; `ingest_ops` and
+  `vector_churn_ops` of the perf-01 S run decide whether the window grows or the shortfall is accepted.
 - `hybrid-rag`: large-k vector search, full-text and a 2-hop walk behind visibility filters, on skewed data with hub
   vertices; qps, p50/p95/p99, recall of the vector step.
+  The laptop S run took about 2.5 minutes (153 s) with every case `ok`; `hybrid-rag` stays at S pending the perf-01 S run.
 - `soak`: the mixed phase for 2 hours, Saturday only, one repetition and no warm-up. A workload may declare its own reps,
   warm-up and step limit (a default method on `Workload`, overriding the run's), which the soak uses; the slopes are
   published as metrics (unit `ratio`, per hour) so the dashboard charts them, and over a limit the case is `failed`; least-squares slope of heap after GC (limit 5% of its mean per hour),
