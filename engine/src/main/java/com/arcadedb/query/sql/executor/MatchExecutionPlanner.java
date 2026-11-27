@@ -645,7 +645,26 @@ public class MatchExecutionPlanner {
 
       // 2. Having found a starting vertex, traverse its neighbors depth-first,
       //    adding any non-visited ones with satisfied dependencies to our schedule.
+      final int scheduledBefore = resultingSchedule.size();
+      // The dependency sets the start satisfies, to undo an empty pass: allocated only when an alias reads it through $matched
+      List<Set<String>> satisfiedByStart = null;
+      for (final Set<String> dependencies : remainingDependencies.values())
+        if (dependencies.contains(startingNode.alias)) {
+          if (satisfiedByStart == null)
+            satisfiedByStart = new ArrayList<>(2);
+          satisfiedByStart.add(dependencies);
+        }
       updateScheduleStartingAt(startingNode, visitedNodes, visitedEdges, remainingDependencies, resultingSchedule, rootCandidates);
+      if (resultingSchedule.size() == scheduledBefore) {
+        // A pass that schedules no edge binds nothing (only the first scheduled edge gets a root step): left visited, the node
+        // would have a later edge walked from it unbound (issue #12943). The pass never recursed, so this undoes all it changed.
+        // The node is NOT put back among the starts: started after another pass, it would bind nothing either, and a node no edge
+        // reaches later is refused below rather than walked from unbound
+        visitedNodes.remove(startingNode);
+        if (satisfiedByStart != null)
+          for (final Set<String> dependencies : satisfiedByStart)
+            dependencies.add(startingNode.alias);
+      }
     }
 
     if (resultingSchedule.size() != pattern.numOfEdges) {
