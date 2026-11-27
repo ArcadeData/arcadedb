@@ -663,25 +663,34 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * property list. MongoDB collections are schemaless, so properties not yet declared on the type
    * are left free-form and the index falls back to {@code STRING} key serialisation (the same
    * approach the native OpenCypher engine uses for {@code CREATE INDEX}, issue #4222), preserving
-   * the stored Java type. Re-creating an existing index is a no-op, matching MongoDB semantics.
+   * the stored Java type. Re-creating an existing index is a no-op, matching MongoDB semantics. The command names at least one index,
+   * as {@code mongod} requires.
    */
   private Document createIndexes(final Document document) {
     final String collectionName = document.get("createIndexes").toString();
 
+    // THE PERMISSIONS COME FIRST, AS THEY DO FOR CREATE INDEX OF SQL, BEFORE ANYTHING OF THE COLLECTION IS READ: THE SCHEMA ONE, AND THE
+    // READ ONE FOR A COLLECTION THAT EXISTS. ONE THAT DOES NOT EXIST IS CREATED BELOW, WHICH THE SCHEMA PERMISSION COVERS
+    ((DatabaseInternal) database).checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+    MongoDBCollectionWrapper.checkAccess(database, collectionName, SecurityDatabaseUser.ACCESS.READ_RECORD);
+
     final Object indexesValue = document.get("indexes");
-    if (indexesValue != null && !(indexesValue instanceof List))
+    if (indexesValue == null)
+      throw new MongoServerError(MISSING_FIELD, "Location" + MISSING_FIELD, "BSON field 'createIndexes.indexes' is missing but a required field");
+    if (!(indexesValue instanceof List))
       throw new MongoServerError(ErrorCode.FailedToParse.getValue(), ErrorCode.FailedToParse.name(),
           "The 'indexes' field of createIndexes must be an array of index specifications");
     final List<Document> indexes = (List<Document>) indexesValue;
+    if (indexes.isEmpty())
+      throw new MongoServerError(ErrorCode.BadValue.getValue(), ErrorCode.BadValue.getName(), "Must specify at least one index to create");
     // VALIDATE EVERY SPECIFICATION BEFORE TOUCHING THE SCHEMA: A REFUSED BATCH CREATES NEITHER THE COLLECTION NOR ANY OF ITS
     // INDEXES, SO THE CLIENT IS NOT LEFT WITH HALF OF WHAT IT ASKED FOR (ISSUE #11446)
-    if (indexes != null)
-      for (final Object index : indexes) {
-        if (!(index instanceof Document specification))
-          throw new MongoServerError(ErrorCode.FailedToParse.getValue(), ErrorCode.FailedToParse.name(),
-              "Each element of the 'indexes' field of createIndexes must be a document, found: " + index);
-        validateIndexSpecification(specification);
-      }
+    for (final Object index : indexes) {
+      if (!(index instanceof Document specification))
+        throw new MongoServerError(ErrorCode.FailedToParse.getValue(), ErrorCode.FailedToParse.name(),
+            "Each element of the 'indexes' field of createIndexes must be a document, found: " + index);
+      validateIndexSpecification(specification);
+    }
 
     final boolean createdCollectionAutomatically;
     if (!database.getSchema().existsType(collectionName)) {
@@ -695,9 +704,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     // <new indexes> stays consistent for clients that check it.
     final int numIndexesBefore = countIndexes(collectionName);
 
-    if (indexes != null)
-      for (final Document index : indexes)
-        createSingleIndex(collectionName, index);
+    for (final Document index : indexes)
+      createSingleIndex(collectionName, index);
 
     final int numIndexesAfter = countIndexes(collectionName);
 
