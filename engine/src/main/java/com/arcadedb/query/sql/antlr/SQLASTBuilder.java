@@ -8100,40 +8100,27 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final CheckDatabaseStatement stmt = new CheckDatabaseStatement();
     final SQLParser.CheckDatabaseStatementContext checkCtx = ctx.checkDatabaseStatement();
 
-    // Parse TYPE clause - list of type identifiers
-    if (checkCtx.TYPE() != null) {
-      for (final SQLParser.IdentifierContext identCtx : checkCtx.identifier()) {
+    // TYPE and BUCKET clauses share the identifier() list: an identifier is a bucket name when it comes after the BUCKET
+    // token, a type name otherwise. Splitting by position matters once both clauses are present: counting every identifier as
+    // a type made "TYPE V BUCKET V_0" scope the check to the types {V, V_0} and to no bucket at all (#12845)
+    final int bucketTokenIndex = checkCtx.BUCKET() != null ? checkCtx.BUCKET().getSymbol().getTokenIndex() : Integer.MAX_VALUE;
+    for (final SQLParser.IdentifierContext identCtx : checkCtx.identifier()) {
+      if (identCtx.getStart().getTokenIndex() < bucketTokenIndex)
         stmt.types.add((Identifier) visit(identCtx));
+      else {
+        final BucketIdentifier bucketId = new BucketIdentifier();
+        bucketId.bucketName = (Identifier) visit(identCtx);
+        stmt.buckets.add(bucketId);
       }
     }
 
-    // Parse BUCKET clause - list of bucket identifiers or integers
-    if (checkCtx.BUCKET() != null) {
-      // Count how many identifiers we've consumed for TYPE
-      final int typeIdentCount = checkCtx.TYPE() != null ? checkCtx.identifier().size() : 0;
-
-      // BUCKET can be identifier or INTEGER_LITERAL
-      // If we have INTEGER_LITERAL tokens, use them
-      if (checkCtx.INTEGER_LITERAL() != null && !checkCtx.INTEGER_LITERAL().isEmpty()) {
-        for (final TerminalNode intNode : checkCtx.INTEGER_LITERAL()) {
-          final BucketIdentifier bucketId = new BucketIdentifier();
-          final PInteger pInt = new PInteger();
-          pInt.setValue(Integer.parseInt(intNode.getText()));
-          bucketId.bucketId = pInt;
-          stmt.buckets.add(bucketId);
-        }
-      }
-
-      // Also check for bucket identifiers (non-TYPE identifiers)
-      // All identifiers after TYPE count belong to BUCKET
-      final List<SQLParser.IdentifierContext> allIdents = checkCtx.identifier();
-      if (allIdents != null && allIdents.size() > typeIdentCount) {
-        for (int i = typeIdentCount; i < allIdents.size(); i++) {
-          final BucketIdentifier bucketId = new BucketIdentifier();
-          bucketId.bucketName = (Identifier) visit(allIdents.get(i));
-          stmt.buckets.add(bucketId);
-        }
-      }
+    // A bucket id: INTEGER_LITERAL appears in the rule only in the BUCKET clause
+    for (final TerminalNode intNode : checkCtx.INTEGER_LITERAL()) {
+      final BucketIdentifier bucketId = new BucketIdentifier();
+      final PInteger pInt = new PInteger();
+      pInt.setValue(Integer.parseInt(intNode.getText()));
+      bucketId.bucketId = pInt;
+      stmt.buckets.add(bucketId);
     }
 
     // Parse RECORD clause - list of RIDs (#5680): scopes the check to those records only
