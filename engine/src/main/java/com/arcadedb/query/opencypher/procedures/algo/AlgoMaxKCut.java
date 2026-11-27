@@ -51,7 +51,8 @@ import java.util.stream.Stream;
  *     <ul>
  *       <li>{@code maxIterations} (int, default 100, minimum 1) – local-search passes per restart</li>
  *       <li>{@code restarts} (int, default 3, minimum 1) – number of random restarts</li>
- *       <li>{@code weightProperty} (String, default null) – edge weight property name</li>
+ *       <li>{@code weightProperty} (String, default null) – edge weight property name; every weight must be finite
+ *           and non-negative, or the call is refused</li>
  *       <li>{@code relTypes} (String, default all)</li>
  *       <li>{@code direction} (String, default BOTH)</li>
  *       <li>{@code seed} (long, default -1)</li>
@@ -140,6 +141,10 @@ public class AlgoMaxKCut extends AbstractAlgoProcedure {
     // neighbors[i][j] - see GraphData.weightedAdjacency and issue #6301, which converted the other
     // weighted algorithms off the same hand-rolled parallel array this one used to build.
     final GraphData.WeightedAdjacency weighted = graph.weightedAdjacency(guard, dir, weightProperty, relTypes);
+    // a NaN or infinite weight made the gains and the cut NaN or infinite, and the answer then depended on whether a view
+    // served the call; a negative one makes a cut below the -1.0 the search starts from (issue #12957)
+    if (weightProperty != null)
+      requireFiniteNonNegativeWeights(weighted, weightProperty, guard);
     final int[][] adj = weighted.neighbors();
     final double[][] adjW = weighted.weights();
 

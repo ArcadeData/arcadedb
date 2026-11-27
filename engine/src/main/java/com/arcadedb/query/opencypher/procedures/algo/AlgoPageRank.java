@@ -48,7 +48,8 @@ import java.util.stream.Stream;
  *   <li>dampingFactor (double, default 0.85): probability of following a link</li>
  *   <li>maxIterations (int, default 20): maximum number of iterations</li>
  *   <li>tolerance (double, default 0.0001): convergence threshold</li>
- *   <li>weightProperty (string, default null): edge property to use as weight</li>
+ *   <li>weightProperty (string, default null): edge property to use as weight; every weight must be finite and
+ *       non-negative, or the call is refused</li>
  *   <li>direction (string, default "OUT"): edges rank is pushed along - "OUT", "IN", or "BOTH".
  *       Anything else is rejected rather than coerced, since the three answer different questions</li>
  * </ul>
@@ -170,6 +171,8 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
     final double[][] outWeights;
     if (weightProperty != null) {
       final GraphData.WeightedAdjacency weighted = graph.weightedAdjacency(guard, direction, weightProperty);
+      // one NaN or infinite weight made every score NaN through the totals it divides by (issue #12957)
+      requireFiniteNonNegativeWeights(weighted, weightProperty, guard);
       outNeighbors = weighted.neighbors();
       outWeights = weighted.weights();
     } else {
