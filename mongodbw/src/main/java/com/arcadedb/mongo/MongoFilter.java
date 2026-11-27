@@ -654,21 +654,31 @@ final class MongoFilter {
    * filter is, so every regular expression of the pipeline draws on one budget. The library evaluates no other regular expression: it has no
    * {@code $expr}, {@code $regexMatch} or {@code $regexFind}, and {@code $merge}/{@code $out} cannot resolve a collection here. The stages are copied, the pipeline of the request is
    * left as it is.
+   * <p>
+   * The top-level {@code $match} stages of a pipeline are tested with {@link MongoQueryMatcher} (see
+   * {@code MongoDBDatabaseWrapper#computeResult}), which reads a document that holds {@code $regex} among other fields as a value to
+   * compare with, exactly as a find filter does. Every other {@code $match} (the stages of a sub-pipeline, and the stages after a
+   * {@code $changeStream}) is tested by the library, which reads any document that holds {@code $regex} as a pattern: there
+   * {@link #requireBoundedRegexes} refuses the ones the preparation did not turn into a bounded expression.
    */
   static List<Document> boundPipeline(final List<Document> pipeline, final RegexBudget budget) {
+    final boolean libraryMatch = !pipeline.isEmpty() && pipeline.getFirst().containsKey("$changeStream");
     final List<Document> bounded = new ArrayList<>(pipeline.size());
     for (final Document stage : pipeline)
-      bounded.add(boundStage(stage, budget));
+      bounded.add(boundStage(stage, budget, libraryMatch));
     return bounded;
   }
 
-  private static Document boundStage(final Document stage, final RegexBudget budget) {
+  /**
+   * @param libraryMatch whether a {@code $match} of this stage is tested by the library
+   */
+  private static Document boundStage(final Document stage, final RegexBudget budget, final boolean libraryMatch) {
     final Document result = new Document();
     for (final Map.Entry<String, Object> entry : stage.entrySet()) {
       final String name = entry.getKey();
       final Object value = entry.getValue();
       switch (name) {
-      case "$match" -> result.put(name, value instanceof Document query ? normalizeQuery(query, budget) : value);
+      case "$match" -> result.put(name, value instanceof Document query ? matchQuery(query, budget, libraryMatch) : value);
       case "$facet" -> {
         if (value instanceof Document branches) {
           final Document converted = new Document();
@@ -689,7 +699,7 @@ final class MongoFilter {
       case "$graphLookup" -> {
         if (value instanceof Document options && options.get("restrictSearchWithMatch") instanceof Document query) {
           final Document converted = new Document(options);
-          converted.put("restrictSearchWithMatch", normalizeQuery(query, budget));
+          converted.put("restrictSearchWithMatch", matchQuery(query, budget, true));
           result.put(name, converted);
         } else
           result.put(name, value);
@@ -700,13 +710,39 @@ final class MongoFilter {
     return result;
   }
 
+  /** The stages of a sub-pipeline: the library tests all of their {@code $match} queries. */
   private static Object boundStages(final Object stages, final RegexBudget budget) {
     if (!(stages instanceof List<?> list))
       return stages;
     final List<Object> converted = new ArrayList<>(list.size());
     for (final Object stage : list)
-      converted.add(stage instanceof Document document ? boundStage(document, budget) : stage);
+      converted.add(stage instanceof Document document ? boundStage(document, budget, true) : stage);
     return converted;
+  }
+
+  private static Document matchQuery(final Document query, final RegexBudget budget, final boolean libraryMatch) {
+    final Document prepared = normalizeQuery(query, budget);
+    if (libraryMatch)
+      requireBoundedRegexes(prepared);
+    return prepared;
+  }
+
+  /**
+   * Refuses a query of the library's matcher that still holds a document with a {@code $regex} key, at any depth: the library searches
+   * any such document as a pattern, whatever its other keys and wherever it sits, and only the expressions {@link #normalizeQuery}
+   * turned into a {@link BoundedRegex} are bounded by the time budget. That leaves the shapes MongoDB itself does not take as a
+   * pattern: a {@code $regex} after a plain key, as an item of {@code $in}, {@code $nin} or {@code $all}, or in the operand of
+   * {@code $not} and {@code $elemMatch}.
+   */
+  private static void requireBoundedRegexes(final Object value) {
+    if (value instanceof Document document) {
+      if (document.containsKey("$regex"))
+        throw new IllegalArgumentException("$regex is not supported in this position");
+      for (final Object item : document.values())
+        requireBoundedRegexes(item);
+    } else if (value instanceof List<?> list)
+      for (final Object item : list)
+        requireBoundedRegexes(item);
   }
 
   static boolean isOperatorDocument(final Document document) {
