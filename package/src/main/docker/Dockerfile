@@ -17,7 +17,11 @@
 # Java 25 (LTS) for the runtime only: the jars are still compiled for release 21, so embedders keep running them on
 # Java 21. 25 is the first release where bin/server.sh can switch on compact object headers (JEP 519), which Java 21
 # rejects outright (issue #9602).
-FROM eclipse-temurin:25-alpine@sha256:3fd2d245c4e0eba615fe366a71b8bd25f5db7104f53e4026b24bf508b880bd2a
+# The JRE, not the JDK: the server needs no compiler or binutils at runtime, and they only add size and CVEs. The JRE
+# keeps jdk.jfr and jdk.management; jcmd/jstack/jmap are not in the image, attach them from a JDK sidecar if needed.
+# The tag must not go back to plain "25-alpine": Dependabot keeps a stale record of the closed PR #2563 for that exact
+# version string and skips every digest bump of it ("Pull request #2563 already exists").
+FROM eclipse-temurin:25-jre-alpine@sha256:69c2a26e9894016e274c880fa542956d005b3755f84db765145185e87405bd89
 
 LABEL maintainer="Arcade Data LTD (info@arcadedb.com)"
 LABEL io.modelcontextprotocol.server.name="com.arcadedb/mcp-server"
