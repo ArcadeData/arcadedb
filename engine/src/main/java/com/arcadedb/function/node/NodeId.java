@@ -19,6 +19,7 @@
 package com.arcadedb.function.node;
 
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
@@ -49,6 +50,9 @@ public class NodeId extends AbstractNodeFunction {
 
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
+    // A node the statement deleted keeps the id it had, as id() does (issue #13582)
+    if (args[0] instanceof DeletedEntityMarker deleted)
+      return deleted.getRelationshipType() == null && deleted.getIdentity() != null ? deleted.getIdentity().toString() : null;
     final Vertex vertex = toVertex(args[0]);
     if (vertex == null)
       return null;
