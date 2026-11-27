@@ -18,12 +18,15 @@
  */
 package com.arcadedb.redis;
 
+import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.exception.HeapLimitExceededException;
+import com.arcadedb.exception.QueryHeapBudgetExceededException;
 import com.arcadedb.query.sql.executor.QueryHeapBudget;
 import com.arcadedb.query.sql.executor.QueryHeapTracker;
 
 /**
  * The heap the reply of one command takes while it is built and sent, accounted to the budget the queries of every protocol share
- * ({@link com.arcadedb.GlobalConfiguration#QUERY_MAX_HEAP_RAM}).
+ * ({@link GlobalConfiguration#QUERY_MAX_HEAP_RAM}).
  * <p>
  * The reply of HMGET has one entry per key of the request, so what it takes follows the request. Charging each entry as it is added
  * refuses a reply that does not fit, with the error the other protocols answer (a retryable one when other queries hold the budget,
@@ -60,9 +63,8 @@ public final class RedisReplyHeap {
   /**
    * Accounts an entry of {@code bytes} added to the reply.
    *
-   * @throws com.arcadedb.exception.QueryHeapBudgetExceededException when the queries running now hold too much of the budget for the
-   *                                                                 reply to grow
-   * @throws com.arcadedb.exception.HeapLimitExceededException       when the reply alone needs more than the whole budget
+   * @throws QueryHeapBudgetExceededException when the queries running now hold too much of the budget for the reply to grow
+   * @throws HeapLimitExceededException       when the reply alone needs more than the whole budget
    */
   public void add(final long bytes) {
     pending += bytes * REPLY_COPIES;
@@ -94,7 +96,7 @@ public final class RedisReplyHeap {
       tracker = new QueryHeapTracker();
     final long bytes = pending;
     pending = 0L;
-    // counted first: a refusal charges nothing, and close() then has nothing to give back that the tracker does not know it holds
+    // counted before the charge: a refusal leaves what the reply was charged before it held, and close() must give that back
     forwarded += bytes;
     tracker.charge(bytes, operation);
   }

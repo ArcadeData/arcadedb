@@ -37,7 +37,6 @@ import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
-import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.query.sql.executor.HeapEstimator;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
@@ -53,6 +52,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalEdgeType;
 import com.arcadedb.schema.LocalVertexType;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.CollectionUtils;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentMap;
