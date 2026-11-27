@@ -577,7 +577,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       stream.forEach(document -> {
         if (quota < 0 || result.size() < quota) {
           result.add(document);
-          heap.add(result.size(), document);
+          MongoResultHeap.add(heap, result.size(), document);
         }
       });
       return result;
@@ -598,7 +598,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   /** The documents of {@code stream}, each counted against {@code heap} as a stage that holds them all takes it in. */
   private static Stream<Document> heldBy(final Stream<Document> stream, final OperationHeapLimit heap) {
     final long[] held = { 0L };
-    return stream.peek(document -> heap.add(++held[0], document));
+    return stream.peek(document -> MongoResultHeap.add(heap, ++held[0], document));
   }
 
   private Stream<Document> runSegment(final List<Document> segment, final Stream<Document> stream, final MongoCollection<?> collection,

@@ -21,6 +21,11 @@ package com.arcadedb.mongo;
 import com.arcadedb.database.Database;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.OperationHeapLimit;
+import de.bwaldvogel.mongo.bson.BinData;
+import de.bwaldvogel.mongo.bson.Document;
+
+import java.util.Collection;
+import java.util.Map;
 
 /**
  * The heap limits the MongoDB read paths count their buffers against: the elements one buffer may hold
@@ -43,5 +48,31 @@ final class MongoResultHeap {
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
     return OperationHeapLimit.of(context, "documents", operation);
+  }
+
+  /**
+   * Charges one more document of a buffer to {@code heap}: its estimated size, and the bytes of the binary values it holds, which the
+   * estimate takes for a small object.
+   *
+   * @param elements the number of documents the buffer holds, {@code document} included
+   */
+  static void add(final OperationHeapLimit heap, final long elements, final Document document) {
+    heap.add(elements, document, (int) Math.min(Integer.MAX_VALUE, binaryBytes(document)));
+  }
+
+  /** The bytes of the binary values {@code value} holds, nested documents and arrays included. */
+  static long binaryBytes(final Object value) {
+    if (value instanceof BinData binary)
+      return binary.getData().length;
+    long bytes = 0L;
+    if (value instanceof Map<?, ?> map) {
+      for (final Object item : map.values())
+        if (!(item instanceof String) && !(item instanceof Number))
+          bytes += binaryBytes(item);
+    } else if (value instanceof Collection<?> collection)
+      for (final Object item : collection)
+        if (!(item instanceof String) && !(item instanceof Number))
+          bytes += binaryBytes(item);
+    return bytes;
   }
 }

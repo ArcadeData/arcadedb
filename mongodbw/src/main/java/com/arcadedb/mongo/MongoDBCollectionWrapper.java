@@ -194,7 +194,7 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
       while (rows.hasNext()) {
         final Document document = rows.next();
         documents.add(document);
-        heap.add(documents.size(), document);
+        MongoResultHeap.add(heap, documents.size(), document);
       }
       return new QueryResult(documents);
     } finally {
@@ -797,7 +797,7 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
       while (rows.hasNext()) {
         final Document document = MongoFindCursor.toDocument(rows.next());
         entries.add(new MongoSortOrder.Entry<>(sortOrder.keyOf(document), 0, document));
-        heap.add(entries.size(), document);
+        MongoResultHeap.add(heap, entries.size(), document);
       }
       sortOrder.sort(entries);
       for (int i = skip; i < entries.size(); i++)

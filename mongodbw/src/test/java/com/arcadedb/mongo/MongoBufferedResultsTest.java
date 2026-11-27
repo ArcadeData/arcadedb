@@ -218,6 +218,31 @@ class MongoBufferedResultsTest {
   }
 
   @Test
+  void theBinaryValuesOfTheDocumentsAreCountedAgainstTheBudget() {
+    cap(-1L);
+    database.command("sql", "CREATE DOCUMENT TYPE Blobs BUCKETS 1");
+    final byte[] megabyte = new byte[1024 * 1024];
+    database.transaction(() -> {
+      for (int k = 1; k <= 32; k++)
+        database.newDocument("Blobs").set("k", k).set("data", megabyte).save();
+    });
+
+    // a budget of 8 MB: 32 documents of one megabyte each are far past it, and are counted by what they hold
+    GlobalConfiguration.QUERY_MAX_HEAP_RAM.setValue(8L);
+    try {
+      final MongoQuery all = new MongoQuery(null, null, database.getName() + ".Blobs", 0, 0, new Document(), null);
+      assertThatThrownBy(() -> wrapper.handleQuery(all)).hasRootCauseInstanceOf(HeapLimitExceededException.class);
+      assertThatThrownBy(() -> aggregate("Blobs", new Document("$match", new Document("k", new Document("$gt", 0))))).hasRootCauseInstanceOf(
+          HeapLimitExceededException.class);
+
+      final MongoQuery few = new MongoQuery(null, null, database.getName() + ".Blobs", 0, 3, new Document(), null);
+      assertThat(wrapper.handleQuery(few).collectDocuments()).as("a few of them fit the budget").hasSize(3);
+    } finally {
+      GlobalConfiguration.QUERY_MAX_HEAP_RAM.reset();
+    }
+  }
+
+  @Test
   void aFindWithoutASortStreamsPastTheElementCap() {
     cap(CAP);
     final Document first = find(new Document("find", "Item").append("batchSize", 50));
