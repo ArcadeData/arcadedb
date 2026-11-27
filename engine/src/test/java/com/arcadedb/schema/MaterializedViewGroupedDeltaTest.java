@@ -745,11 +745,16 @@ class MaterializedViewGroupedDeltaTest extends TestHelper {
     assertThat(committing.get()).isTrue();
     assertViewMatchesQuery("GSums");
     // and a commit after it still applies as a delta on the rebuilt state. The rebuild may have left a further pass owed, which its
-    // owner hands to the scheduler thread; that thread then owns the refresh, so this commit asks it for another pass and returns
-    // before it is made (MaterializedViewRefresher.refreshAfterCommit): the view catches up asynchronously, so it is awaited
+    // owner hands to the scheduler thread (MaterializedViewRefresher.refreshAfterCommit, issue #11464); while that thread owns the
+    // refresh a commit only asks it for one more pass and returns before it is made. So the test waits for the ownership to be
+    // given back, takes it and releases it at once (nothing else writes, so no request can be pending), and the commit below then
+    // makes its own pass before it returns: the view is compared with its query synchronously, as a pass of this commit
+    final MaterializedViewImpl view = (MaterializedViewImpl) database.getSchema().getMaterializedView("GSums");
+    Awaitility.await("the pass the rebuild left owed is made").atMost(30, TimeUnit.SECONDS).pollInterval(5, TimeUnit.MILLISECONDS)
+        .until(view::tryBeginRefresh);
+    assertThat(view.finishRefreshPassAndCheckPending()).as("no pass was asked while the test held the refresh").isFalse();
     database.transaction(() -> insert("b", 1, 9, 9L, "z", 1, "I"));
-    Awaitility.await("the view catches up with the commit").atMost(30, TimeUnit.SECONDS).pollInterval(5, TimeUnit.MILLISECONDS)
-        .untilAsserted(() -> assertViewMatchesQuery("GSums"));
+    assertViewMatchesQuery("GSums");
   }
 
   /**

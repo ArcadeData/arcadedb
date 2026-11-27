@@ -262,7 +262,13 @@ class MaterializedViewPerRecordAlterTest extends TestHelper {
         .getString("status")).as("an interrupted upgrade is not VALID on disk").isNotEqualTo(MaterializedViewStatus.VALID.name());
     database = factory.open();
 
-    assertThat(view("Adults").isPerRecord()).isTrue();
+    final MaterializedViewImpl reopened = view("Adults");
+    assertThat(reopened.isPerRecord()).isTrue();
+    // and the open acted on it: the view either still says so, or a pass already ended (no commit ran yet, so only the recovery
+    // pass of the open can have made it). The status is read first: a pass counts itself before it says VALID
+    final String statusAfterOpen = reopened.getStatus();
+    assertThat(!MaterializedViewStatus.VALID.name().equals(statusAfterOpen) || reopened.getRefreshCount() > 0)
+        .as("the reopened view says it is not VALID (%s) or the open made its recovery pass", statusAfterOpen).isTrue();
 
     database.transaction(() -> database.command("sql", "UPDATE Person SET age = 64 WHERE name = 'a4'"));
     Awaitility.await("the recovery full pass ends VALID").atMost(30, TimeUnit.SECONDS)

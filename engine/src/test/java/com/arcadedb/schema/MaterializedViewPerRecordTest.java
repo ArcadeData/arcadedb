@@ -627,6 +627,11 @@ class MaterializedViewPerRecordTest extends TestHelper {
         .as("the failure is still stored after the close").isNotEqualTo(MaterializedViewStatus.VALID.name());
     database = factory.open();
     final MaterializedViewImpl view = (MaterializedViewImpl) database.getSchema().getMaterializedView("Adults");
+    // and the open acted on it: the view either still says so, or a pass already ended (no commit ran yet, so only the recovery
+    // pass of the open can have made it). The status is read first: a pass counts itself before it says VALID
+    final String statusAfterOpen = view.getStatus();
+    assertThat(!MaterializedViewStatus.VALID.name().equals(statusAfterOpen) || view.getRefreshCount() > 0)
+        .as("the reopened view says it is not VALID (%s) or the open made its recovery pass", statusAfterOpen).isTrue();
 
     database.transaction(() -> database.command("sql", "UPDATE Person SET age = 51 WHERE name = 'a2'"));
     Awaitility.await("the view ends VALID").atMost(30, TimeUnit.SECONDS)
