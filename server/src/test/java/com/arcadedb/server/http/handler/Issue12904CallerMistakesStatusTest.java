@@ -19,6 +19,7 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.QueryNotIdempotentException;
@@ -87,6 +88,17 @@ class Issue12904CallerMistakesStatusTest extends BaseGraphServerTest {
     assertThat(getServerDatabase(0, getDatabaseName()).getSchema().existsTrigger("issue12904bad")).isFalse();
 
     command("INSERT INTO Issue12904P SET k = 1", 200);
+  }
+
+  @Test
+  void createTriggerWithAJavaScriptBodyThatDoesNotParseIs400AndWritesKeepWorking() throws Exception {
+    final JSONObject answer = command(
+        "CREATE TRIGGER issue12904badjs BEFORE CREATE ON TYPE Issue12904P EXECUTE JAVASCRIPT 'var = ;'", 400);
+    assertThat(answer.getString("exception", "")).isEqualTo(CommandParsingException.class.getName());
+    assertThat(answer.getString("detail", "")).contains("issue12904badjs");
+    assertThat(getServerDatabase(0, getDatabaseName()).getSchema().existsTrigger("issue12904badjs")).isFalse();
+
+    command("INSERT INTO Issue12904P SET k = 3", 200);
   }
 
   @Test
