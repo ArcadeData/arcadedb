@@ -116,7 +116,8 @@ public class BasicGraphTest extends BaseGraphTest {
       assertThat(edges3.hasNext()).isTrue();
 
       assertThatThrownBy(() -> edges3.next().modify())
-          .isInstanceOf(IllegalStateException.class);
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("declared LIGHTWEIGHT");
 
     } finally {
       database.commit();
