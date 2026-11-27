@@ -42,6 +42,11 @@ import java.util.function.Function;
 import java.util.logging.Level;
 
 public class TransactionIndexContext {
+  /**
+   * {@link #newKeyEntries()} as a non-capturing function, so {@code computeIfAbsent} on the hot path neither allocates a lambda per
+   * call nor a per-key map for a key that is already there (#13022).
+   */
+  private static final Function<ComparableKey, Map<IndexKey, IndexKey>>    NEW_KEY_ENTRIES = key -> newKeyEntries();
   private final DatabaseInternal                                             database;
   private       Map<String, TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> indexEntries = new LinkedHashMap<>(); // MOST COMMON USE CASE INSERTION IS ORDERED, USE AN ORDERED MAP TO OPTIMIZE THE INDEX
   /**
@@ -781,12 +786,6 @@ public class TransactionIndexContext {
   private static Map<IndexKey, IndexKey> newKeyEntries() {
     return new HashMap<>(2);
   }
-
-  /**
-   * {@link #newKeyEntries()} as a non-capturing function, so {@code computeIfAbsent} on the hot path neither allocates a lambda per
-   * call nor a per-key map for a key that is already there (#13022).
-   */
-  private static final Function<ComparableKey, Map<IndexKey, IndexKey>> NEW_KEY_ENTRIES = key -> newKeyEntries();
 
   public void addIndexKeyLock(final IndexInternal index, IndexKey.IndexKeyOperation operation, final Object[] keysValues,
       final RID rid) {
