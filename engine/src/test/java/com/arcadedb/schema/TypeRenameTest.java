@@ -22,11 +22,14 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
+import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.timeseries.TimeSeriesBucket;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.engine.timeseries.TimeSeriesShard;
+import com.arcadedb.event.BeforeRecordReadListener;
 import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.SchemaException;
@@ -34,8 +37,15 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.query.facet.FacetBucket;
+import com.arcadedb.query.facet.FacetResults;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.executor.InternalExecutionPlan;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.SelectExecutionPlanner;
+import com.arcadedb.query.sql.parser.LocalResultSet;
+import com.arcadedb.query.sql.parser.SelectStatement;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -49,6 +59,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -1932,6 +1943,65 @@ class TypeRenameTest {
         }
       }
       assertThat(rows).isEqualTo(ROWS);
+    }
+  }
+
+  /**
+   * Guard for #12758, the FACETS step: planned on {@code T} and opened after {@code ALTER TYPE T NAME Tr} released the name, the step
+   * looks the target up by that name and finds no type, so it does not ask the type's read listeners and takes the matches from the
+   * full-text index, which reads no record. That is harmless only because the indexed function resolves the target by the same name
+   * and refuses the statement before a match is counted. This pins the outcome: the statement is refused, or its facets leave out the
+   * records a BEFORE READ listener of the type hides, never counts them. If the function ever keeps the planned type instead, this
+   * turns red, and the step must then keep it too.
+   */
+  @Nested
+  class AFacetsStatementPlannedBeforeARename extends TestHelper {
+    @Test
+    void theFacetsNeverCountARecordTheReadListenersOfTheRenamedTypeHide() {
+      database.command("sql", "CREATE DOCUMENT TYPE F12758");
+      database.command("sql", "CREATE PROPERTY F12758.t STRING");
+      database.command("sql", "CREATE INDEX ON F12758 (t) FULL_TEXT");
+      final Set<RID> hidden = new HashSet<>();
+      database.transaction(() -> {
+        for (int i = 0; i < 10; i++) {
+          final MutableDocument doc = database.newDocument("F12758").set("t", "word").set("b", i < 4 ? "hidden" : "shown");
+          doc.save();
+          if (i < 4)
+            hidden.add(doc.getIdentity());
+        }
+      });
+
+      final BeforeRecordReadListener hide = rid -> !hidden.contains(rid);
+      final DocumentType type = database.getSchema().getType("F12758");
+      type.getEvents().registerListener(hide);
+      try {
+        final SelectStatement statement = (SelectStatement) ((DatabaseInternal) database).getStatementCache()
+            .get("SELECT FROM F12758 WHERE search_fields(['t'], 'word') FACETS x: b TERMS TOP 10");
+        final BasicCommandContext context = new BasicCommandContext();
+        context.setDatabase(database);
+        final InternalExecutionPlan plan = new SelectExecutionPlanner(statement).createExecutionPlan(context, false);
+        // NOT VACUOUS: THE FULL-TEXT INDEX CAN ADD THE MATCHES OF THE FACETS WITHOUT READING A RECORD
+        assertThat(plan.prettyPrint(0, 2)).contains("FETCH FROM INDEXED FUNCTION");
+
+        database.command("sql", "ALTER TYPE F12758 NAME F12758r");
+        assertThat(database.getSchema().existsType("F12758")).isFalse();
+
+        final Map<Object, Long> counts = new LinkedHashMap<>();
+        try (final ResultSet rs = new LocalResultSet(plan)) {
+          while (rs.hasNext())
+            rs.next();
+          final FacetResults facets = rs.getFacets();
+          for (final FacetBucket bucket : facets.get("x").buckets())
+            counts.put(bucket.value(), bucket.count());
+        } catch (final SchemaException refused) {
+          // THE NAME THE STATEMENT USED NO LONGER RESOLVES: REFUSED, NOT ANSWERED
+          assertThat(refused.getMessage()).contains("F12758");
+          return;
+        }
+        assertThat(counts).containsExactly(Map.entry("shown", 6L));
+      } finally {
+        type.getEvents().unregisterListener(hide);
+      }
     }
   }
 }
