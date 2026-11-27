@@ -1732,7 +1732,10 @@ public class LocalSchema implements Schema {
    * directory scan re-registers it at the next open, but nothing references it anymore, leaking its space
    * forever. Every legitimate compacted component gets its mainIndex set by the owning mutable index while
    * reading its header (SUB-INDEX FILE ID), so a compacted component still unclaimed after the whole schema
-   * load is provably an orphan.
+   * load is provably an orphan. A claim counts only while the mutable file that made it is still registered: the orphan sweep
+   * ({@link #sweepOrphanBucketIndexFiles}) drops the mutable file of an interrupted rebuild in the same load, and the compacted
+   * file and bloom filter it pointed at went on until the next open, the whole new index of the bucket, because the
+   * back-pointer of the dropped mutable file still marked them claimed.
    * <p>
    * With one exception: a compacted file of the same index as a mutable file the load left out because its header page
    * has not arrived yet (issue #10046). That mutable is the one that would claim it, so the compacted file is kept - with
@@ -1740,6 +1743,10 @@ public class LocalSchema implements Schema {
    */
   private void sweepOrphanCompactedIndexFiles(final List<Component> snapshot) {
     final Set<String> awaitingHeader = headerlessMutableIndexBaseNames();
+    final Set<Integer> claimed = new HashSet<>();
+    for (final Component component : snapshot)
+      if (component instanceof LSMTreeIndexMutable mutable && mutable.getSubIndex() != null)
+        claimed.add(mutable.getSubIndex().getFileId());
     for (final Component component : snapshot) {
       if (component instanceof LSMTreeIndexBloomFilter filter) {
         // A filter is owned by exactly one compacted index; without it nothing can ever read the file again.
@@ -1747,7 +1754,8 @@ public class LocalSchema implements Schema {
         if (owner instanceof LSMTreeIndexCompacted compactedOwner && awaitingHeader.contains(
             LSMTreeIndexAbstract.compactionBaseName(compactedOwner.getName())))
           continue;
-        if (!(owner instanceof LSMTreeIndexCompacted compactedOwner) || compactedOwner.getMainIndex() == null) {
+        if (!(owner instanceof LSMTreeIndexCompacted compactedOwner) || compactedOwner.getMainIndex() == null
+            || !claimed.contains(compactedOwner.getFileId())) {
           LogManager.instance().log(this, Level.INFO,
               "Dropping orphan index bloom filter file '%s' (fileId=%d)", null, filter.getName(), filter.getFileId());
           filter.dropQuietly();
@@ -1755,7 +1763,7 @@ public class LocalSchema implements Schema {
         continue;
       }
 
-      if (!(component instanceof LSMTreeIndexCompacted compacted) || compacted.getMainIndex() != null)
+      if (!(component instanceof LSMTreeIndexCompacted compacted) || (compacted.getMainIndex() != null && claimed.contains(compacted.getFileId())))
         continue;
 
       if (awaitingHeader.contains(LSMTreeIndexAbstract.compactionBaseName(compacted.getName()))) {

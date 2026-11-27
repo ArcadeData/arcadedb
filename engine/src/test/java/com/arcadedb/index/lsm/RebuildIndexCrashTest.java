@@ -36,6 +36,7 @@ import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
@@ -44,9 +45,11 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -177,6 +180,46 @@ class RebuildIndexCrashTest {
     final ChildResult crashed = runChild("after-swap-before-old-drop", databasePath);
     assertThat(crashed.exitCode()).as(crashed.output()).isEqualTo(CRASH_EXIT_CODE);
     assertReopensCompleteAfterSwapCrash(databasePath);
+  }
+
+  /**
+   * A crash inside the swap of a bucket index, after the new mutable file (and the compacted file and bloom filter it points at) was
+   * created and before the schema that names them was written, leaves three files no schema entry references. The first open drops
+   * the mutable file as an orphan, and its compacted file and bloom filter used to stay until the NEXT open: the whole new index of
+   * the bucket, because the mutable file that claimed the compacted file was dropped by the orphan sweep of the same open and the
+   * compacted file sweep took the claim for a live one. The index must also answer completely and still refuse a duplicate.
+   */
+  @ParameterizedTest
+  @ValueSource(strings = { "prepare", "prepare-compacted" })
+  void theFirstOpenAfterACrashBeforeTheSwapIsSavedReclaimsEveryFileTheRebuildLeft(final String prepareMode) throws Exception {
+    final Path databasePath = tempDirectory.resolve("reclaim-" + prepareMode);
+    final ChildResult prepared = runChild(prepareMode, databasePath);
+    assertThat(prepared.exitCode()).as(prepared.output()).isZero();
+    final ChildResult crashed = runChild("swap-before-schema-save", databasePath);
+    assertThat(crashed.exitCode()).as(crashed.output()).isEqualTo(CRASH_EXIT_CODE);
+    final List<String> beforeOpen = indexFileNames(databasePath);
+
+    try (final DatabaseFactory factory = new DatabaseFactory(databasePath.toString()); final Database database = factory.open()) {
+      final TypeIndex index = database.getSchema().getType(TYPE).getIndexByProperties("uid");
+      assertThat(index).isNotNull();
+      assertThat(index.isValid()).isTrue();
+      assertComplete(database, index);
+      assertThatThrownBy(() -> database.transaction(() -> database.newDocument(TYPE).set("uid", "key-42").save()))
+          .isInstanceOf(DuplicatedKeyException.class);
+    }
+    final List<String> afterFirstOpen = indexFileNames(databasePath);
+    assertThat(afterFirstOpen.size()).as("the crash left new index files for the open to reclaim: %s", beforeOpen).isLessThan(beforeOpen.size());
+
+    try (final DatabaseFactory factory = new DatabaseFactory(databasePath.toString()); final Database database = factory.open()) {
+      assertComplete(database, (TypeIndex) database.getSchema().getIndexByName(INDEX));
+    }
+    assertThat(indexFileNames(databasePath)).as("the index files a second open would still have to remove").isEqualTo(afterFirstOpen);
+  }
+
+  private static List<String> indexFileNames(final Path databasePath) throws IOException {
+    try (final Stream<Path> paths = Files.list(databasePath)) {
+      return paths.map(path -> path.getFileName().toString()).filter(name -> name.endsWith("tidx") || name.endsWith("bfidx")).sorted().toList();
+    }
   }
 
   /**
@@ -360,6 +403,19 @@ class RebuildIndexCrashTest {
 
     if ("after-swap-before-old-drop".equals(mode) || "fix-after-swap-before-old-drop".equals(mode))
       LSMTreeIndex.setAfterSwapTestHook(() -> Runtime.getRuntime().halt(CRASH_EXIT_CODE));
+    if ("swap-before-schema-save".equals(mode))
+      // the state of a crash INSIDE the swap, after the new mutable file exists and before the schema that names it is written: the
+      // swap has saved the schema by the time this runs, so the schema of before the swap is put back (schema.prev.json) and the
+      // process stops with the new files on disk and the previous ones not dropped yet
+      LSMTreeIndex.setAfterSwapTestHook(() -> {
+        try {
+          Files.copy(Path.of(databasePath, LocalSchema.SCHEMA_PREV_FILE_NAME), Path.of(databasePath, LocalSchema.SCHEMA_FILE_NAME),
+              StandardCopyOption.REPLACE_EXISTING);
+        } catch (final IOException e) {
+          throw new UncheckedIOException(e);
+        }
+        Runtime.getRuntime().halt(CRASH_EXIT_CODE);
+      });
     if ("fix-mid-scan".equals(mode)) {
       final AtomicInteger records = new AtomicInteger();
       IndexBuildTestHooks.onRecordIndexed = (index, rid) -> {
@@ -383,7 +439,7 @@ class RebuildIndexCrashTest {
         case "after-second-swap" -> phase == LSMTreeIndexBulkLoader.BuildPhase.AFTER_BUCKET_ATTACHMENT && swaps.incrementAndGet() == 2;
         case "repair-after-create" -> phase == LSMTreeIndexBulkLoader.BuildPhase.AFTER_SORT;
         case "repair-after-first-fill" -> phase == LSMTreeIndexBulkLoader.BuildPhase.AFTER_BUCKET_ATTACHMENT;
-        case "after-swap-before-old-drop" -> false;
+        case "after-swap-before-old-drop", "swap-before-schema-save" -> false;
         default -> throw new IllegalArgumentException("Unknown mode " + mode);
       };
       if (halt)
