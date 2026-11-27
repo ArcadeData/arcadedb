@@ -109,4 +109,72 @@ class HashIndexTagScanTest extends TestHelper {
       assertThat(cursor.hasNext()).isFalse();
     }
   }
+
+  /**
+   * Removing an entry moves the LAST slot of the page, offset and tag, into the place of the removed one. The scan must keep
+   * finding the moved entries and must not find the removed ones, inside the deleting transaction and after its commit.
+   */
+  @Test
+  void aUniqueIndexKeepsFindingTheMovedSlotsAfterRemovals() {
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("D", 1).createProperty("id", Type.LONG);
+      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.HASH, true, "D", "id");
+    });
+
+    final Random random = new Random(13);
+    final long[] keys = new long[KEYS];
+    final Set<Long> unique = new HashSet<>();
+    for (int i = 0; i < KEYS; ) {
+      final long key = random.nextLong();
+      if (unique.add(key))
+        keys[i++] = key;
+    }
+
+    database.transaction(() -> {
+      for (final long key : keys) {
+        final MutableDocument doc = database.newDocument("D");
+        doc.set("id", key);
+        doc.save();
+      }
+    });
+
+    // REMOVE EVERY OTHER KEY, AND LOOK UP A SURVIVOR AFTER EACH REMOVAL WHILE THE PAGES ARE STILL THE TRANSACTION'S OWN
+    database.transaction(() -> {
+      for (int i = 0; i < KEYS; i += 2) {
+        try (final IndexCursor cursor = database.lookupByKey("D", "id", keys[i])) {
+          cursor.next().asDocument().delete();
+        }
+        try (final IndexCursor cursor = database.lookupByKey("D", "id", keys[i + 1])) {
+          assertThat(cursor.hasNext()).as("key %s must survive the removal of %s", keys[i + 1], keys[i]).isTrue();
+        }
+      }
+    });
+
+    for (int i = 0; i < KEYS; i++)
+      try (final IndexCursor cursor = database.lookupByKey("D", "id", keys[i])) {
+        if (i % 2 == 0)
+          assertThat(cursor.hasNext()).as("key %s was removed", keys[i]).isFalse();
+        else {
+          assertThat(cursor.hasNext()).as("key %s must be found", keys[i]).isTrue();
+          assertThat(cursor.next().asDocument().getLong("id")).isEqualTo(keys[i]);
+          assertThat(cursor.hasNext()).isFalse();
+        }
+      }
+
+    // THE FREED KEYS CAN BE INSERTED AGAIN: THE UNIQUE CHECK SCANS THE TAGS TOO
+    database.transaction(() -> {
+      for (int i = 0; i < KEYS; i += 2) {
+        final MutableDocument doc = database.newDocument("D");
+        doc.set("id", keys[i]);
+        doc.save();
+      }
+    });
+
+    for (final long key : keys)
+      try (final IndexCursor cursor = database.lookupByKey("D", "id", key)) {
+        assertThat(cursor.hasNext()).as("key %s must be found", key).isTrue();
+        assertThat(cursor.next().asDocument().getLong("id")).isEqualTo(key);
+        assertThat(cursor.hasNext()).isFalse();
+      }
+  }
 }
