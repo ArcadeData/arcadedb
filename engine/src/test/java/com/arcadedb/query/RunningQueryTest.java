@@ -293,6 +293,35 @@ class RunningQueryTest {
     }
 
     @Test
+    void aQuotedValueIsMaskedWholeWhateverItHoldsAndHoweverItEnds() {
+      // an escaped quote stays inside the value
+      assertThat(RunningQuery.maskCredentials("ALTER USER bob SET PASSWORD 'ab\\'cd ef' ROLE admin")).isEqualTo("ALTER USER bob SET PASSWORD *** ROLE admin");
+      assertThat(RunningQuery.maskCredentials("SET password = \"ab\\\"cd ef\", x = 1")).isEqualTo("SET password = ***, x = 1");
+      assertThat(RunningQuery.maskCredentials("SET password = 'ab\\\\' tail")).isEqualTo("SET password = *** tail");
+      // a line break inside the value, or after the backslash
+      assertThat(RunningQuery.maskCredentials("SET password = 'ab\ncd\\\nef' END")).isEqualTo("SET password = *** END");
+      // a quote that is never closed ends the value at the end of the text, blanks included
+      assertThat(RunningQuery.maskCredentials("SET password = 'ab cd ef")).isEqualTo("SET password = ***");
+      assertThat(RunningQuery.maskCredentials("SET password = \"ab cd\\")).isEqualTo("SET password = ***");
+      // the text is the same instance when there is nothing to mask
+      final String plain = "MATCH (n) WHERE n.name = 'it''s' RETURN n";
+      assertThat(RunningQuery.maskCredentials(plain)).isSameAs(plain);
+      // the listing keeps its cut: a value that outlasts the part that is looked at does not leave its start behind
+      final String lengthy = "ALTER USER bob SET PASSWORD 'one two " + "three ".repeat(2_000) + "'";
+      try (final RunningQuery q = registry.register("db", "root", "http", null, null, RunningQuery.Client.NONE)) {
+        q.setStatement("sql", lengthy);
+        assertThat(q.getText()).isEqualTo("ALTER USER bob SET PASSWORD ***");
+      }
+    }
+
+    @Test
+    void aVeryLongValueIsMaskedWithoutGrowingTheStack() {
+      final String escapes = "\\x".repeat(2_000_000);
+      assertThat(RunningQuery.maskCredentials("SET password = '" + escapes + "' END")).isEqualTo("SET password = *** END");
+      assertThat(RunningQuery.maskCredentials("SET password = '" + escapes)).isEqualTo("SET password = ***");
+    }
+
+    @Test
     void anEntryIsPublishedOnlyOnceRegistered() {
       assertThat(RunningQuery.current()).isNull();
       final RunningQuery q = registry.register("db", "root", "http", null, null, RunningQuery.Client.NONE);

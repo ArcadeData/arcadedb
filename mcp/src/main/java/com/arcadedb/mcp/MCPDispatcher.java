@@ -69,6 +69,11 @@ public class MCPDispatcher {
   // silently shipping a prompt that instructs the model to call something that no longer exists.
   static final Set<String> REGISTERED_TOOL_NAMES;
 
+  /** How many characters of a text argument the request log carries. */
+  private static final int    LOGGED_TEXT_LENGTH = 100;
+  /** How far past {@link #LOGGED_TEXT_LENGTH} the request log looks for a value that starts before the cut and ends after it. */
+  private static final int    LOGGED_TEXT_MARGIN = 256;
+
   /** What a reply says about a value nested too deeply to be written out: the call fails, the transport goes on serving. */
   static final String NESTING_TOO_DEEP_MESSAGE = "the value is nested too deeply to be processed";
 
@@ -504,8 +509,8 @@ public class MCPDispatcher {
       // The tools' own argument validation ("'database' is required", "Unknown tool"): text this server words about the
       // request, which the caller needs to correct it, so it is kept in every mode. An IllegalArgumentException of any
       // other origin - the engine's - is engine text, and goes through the concealment below (issue #8749)
-      LogManager.instance()
-          .log(this, Level.WARNING, "MCP[%s] tools/call '%s' -> error: %s", transport, toolName, ErrorConcealment.describe(e));
+      LogManager.instance().log(this, Level.WARNING, "MCP[%s] tools/call '%s' -> error: %s", transport, toolName,
+          RunningQuery.maskCredentials(ErrorConcealment.describe(e)));
       return toolError(id, ErrorConcealment.describe(e));
     } catch (final Exception e) {
       return toolError(id, failureMessage("tools/call '" + toolName + "'", e));
@@ -521,9 +526,23 @@ public class MCPDispatcher {
    * {@code execute_command} tools ran, a resource read: the message, or, in production mode, the placeholder every
    * surface uses ({@link ArcadeDBServer#CONCEALED_ERROR_MESSAGE}), with the detail written to the server log. A
    * duplicated key's message carries the stored key values, and before issue #8749 MCP returned it in every mode.
+   * <p>
+   * The text goes to the log only when it is concealed, and then it is logged masked ({@link #maskedForLog}): an engine
+   * message can quote the statement it refused.
    */
   private String clientMessage(final String message, final Throwable cause) {
-    return ErrorConcealment.clientMessage(ErrorConcealment.isConcealing(server), this, "MCP[" + transport + "]", message, cause);
+    final boolean concealing = ErrorConcealment.isConcealing(server);
+    return ErrorConcealment.clientMessage(concealing, this, "MCP[" + transport + "]",
+        concealing ? maskedForLog(message, cause) : message, cause);
+  }
+
+  /**
+   * {@code message} as the server log may carry it, or the description of {@code cause} when there is none: an engine message
+   * can quote the statement it refused (a parse error shows the text it could not parse), so it is masked by the rule the
+   * request log applies to the arguments of the call, {@link RunningQuery#maskCredentials}.
+   */
+  private static String maskedForLog(final String message, final Throwable cause) {
+    return RunningQuery.maskCredentials(message != null && !message.isBlank() ? message : ErrorConcealment.describe(cause));
   }
 
   /**
@@ -536,7 +555,8 @@ public class MCPDispatcher {
   String refusalMessage(final String operation, final SecurityException e) {
     final String detail = ErrorConcealment.describe(e);
     if (e instanceof MCPRefusalException || !ErrorConcealment.isConcealing(server)) {
-      LogManager.instance().log(this, Level.INFO, "MCP[%s] %s -> permission denied: %s", transport, operation, detail);
+      LogManager.instance().log(this, Level.INFO, "MCP[%s] %s -> permission denied: %s", transport, operation,
+          RunningQuery.maskCredentials(detail));
       return detail;
     }
     return clientMessage(operation + " -> permission denied: " + detail, e);
@@ -563,7 +583,7 @@ public class MCPDispatcher {
       // The trace when the message cannot say where it came from: a failure with none, or a fault of the server's own
       final boolean named = e.getMessage() != null && !e.getMessage().isBlank();
       final Throwable trace = !named || ErrorCategory.of(e) == ErrorCategory.SERVER ? e : null;
-      final String logged = named ? detail : e.getClass().getName();
+      final String logged = named ? maskedForLog(detail, e) : e.getClass().getName();
       LogManager.instance().log(this, Level.WARNING, "MCP[%s] %s -> error: %s", trace, transport, operation, logged);
       text = detail;
     }
@@ -640,10 +660,17 @@ public class MCPDispatcher {
   }
 
   /**
-   * Renders a tool's arguments for the request log. The value a caller writes to a setting is redacted here,
-   * because this line is emitted before the tool runs and would otherwise place the secret in the log regardless of
-   * how the tool's own response is redacted. Redaction is deliberately limited to the one argument that can be a
-   * secret by definition: arguments elsewhere carry caller data, which cannot be told apart from a secret without
+   * Renders a tool's arguments for the request log. This line is emitted before the tool runs, so what it carries is
+   * written whatever the tool, the profile or the permissions then say, and whatever the tool's own response redacts.
+   * <ul>
+   *   <li>The value a caller writes to a setting is redacted by the rule of the setting
+   *   ({@link GlobalConfiguration#publishableValue(Object)}).</li>
+   *   <li>Every text - the statement of {@code query} and {@code execute_command} included - and every record argument is
+   *   masked by the rule of the running-query listing ({@link RunningQuery#maskCredentials}): the value after
+   *   {@code IDENTIFIED BY}, {@code PASSWORD}, {@code TOKEN} and the other keywords that introduce one. A text is masked
+   *   before it is cut to its logged length, so the cut cannot split a value and leave its start in the line.</li>
+   * </ul>
+   * Nothing else is blanked: the rest of the arguments is caller data, which cannot be told apart from a secret without
    * guessing, and blanking it would leave the log unable to explain what a call did.
    */
   static String formatArgs(final String toolName, final JSONObject args) {
@@ -661,18 +688,30 @@ public class MCPDispatcher {
       // publishableValue leaves a value carrying no secret exactly as it was, so this neither blanks nor reshapes
       // an ordinary setting's value, and a non-String argument stays the type the branches below render.
       final Object value = redacted != null && "value".equals(key) ? publishableArgument(redacted, raw) : raw;
-      if (value instanceof String s) {
-        final String sanitized = sanitizeForLog(s);
-        if (sanitized.length() > 100)
-          sb.append(key).append("=\"").append(sanitized, 0, 100).append("...\"");
-        else
-          sb.append(key).append("=\"").append(sanitized).append("\"");
-      } else if (value instanceof JSONArray array)
+      if (value instanceof String s)
+        sb.append(key).append("=\"").append(loggedText(s)).append('"');
+      else if (value instanceof JSONArray array)
         sb.append(key).append("=[").append(array.length()).append(" item(s)]");
+      else if (value instanceof JSONObject object)
+        sb.append(key).append('=').append(RunningQuery.maskCredentials(object.toString()));
       else
         sb.append(key).append("=").append(value);
     }
     return sb.append("}").toString();
+  }
+
+  /**
+   * A text as the request log carries it: masked, with the line breaks escaped, and cut to {@link #LOGGED_TEXT_LENGTH}
+   * characters followed by {@code ...} when there is more. Only the start of a long text is looked at, plus a margin for a value
+   * that starts before the cut and ends after it, so a call costs the same for a statement of a kilobyte and for one of a
+   * hundred megabytes; a value that does not end inside what is looked at is masked up to where the look ends.
+   */
+  private static String loggedText(final String text) {
+    final boolean partial = text.length() > LOGGED_TEXT_LENGTH + LOGGED_TEXT_MARGIN;
+    final String looked = sanitizeForLog(RunningQuery.maskCredentials(partial ? text.substring(0, LOGGED_TEXT_LENGTH + LOGGED_TEXT_MARGIN) : text));
+    if (looked.length() > LOGGED_TEXT_LENGTH)
+      return looked.substring(0, LOGGED_TEXT_LENGTH) + "...";
+    return partial ? looked + "..." : looked;
   }
 
   /**
