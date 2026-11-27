@@ -57,7 +57,6 @@ import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.UnreferencedFiles;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.engine.WALFileFactory;
-import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
@@ -69,7 +68,6 @@ import com.arcadedb.exception.ExternalResourceException;
 import com.arcadedb.exception.LockTimeoutException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryNotIdempotentException;
-import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionCommittedRemotelyException;
@@ -437,15 +435,18 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * while a non-retryable {@link TimeoutException} stays distinct instead of being mistaken for a
    * retryable one. It also lets callers catch the specific type directly.
    * <p>
-   * Only {@link ArcadeDBException} subtypes with a single {@code (String)} constructor belong here:
-   * non-{@code ArcadeDBException} types (e.g. {@code SecurityException}) would not be caught by the
-   * {@code catch (ArcadeDBException)} on the forwarding path and would be re-wrapped anyway, and
-   * types that need structured arguments (e.g. {@link DuplicatedKeyException}) are reconstructed
-   * explicitly in {@link #reconstructLeaderException}. New entries are safe to add as one line each;
-   * extending this map is preferred over reflectively instantiating an arbitrary class name from the
-   * response. {@link Map#ofEntries} is used (rather than {@link Map#of}) because the latter caps at
-   * ten pairs. A class of a 4xx answer that is not here is read from the remote client's table
-   * ({@code RemoteExceptionRebuilder}, issue #12931), so only a type that must be rebuilt as itself on a 5xx or 503 needs a line here.
+   * Only types with a single {@code (String)} constructor belong here: types that need structured
+   * arguments (e.g. {@link DuplicatedKeyException}) are reconstructed explicitly in
+   * {@link #reconstructLeaderException}. New entries are safe to add as one line each; extending this
+   * map is preferred over reflectively instantiating an arbitrary class name from the response.
+   * {@link Map#ofEntries} is used (rather than {@link Map#of}) because the latter caps at ten pairs.
+   * <p>
+   * A class of a 4xx answer that is not here is read from the remote client's table
+   * ({@code RemoteExceptionRebuilder}, issue #12931), so only a type that must be rebuilt as itself
+   * on a 5xx or a 503 needs a line here. That table also holds types that are not an
+   * {@link ArcadeDBException} ({@code IllegalArgumentException}, {@code SecurityException},
+   * {@code NoSuchElementException}): the forwarding path rethrows the refusal it rebuilt as it is,
+   * whatever its type, so they reach the client as the leader raised them instead of being wrapped.
    * <p>
    * ArcadeDB's {@code ConcurrentModificationException} is referenced by its fully qualified name, and
    * {@link java.util.ConcurrentModificationException} is intentionally NOT imported, so that a bare
@@ -6600,32 +6601,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
   /**
    * The client error the leader answered with, rebuilt as the class it named, or {@code null} when it names none this node
-   * can rebuild. The two types whose answer carries more than a message are built as {@code RemoteHttpComponent} builds them:
-   * the kind of the object that holds a taken name travels in {@code exceptionArgs}, and the RID of a missing record in the
-   * message.
+   * can rebuild. Read from the remote client's own table, the types whose answer carries more than a message first (the kind
+   * of the object that holds a taken name, the RID of a missing record or edge endpoint), so the two cannot drift apart.
    */
   private static RuntimeException rebuildClientError(final String exceptionClass, final String exceptionArgs, final String text) {
-    if (AlreadyExistsException.class.getName().equals(exceptionClass))
-      return new AlreadyExistsException(AlreadyExistsException.Kind.fromName(exceptionArgs), text);
-
-    if (RecordNotFoundException.class.getName().equals(exceptionClass))
-      return new RecordNotFoundException(text, ridNamedIn(text));
-
-    return RemoteExceptionRebuilder.rebuild(exceptionClass, text);
-  }
-
-  /** The RID a "Record #12:7 not found" message names, or {@code null} when it names none or one that does not parse. */
-  private static RID ridNamedIn(final String text) {
-    final int begin = text.indexOf('#');
-    if (begin < 0)
-      return null;
-    int end = text.indexOf(' ', begin);
-    if (end < 0)
-      end = text.length();
-    try {
-      return new RID(text.substring(begin, end));
-    } catch (final RuntimeException e) {
-      return null;
-    }
+    final RuntimeException withArguments = RemoteExceptionRebuilder.rebuildWithArguments(exceptionClass, exceptionArgs, text);
+    return withArguments != null ? withArguments : RemoteExceptionRebuilder.rebuild(exceptionClass, text);
   }
 }

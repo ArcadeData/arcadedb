@@ -19,6 +19,7 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.Test;
@@ -89,33 +90,45 @@ class RaftForwardedClientErrorIT extends BaseRaftHATest {
     leader.command("sql", "CREATE VERTEX " + VERTEX_TYPE).close();
     waitForAllServers();
 
+    // The destination of an edge that does not exist is a refusal of its own type (VertexNotFoundException), and the source has
+    // to exist for the statement to get that far
+    final String existingVertex;
+    try (final ResultSet vertices = leader.query("sql", "SELECT FROM " + VERTEX_TYPE)) {
+      existingVertex = vertices.next().getIdentity().orElseThrow().toString();
+    }
+
     final HttpClient client = HttpClient.newBuilder().connectTimeout(HTTP_TIMEOUT).build();
     try {
-      for (final String[] refusal : REFUSALS) {
-        final String what = refusal[0] + ": " + refusal[1];
-        final HttpResponse<String> onTheLeader = send(client, leaderIndex, refusal[0], refusal[1]);
-        assertThat(onTheLeader.statusCode()).as("the leader's own answer to %s: %s", what, onTheLeader.body())
-            .isEqualTo(Integer.parseInt(refusal[2]));
-
-        final HttpResponse<String> onTheFollower = send(client, followerIndex, refusal[0], refusal[1]);
-        assertThat(onTheFollower.statusCode()).as("the follower's answer to %s: %s", what, onTheFollower.body())
-            .isEqualTo(onTheLeader.statusCode());
-        final JSONObject leaderBody = new JSONObject(onTheLeader.body());
-        final JSONObject followerBody = new JSONObject(onTheFollower.body());
-        assertThat(followerBody.getString("exception", "")).as("exception class of %s", what)
-            .isEqualTo(leaderBody.getString("exception", ""));
-        assertThat(followerBody.getString("error", "")).as("label of %s", what).isEqualTo(leaderBody.getString("error", ""));
-      }
+      for (final String[] refusal : REFUSALS)
+        assertAnsweredAsTheLeaderDoes(client, leaderIndex, followerIndex, refusal[0], refusal[1], Integer.parseInt(refusal[2]));
+      assertAnsweredAsTheLeaderDoes(client, leaderIndex, followerIndex, "sql",
+          "CREATE EDGE " + EDGE_TYPE + " FROM " + existingVertex + " TO #98:98", 404);
     } finally {
       client.close();
     }
+  }
+
+  private void assertAnsweredAsTheLeaderDoes(final HttpClient client, final int leaderIndex, final int followerIndex,
+      final String language, final String command, final int expectedStatus) throws Exception {
+    final String what = language + ": " + command;
+    final HttpResponse<String> onTheLeader = send(client, leaderIndex, language, command);
+    assertThat(onTheLeader.statusCode()).as("the leader's own answer to %s: %s", what, onTheLeader.body()).isEqualTo(expectedStatus);
+
+    final HttpResponse<String> onTheFollower = send(client, followerIndex, language, command);
+    assertThat(onTheFollower.statusCode()).as("the follower's answer to %s: %s", what, onTheFollower.body())
+        .isEqualTo(onTheLeader.statusCode());
+    final JSONObject leaderBody = new JSONObject(onTheLeader.body());
+    final JSONObject followerBody = new JSONObject(onTheFollower.body());
+    assertThat(followerBody.getString("exception", "")).as("exception class of %s", what)
+        .isEqualTo(leaderBody.getString("exception", ""));
+    assertThat(followerBody.getString("error", "")).as("label of %s", what).isEqualTo(leaderBody.getString("error", ""));
   }
 
   /** The statement posted to the {@code /command} endpoint of the server {@code serverIndex}, as the root user. */
   private HttpResponse<String> send(final HttpClient client, final int serverIndex, final String language, final String command)
       throws Exception {
     return client.send(HttpRequest.newBuilder()
-        .uri(URI.create("http://127.0.0.1:" + getServer(serverIndex).getHttpServer().getPort() + "/api/v1/command/" + getDatabaseName()))
+        .uri(URI.create(getServerHttpUrl(serverIndex, "/api/v1/command/" + getDatabaseName())))
         .timeout(HTTP_TIMEOUT)
         .header("Authorization", "Basic " + Base64.getEncoder()
             .encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes(StandardCharsets.UTF_8)))

@@ -24,8 +24,11 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.RefusedBeforePublishingException;
 import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.ArithmeticErrorException;
+import com.arcadedb.exception.CommandParameterMissingException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseIsReopeningException;
+import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.DeletedEntityException;
 import com.arcadedb.exception.EquivalentIndexException;
 import com.arcadedb.exception.ErrorCategory;
@@ -37,16 +40,24 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.exception.TransactionOutcomeUnknownException;
+import com.arcadedb.exception.TypeAlreadyExistsException;
 import com.arcadedb.exception.UnknownFunctionException;
 import com.arcadedb.exception.UnknownProcedureException;
 import com.arcadedb.exception.ValidationException;
+import com.arcadedb.exception.VertexNotFoundException;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.network.binary.ReplicationQueueFullException;
+import com.arcadedb.remote.RemoteExceptionRebuilder;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.RequestStillInFlightException;
 import com.arcadedb.server.http.RetryLaterException;
 import com.arcadedb.utility.FileUtils;
 import java.io.File;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.AfterEach;
@@ -694,5 +705,70 @@ class LeaderExceptionReconstructionTest {
     final String body = clientErrorBody(DatabaseIsReopeningException.class.getName(), null, "reopening");
 
     assertThat(RaftReplicatedDatabase.reconstructLeaderException(503, body, null)).isExactlyInstanceOf(TransactionException.class);
+  }
+
+  // Regression for #12931: a type created by somebody else between the check and the create (two migrations through two
+  // followers) is the taken name it extends, with its kind. Its own constructor takes a type name, not a message
+  @Test
+  void aTypeTakenByAConcurrentCreateIsATakenNameOfKindType() {
+    final RuntimeException rebuilt = RaftReplicatedDatabase.reconstructLeaderException(409,
+        clientErrorBody(TypeAlreadyExistsException.class.getName(), "TYPE", "Cannot create type 'T' because already exists"), null);
+
+    assertThat(rebuilt).isExactlyInstanceOf(AlreadyExistsException.class).hasMessage("Cannot create type 'T' because already exists");
+    assertThat(((AlreadyExistsException) rebuilt).getKind()).isEqualTo(AlreadyExistsException.Kind.TYPE);
+  }
+
+  // Regression for #12931: the missing endpoint of an edge keeps its own type and the RID its message names
+  @Test
+  void aMissingEdgeEndpointKeepsItsTypeAndItsRidAcrossTheForward() {
+    final String detail = "Cannot create an edge whose destination vertex #98:98 does not exist";
+    final RuntimeException rebuilt = RaftReplicatedDatabase.reconstructLeaderException(404,
+        clientErrorBody(VertexNotFoundException.class.getName(), null, detail), null);
+
+    assertThat(rebuilt).isExactlyInstanceOf(VertexNotFoundException.class).hasMessage(detail);
+    assertThat(((VertexNotFoundException) rebuilt).getRID()).isEqualTo(new RID(98, 98));
+  }
+
+  // Regression for #12931: a database the leader no longer holds (dropped there, the drop not applied here yet) is answered as
+  // the leader answers it, 404, and not as a fault of this node
+  @Test
+  void aDatabaseTheLeaderNoLongerHoldsIsAnsweredAsTheLeaderAnswersIt() {
+    assertThat(RaftReplicatedDatabase.reconstructLeaderException(404,
+        clientErrorBody(DatabaseNotFoundException.class.getName(), null, "Database 'x' is not available"), null))
+        .isExactlyInstanceOf(DatabaseNotFoundException.class).hasMessage("Database 'x' is not available");
+  }
+
+  /** The few names of the remote client's table a 4xx of the leader does not bring back as themselves, with what they become. */
+  private static final Map<String, Class<?>> FORWARDED_AS = Map.of(
+      // its constructor takes a type name: the AlreadyExistsException it extends, as over the remote client
+      TypeAlreadyExistsException.class.getName(), AlreadyExistsException.class,
+      // its constructor takes the names of the missing parameters: the semantic error it extends, as over the remote client
+      CommandParameterMissingException.class.getName(), CommandSemanticException.class);
+
+  /**
+   * Census for #12931: the authority is the remote client's table ({@code RemoteExceptionRebuilder}), the names it rebuilds from
+   * a message and the ones it rebuilds with arguments. Every one of them, answered 4xx by the leader, comes back on the follower
+   * as the class it names (or as the one documented above), never as the TransactionException this node answers 500 for. Read
+   * from the table's own key sets, so a class added there cannot be missed by the forward path.
+   */
+  @Test
+  void everyNameOfTheRemoteTableAnswered4xxComesBackAsItself() throws Exception {
+    final Set<String> names = new TreeSet<>(RemoteExceptionRebuilder.names());
+    names.addAll(RemoteExceptionRebuilder.namesWithArguments());
+
+    assertThat(names).as("the scan still reaches RemoteExceptionRebuilder.names() and namesWithArguments()")
+        .contains(IllegalArgumentException.class.getName(), ArithmeticErrorException.class.getName(),
+            AlreadyExistsException.class.getName(), TypeAlreadyExistsException.class.getName(),
+            RecordNotFoundException.class.getName(), VertexNotFoundException.class.getName()).hasSizeGreaterThan(60);
+
+    final List<String> wrong = new ArrayList<>();
+    for (final String name : names) {
+      final RuntimeException rebuilt = RaftReplicatedDatabase.reconstructLeaderException(400, clientErrorBody(name, null, "boom"),
+          null);
+      final Class<?> expected = FORWARDED_AS.containsKey(name) ? FORWARDED_AS.get(name) : Class.forName(name);
+      if (rebuilt.getClass() != expected)
+        wrong.add(name + " came back as " + rebuilt.getClass().getName());
+    }
+    assertThat(wrong).isEmpty();
   }
 }
