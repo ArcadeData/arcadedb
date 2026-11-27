@@ -19,8 +19,11 @@
 package com.arcadedb.query.sql.method;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Document;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -61,14 +64,41 @@ class Issue12835ToJsonListScalarsTest extends TestHelper {
     assertThat(json.getLong(1)).isEqualTo(7L);
   }
 
-  /** The branches that already worked are unchanged: nested lists, maps and JSON text. */
+  /** A nested list recurses, so its numbers were lost at every level ([[null,null],[null]]). */
   @Test
-  void theOtherElementKindsAreUnchanged() {
+  void aNestedListKeepsItsNumbers() {
     final JSONArray nested = array("SELECT [[1, 2], [3]].toJSON() AS v");
     assertThat(nested.toString()).isEqualTo("[[1,2],[3]]");
+  }
 
+  /** JSON text inside a list is still parsed, as before. */
+  @Test
+  void aJsonTextElementIsStillParsed() {
     final JSONArray text = array("SELECT ['{\"a\": 1}'].toJSON() AS v");
     assertThat(text.getJSONObject(0).getInt("a")).isEqualTo(1);
+  }
+
+  /**
+   * Every other element with no conversion of its own fell to null too: a link and a date are written as the same value is
+   * written inside a map ({@code {"d": d}.toJSON()}), instead of being dropped.
+   */
+  @Test
+  void aListOfLinksAndDatesKeepsEveryValue() {
+    database.command("sql", "CREATE DOCUMENT TYPE L");
+    database.command("sql", "CREATE PROPERTY L.d DATE");
+    database.transaction(() -> database.command("sql", "INSERT INTO L SET d = date('2026-01-02', 'yyyy-MM-dd')"));
+
+    final Document doc = database.iterateType("L", false).next().asDocument();
+
+    try (final ResultSet rs = database.query("sql", "SELECT [@rid, d].toJSON() AS v, {\"d\": d}.toJSON() AS m FROM L")) {
+      final Result row = rs.next();
+      final JSONArray json = row.getProperty("v");
+      final JSONObject map = row.getProperty("m");
+
+      assertThat(json.length()).isEqualTo(2);
+      assertThat(json.getString(0)).isEqualTo(doc.getIdentity().toString());
+      assertThat(json.get(1)).isNotNull().isEqualTo(map.get("d"));
+    }
   }
 
   private JSONArray array(final String sql) {
