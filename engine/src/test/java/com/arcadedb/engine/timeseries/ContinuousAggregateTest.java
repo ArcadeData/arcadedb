@@ -682,12 +682,12 @@ class ContinuousAggregateTest extends TestHelper {
     // not behind the watermark of before the refresh, behind the one the refresh installs
     duringARefresh(() -> append(H0 + 2 * HOUR + 2_000, 5));
     assertThat(aggregate().getWatermarkTs()).isEqualTo(H0 + 3 * HOUR);
-    assertThat(aggregate().getInvalidation()).isNotNull();
+    assertThat(aggregate().getLateInvalidation()).isNotNull();
 
     refresh();
     assertThat(buckets()).containsExactly(new Bucket(H0, "a", 10), new Bucket(H0 + 2 * HOUR, "a", 25),
         new Bucket(H0 + 3 * HOUR, "a", 30));
-    assertThat(aggregate().getInvalidation()).isNull();
+    assertThat(aggregate().hasInvalidation()).isFalse();
   }
 
   // #10633
@@ -704,7 +704,7 @@ class ContinuousAggregateTest extends TestHelper {
 
     refresh();
     assertThat(buckets()).containsExactly(new Bucket(H0, "a", 15), new Bucket(H0 + HOUR, "a", 20));
-    assertThat(aggregate().getInvalidation()).isNull();
+    assertThat(aggregate().hasInvalidation()).isFalse();
   }
 
   // #10633
@@ -726,7 +726,7 @@ class ContinuousAggregateTest extends TestHelper {
 
     assertThat(buckets()).containsExactly(new Bucket(H0, "a", 10), new Bucket(H0 + 2 * HOUR, "a", 25),
         new Bucket(H0 + 3 * HOUR, "a", 30));
-    assertThat(aggregate().getInvalidation()).isNull();
+    assertThat(aggregate().hasInvalidation()).isFalse();
   }
 
   // #10633
@@ -749,7 +749,7 @@ class ContinuousAggregateTest extends TestHelper {
     refresh();
     assertThat(buckets()).containsExactly(new Bucket(H0, "a", 11), new Bucket(H0 + 2 * HOUR, "a", 22),
         new Bucket(H0 + 3 * HOUR, "a", 30), new Bucket(H0 + 4 * HOUR, "a", 4));
-    assertThat(aggregate().getInvalidation()).isNull();
+    assertThat(aggregate().hasInvalidation()).isFalse();
   }
 
   // #10633
@@ -778,7 +778,7 @@ class ContinuousAggregateTest extends TestHelper {
     refresh();
 
     append(H0 + 2_000, 5);
-    assertThat(aggregate().getInvalidation()).isNull();
+    assertThat(aggregate().hasInvalidation()).isFalse();
   }
 
   /**
@@ -862,7 +862,7 @@ class ContinuousAggregateTest extends TestHelper {
       refresh();
 
       assertThat(buckets()).containsExactly(new Bucket(H0, "a", 15), new Bucket(H0 + 2 * HOUR, "a", 20));
-      assertThat(aggregate().getInvalidation()).isNull();
+      assertThat(aggregate().hasInvalidation()).isFalse();
     }
 
     // #10502
@@ -947,7 +947,7 @@ class ContinuousAggregateTest extends TestHelper {
       engine().appendSamples(new long[] { H0 + 2_000 }, new Object[] { "a" }, new Object[] { 5.0 });
 
       assertThat(buckets()).containsExactly(new Bucket(H0, "a", 15), new Bucket(H0 + 2 * HOUR, "a", 20));
-      assertThat(aggregate().getInvalidation()).isNull();
+      assertThat(aggregate().hasInvalidation()).isFalse();
     }
 
     // #10502
@@ -958,11 +958,11 @@ class ContinuousAggregateTest extends TestHelper {
       twoBucketsAndARefresh();
 
       engine().appendSamplesWithoutRefresh(new long[] { H0 + 2_000 }, new Object[] { "a" }, new Object[] { 5.0 });
-      assertThat(aggregate().getInvalidation()).isNotNull();
+      assertThat(aggregate().getLateInvalidation()).isNotNull();
       refresh();
 
       assertThat(buckets()).containsExactly(new Bucket(H0, "a", 15), new Bucket(H0 + 2 * HOUR, "a", 20));
-      assertThat(aggregate().getInvalidation()).isNull();
+      assertThat(aggregate().hasInvalidation()).isFalse();
     }
 
     // #10502
@@ -1018,7 +1018,7 @@ class ContinuousAggregateTest extends TestHelper {
       engine().appendSamplesWithoutRefresh(new long[] { H0 + 2 * HOUR }, new Object[] { "a" }, new Object[] { 1.0 });
       engine().appendSamplesWithoutRefresh(new long[] { H0 + 5 * HOUR }, new Object[] { "a" }, new Object[] { 1.0 });
 
-      assertThat(aggregate().getInvalidation()).isNull();
+      assertThat(aggregate().hasInvalidation()).isFalse();
       assertThat(schemaVersion()).isEqualTo(version);
     }
 
@@ -1031,7 +1031,7 @@ class ContinuousAggregateTest extends TestHelper {
 
       engine().appendSamples(new long[] { H0 }, new Object[] { "a" }, new Object[] { 1.0 });
 
-      assertThat(aggregate().getInvalidation()).isNull();
+      assertThat(aggregate().hasInvalidation()).isFalse();
       refresh();
       assertThat(buckets()).containsExactly(new Bucket(H0, "a", 1));
     }
@@ -1046,7 +1046,7 @@ class ContinuousAggregateTest extends TestHelper {
       ((LocalTimeSeriesType) database.getSchema().getType("Other")).getEngine()
           .appendSamples(new long[] { H0 }, new Object[] { "a" }, new Object[] { 1.0 });
 
-      assertThat(aggregate().getInvalidation()).isNull();
+      assertThat(aggregate().hasInvalidation()).isFalse();
     }
 
     // #10502
@@ -1113,9 +1113,160 @@ class ContinuousAggregateTest extends TestHelper {
       engine().appendSamplesWithoutRefresh(new long[] { H0 + 2_000 }, new Object[] { "a" }, new Object[] { 5.0 });
       reopenDatabase();
 
-      assertThat(aggregate().getInvalidation()).isNotNull();
+      assertThat(aggregate().getLateInvalidation()).isNotNull();
       refresh();
       assertThat(buckets()).containsExactly(new Bucket(H0, "a", 15), new Bucket(H0 + 2 * HOUR, "a", 20));
+    }
+
+    // Issue #13049: a delete of the whole type records the whole time range as the samples it removed, and the range a late sample
+    // recorded was merged into it, into a range that starts at the beginning of time. That range is recomputed from the rows the
+    // aggregate holds, and the bucket of the late sample holds none, so the sample never reached it. The range of the delete was also
+    // never cleared, because the end of the range of a whole-type delete is the value that means "no append in flight".
+    // #13049
+    // ---- the repro of the issue
+
+    /** The watermark at the second of two buckets one hour apart: the first is behind it. */
+    private void twoAdjacentBucketsAndARefresh() {
+      insert(H0 + 1_000, "a", 1.0);
+      insert(H0 + HOUR + 1_000, "a", 2.0);
+      refresh();
+      assertThat(aggregate().getWatermarkTs()).isEqualTo(H0 + HOUR);
+      assertThat(buckets()).containsExactly(new Bucket(H0, "a", 1), new Bucket(H0 + HOUR, "a", 2));
+    }
+
+    /** What the query over the source answers: the aggregate has to hold exactly that. */
+    private List<Bucket> bucketsOfTheSource() {
+      final List<Bucket> result = new ArrayList<>();
+      try (final ResultSet rs = database.query("sql",
+          "SELECT ts.timeBucket('1h', ts) AS hr, h, sum(v) AS total FROM S GROUP BY hr, h ORDER BY hr, h")) {
+        while (rs.hasNext()) {
+          final Result row = rs.next();
+          result.add(new Bucket(DateUtils.toEpochMillis(row.getProperty("hr")), row.getProperty("h"),
+              ((Number) row.getProperty("total")).doubleValue()));
+        }
+      }
+      return result;
+    }
+
+    @Test
+    void aLateSampleAfterADeleteOfTheWholeTypeReachesItsBucket() {
+      createSourceAndAggregate();
+      twoAdjacentBucketsAndARefresh();
+
+      database.command("sql", "DELETE FROM S").close();
+      assertThat(buckets()).isEmpty();
+
+      insert(H0 + 2_000, "a", 3.0);
+
+      assertThat(bucketsOfTheSource()).containsExactly(new Bucket(H0, "a", 3));
+      assertThat(buckets()).as("the aggregate answers what the source answers").containsExactly(new Bucket(H0, "a", 3));
+      // and a refresh asked for, as the issue says, has nothing left to repair
+      refresh();
+      assertThat(buckets()).containsExactly(new Bucket(H0, "a", 3));
+    }
+
+    @Test
+    void aLateSampleAfterATruncateTypeReachesItsBucket() {
+      createSourceAndAggregate();
+      twoAdjacentBucketsAndARefresh();
+
+      database.command("sql", "TRUNCATE TYPE S").close();
+      assertThat(buckets()).isEmpty();
+
+      insert(H0 + 2_000, "a", 3.0);
+      refresh();
+
+      assertThat(bucketsOfTheSource()).containsExactly(new Bucket(H0, "a", 3));
+      assertThat(buckets()).containsExactly(new Bucket(H0, "a", 3));
+    }
+
+    // #13049
+    /** The range of the delete is bounded by a time: that one was right, and stays right. */
+    @Test
+    void aLateSampleAfterADeleteOfARangeReachesItsBucket() {
+      createSourceAndAggregate();
+      twoAdjacentBucketsAndARefresh();
+
+      database.command("sql", "DELETE FROM S WHERE ts < " + (H0 + HOUR)).close();
+      assertThat(buckets()).containsExactly(new Bucket(H0 + HOUR, "a", 2));
+
+      insert(H0 + 2_000, "a", 3.0);
+
+      assertThat(buckets()).containsExactly(new Bucket(H0, "a", 3), new Bucket(H0 + HOUR, "a", 2));
+      assertThat(buckets()).isEqualTo(bucketsOfTheSource());
+    }
+
+    // #13049
+    /**
+     * The delete and the late sample are both recorded when the refresh runs: the delete is inside a transaction, whose end is what runs
+     * the refresh the delete owes, and the append commits its own.
+     */
+    @Test
+    void aDeleteOfTheWholeTypeAndALateSampleRecordedBeforeTheSameRefreshAreBothApplied() {
+      createSourceAndAggregate();
+      twoAdjacentBucketsAndARefresh();
+
+      database.transaction(() -> {
+        database.command("sql", "DELETE FROM S").close();
+        insert(H0 + 2_000, "a", 3.0);
+      });
+
+      assertThat(bucketsOfTheSource()).containsExactly(new Bucket(H0, "a", 3));
+      assertThat(buckets()).containsExactly(new Bucket(H0, "a", 3));
+    }
+
+    // #13049
+    /**
+     * The two records kept apart: a delete of the whole type still pending when a late sample is appended, which is what an append in
+     * flight during the refresh of the delete leaves. The backing type holds no row behind the watermark, so the range of the delete
+     * has no bucket to recompute, and the range of the sample is the one that creates its bucket.
+     */
+    @Test
+    void aLateSampleIsNotLostInTheRangeOfAPendingDeleteOfTheWholeType() throws Exception {
+      createSourceAndAggregate();
+      twoAdjacentBucketsAndARefresh();
+      database.command("sql", "TRUNCATE TYPE S").close();
+      assertThat(buckets()).isEmpty();
+
+      aggregate().invalidate(Long.MIN_VALUE, Long.MAX_VALUE);
+      engine().appendSamplesWithoutRefresh(new long[] { H0 + 2_000 }, new Object[] { "a" }, new Object[] { 3.0 });
+      assertThat(aggregate().getInvalidation()).as("the range of the delete is still the whole time range")
+          .isEqualTo(new ContinuousAggregateImpl.Invalidation(Long.MIN_VALUE, Long.MAX_VALUE));
+      assertThat(aggregate().getLateInvalidation()).as("the range of the sample is the bucket it reached")
+          .isEqualTo(new ContinuousAggregateImpl.Invalidation(H0, H0 + HOUR - 1));
+      refresh();
+
+      assertThat(buckets()).containsExactly(new Bucket(H0, "a", 3));
+      assertThat(aggregate().hasInvalidation()).isFalse();
+    }
+
+    // #13049
+    @Test
+    void theRangeOfAWholeTypeDeleteIsClearedOnceItIsRecomputed() {
+      createSourceAndAggregate();
+      twoAdjacentBucketsAndARefresh();
+
+      database.command("sql", "DELETE FROM S").close();
+
+      assertThat(aggregate().hasInvalidation()).as("nothing is left to recompute").isFalse();
+      assertThat(aggregate().toJSON().has("invalidatedFromTs")).as("and nothing stays in the schema").isFalse();
+      assertThat(aggregate().toJSON().has("invalidatedToTs")).isFalse();
+    }
+
+    // #13049
+    @Test
+    void theRangeOfATruncateTypeIsClearedAndStaysClearedAfterARestart() {
+      createSourceAndAggregate();
+      twoAdjacentBucketsAndARefresh();
+
+      database.command("sql", "TRUNCATE TYPE S").close();
+      assertThat(aggregate().hasInvalidation()).isFalse();
+
+      reopenDatabase();
+
+      assertThat(aggregate().hasInvalidation()).as("the schema on disk holds no range either").isFalse();
+      insert(H0 + 2_000, "a", 3.0);
+      assertThat(buckets()).containsExactly(new Bucket(H0, "a", 3));
     }
   }
 }

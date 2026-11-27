@@ -999,6 +999,30 @@ class LeaderForwardRoutingTest {
           .firstValue(LeaderForwardContext.FORWARDED_LEADER_ID_HEADER)).isEmpty();
     }
 
+    /**
+     * A caller that holds a session token is forwarded under its user name. A name with characters a header cannot carry
+     * as written is not sent: the forward fails, and nothing reaches the leader.
+     */
+    @Test
+    void aSessionUserWithUnsupportedCharactersInTheNameIsNotForwarded() throws Exception {
+      leader.answerJson(200, "{\"result\":\"ok\"}");
+      final LeaderCommandForwarder forwarder = new LeaderCommandForwarder(httpServerWith(ha(), config(30_000L)));
+
+      for (final String name : new String[] { "reader ", " reader", "re  ader" }) {
+        final HttpServerExchange exchange = exchange("/api/v1/server");
+        exchange.getRequestHeaders().put(new HttpString("Authorization"), "Bearer AU-0123456789abcdef");
+
+        assertThatThrownBy(() -> forwarder.forwardIfReplica(exchange, user(name), "/api/v1/server", "{}", false))
+            .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("principal");
+      }
+      assertThat(leader.requests()).isZero();
+
+      final HttpServerExchange exchange = exchange("/api/v1/server");
+      exchange.getRequestHeaders().put(new HttpString("Authorization"), "Bearer AU-0123456789abcdef");
+      assertThat(forwarder.forwardIfReplica(exchange, user("jane.doe"), "/api/v1/server", "{}", false).getCode()).isEqualTo(200);
+      assertThat(leader.header(PeerRequest.FORWARDED_USER_HEADER)).isEqualTo("jane.doe");
+    }
+
     // ---------------------------------------------------------------------------------------------------------------
     // Fixtures
     // ---------------------------------------------------------------------------------------------------------------
@@ -1297,6 +1321,15 @@ class LeaderForwardRoutingTest {
       assertThat(request.headers().firstValue(PeerRequest.CLUSTER_TOKEN_HEADER)).hasValue("s3cr3t");
       assertThat(request.headers().firstValue(PeerRequest.FORWARDED_USER_HEADER)).hasValue("reader");
       assertThat(request.headers().firstValue("Content-Type")).hasValue("application/json");
+    }
+
+    /** The principal name of a forward is checked where the request is built, whichever dial builds it. */
+    @Test
+    void aBatchForwardForAPrincipalNameWithUnsupportedCharactersFails() {
+      for (final String user : new String[] { "reader ", " reader", "re  ader", "reader\t" })
+        assertThatThrownBy(() -> PostBatchHandler.buildForwardRequest(PLAIN_URL, "application/json", "s3cr3t", user, 0L,
+            new ByteArrayInputStream(new byte[0]), null, null, "peer-1", false)).isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("principal");
     }
 
     @Test

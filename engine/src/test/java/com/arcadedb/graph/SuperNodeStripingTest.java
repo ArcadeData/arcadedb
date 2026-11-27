@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
@@ -576,11 +577,14 @@ class SuperNodeStripingTest extends TestHelper {
   @Test
   void poolNameCollisionWithUserBucketSkipsPromotion() {
     GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.setValue(64);
-    createSchema();
-    // A user bucket named like slot 0 of Hub's pool, OWNED by another type
+    // A user bucket named like slot 0 of Hub's pool, OWNED by another type before Hub exists: once Hub is there, a bucket of that
+    // name is one of its own and is not handed to another type
     database.transaction(() -> {
-      final com.arcadedb.engine.Bucket collision = database.getSchema().createBucket(StripedEdgeList.stripeBucketName("Hub", 0));
+      database.getSchema().createVertexType("Src", 8);
+      final Bucket collision = database.getSchema().createBucket(StripedEdgeList.stripeBucketName("Hub", 0));
       database.getSchema().getType("Src").addBucket(collision);
+      database.getSchema().createVertexType("Hub", 1);
+      database.getSchema().createEdgeType("LINK", 8);
     });
     final RID hubRID = createHub();
 
@@ -589,6 +593,7 @@ class SuperNodeStripingTest extends TestHelper {
 
     // PROMOTION MUST HAVE BEEN SKIPPED: CLASSIC LAYOUT, EVERYTHING WORKS
     assertThat(loadInHead(hubRID)).isInstanceOf(MutableEdgeSegment.class);
+    assertThat(database.getSchema().getTypeByBucketName(StripedEdgeList.stripeBucketName("Hub", 0)).getName()).isEqualTo("Src");
     database.transaction(() -> {
       final Vertex hub = hubRID.asVertex(true);
       assertThat(hub.countEdges(Vertex.DIRECTION.IN, "LINK")).isEqualTo(total);

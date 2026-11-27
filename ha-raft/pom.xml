@@ -38,7 +38,21 @@
              a Ratis clause, issue #8548) and run InstallSnapshotNotifyLoopTest and
              LeaderAppenderAfterInstallBoundaryTest, which pin the stock appender's behaviour. -->
         <ratis.version>3.3.1</ratis.version>
+        <!-- Ratis 3.3.1 brings ratis-thirdparty 1.1.0, whose shaded Netty 4.1.136.Final carries the Critical
+             GHSA-c4c3-7fpv-j4q5 (fixed in 4.1.137.Final). 1.1.1 shades Netty 4.1.139.Final. Drop this override once
+             ratis.version moves to a release that brings ratis-thirdparty 1.1.1 or later on its own. -->
+        <ratis-thirdparty.version>1.1.1</ratis-thirdparty.version>
     </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.apache.ratis</groupId>
+                <artifactId>ratis-thirdparty-misc</artifactId>
+                <version>${ratis-thirdparty.version}</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
 
     <dependencies>
         <!-- Provided, like arcadedb-server below and every other plugin module: the server distribution already ships

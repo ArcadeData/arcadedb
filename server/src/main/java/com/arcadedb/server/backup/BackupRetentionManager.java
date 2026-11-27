@@ -199,24 +199,38 @@ public class BackupRetentionManager {
    * of the directory takes them for backups, so neither does the policy above. A backup that is still running keeps writing
    * its partial archive, so one left unwritten for {@link #STALE_PARTIAL_MILLIS} belongs to no running backup. The age, not a
    * lock, is what spares the archive another server is writing into a shared directory.
+   * <p>
+   * Static, and independent of any retention policy or registration, on purpose (issue #12530): the on-demand backups ({@code
+   * trigger backup}, SQL {@code BACKUP DATABASE}) write partial archives whether or not auto-backup is enabled, and with it off
+   * (the default) no retention runs, so this is the only thing that can remove what a crashed one left. The caller must hold the
+   * database's BACKUP slot, which is what keeps it from running next to a backup of that database on this server.
+   *
+   * @param dbBackupDir the backup directory of ONE database; a missing one is nothing to sweep
+   *
+   * @return the number of partial archives deleted
    */
-  private void deleteStalePartialArchives(final File dbBackupDir) {
+  public static int deleteStalePartialArchives(final File dbBackupDir) {
     final File[] partials = dbBackupDir.listFiles(PARTIAL_FILE_FILTER);
     if (partials == null)
-      return;
+      return 0;
 
+    int deleted = 0;
     final long staleBefore = System.currentTimeMillis() - STALE_PARTIAL_MILLIS;
     for (final File partial : partials) {
       if (partial.lastModified() >= staleBefore)
         continue;
       try {
-        if (Files.deleteIfExists(partial.toPath()))
-          LogManager.instance().log(this, Level.INFO, "Deleted '%s', left by a backup that did not complete", partial.getName());
+        if (Files.deleteIfExists(partial.toPath())) {
+          ++deleted;
+          LogManager.instance().log(BackupRetentionManager.class, Level.INFO, "Deleted '%s', left by a backup that did not complete",
+              partial.getName());
+        }
       } catch (final IOException e) {
-        LogManager.instance().log(this, Level.WARNING, "Failed to delete '%s', left by a backup that did not complete: %s",
-            partial.getName(), e.getMessage());
+        LogManager.instance().log(BackupRetentionManager.class, Level.WARNING,
+            "Failed to delete '%s', left by a backup that did not complete: %s", partial.getName(), e.getMessage());
       }
     }
+    return deleted;
   }
 
   // Maximum number of backup files to process to prevent unbounded memory usage

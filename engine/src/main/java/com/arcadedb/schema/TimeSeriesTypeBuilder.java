@@ -427,6 +427,8 @@ public class TimeSeriesTypeBuilder {
   protected void validate() {
     if (typeName == null || typeName.isEmpty())
       throw new SchemaException("TimeSeries type name is required");
+    // the name is the first part of the names of the files of the type: judged before anything is looked up or created
+    LocalTimeSeriesType.checkValidName(typeName);
     if (timestampColumn == null)
       throw new SchemaException("TimeSeries type requires a TIMESTAMP column");
 

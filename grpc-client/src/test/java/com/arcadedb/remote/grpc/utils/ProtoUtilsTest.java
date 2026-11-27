@@ -18,6 +18,9 @@
  */
 package com.arcadedb.remote.grpc.utils;
 
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.DatabaseRID;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
@@ -441,6 +444,36 @@ class ProtoUtilsTest {
 
     assertThat(ProtoUtils.fromGrpcValue(list)).isEqualTo(List.of(new RID(10, 5), new RID(10, 5)));
     assertThat(ProtoUtils.fromGrpcValue(map)).isEqualTo(Map.of("x", new RID(10, 5)));
+  }
+
+  @Test
+  void fromGrpcValueBindsEveryLinkToTheGivenDatabase() {
+    // a link, a list, a map and an embedded value of links, bound to the database the caller decodes for (issue #12603)
+    final GrpcValue link = GrpcValue.newBuilder().setLinkValue(GrpcLink.newBuilder().setRid("#10:5").build()).build();
+    final GrpcValue list = GrpcValue.newBuilder().setListValue(GrpcList.newBuilder().addValues(link).build()).build();
+    final GrpcValue map = GrpcValue.newBuilder().setMapValue(GrpcMap.newBuilder().putEntries("x", link).build()).build();
+    final GrpcValue embedded = GrpcValue.newBuilder().setEmbeddedValue(GrpcEmbedded.newBuilder().putFields("y", link).build()).build();
+
+    final DatabaseFactory factory = new DatabaseFactory("./target/databases/ProtoUtilsTest12603");
+    if (factory.exists())
+      factory.open().drop();
+    final Database database = factory.create();
+    try {
+      assertBoundTo(ProtoUtils.fromGrpcValue(link, database), database);
+      assertBoundTo(((List<?>) ProtoUtils.fromGrpcValue(list, database)).getFirst(), database);
+      assertBoundTo(((Map<?, ?>) ProtoUtils.fromGrpcValue(map, database)).get("x"), database);
+      assertBoundTo(((Map<?, ?>) ProtoUtils.fromGrpcValue(embedded, database)).get("y"), database);
+
+      // without a database a link stays a plain RID
+      assertThat(ProtoUtils.fromGrpcValue(link, null).getClass()).isEqualTo(RID.class);
+    } finally {
+      database.drop();
+    }
+  }
+
+  private static void assertBoundTo(final Object value, final Database database) {
+    assertThat(value).isInstanceOf(DatabaseRID.class).isEqualTo(new RID(10, 5));
+    assertThat(((DatabaseRID) value).getBoundDatabase()).isSameAs(database);
   }
 
   @Test

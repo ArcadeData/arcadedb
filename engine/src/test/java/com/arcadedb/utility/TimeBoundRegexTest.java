@@ -246,6 +246,18 @@ class TimeBoundRegexTest {
     }
 
     @Test
+    void aCountedGroupOfACountedEmptyGroupIsRefusedWhateverTheInput() {
+      // 4.3 billion empty matches over an input with no character to read (17 s of the JDK, with no deadline to hear of them)
+      final Pattern pattern = Pattern.compile("((){21474836}){200}");
+      final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
+      assertThatThrownBy(() -> TimeBoundRegex.findUntil(pattern, "", TimeBoundRegex.newDeadline(200))).isInstanceOf(
+          TimeoutException.class);
+      assertThatThrownBy(() -> TimeBoundRegex.matches(pattern, "", 200)).isInstanceOf(TimeoutException.class);
+      assertThatThrownBy(() -> TimeBoundRegex.replaceAll(pattern, "ab", "x", 200)).isInstanceOf(TimeoutException.class);
+      stopwatch.assertGaveUpWithin(5000, "the refusal, which looks at the pattern and not at the input");
+    }
+
+    @Test
     void aBodyRepeatedNoTimesIsNotCounted() {
       // the body is never entered, so a match that does not go through it must not be refused for what it would cost
       final Pattern pattern = Pattern.compile("(?:\\A|\\A){0}".repeat(20) + "a");
@@ -388,5 +400,60 @@ class TimeBoundRegexTest {
     // And an overflow-inducing timeout must still let a normal match through rather than abort it, proving the
     // fallback really disables the bound instead of just returning a large-but-still-wrong deadline.
     assertThat(TimeBoundRegex.matches(Pattern.compile("Aa.*"), "Aardvark", Long.MAX_VALUE)).isTrue();
+  }
+
+  /** The measure a caller that counts the reads of a match, and has no clock to look at, takes of a pattern. */
+  @Nested
+  class ReadFreeWorkOfAPattern {
+    @Test
+    void aPatternThatCanStepAtLengthWithoutReadingIsRefused() {
+      assertThat(TimeBoundRegex.readFreeWork(Pattern.compile("((){2147483647}){2147483647}")).refused()).isTrue();
+      assertThat(TimeBoundRegex.readFreeWork(Pattern.compile("((){1000}){1000}")).refused()).isTrue();
+      assertThat(TimeBoundRegex.readFreeWork(Pattern.compile("(|)".repeat(12) + "(?!)")).refused()).isTrue();
+      assertThat(TimeBoundRegex.readFreeWork(Pattern.compile("^?".repeat(12) + "(?!)")).refused()).isTrue();
+      assertThat(TimeBoundRegex.readFreeWork(Pattern.compile("(a*)?".repeat(12) + "(?!)")).refused()).isTrue();
+    }
+
+    @Test
+    void anOrdinaryPatternIsNotRefusedAndCostsAFewSteps() {
+      for (final String regex : new String[] { "^(pg_catalog|public)$", "^pg_toast", "^(.*)(.*)(.*)Y$", "[a-z]+", "e?", "(a|b|c|d)*z",
+          "" }) {
+        final TimeBoundRegex.ReadFreeWork work = TimeBoundRegex.readFreeWork(Pattern.compile(regex));
+        assertThat(work.refused()).as(regex).isFalse();
+        assertThat(work.perAttempt()).as(regex).isLessThan(10);
+        assertThat(work.perStart()).as(regex).isLessThan(10);
+      }
+    }
+
+    @Test
+    void theStepsOfAPatternThatCanTakeSomeAreCounted() {
+      // 240 x 240 empty matches in one attempt, whether the attempt starts at the end of the input or in the middle of it
+      final TimeBoundRegex.ReadFreeWork work = TimeBoundRegex.readFreeWork(Pattern.compile("((){240}){240}"));
+      assertThat(work.refused()).isFalse();
+      assertThat(work.perAttempt()).isEqualTo(57_600);
+      assertThat(work.perStart()).isEqualTo(57_600);
+
+      // eight anchors that fail at every position but the first are steps of each start position of a search, not a way to succeed
+      final TimeBoundRegex.ReadFreeWork anchors = TimeBoundRegex.readFreeWork(Pattern.compile("(?:^|^|^|^|^|^|^|^)c"));
+      assertThat(anchors.refused()).isFalse();
+      assertThat(anchors.perStart()).isEqualTo(8);
+    }
+
+    @Test
+    void aLiteralPatternHasNothingToStepThrough() {
+      final TimeBoundRegex.ReadFreeWork work = TimeBoundRegex.readFreeWork(Pattern.compile("(|)".repeat(12) + "(?!)", Pattern.LITERAL));
+      assertThat(work.refused()).isFalse();
+      assertThat(work.perAttempt()).isZero();
+      assertThat(work.perStart()).isZero();
+    }
+
+    @Test
+    void thePatternsOfALikeAreMeasuredAsReadsOnly() {
+      // what a LIKE turns into: a wildcard and quoted characters, which the match reads one by one
+      final TimeBoundRegex.ReadFreeWork work = TimeBoundRegex.readFreeWork(Pattern.compile(".*\\Qa\\E.*\\Qa\\E.*\\Qb\\E"));
+      assertThat(work.refused()).isFalse();
+      assertThat(work.perAttempt()).isZero();
+      assertThat(work.perStart()).isZero();
+    }
   }
 }

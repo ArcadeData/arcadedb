@@ -37,7 +37,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>
  * The defect is not observable from inside one test class, only as a collision between two of them on a busy
  * machine, so this source-level guard - the Bolt counterpart of the gRPC module's
- * {@code Issue7496GrpcHaItsAllocateTheirPortsTest} - holds the line: every class here that starts the Bolt plugin must
+ * {@code GrpcPortAllocationCensusTest} - holds the line: every class here that starts the Bolt plugin must
  * take its port from one of those two fixtures, and none may pin it or dial the production default.
  */
 class Issue8204BoltFixturesTakeUnpinnedPortsTest {

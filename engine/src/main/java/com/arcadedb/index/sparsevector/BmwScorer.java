@@ -21,6 +21,7 @@ package com.arcadedb.index.sparsevector;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.RID;
 import com.arcadedb.index.vector.GroupAdmissionState;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -146,16 +147,29 @@ public final class BmwScorer {
    */
   public static List<RidScore> topK(final int[] queryDims, final float[] queryWeights, final DimCursor[] cursors, final int k,
       final RID startInclusive, final RID endExclusive) throws IOException {
+    return topK(queryDims, queryWeights, cursors, k, startInclusive, endExclusive, WorkGuard.forCommandDeadline(null));
+  }
+
+  /**
+   * {@link #topK(int[], float[], DimCursor[], int, RID, RID)} that stops with the abort of {@code guard} (the command's
+   * deadline, or the termination of its statement) as soon as the scan sees it, instead of running to the end of the postings.
+   * The guard is read on whatever thread scores the range, so it must leave the thread's interrupt flag alone (see
+   * {@link WorkGuard#withoutInterrupt()}).
+   */
+  public static List<RidScore> topK(final int[] queryDims, final float[] queryWeights, final DimCursor[] cursors, final int k,
+      final RID startInclusive, final RID endExclusive, final WorkGuard guard) throws IOException {
     validate(queryDims, queryWeights, cursors);
     if (k <= 0)
       return List.of();
 
+    // Before a cursor is started: starting one decodes its first block
+    guard.check();
     final DimEntry[] terms = openTerms(queryWeights, cursors, startInclusive);
     if (terms.length == 0)
       return List.of();
 
     final TopKCollector collector = new TopKCollector(k);
-    scan(terms, collector, endExclusive);
+    scan(terms, collector, endExclusive, guard);
     return collector.drain();
   }
 
@@ -255,6 +269,17 @@ public final class BmwScorer {
   public static List<RidScore> topKGrouped(final int[] queryDims, final float[] queryWeights, final CursorSource cursors,
       final int limit, final int groupSize, final Function<RID, Object> groupKeyResolver, final Set<RID> allowedRIDs,
       final Set<RID> excludedRIDs) throws IOException {
+    return topKGrouped(queryDims, queryWeights, cursors, limit, groupSize, groupKeyResolver, allowedRIDs, excludedRIDs,
+        WorkGuard.forCommandDeadline(null));
+  }
+
+  /**
+   * {@link #topKGrouped(int[], float[], CursorSource, int, int, Function, Set, Set)} that stops with the abort of
+   * {@code guard} as soon as the scan sees it, see {@link #topK(int[], float[], DimCursor[], int, RID, RID, WorkGuard)}.
+   */
+  public static List<RidScore> topKGrouped(final int[] queryDims, final float[] queryWeights, final CursorSource cursors,
+      final int limit, final int groupSize, final Function<RID, Object> groupKeyResolver, final Set<RID> allowedRIDs,
+      final Set<RID> excludedRIDs, final WorkGuard guard) throws IOException {
     if (groupKeyResolver == null)
       throw new IllegalArgumentException("groupKeyResolver must not be null");
     if (limit <= 0 || groupSize <= 0) {
@@ -263,7 +288,7 @@ public final class BmwScorer {
     }
 
     final GroupedCollector collector = new GroupedCollector(limit, groupSize, groupKeyResolver, allowedRIDs, excludedRIDs);
-    scan(queryDims, queryWeights, cursors, collector);
+    scan(queryDims, queryWeights, cursors, collector, guard);
 
     final HashMap<Object, GroupState> shortGroups = collector.possiblyShortGroups();
     if (!shortGroups.isEmpty()) {
@@ -271,7 +296,7 @@ public final class BmwScorer {
           groupKeyResolver, allowedRIDs, excludedRIDs);
       for (final Map.Entry<Object, GroupState> e : shortGroups.entrySet())
         refill.seed(e.getKey(), e.getValue().heap);
-      scan(queryDims, queryWeights, cursors, refill);
+      scan(queryDims, queryWeights, cursors, refill, guard);
       for (final Map.Entry<Object, RidScoreMinHeap> e : refill.groups.entrySet())
         shortGroups.get(e.getKey()).heap = e.getValue();
     }
@@ -298,6 +323,30 @@ public final class BmwScorer {
   public static List<RidScore> topKForGroups(final int[] queryDims, final float[] queryWeights, final CursorSource cursors,
       final Set<Object> groupKeys, final int groupSize, final float floor, final Function<RID, Object> groupKeyResolver,
       final Set<RID> allowedRIDs, final Set<RID> excludedRIDs) throws IOException {
+    return topKForGroups(queryDims, queryWeights, cursors, new FixedGroups(groupKeys, groupSize, floor), groupKeyResolver,
+        allowedRIDs, excludedRIDs, WorkGuard.forCommandDeadline(null));
+  }
+
+  /**
+   * The groups a fixed-group search fills, see {@link #topKForGroups}.
+   *
+   * @param keys     the groups to fill
+   * @param size     how many members each of them takes
+   * @param floor    the score above which a member matters, {@link Float#NEGATIVE_INFINITY} for none
+   */
+  public record FixedGroups(Set<Object> keys, int size, float floor) {
+  }
+
+  /**
+   * {@link #topKForGroups(int[], float[], CursorSource, Set, int, float, Function, Set, Set)} that stops with the abort of
+   * {@code guard} as soon as the scan sees it, see {@link #topK(int[], float[], DimCursor[], int, RID, RID, WorkGuard)}.
+   */
+  public static List<RidScore> topKForGroups(final int[] queryDims, final float[] queryWeights, final CursorSource cursors,
+      final FixedGroups groups, final Function<RID, Object> groupKeyResolver, final Set<RID> allowedRIDs,
+      final Set<RID> excludedRIDs, final WorkGuard guard) throws IOException {
+    final Set<Object> groupKeys = groups.keys();
+    final int groupSize = groups.size();
+    final float floor = groups.floor();
     if (groupKeyResolver == null)
       throw new IllegalArgumentException("groupKeyResolver must not be null");
     if (Float.isNaN(floor))
@@ -309,21 +358,23 @@ public final class BmwScorer {
 
     final FixedGroupsCollector collector = new FixedGroupsCollector(groupKeys, groupSize, floor, groupKeyResolver,
         allowedRIDs, excludedRIDs);
-    scan(queryDims, queryWeights, cursors, collector);
+    scan(queryDims, queryWeights, cursors, collector, guard);
     return collector.drain();
   }
 
   /** One full traversal: opens the cursors, scans them into {@code collector}, and closes them whatever happens. */
   private static void scan(final int[] queryDims, final float[] queryWeights, final CursorSource source,
-      final Collector collector) throws IOException {
+      final Collector collector, final WorkGuard guard) throws IOException {
     validate(queryDims, queryWeights);
+    // Before the cursors are opened and started: starting one decodes its first block
+    guard.check();
     final DimCursor[] cursors = source.open();
     try {
       if (cursors.length != queryDims.length)
         throw new IllegalArgumentException("queryDims, queryWeights, cursors must have the same length");
       final DimEntry[] terms = openTerms(queryWeights, cursors, null);
       if (terms.length > 0)
-        scan(terms, collector, null);
+        scan(terms, collector, null, guard);
     } finally {
       for (final DimCursor c : cursors)
         if (c != null)
@@ -345,18 +396,24 @@ public final class BmwScorer {
    * dominates everything else once the posting mass has been pruned away. The heap turns that into
    * O(aligned * log terms).
    */
-  private static void scan(final DimEntry[] terms, final Collector collector, final RID endExclusive) throws IOException {
+  private static void scan(final DimEntry[] terms, final Collector collector, final RID endExclusive, final WorkGuard guard)
+      throws IOException {
+    // Before the first posting is read: a scan that starts on a bound already reached never touches the index. Inside the
+    // loops below the guard is read every 1024 steps (WorkGuard.checkPeriodically), a step being one posting or one document.
+    guard.check();
     final int window = GlobalConfiguration.SPARSE_VECTOR_SCORING_WINDOW.getValueAsInteger();
     if (window > 0) {
-      scanWindowed(terms, collector, endExclusive, (Math.min(window, MAX_WINDOW) + 63) & ~63);
+      scanWindowed(terms, collector, endExclusive, (Math.min(window, MAX_WINDOW) + 63) & ~63, guard);
       return;
     }
-    scanDocumentAtATime(terms, collector, endExclusive);
+    scanDocumentAtATime(terms, collector, endExclusive, guard);
   }
 
-  private static void scanDocumentAtATime(final DimEntry[] terms, final Collector collector, final RID endExclusive)
-      throws IOException {
+  private static void scanDocumentAtATime(final DimEntry[] terms, final Collector collector, final RID endExclusive,
+      final WorkGuard guard) throws IOException {
     final int n = terms.length;
+    // Counts the candidates handed to the scorer, for the throttled guard check: one per loop iteration
+    int steps = 0;
     // Keys are packed relative to the smallest bucket id any cursor starts on: cursors only move
     // forward, so no key this traversal will ever see has a smaller one (issue #8553).
     int base = Integer.MAX_VALUE;
@@ -400,9 +457,10 @@ public final class BmwScorer {
         // UNPACKABLE marker, so the collector and the cursors are exactly where a traversal on RIDs
         // would have them: it carries on from here on RID comparisons (issue #8553).
         WIDE_FALLBACKS.incrementAndGet();
-        scanWide(terms, collector, endExclusive);
+        scanWide(terms, collector, endExclusive, guard);
         return;
       }
+      guard.checkPeriodically(++steps);
       final float threshold = collector.threshold();
       if (splitDirty || threshold > lastThreshold) {
         lastThreshold = threshold;
@@ -494,8 +552,10 @@ public final class BmwScorer {
    * back. Falls to {@link #scanWide} on a RID the packed order cannot hold, like the other traversal.
    */
   private static void scanWindowed(final DimEntry[] terms, final Collector collector, final RID endExclusive,
-      final int windowSize) throws IOException {
+      final int windowSize, final WorkGuard guard) throws IOException {
     final int n = terms.length;
+    // Counts the windows, the postings added to them and the documents drained from them, for the throttled guard check
+    int steps = 0;
     int base = Integer.MAX_VALUE;
     for (final DimEntry t : terms)
       base = Math.min(base, t.cursor.currentBucketId());
@@ -525,9 +585,10 @@ public final class BmwScorer {
     while (true) {
       if (mirror.overflow) {
         WIDE_FALLBACKS.incrementAndGet();
-        scanWide(terms, collector, endExclusive);
+        scanWide(terms, collector, endExclusive, guard);
         return;
       }
+      guard.checkPeriodically(++steps);
       final float threshold = collector.threshold();
       if (splitDirty || threshold > lastThreshold) {
         lastThreshold = threshold;
@@ -589,6 +650,8 @@ public final class BmwScorer {
               scores[offset] += w * c.currentWeight();
             touched[word] |= bit;
           }
+          // A window holds up to a million positions, so a term can add that many postings between two windows
+          guard.checkPeriodically(++steps);
           c.advance();
           mirror.sync(terms, i);
           key = keys[i];
@@ -614,6 +677,7 @@ public final class BmwScorer {
           bits &= bits - 1;
           final float essentialScore = scores[offset];
           scores[offset] = 0.0f;
+          guard.checkPeriodically(++steps);
           scoreWindowDocument(terms, mirror, split, prefix, nonEssentialCeiling, windowStart + offset, essentialScore,
               collector);
         }
@@ -1081,13 +1145,15 @@ public final class BmwScorer {
    * only runs on RIDs no real bucket produces: a traversal spanning more than a million bucket ids, or a position past
    * {@code 2^42}. It picks up the cursors and the collector exactly where the packed traversal left them.
    */
-  private static void scanWide(final DimEntry[] terms, final Collector collector, final RID endExclusive)
-      throws IOException {
+  private static void scanWide(final DimEntry[] terms, final Collector collector, final RID endExclusive,
+      final WorkGuard guard) throws IOException {
     final int n = terms.length;
     final float[] prefix = new float[n + 1];
     recomputePrefix(terms, prefix);
     int split = 0;
+    int steps = 0;
     while (true) {
+      guard.checkPeriodically(++steps);
       final float threshold = collector.threshold();
       while (split < n && prefix[split + 1] <= threshold)
         split++;

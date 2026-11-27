@@ -27,9 +27,11 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * coll.flatten(list, [depth]) - Flattens nested lists into a single list.
- * The depth parameter controls how many levels of nesting to flatten (default 1).
- * If depth is 0, the list is returned unchanged. If depth is null, returns null.
+ * coll.flatten(list, [recursive | depth]) - Flattens nested lists into a single list.
+ * As in APOC's {@code apoc.coll.flatten(list, recursive)}, the second argument is a boolean: {@code false} (the default)
+ * flattens one level, {@code true} flattens every level, and a {@code null} list answers the empty list (issue #12108).
+ * ArcadeDB also accepts a whole number there, the depth to flatten: 0 returns the list unchanged, -1 flattens every
+ * level. A {@code null} second argument returns null.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -59,14 +61,15 @@ public class CollFlatten extends AbstractCollFunction {
     checkArity(args);
     final List<Object> list = asList(args[0]);
     if (list == null)
-      return null;
+      return new ArrayList<>();
 
     int maxDepth = 1; // default: flatten one level
     if (args.length > 1) {
       if (args[1] == null)
         return null;
-      if (args[1] instanceof Boolean)
-        maxDepth = (Boolean) args[1] ? 1 : -1;
+      if (args[1] instanceof Boolean recursive)
+        // APOC's recursive flag: true flattens every level (issue #12108 - it used to be read the other way round)
+        maxDepth = recursive ? -1 : 1;
       else
         // A caller mistake here is a client error, exactly like every other argument in the family (issue
         // #6403) - args[1] used to fall through every branch silently and leave maxDepth at its default instead

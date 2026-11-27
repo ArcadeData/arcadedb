@@ -19,7 +19,6 @@
 package com.arcadedb.remote.grpc;
 
 import com.arcadedb.remote.RemoteGraphBatch;
-import com.arcadedb.remote.grpc.utils.ProtoUtils;
 import com.arcadedb.server.grpc.GraphBatchChunk;
 import com.arcadedb.server.grpc.GraphBatchOptions;
 import com.arcadedb.server.grpc.GraphBatchRecord;
@@ -201,14 +200,15 @@ public class RemoteGrpcGraphBatch extends RemoteGraphBatch {
       flush();
   }
 
-  private static void putProperties(final GraphBatchRecord.Builder record, final Object[] properties) {
+  private void putProperties(final GraphBatchRecord.Builder record, final Object[] properties) {
     if (properties == null || properties.length == 0)
       return;
     if (properties.length % 2 != 0)
       throw new IllegalArgumentException("Properties must be key-value pairs (even number of arguments)");
 
+    // The database's encoder: a float[] / double[] is packed only for a server that announced it decodes it (issue #11714)
     for (int i = 0; i < properties.length; i += 2)
-      record.putProperties((String) properties[i], ProtoUtils.toGrpcValue(properties[i + 1]));
+      record.putProperties((String) properties[i], database.objectToGrpcValue(properties[i + 1]));
   }
 
   /**
