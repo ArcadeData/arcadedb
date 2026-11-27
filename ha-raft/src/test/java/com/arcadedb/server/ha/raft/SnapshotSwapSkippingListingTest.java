@@ -33,6 +33,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -248,6 +249,61 @@ class SnapshotSwapSkippingListingTest {
         .hasRootCauseMessage("Cannot drain " + snapshotNew + ": 1 listed entries no longer exist after 5 fresh listings "
             + "(first: 'Ghost_0.999.65536.v0.bucket')");
     assertThat(databaseFiles(dbDir)).as("the originals are restored").isEqualTo(originals());
+  }
+
+  // Regression for #13618: originals the backup phase never listed are moved to the backup, not overwritten or left live
+  @Test
+  void originalsTheBackupPhaseMissedAreMovedToTheBackup(@TempDir final Path databasesDir) throws IOException {
+    final Path dbDir = databasesDir.resolve("drill");
+    final Path snapshotNew = dbDir.resolve(SnapshotInstaller.SNAPSHOT_NEW_DIR);
+    final Path snapshotBackup = dbDir.resolve(SnapshotInstaller.SNAPSHOT_BACKUP_DIR);
+    write(dbDir, originals());
+    write(snapshotNew, snapshot());
+    SnapshotInstaller.writeInstalledFilesManifest(snapshotNew, SnapshotInstaller.expectedInstalledFiles(snapshotNew));
+    Files.writeString(snapshotNew.resolve(SnapshotInstaller.SNAPSHOT_COMPLETE_FILE), "");
+
+    // Every listing of the live directory taken by the backup phase misses one original the snapshot also ships and one
+    // it does not (the v0 dictionary): fresh listings of the live directory see them again only once phase 2 started.
+    final Set<String> hidden = Set.of("Link3_0.103.65536.v0.bucket", "dictionary.0.327680.v0.dict");
+    final AtomicBoolean installing = new AtomicBoolean();
+    SnapshotInstaller.directoryListingForTesting = (dir, entries) -> {
+      if (dir.equals(snapshotNew))
+        installing.set(true);
+      if (!dir.equals(dbDir) || installing.get())
+        return entries;
+      return entries.stream().filter(entry -> !hidden.contains(entry.getFileName().toString())).toList();
+    };
+    SnapshotInstaller.atomicSwap(dbDir, snapshotNew, snapshotBackup);
+
+    assertThat(databaseFiles(snapshotBackup)).as("every original is in the retained backup, the missed ones included")
+        .isEqualTo(originals());
+    assertThat(databaseFiles(dbDir)).as("no original is left live next to the snapshot").isEqualTo(snapshot());
+  }
+
+  // Regression for #13618: recovery never accepts an install whose staging still holds staged files
+  @Test
+  void recoveryRollsBackAnInstallWhoseStagingStillHoldsFiles(@TempDir final Path databasesDir) throws IOException {
+    final Path dbDir = databasesDir.resolve("drill");
+    final Path snapshotNew = dbDir.resolve(SnapshotInstaller.SNAPSHOT_NEW_DIR);
+    final Path snapshotBackup = dbDir.resolve(SnapshotInstaller.SNAPSHOT_BACKUP_DIR);
+    // INSTALLED over a staging that kept one bucket and the manifest (both missed by the listings): no live manifest to
+    // compare with, and the copy opens.
+    final Map<String, String> live = new LinkedHashMap<>(snapshot());
+    final String kept = "Link5_0.105.65536.v0.bucket";
+    live.remove(kept);
+    write(dbDir, live);
+    write(snapshotNew, Map.of(kept, "new-5"));
+    SnapshotInstaller.writeInstalledFilesManifest(snapshotNew, Map.of(kept, 5L));
+    Files.writeString(snapshotNew.resolve(SnapshotInstaller.SNAPSHOT_COMPLETE_FILE), "");
+    write(snapshotBackup, originals());
+    Files.writeString(dbDir.resolve(SnapshotInstaller.SNAPSHOT_PENDING_FILE), "");
+    Files.writeString(dbDir.resolve(SnapshotInstaller.SNAPSHOT_SWAP_STATE_FILE), "INSTALLED");
+
+    SnapshotInstaller.recoverPendingSnapshotSwaps(databasesDir);
+
+    assertThat(databaseFiles(dbDir)).as("the incomplete install is rolled back to the originals").isEqualTo(originals());
+    assertThat(snapshotBackup).doesNotExist();
+    assertThat(dbDir.resolve(SnapshotInstaller.SNAPSHOT_PENDING_FILE)).doesNotExist();
   }
 
   // Regression for #13618: the mismatch report counts every file and says why each could not be matched

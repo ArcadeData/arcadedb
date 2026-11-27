@@ -53,8 +53,8 @@ import java.nio.BufferUnderflowException;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
-import java.nio.file.DirectoryStream;
 import java.nio.file.DirectoryNotEmptyException;
+import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.NoSuchFileException;
@@ -64,6 +64,7 @@ import java.nio.file.StandardOpenOption;
 import java.security.KeyStore;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -2011,8 +2012,12 @@ public final class SnapshotInstaller {
     // What the live files are compared with is the account taken from the verified staging (issue #11223): a snapshot
     // that opens can still hold zero-length page files or a schema.json that fell back to schema.prev.json (#11200).
     // An install that predates the manifest has nothing to compare with, and keeps the proof of the open alone.
+    // A staging that still holds a staged entry is an install that did not finish (issue #13618): the swap refused to
+    // delete it, so whatever it holds never went live, the manifest itself included. Never accepted, whatever opens.
     final Map<String, Long> expected = readInstalledFilesManifest(dbDir);
-    final String mismatch = expected != null ? installedFileMismatches(expected, dbDir) : null;
+    final String mismatch = Files.isDirectory(snapshotNew) && hasStagedSnapshotFiles(snapshotNew) ?
+        "'" + SNAPSHOT_NEW_DIR + "' still holds staged files" :
+        expected != null ? installedFileMismatches(expected, dbDir) : null;
     if (mismatch == null && snapshotOpens(dbDir))
       return;
 
@@ -2968,10 +2973,20 @@ public final class SnapshotInstaller {
       // the staging finds none left (issue #13618).
       final int installed = drainDirectory(newDir, entry -> !SNAPSHOT_COMPLETE_FILE.equals(entry.getFileName().toString()),
           entry -> {
-            Files.move(entry, dbDir.resolve(entry.getFileName().toString()), StandardCopyOption.REPLACE_EXISTING);
-            snapshotSwapProgress("INSTALLING:" + entry.getFileName());
+            final String name = entry.getFileName().toString();
+            final Path target = dbDir.resolve(name);
+            // A live entry under a staged name that the backup does not hold is an original phase 1 did not see (its
+            // listing missed it, issue #13618): phase 1 renames, so an original it moved is gone from dbDir, and a staged
+            // name is installed once. It goes to the backup first rather than being overwritten.
+            if (Files.exists(target, LinkOption.NOFOLLOW_LINKS) && !Files.exists(backupDir.resolve(name), LinkOption.NOFOLLOW_LINKS)) {
+              Files.move(target, backupDir.resolve(name));
+              snapshotSwapProgress("RESCUING:" + name);
+            }
+            Files.move(entry, target, StandardCopyOption.REPLACE_EXISTING);
+            snapshotSwapProgress("INSTALLING:" + name);
           });
       HALog.log(SnapshotInstaller.class, HALog.BASIC, "Snapshot swap of %s: installed %d staged entries", dbDir, installed);
+      moveOriginalsLeftLiveToTheBackup(dbDir, backupDir);
 
       // Make the rename directory entries durable before the caller deletes the retained backup. The
       // file data itself was already fsynced at extraction time; this fsync persists the directory
@@ -3009,6 +3024,42 @@ public final class SnapshotInstaller {
       deleteDrainedDirectory(newDir, SNAPSHOT_COMPLETE_FILE);
     } catch (final IOException e) {
       LogManager.instance().log(SnapshotInstaller.class, Level.WARNING, "%s", null, e.getMessage());
+    }
+  }
+
+  /**
+   * Once every staged entry is live, moves to the backup each live entry that the snapshot does not name and the backup
+   * does not hold (issue #13618). Such an entry can only be an original that phase 1's listing missed: left live, it would
+   * sit next to the snapshot's files (a dictionary of another version is enough for the engine to refuse the directory),
+   * and a later rollback would delete it with the snapshot files instead of restoring it. Runs before INSTALLED is
+   * published and before anything opens the directory, so nothing but the swap has written to it. A no-op without the
+   * snapshot's manifest, the only account of which names are the snapshot's.
+   */
+  private static void moveOriginalsLeftLiveToTheBackup(final Path dbDir, final Path backupDir) throws IOException {
+    final Map<String, Long> expected = readInstalledFilesManifest(dbDir);
+    if (expected == null)
+      return;
+    final Set<String> snapshotEntries = new HashSet<>();
+    for (final String path : expected.keySet()) {
+      final int slash = path.indexOf('/');
+      snapshotEntries.add(slash < 0 ? path : path.substring(0, slash));
+    }
+    final List<String> rescued = new ArrayList<>();
+    drainDirectory(dbDir, entry -> {
+      final String name = entry.getFileName().toString();
+      return isLiveDatabaseEntry(entry) && !snapshotEntries.contains(name)
+          && !Files.exists(backupDir.resolve(name), LinkOption.NOFOLLOW_LINKS);
+    }, entry -> {
+      final String name = entry.getFileName().toString();
+      Files.move(entry, backupDir.resolve(name));
+      rescued.add(name);
+      snapshotSwapProgress("RESCUING:" + name);
+    });
+    if (!rescued.isEmpty()) {
+      fsyncDirectory(backupDir);
+      LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
+          "Snapshot swap of %s found %d original entries still live after the backup phase (the directory listing missed "
+              + "them) and moved them to the retained backup: %s", null, dbDir, rescued.size(), rescued);
     }
   }
 
