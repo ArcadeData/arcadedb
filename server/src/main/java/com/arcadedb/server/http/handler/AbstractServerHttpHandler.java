@@ -1198,16 +1198,6 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       if (t instanceof QueryTerminatedException terminated)
         return new ErrorClassification(409, "Query terminated", terminated, null, ErrorLogKind.USER);
 
-    // 408: the query ran out of the time its caller gave it (a TIMEOUT clause) or the operator gave the caller (the group
-    // readTimeout, arcadedb.command.timeout). Every other wire protocol already answers it as its own timeout code
-    // (ErrorCategory.TIMEOUT); here it fell through to the generic 500, which monitoring counts as a server failure and a client
-    // cannot tell from one (issue #12923). Walked along the cause chain like a termination: the engine wraps it in a planner or
-    // commit failure, more than once on some paths.
-    depth = 0;
-    for (Throwable t = e; t != null && depth++ < 16; t = t.getCause())
-      if (t instanceof TimeoutException timeout)
-        return new ErrorClassification(408, "Query timeout", timeout, null, ErrorLogKind.USER);
-
     // 413 Content Too Large: the REQUEST body exceeded arcadedb.server.httpBodyContentMaxSize, so this server
     // stopped reading it - in readRequestBody above, or in PostBatchHandler's CountingInputStream for the route
     // that streams instead of buffering. Reached only by a body that declared no length; a declared one is
@@ -1648,6 +1638,26 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     if (badArgument != null) {
       return new ErrorClassification(400, "Cannot execute command", badArgument, null, ErrorLogKind.USER);
     }
+
+    // 400: the statement ran out of the time its caller gave it (a TIMEOUT clause) or the operator gave the caller (the group
+    // readTimeout, arcadedb.command.timeout). Every other wire protocol answers it as its own timeout code
+    // (ErrorCategory.TIMEOUT); here it fell through to the generic 500, which monitoring counts as a server failure and a client
+    // cannot tell from one (issue #12923). The label and the exception field tell it from the other 400s.
+    //
+    // Not 408, the status that reads closest: a browser resends a request answered 408 on a reused HTTP/1.1 connection by
+    // itself, POST included, so from Studio the statement that just proved too expensive would run again, more than once. And
+    // not 504, which says the outcome is unknown (the arm above), while a timeout rolled its statement back.
+    //
+    // Decided by ErrorCategory and last among the caller's errors, as there: a chain that also carries a conflict or any other
+    // classified failure keeps that verdict (COMMIT RETRY giving up at the command deadline carries the conflict as its cause).
+    // Nor a block that committed part of its work before the deadline, which carries the TransactionException built for it
+    // under the timeout (TransactionContext.notReplayable, issue #13251): it keeps the 500 and its own message, so nothing
+    // reads it as a statement to send again with a larger limit. The chain is searched to any depth, since the engine wraps
+    // the timeout in a planner or commit failure, more than once on some paths.
+    final TimeoutException timeout = CauseChain.find(e, TimeoutException.class);
+    if (timeout != null && ErrorCategory.of(e) == ErrorCategory.TIMEOUT
+        && CauseChain.find(timeout.getCause(), TransactionException.class) == null)
+      return new ErrorClassification(400, "Timeout", timeout, null, ErrorLogKind.USER);
 
     // From here on nothing identified the failure as a client error, so the two generic wrappers answer for
     // whatever they carry. UNEXPECTED INTERNAL ERROR: log the FULL stack trace - passing the throwable is what
