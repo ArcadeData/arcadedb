@@ -3536,13 +3536,13 @@ public class PostgresNetworkExecutor extends Thread {
       // BIND
       final String portalName = readString(bytesLeft);
       if (portalName == null) {
-        refuseMessageAndClose("bind message is shorter than its contents");
+        refuseMessageAndClose("bind message has a portal name that is too long or not terminated within the message");
         return;
       }
       bytesLeft -= lastStringBytes;
       final String sourcePreparedStatement = readString(bytesLeft);
       if (sourcePreparedStatement == null) {
-        refuseMessageAndClose("bind message is shorter than its contents");
+        refuseMessageAndClose("bind message has a statement name that is too long or not terminated within the message");
         return;
       }
       bytesLeft -= lastStringBytes;
@@ -3885,14 +3885,14 @@ public class PostgresNetworkExecutor extends Thread {
       // PARSE
       final String portalName = readString(messageBodyLength);
       if (portalName == null) {
-        refuseMessageAndClose("parse message is shorter than its contents");
+        refuseMessageAndClose("parse message has a statement name that is too long or not terminated within the message");
         return;
       }
       long bytesLeft = messageBodyLength - lastStringBytes;
 
       final String statementTextAsSent = readString(bytesLeft);
       if (statementTextAsSent == null) {
-        refuseMessageAndClose("parse message is shorter than its contents");
+        refuseMessageAndClose("parse message has a statement text that is too long or not terminated within the message");
         return;
       }
       bytesLeft -= lastStringBytes;
@@ -5237,7 +5237,8 @@ public class PostgresNetworkExecutor extends Thread {
   /**
    * Reads a null-terminated string out of at most {@code limit} bytes, the ones a message has left.
    *
-   * @return the string, or null when those bytes end before its terminator: nothing is read past them
+   * @return the string, or null when it does not fit: those bytes end before its terminator, or it is longer than the read buffer.
+   * Nothing is read past the {@code limit}, and what is left of the message is not read at all
    */
   private String readString(final long limit) throws IOException {
     int len = 0;
@@ -5252,6 +5253,10 @@ public class PostgresNetworkExecutor extends Thread {
 
       buffer[len] = (byte) b;
     }
+
+    if (limit != Long.MAX_VALUE)
+      // A string of a message of known length that fills the buffer: the rest of it is not read to find where it ends
+      return null;
 
     len = readUntilTerminator(len);
 

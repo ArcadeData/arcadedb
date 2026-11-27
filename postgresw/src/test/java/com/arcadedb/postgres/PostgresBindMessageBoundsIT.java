@@ -34,6 +34,7 @@ import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.SocketException;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.List;
 
 import static com.arcadedb.postgres.PostgresWireMessages.WireMessage;
@@ -66,6 +67,8 @@ class PostgresBindMessageBoundsIT extends PostgresWireProtocolTestBase {
   private static final int    UNSUPPORTED_TYPE   = 999999;
   private static final int    READ_TIMEOUT_MS    = 20_000;
   private static final int    DELIVERY_SLICE     = 40_000;
+  /** What the server reads a name or a statement text into, terminator included. */
+  private static final int    READ_BUFFER_LENGTH = 32 * 1024;
   private static final String SQLSTATE_PROTOCOL  = "08P01";
 
   @BeforeEach
@@ -233,6 +236,45 @@ class PostgresBindMessageBoundsIT extends PostgresWireProtocolTestBase {
     }
 
     assertServerStillServesANewClient();
+  }
+
+  /** 32768 bytes is what a name can take of the read buffer, terminator included: a name of 32768 characters cannot be read. */
+  @ParameterizedTest(name = "{0}")
+  @ValueSource(strings = { "bind, message ends at the buffer limit", "bind, terminator after the buffer limit",
+      "parse, message ends at the buffer limit", "parse, terminator after the buffer limit" })
+  void aStringThatFillsTheReadBufferIsRefusedWithoutReadingPastTheMessage(final String shape) throws Exception {
+    try (final Socket socket = connectedSocket()) {
+      final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+      final DataInputStream in = new DataInputStream(socket.getInputStream());
+      authenticate(out, in);
+
+      final ByteArrayOutputStream body = new ByteArrayOutputStream();
+      final byte[] name = new byte[READ_BUFFER_LENGTH];
+      Arrays.fill(name, (byte) 'a');
+      body.writeBytes(name);
+      if (shape.contains("terminator"))
+        body.write(0);
+      out.write(framed(shape.startsWith("bind") ? 'B' : 'P', body.toByteArray()));
+      out.flush();
+
+      assertRefusedAndClosed(in, SQLSTATE_PROTOCOL);
+    }
+
+    assertServerStillServesANewClient();
+  }
+
+  @Test
+  void aStatementNameOneByteShorterThanTheReadBufferIsAccepted() throws Exception {
+    try (final Socket socket = connectedSocket()) {
+      final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+      final DataInputStream in = new DataInputStream(socket.getInputStream());
+      authenticate(out, in);
+
+      sendParse(out, "n".repeat(READ_BUFFER_LENGTH - 1), "SELECT 1");
+      sendSync(out);
+
+      assertThat(messageTypesOf(readUntilReadyForQuery(in))).containsExactly('1', 'Z');
+    }
   }
 
   @ParameterizedTest(name = "{0}")
