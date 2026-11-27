@@ -23,7 +23,11 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import org.apache.tinkerpop.gremlin.process.traversal.Bytecode;
 import org.apache.tinkerpop.gremlin.process.traversal.P;
 import org.apache.tinkerpop.gremlin.process.traversal.Traversal;
+import org.apache.tinkerpop.gremlin.process.traversal.TraversalSource;
 import org.apache.tinkerpop.gremlin.process.traversal.TraversalStrategy;
+import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversal;
+import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
+import org.apache.tinkerpop.gremlin.process.traversal.lambda.CardinalityValueTraversal;
 import org.apache.tinkerpop.gremlin.process.traversal.step.GValue;
 import org.apache.tinkerpop.gremlin.process.traversal.util.ConnectiveP;
 import org.apache.tinkerpop.gremlin.server.auth.AuthenticatedUser;
@@ -33,8 +37,13 @@ import org.apache.tinkerpop.gremlin.util.Tokens;
 import org.apache.tinkerpop.gremlin.util.function.Lambda;
 import org.apache.tinkerpop.gremlin.util.message.RequestMessage;
 
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Enforces per-database authorization for the Gremlin wire protocol. The {@link GremlinServerAuthenticator}
@@ -52,14 +61,35 @@ import java.util.Map;
  * arbitrary JVM code, so its reach is the host, not the database the request targets. Every other user keeps
  * bytecode traversals and {@value #GREMLIN_LANG} string scripts, both of which are parsed by the Gremlin grammar
  * rather than executed as code.
+ * <p>
+ * A bytecode request is a list of instructions, each naming by its operator a method of the traversal or of the traversal
+ * source, which TinkerPop's translator invokes by name. A request is accepted only when every operator in it, nested traversals
+ * included, is a step of the traversal DSL or an option of the traversal source, which is all a client driver records. The check
+ * runs for every user, before the translation.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class ArcadeGremlinAuthorizer implements Authorizer {
-  static final         String         GREMLIN_LANG = "gremlin-lang";
-  // DEEPER THAN ANY TRAVERSAL A CLIENT BUILDS ON PURPOSE: BEYOND IT THE REQUEST IS TREATED AS CARRYING A LAMBDA
-  private static final int            MAX_LAMBDA_SCAN_DEPTH = 64;
-  private              ArcadeDBServer server;
+  static final         String GREMLIN_LANG = "gremlin-lang";
+  // DEEPER THAN ANY TRAVERSAL A CLIENT BUILDS ON PURPOSE: BEYOND IT THE REQUEST IS TREATED AS CARRYING A LAMBDA OR AN UNSUPPORTED INSTRUCTION
+  private static final int    MAX_SCAN_DEPTH = 64;
+  private static final int    OPERATOR_PREVIEW_LENGTH = 48;
+  // THE OPERATORS A CLIENT DRIVER RECORDS: THE SYMBOLS OF THE TRAVERSAL DSL AND OF THE TRAVERSAL SOURCE, READ FROM TINKERPOP SO A STEP
+  // IT ADDS IS ACCEPTED AND A METHOD IT ADDS THAT IS NOT A STEP IS NOT. CardinalityValueTraversal IS THE ONE SOURCE INSTRUCTION A NESTED
+  // TRAVERSAL CARRIES
+  private static final Set<String> STEP_OPERATORS   = symbols(GraphTraversal.Symbols.class, Traversal.Symbols.class);
+  private static final Set<String> SOURCE_OPERATORS = sourceOperators();
+
+  /** What the request scan looks for: a value that breaks the rule on its own, whatever is nested in it. */
+  @FunctionalInterface
+  private interface Rule {
+    boolean refuses(Object value);
+  }
+
+  private static final Rule LAMBDA                  = value -> value instanceof Lambda;
+  private static final Rule UNSUPPORTED_INSTRUCTION = value -> value instanceof Bytecode bytecode && unsupportedOperator(bytecode) != null;
+
+  private ArcadeDBServer server;
 
   @Override
   public void setup(final Map<String, Object> config) {
@@ -77,6 +107,10 @@ public class ArcadeGremlinAuthorizer implements Authorizer {
     if (aliases != null)
       for (final String alias : aliases.values())
         checkDatabaseAccess(securityUser, alias);
+
+    final String unsupported = unsupportedInstructionMessage(bytecode, 0);
+    if (unsupported != null)
+      throw new AuthorizationException(unsupported);
 
     if (!ServerSecurityUser.isServerAdministrator(securityUser.getName()) && containsLambda(bytecode, 0))
       throw new AuthorizationException(
@@ -135,53 +169,140 @@ public class ArcadeGremlinAuthorizer implements Authorizer {
    * Whether a lambda travels anywhere in the request: as a step argument, in a nested traversal, behind a
    * {@link Bytecode.Binding} or a {@link GValue} parameter, inside a predicate ({@link P}, including {@code and}/{@code or}), inside a collection, map or array argument, or in the configuration of a strategy passed to
    * {@code withStrategies()}. TinkerPop's {@code BytecodeHelper.getLambdaLanguage} only follows nested bytecode, so it
-   * would miss the other carriers. Fails closed: a structure nested deeper than {@value #MAX_LAMBDA_SCAN_DEPTH} levels
+   * would miss the other carriers. Fails closed: a structure nested deeper than {@value #MAX_SCAN_DEPTH} levels
    * counts as carrying a lambda.
    */
   static boolean containsLambda(final Object value, final int depth) {
+    return scan(value, depth, LAMBDA) != null;
+  }
+
+  /**
+   * What the client is told when an instruction a client driver never records travels anywhere in the request, looked for in the
+   * same places as {@link #containsLambda}: a bytecode whose step operators are not steps of the traversal DSL, or whose source
+   * operators are not options of the traversal source. The operator is client input, so only the start of it goes into the message.
+   * Fails closed: a structure nested deeper than {@value #MAX_SCAN_DEPTH} levels counts as carrying one.
+   *
+   * @return the message, or {@code null} when every instruction of the request is one a driver records
+   */
+  static String unsupportedInstructionMessage(final Object value, final int depth) {
+    final Object refused = scan(value, depth, UNSUPPORTED_INSTRUCTION);
+    if (refused == null)
+      return null;
+
+    final String operator = refused instanceof Bytecode bytecode ? unsupportedOperator(bytecode) : null;
+    if (operator == null)
+      return "The traversal is nested too deeply";
+    return "Traversal instruction '" + (operator.length() > OPERATOR_PREVIEW_LENGTH ? operator.substring(0, OPERATOR_PREVIEW_LENGTH) + "..." : operator)
+        + "' is not supported";
+  }
+
+  /**
+   * Looks for a value that breaks {@code rule} in {@code value} and in everything nested in it.
+   *
+   * @return the value that breaks the rule, or the structure that is nested too deeply, or {@code null} when there is none
+   */
+  private static Object scan(final Object value, final int depth, final Rule rule) {
     if (value == null || value instanceof String || value instanceof Number || value instanceof Boolean)
-      return false;
-    if (depth > MAX_LAMBDA_SCAN_DEPTH || value instanceof Lambda)
-      return true;
+      return null;
+    if (depth > MAX_SCAN_DEPTH || rule.refuses(value))
+      return value;
 
     final int next = depth + 1;
     if (value instanceof Bytecode bytecode) {
-      for (final Bytecode.Instruction instruction : bytecode.getInstructions())
-        for (final Object argument : instruction.getArguments())
-          if (containsLambda(argument, next))
-            return true;
+      for (final Bytecode.Instruction instruction : bytecode.getInstructions()) {
+        final Object refused = scanEach(instruction.getArguments(), next, rule);
+        if (refused != null)
+          return refused;
+      }
     } else if (value instanceof Bytecode.Binding<?> binding)
-      return containsLambda(binding.value(), next);
+      return scan(binding.value(), next, rule);
     else if (value instanceof GValue<?> parameter)
-      return containsLambda(parameter.get(), next);
-    else if (value instanceof ConnectiveP<?> connective) {
-      for (final P<?> predicate : connective.getPredicates())
-        if (containsLambda(predicate, next))
-          return true;
-    } else if (value instanceof P<?> predicate)
-      return containsLambda(predicate.getBiPredicate(), next) || containsLambda(predicate.getValue(), next);
-    else if (value instanceof Traversal<?, ?> traversal)
-      return containsLambda(traversal.asAdmin().getBytecode(), next);
+      return scan(parameter.get(), next, rule);
+    else if (value instanceof ConnectiveP<?> connective)
+      return scanEach(connective.getPredicates(), next, rule);
+    else if (value instanceof P<?> predicate) {
+      final Object refused = scan(predicate.getBiPredicate(), next, rule);
+      return refused != null ? refused : scan(predicate.getValue(), next, rule);
+    } else if (value instanceof Traversal<?, ?> traversal)
+      return scan(traversal.asAdmin().getBytecode(), next, rule);
     else if (value instanceof TraversalStrategy<?> strategy) {
       final var configuration = strategy.getConfiguration();
       if (configuration != null)
-        for (final Iterator<String> keys = configuration.getKeys(); keys.hasNext(); )
-          if (containsLambda(configuration.getProperty(keys.next()), next))
-            return true;
-    } else if (value instanceof Iterable<?> iterable) {
-      for (final Object element : iterable)
-        if (containsLambda(element, next))
-          return true;
-    } else if (value instanceof Map<?, ?> map) {
-      for (final Map.Entry<?, ?> entry : map.entrySet())
-        if (containsLambda(entry.getKey(), next) || containsLambda(entry.getValue(), next))
-          return true;
-    } else if (value instanceof Object[] array) {
-      for (final Object element : array)
-        if (containsLambda(element, next))
-          return true;
+        for (final Iterator<String> keys = configuration.getKeys(); keys.hasNext(); ) {
+          final Object refused = scan(configuration.getProperty(keys.next()), next, rule);
+          if (refused != null)
+            return refused;
+        }
+    } else if (value instanceof Iterable<?> iterable)
+      return scanEach(iterable, next, rule);
+    else if (value instanceof Map<?, ?> map) {
+      for (final Map.Entry<?, ?> entry : map.entrySet()) {
+        final Object refused = scan(entry.getKey(), next, rule);
+        if (refused != null)
+          return refused;
+        final Object refusedValue = scan(entry.getValue(), next, rule);
+        if (refusedValue != null)
+          return refusedValue;
+      }
+    } else if (value instanceof Object[] array)
+      return scanEach(array, next, rule);
+    return null;
+  }
+
+  private static Object scanEach(final Iterable<?> values, final int depth, final Rule rule) {
+    for (final Object value : values) {
+      final Object refused = scan(value, depth, rule);
+      if (refused != null)
+        return refused;
     }
-    return false;
+    return null;
+  }
+
+  private static Object scanEach(final Object[] values, final int depth, final Rule rule) {
+    if (values == null)
+      return null;
+    for (final Object value : values) {
+      final Object refused = scan(value, depth, rule);
+      if (refused != null)
+        return refused;
+    }
+    return null;
+  }
+
+  /** The first operator of the bytecode that a client driver does not record, or {@code null} when there is none. */
+  private static String unsupportedOperator(final Bytecode bytecode) {
+    for (final Bytecode.Instruction instruction : bytecode.getSourceInstructions())
+      if (!isSupported(SOURCE_OPERATORS, instruction.getOperator()))
+        return String.valueOf(instruction.getOperator());
+    for (final Bytecode.Instruction instruction : bytecode.getStepInstructions())
+      if (!isSupported(STEP_OPERATORS, instruction.getOperator()))
+        return String.valueOf(instruction.getOperator());
+    return null;
+  }
+
+  private static boolean isSupported(final Set<String> operators, final String operator) {
+    return operator != null && operators.contains(operator);
+  }
+
+  /** The values of the public string constants of {@code holders}: the operator names TinkerPop defines. */
+  private static Set<String> symbols(final Class<?>... holders) {
+    final Set<String> names = new HashSet<>();
+    for (final Class<?> holder : holders)
+      for (final Field field : holder.getFields())
+        if (Modifier.isStatic(field.getModifiers()) && field.getType() == String.class)
+          try {
+            names.add((String) field.get(null));
+          } catch (final IllegalAccessException e) {
+            // FAIL CLOSED: WITHOUT THE NAMES, A REQUEST COULD NOT BE TOLD FROM ONE THAT NAMES A METHOD THAT IS NOT A STEP
+            throw new ExceptionInInitializerError(e);
+          }
+    return Collections.unmodifiableSet(names);
+  }
+
+  private static Set<String> sourceOperators() {
+    final Set<String> operators = new HashSet<>(symbols(TraversalSource.Symbols.class, GraphTraversalSource.Symbols.class));
+    operators.add(CardinalityValueTraversal.class.getSimpleName());
+    return Collections.unmodifiableSet(operators);
   }
 
   private void checkDatabaseAccess(final ServerSecurityUser securityUser, final String traversalSourceAlias)
