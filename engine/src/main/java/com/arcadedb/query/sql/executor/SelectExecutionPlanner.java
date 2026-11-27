@@ -29,7 +29,9 @@ import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.CommandSemanticException;
+import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexCursor;
@@ -451,8 +453,12 @@ public class SelectExecutionPlanner {
 
     optimizeQuery(info, context);
 
-    if (emptyReason == null && handleHardwiredOptimizations(selectExecutionPlan, context))
+    if (emptyReason == null && handleHardwiredOptimizations(selectExecutionPlan, context)) {
+      // the statement passed the cache gate above, so a hardwired count(*), max() or min() is cached too: otherwise each of its
+      // executions pays a cache lookup that always misses on top of the planning (issue #13059)
+      cachePlan(selectExecutionPlan, context, useCache, planningEpoch);
       return selectExecutionPlan;
+    }
 
     handleGlobalLet(selectExecutionPlan, info, context);
 
@@ -501,13 +507,15 @@ public class SelectExecutionPlanner {
       chainTimeout(selectExecutionPlan, info, context);
     }
 
-    if (useCache && !context.isProfiling() && statement.executionPlanCanBeCached() && !planDependsOnInputParameters
-        && selectExecutionPlan.canBeCached())
+    cachePlan(selectExecutionPlan, context, useCache, planningEpoch);
+    return selectExecutionPlan;
+  }
+
+  private void cachePlan(final SelectExecutionPlan plan, final CommandContext context, final boolean useCache, final long planningEpoch) {
+    if (useCache && !context.isProfiling() && statement.executionPlanCanBeCached() && !planDependsOnInputParameters && plan.canBeCached())
       // The planningEpoch re-check happens atomically inside put(), under the same lock as invalidate(), so a DDL
       // racing this call can never be missed the way two separately-locked calls could (#6671).
-      db.getExecutionPlanCache().put(statement.getOriginalStatement(), selectExecutionPlan, planningEpoch);
-
-    return selectExecutionPlan;
+      context.getDatabase().getExecutionPlanCache().put(statement.getOriginalStatement(), plan, planningEpoch);
   }
 
   /**
@@ -908,6 +916,8 @@ public class SelectExecutionPlanner {
       // Check if the target is specified via a positional/named parameter (e.g., SELECT max(p) FROM ?)
       final InputParameter inputParam = info.target.getItem().getInputParam();
       if (inputParam != null) {
+        // the type comes from this execution's parameter: the plan must not answer an execution bound to another type
+        planDependsOnInputParameters = true;
         final Object paramValue = inputParam.getValue(context.getInputParameters());
         if (paramValue instanceof String string)
           targetClass = new Identifier(string);
@@ -2125,9 +2135,9 @@ public class SelectExecutionPlanner {
         }
 
       } else
-        throw new UnsupportedOperationException();
+        throw new CommandSemanticException("Unsupported target '" + target + "'");
     } else {
-      throw new UnsupportedOperationException();
+      throw new CommandSemanticException("Unsupported target '" + target + "'");
     }
   }
 
@@ -2203,19 +2213,31 @@ public class SelectExecutionPlanner {
   /**
    * An element of a bound collection target as a record. A RID string, as a remote driver binds one, names its record here as a
    * single bound RID string does (issue #11767). Any other element, including a string that only looks like a RID and does not
-   * parse (such as "#1:2-3"), refuses the collection as a target.
+   * parse (such as "#1:2-3"), refuses the collection as a target: the caller bound a value of the wrong kind, a client error
+   * (issue #12795).
    */
   static Identifiable collectionTargetElement(final Object element, final Object collection, final CommandContext context) {
     if (element instanceof String string && RID.is(string)) {
       try {
         return context.getDatabase().newRID(string);
       } catch (final NumberFormatException e) {
-        throw new CommandExecutionException("Cannot use collection as target: " + collection, e);
+        throw new TypeMismatchException("Cannot use collection as target: " + InvalidArgumentException.quote(collection), e);
       }
     }
     if (element instanceof Identifiable identifiable)
       return identifiable;
-    throw new CommandExecutionException("Cannot use collection as target: " + collection);
+    throw new TypeMismatchException("Cannot use collection as target: " + InvalidArgumentException.quote(collection)
+        + ", its elements must be records or RIDs");
+  }
+
+  /**
+   * The refusal of a parameter bound as a target to a value no target can be: the caller's mistake, a client error (issue #12795,
+   * where it answered 500).
+   */
+  static TypeMismatchException invalidParameterTarget(final InputParameter inputParam, final Object value) {
+    return new TypeMismatchException(
+        "Invalid target: the parameter " + inputParam + " is " + InvalidArgumentException.quote(value) + " (" + value.getClass()
+            .getSimpleName() + "), a target parameter must be a type name, a RID, a record or a collection of RIDs or records");
   }
 
   private void handleInputParamAsTarget(final SelectExecutionPlan result, final Set<String> filterClusters,
@@ -2281,7 +2303,7 @@ public class SelectExecutionPlanner {
         result.chain(new EmptyStep(context));//nothing to return
       }
     } else {
-      throw new CommandExecutionException("Invalid target: " + paramValue);
+      throw invalidParameterTarget(inputParam, paramValue);
     }
   }
 

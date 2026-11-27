@@ -161,7 +161,7 @@ public class DatabaseAsyncTransaction extends DatabaseAsyncAbstractTask {
                   + "already durable half a second time. Propagating the conflict to the caller",
               null, database.getName());
           // Not as the retryable conflict it is, which the caller would retry anyway (#13251)
-          lastException = TransactionContext.notReplayable(e, "Async transaction");
+          lastException = TransactionContext.notReplayable(e, "Async transaction", txAtStart, commitCountAtStart);
           break;
         }
 

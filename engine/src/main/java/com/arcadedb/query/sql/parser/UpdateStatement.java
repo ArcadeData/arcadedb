@@ -128,6 +128,8 @@ public class UpdateStatement extends Statement {
     result.limit = limit == null ? null : limit.copy();
     result.batch = batch == null ? null : batch.copy();
     result.timeout = timeout == null ? null : timeout.copy();
+    // the copy holds the same literals (issue #12605)
+    result.excludedFromPlanCache = excludedFromPlanCache;
     return result;
   }
 

@@ -37,6 +37,20 @@ public interface CypherStatement {
   boolean isReadOnly();
 
   /**
+   * Returns true when this statement calls a function whose effect cannot be confirmed without running it: a dotted name no
+   * built-in function answers, which can be a {@code DEFINE FUNCTION} body (issue #6418). Planning a statement evaluates some of
+   * its expressions ({@code SKIP}, {@code LIMIT}, the conditions of a conditional query), so such a call runs even where the
+   * statement itself is not executed, and an EXPLAIN of this statement is classified as the statement is.
+   * Defaults to false for non-query (control/admin/DDL/session) statements, which hold no expression of their own; a statement
+   * type that holds expressions the planner evaluates must override it.
+   *
+   * @return true if the statement calls a function that is not confirmed to be a built-in one
+   */
+  default boolean hasUnconfirmedFunctionCall() {
+    return false;
+  }
+
+  /**
    * Returns the list of MATCH clauses in this statement.
    * Defaults to an empty list for non-query (control/admin/DDL/session) statements.
    *

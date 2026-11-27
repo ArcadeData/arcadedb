@@ -91,6 +91,11 @@ jobs:
       # losing the release's assets. Run 33796693420 did exactly that to every 26.9.1 native binary.
       - name: Check release upload assets
         run: ./.github/scripts/check-release-upload-assets.py
+      # A release image pushed without a cosign signature, a tag pushed before the signing steps ran,
+      # or a recovery run signing from a ref other than main would all publish artifacts whose
+      # signer identity a consumer cannot verify, and nobody notices until a bank's verify fails.
+      - name: Check release signing
+        run: ./.github/scripts/check-release-signing.py
       # mvn-deploy.yml and mvn-release.yml run only on main and on a release, so a deploy that
       # Maven refuses to authenticate is discovered by losing the snapshots or the release (#10023).
       - name: Check deploy credential scope

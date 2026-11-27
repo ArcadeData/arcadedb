@@ -21,17 +21,24 @@ package com.arcadedb.database;
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.DisabledOnOs;
 import org.junit.jupiter.api.condition.OS;
 
 import java.io.UncheckedIOException;
+import java.nio.file.AccessDeniedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -206,9 +213,8 @@ class DatabaseGetSizeTest extends TestHelper {
    * as the cause of the DatabaseOperationException, instead of {@code e.getCause()} which is null (or
    * a different, inner exception) and loses the real stack trace.
    * <p>
-   * An unreadable subdirectory makes {@link java.nio.file.Files#walk} throw an
-   * {@link UncheckedIOException}: the buggy code rewrapped it with {@code e.getCause()} (the inner
-   * AccessDeniedException, or null), while the fix propagates the actual exception {@code e}.
+   * An unreadable subdirectory makes the walk fail with an {@link AccessDeniedException}: unlike a file that vanished
+   * during the walk (issue #12825) that is a real error, so it still fails and is the cause of the exception thrown.
    */
   @Test
   @DisabledOnOs(OS.WINDOWS)
@@ -230,9 +236,7 @@ class DatabaseGetSizeTest extends TestHelper {
 
       assertThatThrownBy(() -> database.getSize())
           .isInstanceOf(DatabaseOperationException.class)
-          // The fix passes the original exception (UncheckedIOException) as the cause; the buggy code
-          // passed e.getCause(), losing the wrapper (and being null for non-IOException failures).
-          .hasCauseInstanceOf(UncheckedIOException.class);
+          .hasCauseInstanceOf(AccessDeniedException.class);
     } catch (Exception e) {
       throw new RuntimeException(e);
     } finally {
@@ -246,5 +250,64 @@ class DatabaseGetSizeTest extends TestHelper {
         // best effort
       }
     }
+  }
+
+  /**
+   * Issue #12825: {@code SELECT FROM schema:database} reports the size through the same walk, which now tolerates files that
+   * background work removes while it runs (see {@code FileUtilsTest.DirectorySize}). It still reports the real size.
+   */
+  @Test
+  void schemaDatabaseReportsThePositiveSize() {
+    try (ResultSet rs = database.query("sql", "SELECT FROM schema:database")) {
+      final long size = rs.next().<Number>getProperty("size").longValue();
+      assertThat(size).isGreaterThan(0L);
+    }
+  }
+
+  /**
+   * Issue #12825: files created and removed in the database directory while getSize() walks it (what columnar flush and merge,
+   * WAL segments and manifest temp files do in the background) must not fail the call. Before the fix the walk measured each
+   * listed file with a second stat, and a file removed in between raised a NoSuchFileException wrapped in a
+   * DatabaseOperationException.
+   */
+  @Test
+  void getSizeToleratesFilesRemovedDuringTheWalk() throws Exception {
+    final Path churnDir = Path.of(database.getDatabasePath(), "churn-12825");
+    Files.createDirectory(churnDir);
+    final AtomicBoolean running = new AtomicBoolean(true);
+    final AtomicReference<Throwable> churnError = new AtomicReference<>();
+    final byte[] content = new byte[64];
+
+    final Thread churn = new Thread(() -> {
+      try {
+        int i = 0;
+        while (running.get()) {
+          final Path file = churnDir.resolve("seg-" + (i++ % 32) + ".tmp");
+          Files.write(file, content);
+          Files.deleteIfExists(file);
+        }
+      } catch (final Throwable t) {
+        churnError.set(t);
+      }
+    }, "churn-12825");
+    churn.start();
+
+    final List<Throwable> failures = new ArrayList<>();
+    try {
+      for (int i = 0; i < 2_000 && churnError.get() == null; i++) {
+        try {
+          assertThat(database.getSize()).isGreaterThan(0L);
+        } catch (final DatabaseOperationException e) {
+          failures.add(e);
+        }
+      }
+    } finally {
+      running.set(false);
+      churn.join(10_000);
+      FileUtils.deleteRecursively(churnDir.toFile());
+    }
+
+    assertThat(churnError.get()).isNull();
+    assertThat(failures).isEmpty();
   }
 }

@@ -2104,7 +2104,7 @@
         {
           "name": "util.sha512",
           "syntax": "util.sha512(...)",
-          "description": "Compute SHA-512 hash of the given value",
+          "description": "Compute SHA-512 hash of the concatenated string forms of the given values",
           "since": "cypher"
         },
         {
@@ -2122,31 +2122,31 @@
         {
           "name": "util.compress",
           "syntax": "util.compress(...)",
-          "description": "Compress data using the specified algorithm (gzip or deflate), returns base64-encoded string",
+          "description": "Compress a string into a byte array, config {compression: 'GZIP' (default), 'DEFLATE' or 'NONE', charset: 'UTF-8'}",
           "since": "cypher"
         },
         {
           "name": "util.sha1",
           "syntax": "util.sha1(...)",
-          "description": "Compute SHA-1 hash of the given value",
+          "description": "Compute SHA-1 hash of the concatenated string forms of the given values",
           "since": "cypher"
         },
         {
           "name": "util.decompress",
           "syntax": "util.decompress(...)",
-          "description": "Decompress base64-encoded data using the specified algorithm (gzip or deflate)",
+          "description": "Decompress a byte array written by util.compress back into a string, with the same config map",
           "since": "cypher"
         },
         {
           "name": "util.sha256",
           "syntax": "util.sha256(...)",
-          "description": "Compute SHA-256 hash of the given value",
+          "description": "Compute SHA-256 hash of the concatenated string forms of the given values",
           "since": "cypher"
         },
         {
           "name": "util.md5",
           "syntax": "util.md5(...)",
-          "description": "Compute MD5 hash of the given value",
+          "description": "Compute MD5 hash of the concatenated string forms of the given values",
           "since": "cypher"
         },
         {

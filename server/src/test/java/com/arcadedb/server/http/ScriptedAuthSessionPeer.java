@@ -41,6 +41,7 @@ public final class ScriptedAuthSessionPeer implements HAServerPlugin {
 
   private final    List<Lookup>    lookups = new CopyOnWriteArrayList<>();
   private volatile PeerAuthSession answer;
+  private volatile Runnable        whenAsked;
 
   /** The issuer vouches for the session of {@code userName} from now on. */
   public ScriptedAuthSessionPeer vouchesFor(final String userName) {
@@ -54,6 +55,15 @@ public final class ScriptedAuthSessionPeer implements HAServerPlugin {
     return this;
   }
 
+  /**
+   * Runs {@code action} each time the issuer is asked, after the answer was taken and before it is given back: whatever it
+   * changes happens while the question is in flight, so the answer does not reflect it. {@code null} removes it.
+   */
+  public ScriptedAuthSessionPeer whenAsked(final Runnable action) {
+    whenAsked = action;
+    return this;
+  }
+
   public List<Lookup> lookups() {
     return lookups;
   }
@@ -62,7 +72,11 @@ public final class ScriptedAuthSessionPeer implements HAServerPlugin {
   public PeerAuthSession lookupAuthSession(final String issuerServerName, final String token) throws IOException {
     final Thread thread = Thread.currentThread();
     lookups.add(new Lookup(issuerServerName, token, thread.getName(), thread instanceof XnioIoThread));
-    return answer;
+    final PeerAuthSession given = answer;
+    final Runnable action = whenAsked;
+    if (action != null)
+      action.run();
+    return given;
   }
 
   @Override

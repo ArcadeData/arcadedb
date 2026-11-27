@@ -1387,6 +1387,17 @@ public enum GlobalConfiguration {
       Raise it only if a legitimate, deeply-nested or very long generated document needs it.""",
       Integer.class, 200),
 
+  GRAPHQL_MAX_INTROSPECTION_ENTRIES("arcadedb.graphql.maxIntrospectionEntries", SCOPE.DATABASE,
+      """
+      Maximum size of the answer to one GraphQL introspection query ('__schema' or '__type'), counted in entries: \
+      every object built, every selection visited and every type or field skipped counts one. Each alias of a \
+      selection is answered under its own response key, so the size follows the aliases and the fragment spreads of \
+      the document as much as the size of the schema. A query past the limit is rejected as a normal parse error. \
+      The default is well above what the standard introspection query of the common GraphQL tools needs on a schema \
+      of thousands of types: raise it only if a legitimate query of a larger schema needs it. 0 or a negative number \
+      means no limit.""",
+      Integer.class, 2_000_000),
+
   // INDEXES
   INDEX_BUILD_CHUNK_SIZE_MB("arcadedb.index.buildChunkSizeMB", SCOPE.DATABASE,
       """

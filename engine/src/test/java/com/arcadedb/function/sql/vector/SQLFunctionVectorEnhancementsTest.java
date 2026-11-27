@@ -349,6 +349,16 @@ class SQLFunctionVectorEnhancementsTest extends TestHelper {
         .containsExactly(0.5f, 0.5f, 0.5f);
   }
 
+  @Test
+  void normalizeScoresOfARangeBeyondFloatMaxStillSpansZeroToOne() {
+    // max - min = 6e38 is past Float.MAX_VALUE: in float the range is infinite, so the middle score came out 0 and the maximum NaN
+    final SQLFunctionVectorNormalizeScores fn = new SQLFunctionVectorNormalizeScores();
+    assertThat((float[]) fn.execute(null, null, null, new Object[] { new float[] { -3.0e38f, 0.0f, 3.0e38f } }, ctx()))
+        .containsExactly(0.0f, 0.5f, 1.0f);
+    assertThat((float[]) fn.execute(null, null, null, new Object[] { new float[] { 3.0e38f, -3.0e38f, 1.5e38f } }, ctx()))
+        .containsExactly(1.0f, 0.0f, 0.75f);
+  }
+
   // ========== int8 quantization ergonomics (#8/#9/#10) ==========
 
   @Test
