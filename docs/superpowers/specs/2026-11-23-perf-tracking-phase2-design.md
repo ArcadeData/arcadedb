@@ -189,6 +189,8 @@ the run file records the cpusets as shared.
 - **Write ledger:** every acknowledged write is looked up on every node at the end; an answer like
   `DatabaseIsReopeningException` counts as unknown (it may have landed), reported as a metric; a missing acknowledged write
   fails the case. **Digest:** a content digest per type compared across nodes; a difference fails the case.
+- HA runs at S on weeknights: the dispatched S run on perf-01 took about 6 minutes per variant (13 minutes for JVM and
+  native together), well under the 25 minutes that would have moved it to M and up like the ramp.
 
 **Mixed phase, hybrid retrieval, soak** (project 6).
 - `mixed`: ingest, search, compaction, DDL, time-series inserts and vector churn at once; per operation p99 and the longest
