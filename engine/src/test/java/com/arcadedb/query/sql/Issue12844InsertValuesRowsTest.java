@@ -77,7 +77,7 @@ class Issue12844InsertValuesRowsTest extends TestHelper {
     assertThatThrownBy(() -> database.transaction(() -> database.command("sql", "CREATE VERTEX (A, b) VALUES (1, 2)").close()))
         .isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("Missing target");
 
-    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM A")) {
+    try (final ResultSet rs = database.query("sql", "SELECT count(@rid) AS c FROM A")) {
       assertThat(rs.next().<Long>getProperty("c")).isZero();
     }
   }
@@ -97,7 +97,7 @@ class Issue12844InsertValuesRowsTest extends TestHelper {
   }
 
   private long count() {
-    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM V")) {
+    try (final ResultSet rs = database.query("sql", "SELECT count(@rid) AS c FROM V")) {
       return rs.next().<Long>getProperty("c");
     }
   }
