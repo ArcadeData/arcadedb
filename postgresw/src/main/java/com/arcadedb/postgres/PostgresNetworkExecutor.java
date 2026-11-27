@@ -1360,7 +1360,8 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   private CommandContext createCommandContext() {
-    CommandContext commandContext = new BasicCommandContext();
+    final BasicCommandContext commandContext = new BasicCommandContext();
+    commandContext.setDatabase(database);
     commandContext.setConfiguration(server.getConfiguration());
     return commandContext;
   }
