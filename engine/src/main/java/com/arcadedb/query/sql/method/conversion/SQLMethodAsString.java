@@ -31,9 +31,9 @@ import java.util.List;
  * A vector (a {@code float[]}) is rendered with the same formats as the {@code vector.toString()} SQL function via
  * {@link VectorUtils#formatVector}, and so is any array or list of numbers when a format argument asks for one (a list of
  * {@link Float} without a format takes its natural form, which is the same text as the COMPACT layout). An optional format
- * argument selects the layout: COMPACT (default), PRETTY, PYTHON, MATLAB, JULIA, NUMPY. Example: {@code embedding.asString('PYTHON')}. Every other value, a list of integers, longs
- * or doubles included, falls back to its natural string form: the vector formatter converts to {@code float}, which would
- * change the numbers (issue #12834).
+ * argument selects the layout: COMPACT (default), PRETTY, PYTHON, MATLAB, JULIA, NUMPY. Example:
+ * {@code embedding.asString('PYTHON')}. Every other value, a list of integers, longs or doubles included, falls back to its
+ * natural string form: the vector formatter converts to {@code float}, which would change the numbers (issue #12834).
  *
  * @author Johann Sorel (Geomatys)
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
