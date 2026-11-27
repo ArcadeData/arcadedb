@@ -1,0 +1,122 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.6",
+  "serialNumber": "urn:uuid:11111111-1111-4111-8111-111111111111",
+  "version": 1,
+  "metadata": {
+    "tools": {
+      "components": [
+        {
+          "type": "library",
+          "author": "OWASP Foundation",
+          "name": "cyclonedx-maven-plugin",
+          "version": "2.9.3"
+        }
+      ]
+    },
+    "component": {
+      "type": "application",
+      "bom-ref": "pkg:maven/com.arcadedb/arcadedb-package@26.12.1?type=pom",
+      "publisher": "Arcade Data Ltd",
+      "group": "com.arcadedb",
+      "name": "arcadedb-package",
+      "version": "26.12.1",
+      "purl": "pkg:maven/com.arcadedb/arcadedb-package@26.12.1?type=pom"
+    }
+  },
+  "components": [
+    {
+      "type": "library",
+      "bom-ref": "pkg:maven/com.arcadedb/arcadedb-engine@26.12.1?type=jar",
+      "publisher": "Arcade Data Ltd",
+      "group": "com.arcadedb",
+      "name": "arcadedb-engine",
+      "version": "26.12.1",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "75570bec4c885eaa6587cc5cd5e90182a52248cd7ab484036e97c12dba18f82b"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "purl": "pkg:maven/com.arcadedb/arcadedb-engine@26.12.1?type=jar"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:maven/com.arcadedb/arcadedb-studio@26.12.1?type=jar",
+      "publisher": "Arcade Data Ltd",
+      "group": "com.arcadedb",
+      "name": "arcadedb-studio",
+      "version": "26.12.1",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "92b8648b604f514b87a60cda5c5b426c3aec7e2190839746eca7d4ae120d355d"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "purl": "pkg:maven/com.arcadedb/arcadedb-studio@26.12.1?type=jar"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:maven/com.arcadedb/arcadedb-gremlin@26.12.1?classifier=shaded&type=jar",
+      "publisher": "Arcade Data Ltd",
+      "group": "com.arcadedb",
+      "name": "arcadedb-gremlin",
+      "version": "26.12.1",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "56cb37b222e78e043098760384da3eb2bea4086afffb16048d4fdc4ac3d89f2d"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "purl": "pkg:maven/com.arcadedb/arcadedb-gremlin@26.12.1?classifier=shaded&type=jar"
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "pkg:maven/com.arcadedb/arcadedb-package@26.12.1?type=pom",
+      "dependsOn": [
+        "pkg:maven/com.arcadedb/arcadedb-engine@26.12.1?type=jar",
+        "pkg:maven/com.arcadedb/arcadedb-studio@26.12.1?type=jar",
+        "pkg:maven/com.arcadedb/arcadedb-gremlin@26.12.1?classifier=shaded&type=jar"
+      ]
+    },
+    {
+      "ref": "pkg:maven/com.arcadedb/arcadedb-engine@26.12.1?type=jar",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:maven/com.arcadedb/arcadedb-studio@26.12.1?type=jar",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:maven/com.arcadedb/arcadedb-gremlin@26.12.1?classifier=shaded&type=jar",
+      "dependsOn": [
+        "pkg:maven/com.arcadedb/arcadedb-engine@26.12.1?type=jar"
+      ]
+    }
+  ]
+}

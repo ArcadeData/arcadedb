@@ -184,7 +184,7 @@ final class ProjectionValidator {
           if (d != Math.floor(d) || Double.isInfinite(d))
             throw new CommandParsingException("InvalidArgumentType: " + clauseName + " value must be an integer, got: Float(" + d + ")");
         }
-        if (((Number) val).intValue() < 0)
+        if (((Number) val).longValue() < 0)
           throw new CommandParsingException("NegativeIntegerArgument: " + clauseName + " value cannot be negative: " + val);
       }
     }

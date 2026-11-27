@@ -101,6 +101,8 @@ import com.arcadedb.query.opencypher.procedures.algo.AlgoTopologicalSort;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoTriangleCount;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoVoteRank;
 import com.arcadedb.query.opencypher.procedures.algo.AlgoWCC;
+import com.arcadedb.query.opencypher.procedures.create.CreateVNodeProcedure;
+import com.arcadedb.query.opencypher.procedures.create.CreateVRelationshipProcedure;
 import com.arcadedb.query.opencypher.procedures.control.DoWhen;
 import com.arcadedb.query.opencypher.procedures.merge.MergeNode;
 import com.arcadedb.query.opencypher.procedures.merge.MergeRelationship;
@@ -300,6 +302,8 @@ public final class CypherProcedureRegistry {
   private static void registerBuiltInProcedures() {
     // Merge procedures
     registerMergeProcedures();
+    // Virtual node/relationship procedures (APOC compatibility): the CALL forms of create.vNode / create.vRelationship
+    registerCreateProcedures();
     // Algorithm procedures
     registerAlgorithmProcedures();
     // Path expansion procedures
@@ -317,6 +321,11 @@ public final class CypherProcedureRegistry {
   private static void registerMergeProcedures() {
     register(new MergeRelationship());
     register(new MergeNode());
+  }
+
+  private static void registerCreateProcedures() {
+    register(new CreateVNodeProcedure());
+    register(new CreateVRelationshipProcedure());
   }
 
   private static void registerAlgorithmProcedures() {

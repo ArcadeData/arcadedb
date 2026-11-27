@@ -1,0 +1,12 @@
+name: x
+on: [ workflow_dispatch ]
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: docker/build-push-action@abc # v6
+        with:
+          push: true
+      - name: Sign
+        if: ${{ github.event_name == 'release' || inputs.attach_to_release }}
+        run: cosign sign --yes img

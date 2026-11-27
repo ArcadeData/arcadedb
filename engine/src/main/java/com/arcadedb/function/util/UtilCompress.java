@@ -22,16 +22,13 @@ import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.util.Base64;
-import java.util.Locale;
-import java.util.zip.Deflater;
 import java.util.zip.DeflaterOutputStream;
 import java.util.zip.GZIPOutputStream;
 
 /**
- * util.compress(data, algorithm) - Compress data using the specified algorithm.
- * Supported algorithms: "gzip", "deflate" (default: "gzip").
+ * util.compress(data, [config]) - Compress a string into a BYTEARRAY, as APOC's {@code apoc.util.compress} (issue #12108).
+ * The config map is {@code {compression: 'GZIP' (default) | 'DEFLATE' | 'NONE', charset: 'UTF-8' (default)}}; see
+ * {@link CompressionConfig}.
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -56,7 +53,7 @@ public class UtilCompress extends AbstractUtilFunction {
 
   @Override
   public String getDescription() {
-    return "Compress data using the specified algorithm (gzip or deflate), returns base64-encoded string";
+    return "Compress a string into a byte array, config {compression: 'GZIP' (default), 'DEFLATE' or 'NONE', charset: 'UTF-8'}";
   }
 
   @Override
@@ -64,38 +61,37 @@ public class UtilCompress extends AbstractUtilFunction {
     if (args[0] == null)
       return null;
 
-    final String data = args[0].toString();
-    final String algorithm = args.length > 1 && args[1] != null ? args[1].toString().toLowerCase(Locale.ROOT) : "gzip";
+    final CompressionConfig config = CompressionConfig.of(args.length > 1 ? args[1] : null);
+    final byte[] inputBytes = args[0].toString().getBytes(config.charset());
+
+    // Check input size to prevent DoS attacks
+    if (inputBytes.length > MAX_INPUT_SIZE)
+      throw new IllegalArgumentException(
+          "Input size exceeds maximum allowed (" + MAX_INPUT_SIZE + " bytes): " + inputBytes.length + " bytes");
 
     try {
-      final byte[] inputBytes = data.getBytes(StandardCharsets.UTF_8);
-
-      // Check input size to prevent DoS attacks
-      if (inputBytes.length > MAX_INPUT_SIZE) {
-        throw new IllegalArgumentException(
-            "Input size exceeds maximum allowed (" + MAX_INPUT_SIZE + " bytes): " + inputBytes.length + " bytes");
-      }
-
       final ByteArrayOutputStream baos = new ByteArrayOutputStream();
 
       // Arrow form, as on the decompress side: a colon switch stays correct only while every branch keeps its
       // break, so a line added to one of them could fall through and compress the payload twice, with the second
       // algorithm wrapping the output of the first.
-      switch (algorithm) {
-        case "gzip" -> {
+      switch (config.algorithm()) {
+        case GZIP -> {
           try (final GZIPOutputStream gzos = new GZIPOutputStream(baos)) {
             gzos.write(inputBytes);
           }
         }
-        case "deflate" -> {
-          try (final DeflaterOutputStream dos = new DeflaterOutputStream(baos, new Deflater(Deflater.DEFAULT_COMPRESSION))) {
+        case DEFLATE -> {
+          try (final DeflaterOutputStream dos = new DeflaterOutputStream(baos)) {
             dos.write(inputBytes);
           }
         }
-        default -> throw new IllegalArgumentException("Unsupported compression algorithm: " + algorithm);
+        case NONE -> {
+          return inputBytes;
+        }
       }
 
-      return Base64.getEncoder().encodeToString(baos.toByteArray());
+      return baos.toByteArray();
     } catch (final IOException e) {
       throw new RuntimeException("Error compressing data", e);
     }

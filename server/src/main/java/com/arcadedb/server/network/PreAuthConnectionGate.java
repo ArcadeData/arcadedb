@@ -130,6 +130,15 @@ public class PreAuthConnectionGate {
       }
     }
 
+    /**
+     * For a connection whose thread could not be started: nothing will ever read from it, or hand its permit back, so the
+     * permit is returned and the socket this ticket was handed is closed. Safe to call after {@link #release()}.
+     */
+    public void abandon() {
+      release();
+      closeQuietly(socket);
+    }
+
     /** Whether the connection is past the pre-authentication phase: authenticated once, or gone. */
     public boolean isReleased() {
       return released.get();
@@ -170,18 +179,21 @@ public class PreAuthConnectionGate {
     }
   }
 
-  /** The JVM-wide reaper thread, created by the first ticket that carries a deadline (holder idiom). */
+  /**
+   * The JVM-wide reaper thread, created by the first ticket that carries a deadline. A creation that fails leaves nothing
+   * behind, so the next ticket tries again instead of finding a holder class that can never be initialized.
+   */
   private static final class Reaper {
-    private static final ScheduledThreadPoolExecutor EXECUTOR = create();
+    private static volatile ScheduledThreadPoolExecutor executor;
 
     private static ScheduledThreadPoolExecutor create() {
-      final ScheduledThreadPoolExecutor executor = new ScheduledThreadPoolExecutor(1, r -> {
+      final ScheduledThreadPoolExecutor created = new ScheduledThreadPoolExecutor(1, r -> {
         final Thread t = new Thread(r, "ArcadeDB Pre-Auth Reaper");
         t.setDaemon(true);
         return t;
       });
-      executor.scheduleWithFixedDelay(Reaper::reap, REAPER_PERIOD_MS, REAPER_PERIOD_MS, TimeUnit.MILLISECONDS);
-      return executor;
+      created.scheduleWithFixedDelay(Reaper::reap, REAPER_PERIOD_MS, REAPER_PERIOD_MS, TimeUnit.MILLISECONDS);
+      return created;
     }
 
     private static void reap() {
@@ -190,15 +202,19 @@ public class PreAuthConnectionGate {
         if (now - ticket.deadlineNanos >= 0)
           try {
             ticket.expire();
-          } catch (final RuntimeException e) {
+          } catch (final RuntimeException | Error e) {
             // never let one ticket end the periodic task, which would silently stop every deadline of the JVM
             LogManager.instance().log(PreAuthConnectionGate.class, Level.WARNING, "Error on closing an expired connection", e);
           }
     }
 
     static void start() {
-      // initializing the holder is what creates the thread, once
-      EXECUTOR.getPoolSize();
+      if (executor != null)
+        return;
+      synchronized (Reaper.class) {
+        if (executor == null)
+          executor = create();
+      }
     }
   }
 
@@ -248,12 +264,35 @@ public class PreAuthConnectionGate {
       return null;
     }
 
-    final Ticket ticket = new Ticket(this, socket);
-    if (ticket.deadlineNanos != 0L) {
-      Reaper.start();
-      TRACKED.add(ticket);
+    Ticket ticket = null;
+    try {
+      ticket = new Ticket(this, socket);
+      if (ticket.deadlineNanos != 0L) {
+        Reaper.start();
+        TRACKED.add(ticket);
+      }
+      return ticket;
+    } catch (final Throwable e) {
+      // nobody receives the ticket, so nobody can hand the permit back or close the socket. The try block throws no checked
+      // exception, so the rethrow below (precise rethrow of the caught type) leaves the signature of this method unchanged
+      if (ticket != null)
+        ticket.abandon();
+      else {
+        if (permits != null)
+          permits.release();
+        closeQuietly(socket);
+      }
+      throw e;
     }
-    return ticket;
+  }
+
+  private static void closeQuietly(final Socket socket) {
+    if (socket != null)
+      try {
+        socket.close();
+      } catch (final IOException e) {
+        // IGNORE IT: THE CONNECTION IS BEING DROPPED ANYWAY
+      }
   }
 
   /**

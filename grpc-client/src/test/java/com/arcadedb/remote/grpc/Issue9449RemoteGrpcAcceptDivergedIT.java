@@ -31,7 +31,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * Issue #9449: {@link RemoteGrpcServer#acceptDivergedDatabase(String)} reaches the {@code AcceptDivergedDatabase} RPC, and
  * the server's refusal comes back through the shared client error mapper. The lift itself on a one-voter cluster is
- * covered by {@code Issue9449GrpcAcceptDivergedDatabaseIT} in grpcw.
+ * covered by {@code GrpcHaAcceptRpcsIT.AcceptDivergedDatabase} in grpcw.
  *
  * @author Roberto Franchini (r.franchini@arcadedata.com)
  */

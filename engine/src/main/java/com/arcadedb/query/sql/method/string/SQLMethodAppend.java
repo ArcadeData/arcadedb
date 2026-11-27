@@ -21,7 +21,6 @@ package com.arcadedb.query.sql.method.string;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
-import com.arcadedb.utility.FileUtils;
 
 /**
  * Appends strings. Acts as a concatenation.
@@ -56,7 +55,7 @@ public class SQLMethodAppend extends AbstractSQLMethod {
     final StringBuilder buffer = new StringBuilder(value.toString());
     for (int i = 0; i < params.length; ++i)
       if (params[i] != null)
-        buffer.append(FileUtils.getStringContent(params[i]));
+        buffer.append(params[i]);
 
     return buffer.toString();
   }

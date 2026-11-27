@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.executor.steps;
 
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
@@ -29,6 +30,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.ConsistentKeyLookup;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
+import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.RangeIndex;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.InlineProperties;
@@ -36,6 +38,7 @@ import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.EdgeIndexSeedPlanner;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
+import com.arcadedb.query.opencypher.executor.RidTextKeys;
 import com.arcadedb.query.opencypher.executor.operators.InListValues;
 import com.arcadedb.query.opencypher.temporal.CypherDate;
 import com.arcadedb.query.opencypher.temporal.CypherDateTime;
@@ -50,6 +53,8 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
+import com.arcadedb.security.SecurityHelper;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -195,7 +200,8 @@ public class MatchEdgeByIndexStep extends AbstractExecutionStep {
             throw new CommandExecutionException(
                 "Index '" + seek.indexName() + "' on type '" + seek.edgeType() + "' is no longer available: re-plan the query");
 
-          seekKeys = resolveSeekKeys(seek.keyValues());
+          seekKeys = resolveSeekKeys(seek.keyValues(),
+              ridTextKeyTypes(seek, index instanceof IndexInternal internal ? internal.getKeyTypes() : null));
           seekIndex = 0;
           wholeKey = !seekKeys.isEmpty() && seekKeys.getFirst().length == index.getPropertyNames().size();
           // An edge has one type, so the seeks of two types never return the same one: the set spans one type's keys
@@ -233,6 +239,7 @@ public class MatchEdgeByIndexStep extends AbstractExecutionStep {
 
         if (!initialized) {
           initialized = true;
+          requireReadable();
           if (!openNextCursor()) {
             finished = true;
             return;
@@ -340,6 +347,31 @@ public class MatchEdgeByIndexStep extends AbstractExecutionStep {
   }
 
   /**
+   * Refuses the user who may not read a type the seek reads, or whose vertices it binds, as the walk of the buckets of those types
+   * does (issue #12663), once before the first cursor opens.
+   * <p>
+   * A walk opens the buckets of the type, and a bucket refuses a user who may not read it whatever the keys are. The seek loads the
+   * edge a key finds, which a bucket refuses only for a key the edge type holds, so left to itself the statement would tell a user
+   * who may not read the type whether it holds a key. And it binds the endpoints from the RIDs the edge carries, without loading
+   * them, so the vertex type of an endpoint is never asked at all and the rows of the relationships that end in a type the user may
+   * not read would be returned. The labels of the endpoints are what the pattern would have walked instead of seeking, so they are
+   * asked as that walk asks them: the buckets of the type and of every type under it. The plan is not always built for the user who
+   * runs it (the cache of Cypher plans belongs to the database), so the check is the step's to make, per execution.
+   *
+   * @throws SecurityException when the current user may not read one of the types
+   */
+  private void requireReadable() {
+    final DatabaseInternal database = context.getDatabase();
+    final Schema schema = database.getSchema();
+    for (final EdgeIndexSeedPlanner.TypeSeek seek : seeks)
+      SecurityHelper.checkReadOnTypeAndSubTypes(database, schema.getTypeOrNull(seek.edgeType()));
+    for (final String label : sourceFilter.labels())
+      SecurityHelper.checkReadOnTypeAndSubTypes(database, schema.getTypeOrNull(label));
+    for (final String label : targetFilter.labels())
+      SecurityHelper.checkReadOnTypeAndSubTypes(database, schema.getTypeOrNull(label));
+  }
+
+  /**
    * Releases whatever the current seek opened, honouring the {@code IndexCursor} contract regardless of how the
    * current or a future index implementation backs it.
    */
@@ -355,12 +387,12 @@ public class MatchEdgeByIndexStep extends AbstractExecutionStep {
    * keys: one per combination of the per-column values. A column whose values all resolve to {@code null} - an
    * unbound parameter, an empty list - truncates the key there, degrading the seek to the shorter prefix the
    * {@code WHERE} filter above re-validates; a leading column with no value yields no seek at all, as no edge
-   * can equal {@code null}.
+   * can equal {@code null}. A RID spelled as text is sought as the id it stands for in a numeric column (issue #11933).
    */
-  private List<Object[]> resolveSeekKeys(final Object[] keyValues) {
+  private List<Object[]> resolveSeekKeys(final Object[] keyValues, final Type[] keyTypes) {
     final List<List<Object>> columns = new ArrayList<>(keyValues.length);
-    for (final Object keyValue : keyValues) {
-      final List<Object> values = resolveColumnValues(keyValue);
+    for (int i = 0; i < keyValues.length; i++) {
+      final List<Object> values = resolveColumnValues(keyValues[i], keyTypes, i);
       if (values.isEmpty())
         break;
       columns.add(values);
@@ -384,7 +416,29 @@ public class MatchEdgeByIndexStep extends AbstractExecutionStep {
     return keys;
   }
 
-  private List<Object> resolveColumnValues(final Object keyValue) {
+  /**
+   * The key types {@link RidTextKeys} reads a RID spelled as text against, column by column: the index's, except for a column the
+   * inline property map pins to such a text. The map compares through {@link InlineProperties}, which reads that text as no number,
+   * so the id the text stands for under {@code =} finds only relationships the map rejects, and a text no id encodes would refuse
+   * the statement where the scan answers no row. That column keeps the text as its key, as the scan compares it (issue #11933).
+   */
+  private Type[] ridTextKeyTypes(final EdgeIndexSeedPlanner.TypeSeek seek, final Type[] keyTypes) {
+    if (relationshipProperties == null || keyTypes == null)
+      return keyTypes;
+    Type[] result = keyTypes;
+    final String[] propertyNames = seek.propertyNames();
+    for (int i = 0; i < propertyNames.length && i < keyTypes.length; i++) {
+      final Object declared = relationshipProperties.get(propertyNames[i]);
+      if (declared != null && InlineProperties.resolve(declared, EMPTY_RESULT, context) instanceof String text && RID.is(text)) {
+        if (result == keyTypes)
+          result = keyTypes.clone();
+        result[i] = null;
+      }
+    }
+    return result;
+  }
+
+  private List<Object> resolveColumnValues(final Object keyValue, final Type[] keyTypes, final int column) {
     final Set<Object> values = new LinkedHashSet<>();
     if (keyValue instanceof InListValues inList) {
       for (final Expression element : inList.getValues()) {
@@ -392,15 +446,16 @@ public class MatchEdgeByIndexStep extends AbstractExecutionStep {
         // A single parameter may stand for the whole list (t.k IN $ids), so a multi-value element expands.
         if (resolved instanceof Collection<?> collection) {
           for (final Object v : collection)
-            addValue(values, coerceForIndexKey(v));
+            addValue(values, RidTextKeys.keyFor(coerceForIndexKey(v), keyTypes, column));
         } else if (resolved != null && resolved.getClass().isArray()) {
           for (final Object v : MultiValue.getMultiValueAsList(resolved))
-            addValue(values, coerceForIndexKey(v));
+            addValue(values, RidTextKeys.keyFor(coerceForIndexKey(v), keyTypes, column));
         } else
-          addValue(values, resolved);
+          addValue(values, RidTextKeys.keyFor(resolved, keyTypes, column));
       }
     } else
-      addValue(values, coerceForIndexKey(evaluator.evaluate((Expression) keyValue, EMPTY_RESULT, context)));
+      addValue(values, RidTextKeys.keyFor(coerceForIndexKey(evaluator.evaluate((Expression) keyValue, EMPTY_RESULT, context)), keyTypes,
+          column));
     return new ArrayList<>(values);
   }
 
@@ -479,7 +534,7 @@ public class MatchEdgeByIndexStep extends AbstractExecutionStep {
     return builder.toString();
   }
 
-  private static String labelsOf(final EdgeIndexSeedPlanner.EndpointFilter filter) {
+  static String labelsOf(final EdgeIndexSeedPlanner.EndpointFilter filter) {
     return filter.labels().isEmpty() ? "" : ":" + String.join(filter.disjunction() ? "|" : ":", filter.labels());
   }
 

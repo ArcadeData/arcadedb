@@ -39,6 +39,7 @@ import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexFactoryHandler;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.PendingIndexRemovals;
+import com.arcadedb.index.StaleIndexException;
 import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
@@ -950,14 +951,14 @@ public class HashIndex implements IndexInternal {
 
     final byte[] keyTypes = bucket.declaredKeyTypes;
     for (int i = 0; i < keys.length && i < convertedKeys.length && i < keyTypes.length; ++i)
-      if (!Type.isReadAsIndexKey(keys[i], convertedKeys[i], BinaryTypes.getClassFromType(keyTypes[i])))
+      if (!Type.isReadAsIndexKey(keys[i], convertedKeys[i], keyTypes[i]))
         return false;
     return true;
   }
 
   private void checkIsValid() {
     if (!valid)
-      throw new IndexException("Hash index '" + name + "' is not valid. Probably has been dropped or rebuilt");
+      throw new StaleIndexException("Hash index '" + name + "' is not valid. Probably has been dropped or rebuilt");
   }
 
   DatabaseInternal getDatabase() {

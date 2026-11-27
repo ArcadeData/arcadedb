@@ -141,6 +141,11 @@ public class GraphOltpWorkload implements Workload {
     queryIds = sampleIds(userIds, ctx.seed() + 7, QUERIES_PER_REP);
   }
 
+  /** The ids of every user of the graph, loaded by {@link #prepare}; null before it and after {@link #teardown}. */
+  int[] userIds() {
+    return userIds;
+  }
+
   @Override
   public void teardown(final WorkloadContext ctx) {
     userIds = null;
@@ -163,7 +168,7 @@ public class GraphOltpWorkload implements Workload {
     final List<Metric> metrics = new ArrayList<>();
     metrics.add(Metrics.rate("queries_per_s", "queries/s", queryIds.length / (latencies.totalNanos() / 1e9)));
     metrics.addAll(Metrics.latencies(latencies));
-    return new Measurement(metrics);
+    return Measurement.of(metrics, latencies);
   }
 
   /** The {@code n} column of a case for each of the first {@code count} query ids, for comparing the two forms of a case. */
@@ -279,13 +284,13 @@ public class GraphOltpWorkload implements Workload {
     }
   }
 
-  private static void flush(final RemoteDatabase db, final StringBuilder script) {
+  static void flush(final RemoteDatabase db, final StringBuilder script) {
     script.append("COMMIT;");
     db.command("sqlscript", script.toString()).close();
   }
 
   /** The RIDs of a type ordered by id, so position i holds the vertex of the i-th id. */
-  private static String[] loadRids(final RemoteDatabase db, final String type, final int expected) {
+  static String[] loadRids(final RemoteDatabase db, final String type, final int expected) {
     final String[] rids = new String[expected];
     int n = 0;
     int last = Integer.MIN_VALUE;
