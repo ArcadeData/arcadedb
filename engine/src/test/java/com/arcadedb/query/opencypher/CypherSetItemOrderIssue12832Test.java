@@ -25,8 +25,10 @@ import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
  * Regression test for GitHub issue #12832: in one SET clause, an item read the record from before the clause when an earlier
@@ -168,6 +170,46 @@ class CypherSetItemOrderIssue12832Test extends TestHelper {
   void foldedMergeOnCreateSetKeepsEveryItem() {
     assertThat(properties("MERGE (n:ZH {k: 1}) ON CREATE SET n = {k: 1, a: 1}, n += {a: 2, b: 3} RETURN properties(n) AS p"))
         .isEqualTo(Map.of("k", 1L, "a", 2L, "b", 3L));
+  }
+
+  /**
+   * A later group is refused after the earlier groups were written (here a null for a NOTNULL property, issue #13227): the
+   * statement fails as a whole, so a transaction it opened itself leaves none of the clause behind.
+   */
+  @Test
+  void aRefusedLaterGroupLeavesNothingWrittenInTheStatementTransaction() {
+    createNotNullNode();
+    final Throwable thrown = catchThrowable(() -> database.command("opencypher", "MATCH (n:ZN) SET n.a = 1, n += {req: null}").close());
+    assertThat(thrown).isNotNull();
+    assertThat(storedPropertyNames()).containsExactlyInAnyOrder("req");
+  }
+
+  /** The same refusal inside a caller's transaction: the rollback the failure leads to undoes the earlier groups too. */
+  @Test
+  void aRefusedLaterGroupLeavesNothingWrittenAfterTheCallerRollsBack() {
+    createNotNullNode();
+    database.command("opencypher", "CREATE (:ZW {k: 1})").close();
+    final Throwable thrown = catchThrowable(() -> database.transaction(
+        () -> database.command("opencypher", "MATCH (n:ZN), (m:ZW {k: 1}) SET m.a = 1, n.a = m.a, n += {req: null}").close()));
+    assertThat(thrown).isNotNull();
+    assertThat(storedPropertyNames()).containsExactlyInAnyOrder("req");
+    try (final ResultSet rs = database.query("opencypher", "MATCH (m:ZW {k: 1}) RETURN m.a AS v")) {
+      assertThat(rs.next().<Object>getProperty("v")).isNull();
+    }
+  }
+
+  private void createNotNullNode() {
+    database.command("sql", "CREATE VERTEX TYPE ZN");
+    database.command("sql", "CREATE PROPERTY ZN.req STRING (notnull true)");
+    database.command("opencypher", "CREATE (:ZN {req: 'x'})").close();
+  }
+
+  private Set<String> storedPropertyNames() {
+    try (final ResultSet rs = database.query("sql", "SELECT FROM ZN")) {
+      final Set<String> names = rs.next().getPropertyNames();
+      assertThat(rs.hasNext()).isFalse();
+      return names;
+    }
   }
 
   private void createZf() {
