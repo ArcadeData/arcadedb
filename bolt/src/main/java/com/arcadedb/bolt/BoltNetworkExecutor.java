@@ -54,6 +54,7 @@ import com.arcadedb.exception.ExternalResourceException;
 import com.arcadedb.exception.ImplicitTransactionRequiredException;
 import com.arcadedb.exception.InvalidPropertyTypeException;
 import com.arcadedb.exception.ObjectInUseException;
+import com.arcadedb.exception.ProcedureCallFailedException;
 import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryAdmissionException;
@@ -2244,7 +2245,9 @@ public class BoltNetworkExecutor extends Thread {
   private void sendExecutionFailure(final String code, final String failureText, final Throwable error) throws IOException {
     // A concealing server sends no engine text, the refusal's own sentence included
     final String text = ErrorConcealment.isConcealing(server) ? failureText : withUnavailableReason(failureText, error);
-    sendFailure(code, withLeaderRedirect(text, error));
+    // The text Neo4j with APOC puts on a failed call, which clients decode (the message of the guard stays the engine's elsewhere)
+    final ProcedureCallFailedException failedCall = ErrorConcealment.isConcealing(server) ? null : CauseChain.find(error, ProcedureCallFailedException.class);
+    sendFailure(code, withLeaderRedirect(failedCall != null ? failedCall.getNeo4jMessage() : text, error));
   }
 
   /**
@@ -2347,6 +2350,10 @@ public class BoltNetworkExecutor extends Thread {
     // ConstraintValidationFailed, where the category alone says ArgumentError (issue #11974)
     if (category == ErrorCategory.VALIDATION && CauseChain.contains(error, ObjectInUseException.class))
       return BoltErrorCodes.CONSTRAINT_VIOLATION_ERROR;
+
+    // A guard of apoc.util.validate that fired: Neo4j's ProcedureCallFailed, where the category alone says ArgumentError
+    if (category == ErrorCategory.VALIDATION && CauseChain.contains(error, ProcedureCallFailedException.class))
+      return BoltErrorCodes.PROCEDURE_CALL_FAILED_ERROR;
 
     // A LOAD CSV URL that cannot be opened or read: Neo4j's ExternalResourceFailed (issue #11974)
     if (category == ErrorCategory.VALIDATION && CauseChain.contains(error, ExternalResourceException.class))

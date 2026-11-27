@@ -32,6 +32,11 @@ public class UtilValidatePredicate extends UtilValidate {
   }
 
   @Override
+  protected boolean isFunctionForm() {
+    return true;
+  }
+
+  @Override
   public String getDescription() {
     return "Throws an exception with the given message, formatted with the optional params, if the predicate is true; returns true otherwise";
   }
