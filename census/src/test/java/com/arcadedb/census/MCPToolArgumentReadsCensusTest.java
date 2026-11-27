@@ -92,6 +92,8 @@ class MCPToolArgumentReadsCensusTest {
   private static final Map<String, String> NOT_A_TOOL_ARGUMENT = new TreeMap<>(Map.ofEntries(//
       Map.entry("mcp/MCPDispatcher#formatArgs", "renders every member for the audit log line, each by a key it just listed"),//
       Map.entry("mcp/MCPDispatcher#settingKey", "names the setting to redact in that log line, and catches what a malformed key raises"),//
+      Map.entry("mcp/MCPDispatcher#withoutCredentialMembers",
+          "copies a record argument for the audit log line, each member by a key it just listed and each element by an index below the array's length"),//
       Map.entry("mcp/MCPDispatcher#textMember", TYPE_CHECKED),//
       Map.entry("query/search/FullTextQuery#validateArguments", VALIDATOR),//
       Map.entry("query/search/FullTextQuery#requireText", TYPE_CHECKED),//
