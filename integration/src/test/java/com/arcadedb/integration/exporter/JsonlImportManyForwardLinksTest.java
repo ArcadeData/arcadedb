@@ -228,15 +228,23 @@ class JsonlImportManyForwardLinksTest {
   /** Imports the file and returns the number of links that named a record the file does not hold. */
   private static long importInto(final Database target) {
     final ThreadMXBean threads = (ThreadMXBean) ManagementFactory.getThreadMXBean();
+    // A JVM THAT CANNOT COUNT THE BYTES OF A THREAD ANSWERS -1 TO BOTH SAMPLES, WHICH SUBTRACT TO A PASS: THEN ONLY THE BYTES ARE NOT CHECKED
+    final boolean counted = threads.isThreadAllocatedMemorySupported();
+    if (counted)
+      threads.setThreadAllocatedMemoryEnabled(true);
     final long threadId = Thread.currentThread().threadId();
-    final long before = threads.getThreadAllocatedBytes(threadId);
+    final long before = counted ? threads.getThreadAllocatedBytes(threadId) : 0L;
     final long dangling;
     try (final ResultSet rs = target.command("sql", "IMPORT DATABASE file://" + new File("exports/" + FILE).getAbsolutePath())) {
       dangling = rs.next().<Long>getProperty("danglingLinks");
     }
-    // COUNTED, NOT TIMED: A COPY OF THE WHOLE CONTAINER FOR EACH OF ITS LINKS IS BYTES NO PAUSE OF THE JVM CAN HIDE OR ADD
-    assertThat(threads.getThreadAllocatedBytes(threadId) - before).as("bytes allocated by the import of " + LINKS + " links")
-        .isLessThan(MAX_ALLOCATED_BYTES);
+    if (counted) {
+      final long after = threads.getThreadAllocatedBytes(threadId);
+      assertThat(before).as("allocated bytes of the thread before the import").isNotNegative();
+      assertThat(after).as("allocated bytes of the thread after the import").isNotNegative();
+      // COUNTED, NOT TIMED: A COPY OF THE WHOLE CONTAINER FOR EACH OF ITS LINKS IS BYTES NO PAUSE OF THE JVM CAN HIDE OR ADD
+      assertThat(after - before).as("bytes allocated by the import of " + LINKS + " links").isLessThan(MAX_ALLOCATED_BYTES);
+    }
     return dangling;
   }
 
