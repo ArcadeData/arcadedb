@@ -27,6 +27,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VirtualVertex;
 import com.arcadedb.query.opencypher.Labels;
@@ -94,6 +95,10 @@ public final class SetClauseApplier {
   // Lines up the records the row's lists and maps hold with what the statement wrote (issue #11754): the statement's own,
   // shared by every clause, resolved at the start of each apply()
   private       HeldCollectionRefresher heldCollections;
+  // The records the current clause has written and not saved yet, in the order it first wrote them (issue #12824): each is
+  // saved once, after every item of the clause has been applied, so an UPDATE trigger fires once and sees the final state.
+  // Reused across rows, and not thread-safe for the same reason as reloadedRids
+  private final List<MutableDocument> pendingSaves = new ArrayList<>();
 
   private SetClauseApplier(final CommandContext context, final ExpressionEvaluator evaluator,
       final boolean reloadLatestTarget, final boolean skipUnchangedPropertyWrites, final SelectionPredicates selection) {
@@ -245,23 +250,31 @@ public final class SetClauseApplier {
     // A null written to a NOTNULL property is refused here, before any item of the group is written (issue #13227)
     refuseNullsOnNotNullProperties(items, result, writtenDocs, values, targets, keys, keyIsNull);
 
-    // Phase 2: apply the writes using the pre-computed snapshot values.
-    for (int i = 0; i < items.size(); i++) {
-      final SetClause.SetItem item = items.get(i);
-      switch (item.getType()) {
-      case PROPERTY:
-        applyPropertySet(item, result, writtenDocs, labelReplacements, values[i], targets[i], keys[i], keyIsNull[i]);
-        break;
-      case REPLACE_MAP:
-        applyReplaceMap(item, result, writtenDocs, asPropertyMap(values[i]));
-        break;
-      case MERGE_MAP:
-        applyMergeMap(item, result, writtenDocs, asPropertyMap(values[i]));
-        break;
-      case LABELS:
-        applyLabels(item, result, writtenDocs, labelReplacements, asLabelList(values[i]));
-        break;
+    // Phase 2: apply the writes using the pre-computed snapshot values. A record is saved once, after every item of the
+    // clause has been applied to it (issue #12824): saving it per item fired its BEFORE/AFTER UPDATE triggers once per item,
+    // each time on a half-applied record, while SQL UPDATE with the same assignments saves it once
+    try {
+      for (int i = 0; i < items.size(); i++) {
+        final SetClause.SetItem item = items.get(i);
+        switch (item.getType()) {
+        case PROPERTY:
+          applyPropertySet(item, result, writtenDocs, labelReplacements, values[i], targets[i], keys[i], keyIsNull[i]);
+          break;
+        case REPLACE_MAP:
+          applyReplaceMap(item, result, writtenDocs, asPropertyMap(values[i]));
+          break;
+        case MERGE_MAP:
+          applyMergeMap(item, result, writtenDocs, asPropertyMap(values[i]));
+          break;
+        case LABELS:
+          applyLabels(item, result, writtenDocs, labelReplacements, asLabelList(values[i]));
+          break;
+        }
       }
+      savePending();
+    } finally {
+      // A refused save leaves nothing behind for the next row
+      pendingSaves.clear();
     }
   }
 
@@ -560,8 +573,11 @@ public final class SetClauseApplier {
         return;
     }
 
-    if (!(obj instanceof Document doc))
+    if (!(obj instanceof Document target))
       return;
+    // An expression target can name, through an instance of its own, a record an earlier item of this clause wrote and has
+    // not saved yet: the write goes on that copy, or it would start from the record without that item and be saved over it
+    final Document doc = pendingCopyOf(target);
 
     // Resolve the property name. For dynamic bracket syntax (SET n[keyExpr] = value) the name is computed at runtime
     // (snapshotted in phase 1); otherwise it is the static dot-syntax name.
@@ -605,7 +621,7 @@ public final class SetClauseApplier {
       mutableDoc.set(propertyName, value);
       propertyExisted = true;
     }
-    mutableDoc.save();
+    markWritten(mutableDoc);
 
     // Neo4j counts both a property assignment and a genuine (existing-property) null-valued removal under
     // "properties set".
@@ -660,7 +676,7 @@ public final class SetClauseApplier {
     // re-set with a non-null value), matching applyPropertySet/applyMergeMap.
     propertiesSet += CypherStatisticsHelper.countRemovedProperties(existingProps, map);
 
-    mutableDoc.save();
+    markWritten(mutableDoc);
     context.getStatistics().addPropertiesSet(propertiesSet);
     final RID savedRid = mutableDoc.getIdentity();
     if (savedRid != null)
@@ -701,7 +717,7 @@ public final class SetClauseApplier {
       }
     }
 
-    mutableDoc.save();
+    markWritten(mutableDoc);
     context.getStatistics().addPropertiesSet(propertiesSet);
     final RID savedRid = mutableDoc.getIdentity();
     if (savedRid != null)
@@ -710,6 +726,84 @@ public final class SetClauseApplier {
     RowAliases.propagateUpdate(result, doc, mutableDoc);
     if (doc.getIdentity() == null)
       ((ResultInternal) result).setProperty(item.getVariable(), mutableDoc);
+  }
+
+  /**
+   * Queues {@code doc}, which an item of the clause has just written, for the save {@link #apply} performs once every item has
+   * been applied (issue #12824). A record with no identity yet is saved now, as before: its save creates it, which is no
+   * update, and gives it the identity later items and rows find it by.
+   */
+  private void markWritten(final MutableDocument doc) {
+    if (doc.getIdentity() == null) {
+      doc.save();
+      return;
+    }
+    for (int i = 0; i < pendingSaves.size(); i++)
+      if (pendingSaves.get(i) == doc)
+        return;
+    pendingSaves.add(doc);
+  }
+
+  /** The unsaved copy an earlier item of the clause wrote of the record {@code doc} names, or {@code doc} itself. */
+  private Document pendingCopyOf(final Document doc) {
+    final RID rid = doc.getIdentity();
+    if (rid != null)
+      for (int i = 0; i < pendingSaves.size(); i++) {
+        final MutableDocument pending = pendingSaves.get(i);
+        if (pending != doc && rid.equals(pending.getIdentity()))
+          return pending;
+      }
+    return doc;
+  }
+
+  /**
+   * Readies the records the clause has written and not saved yet for the label write that moves {@code vertex} to another type
+   * (issue #12824), and answers the instance the move has to copy.
+   * <ul>
+   *   <li>the vertex's own unsaved copy is what the move copies, and it is dropped from the queue unsaved: the move deletes the
+   *       record, so saving it first only fired its UPDATE triggers on a half-applied record about to disappear;</li>
+   *   <li>a record the move rewrites is saved first: an edge of the vertex (re-created from what the transaction holds, which is
+   *       only what was saved) and a vertex at the other end of one (whose edge list the move rewrites on the saved copy, so
+   *       its own unsaved copy, saved later, would overwrite the re-attached edges);</li>
+   *   <li>every other record stays queued and is saved once at the end of the clause.</li>
+   * </ul>
+   */
+  private Vertex prepareForLabelMove(final Vertex vertex) {
+    if (pendingSaves.isEmpty())
+      return vertex;
+    final RID rid = vertex.getIdentity();
+    Vertex toMove = vertex;
+    int kept = 0;
+    for (int i = 0; i < pendingSaves.size(); i++) {
+      final MutableDocument pending = pendingSaves.get(i);
+      if (pending instanceof Vertex pendingVertex && rid.equals(pending.getIdentity()))
+        toMove = pendingVertex;
+      else if (isRewrittenByLabelMove(pending, vertex, rid))
+        pending.save();
+      else
+        pendingSaves.set(kept++, pending);
+    }
+    for (int i = pendingSaves.size() - 1; i >= kept; i--)
+      pendingSaves.remove(i);
+    return toMove;
+  }
+
+  /** Whether moving {@code vertex} (whose RID is {@code rid}) to another type rewrites {@code pending}. */
+  private static boolean isRewrittenByLabelMove(final MutableDocument pending, final Vertex vertex, final RID rid) {
+    if (pending instanceof Edge edge)
+      return rid.equals(edge.getOut()) || rid.equals(edge.getIn());
+    if (pending instanceof Vertex other)
+      // An edge of a unidirectional type that ends in the vertex is stored on its source only
+      return vertex.isConnectedTo(other) || other.isConnectedTo(vertex, Vertex.DIRECTION.OUT);
+    // A document is no part of the graph the move rewrites
+    return false;
+  }
+
+  /** Saves every record the clause has written since the last call, once each, in the order the clause first wrote them. */
+  private void savePending() {
+    for (int i = 0; i < pendingSaves.size(); i++)
+      pendingSaves.get(i).save();
+    pendingSaves.clear();
   }
 
   @SuppressWarnings("unchecked")
@@ -868,8 +962,8 @@ public final class SetClauseApplier {
       return;
 
     // Rewrite the vertex under the composite type: the record moves, and the replacement is recorded so this row and
-    // every later one follow it.
-    labelReplacements.replace(vertex, newTypeName);
+    // every later one follow it. The move copies what the clause wrote to the vertex so far (issue #12824).
+    labelReplacements.replace(prepareForLabelMove(vertex), newTypeName);
     if (newLabelsCount > 0)
       context.getStatistics().addLabelsAdded(newLabelsCount);
 
