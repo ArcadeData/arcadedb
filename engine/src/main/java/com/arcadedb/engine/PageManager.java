@@ -2725,11 +2725,17 @@ public class PageManager extends LockContext {
           // disk and in the read cache: a write that fails leaves the pipeline exactly as it was, and no read can fall
           // back to the file's older image in between.
           final boolean pending = thread != null && thread.hasPendingCopy(page.pageId);
-          flushPage(page, pending ? thread : null);
+          final boolean written = flushPage(page, pending ? thread : null);
           // ADD THE PAGE IN TO READ CACHE. FROM THIS POINT THE PAGE IS NEVER MODIFIED, SO IT CAN BE CACHED
           putPageInReadCache(new CachedPage(page, false));
-          if (pending)
+          // Only a write that reached the file supersedes the copies: one skipped for a fenced or closed database leaves
+          // them where they are, a copy with no WAL behind it included
+          if (pending && written) {
             releaseWALOfSupersededCopies(thread.detachCopiesSupersededBy(page));
+            // Again, after the copies left the index: a read that missed the cache in between can have filled it with
+            // the older pending image, and the version-monotonic put replaces it
+            putPageInReadCache(new CachedPage(page, false));
+          }
           if (i++ == half)
             midway.run();
         }

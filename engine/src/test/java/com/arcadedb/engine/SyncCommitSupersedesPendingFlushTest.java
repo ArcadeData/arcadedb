@@ -82,7 +82,7 @@ class SyncCommitSupersedesPendingFlushTest {
       PageManager.setPageWriteFaultInjector(pageId -> {
         if (isFlushThread() && blockerName.equals(pageId.getDatabase().getName())) {
           held.countDown();
-          awaitQuietly(release, 30);
+          awaitQuietly(release, 100);
         }
       });
 
@@ -92,9 +92,13 @@ class SyncCommitSupersedesPendingFlushTest {
       try {
         final Map<String, Integer> before;
         try (final Database db = new DatabaseFactory(DATABASE_PATH).create()) {
-          before = declareSchemaSynchronously(db);
-          // The queued copy of create() is written now, after the synchronous rewrites of the dictionary page
-          release.countDown();
+          try {
+            before = declareSchemaSynchronously(db);
+            // The queued copy of create() is written now, after the synchronous rewrites of the dictionary page
+          } finally {
+            // Before the close, which waits for the held flush thread
+            release.countDown();
+          }
         }
         assertSurvivesReopen(before);
       } finally {
@@ -108,7 +112,7 @@ class SyncCommitSupersedesPendingFlushTest {
 
   /**
    * The older copy is IN FLIGHT when the synchronous write starts: the flush thread is inside the write of dictionary
-   * page 0 of {@code create()}, held there for a while. The synchronous write must land after it, never before.
+   * page 0 of {@code create()}, held there for a while. It must not land after the synchronous write.
    */
   @Test
   @Timeout(value = 2, unit = TimeUnit.MINUTES)
@@ -119,13 +123,14 @@ class SyncCommitSupersedesPendingFlushTest {
       if (isFlushThread() && pageId.getFileId() == 0 && pageId.getPageNumber() == 0 && DATABASE_PATH.endsWith(
           pageId.getDatabase().getName())) {
         held.countDown();
-        awaitQuietly(release, 30);
+        awaitQuietly(release, 100);
       }
     });
 
     final Thread releaser = new Thread(() -> {
-      // Released by time, not by the test thread: with the fix the synchronous write waits for this very write. The
-      // 500 ms only widen the window in which the synchronous write races the held one; the assertions hold either way
+      // Released by time, not by the test thread. With the fix the synchronous writes land while this one is held,
+      // and the held write, released afterwards, finds a newer version recorded and is skipped. The 500 ms only widen
+      // the window in which the synchronous writes race the held one; the assertions hold either way
       awaitQuietly(held, 30);
       try {
         Thread.sleep(500);
@@ -138,9 +143,13 @@ class SyncCommitSupersedesPendingFlushTest {
     try {
       final Map<String, Integer> before;
       try (final Database db = new DatabaseFactory(DATABASE_PATH).create()) {
-        before = declareSchemaSynchronously(db);
-        assertThat(held.getCount()).as("the flush thread must have been held on dictionary page 0").isZero();
-        release.countDown();
+        try {
+          before = declareSchemaSynchronously(db);
+          assertThat(held.getCount()).as("the flush thread must have been held on dictionary page 0").isZero();
+        } finally {
+          // Before the close, which waits for the held flush thread
+          release.countDown();
+        }
       }
       assertSurvivesReopen(before);
     } finally {
@@ -166,7 +175,7 @@ class SyncCommitSupersedesPendingFlushTest {
       PageManager.setPageWriteFaultInjector(pageId -> {
         if (isFlushThread() && blockerName.equals(pageId.getDatabase().getName())) {
           held.countDown();
-          awaitQuietly(release, 30);
+          awaitQuietly(release, 100);
         }
       });
 
@@ -177,27 +186,31 @@ class SyncCommitSupersedesPendingFlushTest {
       final int pageSize;
       final int markerOffset;
       try (final DatabaseInternal db = (DatabaseInternal) new DatabaseFactory(DATABASE_PATH).create()) {
-        final PaginatedComponent bucket = (PaginatedComponent) db.getSchema().createDocumentType("Item").getBuckets(false)
-            .getFirst();
-        pageSize = bucket.getPageSize();
-        pageId = new PageId(db, bucket.getFileId(), bucket.getTotalPages());
+        try {
+          final PaginatedComponent bucket = (PaginatedComponent) db.getSchema().createDocumentType("Item").getBuckets(false)
+              .getFirst();
+          pageSize = bucket.getPageSize();
+          pageId = new PageId(db, bucket.getFileId(), bucket.getTotalPages());
 
-        final MutablePage page = new MutablePage(pageId, pageSize);
-        markerOffset = page.getMaxContentSize() - Integer.BYTES;
-        page.writeInt(markerOffset, 13441);
+          final MutablePage page = new MutablePage(pageId, pageSize);
+          markerOffset = page.getMaxContentSize() - Integer.BYTES;
+          page.writeInt(markerOffset, 13441);
 
-        final PageManager pageManager = db.getPageManager();
-        pageManager.updatePageVersion(page, true);
-        // Queued behind the held batch of the blocker, then the same instance is written synchronously
-        pageManager.writePages(List.of(page), true);
-        pageManager.writePages(List.of(page), false);
+          final PageManager pageManager = db.getPageManager();
+          pageManager.updatePageVersion(page, true);
+          // Queued behind the held batch of the blocker, then the same instance is written synchronously
+          pageManager.writePages(List.of(page), true);
+          pageManager.writePages(List.of(page), false);
 
-        // The instance was the only copy the detach reached, but an older one could still sit in a batch the flush
-        // thread polled and had not published: the write is recorded all the same
-        assertThat(pageManager.getFlushThread().isOlderThanASyncWrite(new MutablePage(pageId, pageSize)))
-            .as("a copy older than the synchronous write must be skipped").isTrue();
+          // The instance was the only copy the detach reached, but an older one could still sit in a batch the flush
+          // thread polled and had not published: the write is recorded all the same
+          assertThat(pageManager.getFlushThread().isOlderThanASyncWrite(new MutablePage(pageId, pageSize)))
+              .as("a copy older than the synchronous write must be skipped").isTrue();
 
-        release.countDown();
+        } finally {
+          // Before the close, which waits for the held flush thread
+          release.countDown();
+        }
       } finally {
         release.countDown();
       }
@@ -231,7 +244,7 @@ class SyncCommitSupersedesPendingFlushTest {
       PageManager.setPageWriteFaultInjector(pageId -> {
         if (isFlushThread() && blockerName.equals(pageId.getDatabase().getName())) {
           held.countDown();
-          awaitQuietly(release, 30);
+          awaitQuietly(release, 100);
         }
       });
 
@@ -239,31 +252,35 @@ class SyncCommitSupersedesPendingFlushTest {
       assertThat(held.await(30, TimeUnit.SECONDS)).as("the flush thread must be held on the blocker's batch").isTrue();
 
       try (final DatabaseInternal db = (DatabaseInternal) new DatabaseFactory(DATABASE_PATH).create()) {
-        final PaginatedComponent bucket = (PaginatedComponent) db.getSchema().createDocumentType("Item").getBuckets(false)
-            .getFirst();
-        final int pageSize = bucket.getPageSize();
-        final PageManager pageManager = db.getPageManager();
+        try {
+          final PaginatedComponent bucket = (PaginatedComponent) db.getSchema().createDocumentType("Item").getBuckets(false)
+              .getFirst();
+          final int pageSize = bucket.getPageSize();
+          final PageManager pageManager = db.getPageManager();
 
-        final List<MutablePage> pages = new ArrayList<>();
-        for (int i = 0; i < 2; i++) {
-          final MutablePage page = new MutablePage(new PageId(db, bucket.getFileId(), bucket.getTotalPages() + i), pageSize);
-          page.writeInt(page.getMaxContentSize() - Integer.BYTES, 13441 + i);
-          pageManager.updatePageVersion(page, true);
-          pages.add(page);
+          final List<MutablePage> pages = new ArrayList<>();
+          for (int i = 0; i < 2; i++) {
+            final MutablePage page = new MutablePage(new PageId(db, bucket.getFileId(), bucket.getTotalPages() + i), pageSize);
+            page.writeInt(page.getMaxContentSize() - Integer.BYTES, 13441 + i);
+            pageManager.updatePageVersion(page, true);
+            pages.add(page);
+          }
+
+          // The pipeline changes the shared list: keep the pages apart to check them
+          final List<MutablePage> created = List.copyOf(pages);
+
+          // Queued behind the held batch of the blocker, then the same list is written synchronously
+          pageManager.writePages(pages, true);
+          pageManager.writePages(pages, false);
+
+          assertThat(created).hasSize(2);
+          for (final MutablePage page : created)
+            assertThat(pageManager.getFlushThread().pageIndex.get(page.getPageId()))
+                .as("page %s must have been written synchronously, not left pending", page.getPageId()).isNull();
+        } finally {
+          // Before the close, which waits for the held flush thread
+          release.countDown();
         }
-
-        // The pipeline changes the shared list: keep the pages apart to check them
-        final List<MutablePage> created = List.copyOf(pages);
-
-        // Queued behind the held batch of the blocker, then the same list is written synchronously
-        pageManager.writePages(pages, true);
-        pageManager.writePages(pages, false);
-
-        assertThat(created).hasSize(2);
-        for (final MutablePage page : created)
-          assertThat(pageManager.getFlushThread().pageIndex.get(page.getPageId()))
-              .as("page %s must have been written synchronously, not left pending", page.getPageId()).isNull();
-        release.countDown();
       } finally {
         release.countDown();
       }
@@ -292,7 +309,7 @@ class SyncCommitSupersedesPendingFlushTest {
       PageManager.setPageWriteFaultInjector(id -> {
         if (isFlushThread() && blockerName.equals(id.getDatabase().getName())) {
           held.countDown();
-          awaitQuietly(release, 30);
+          awaitQuietly(release, 100);
         } else if (!isFlushThread() && id.equals(failWritesOf.get()))
           throw new IOException("injected failure of the synchronous write");
       });
@@ -300,32 +317,36 @@ class SyncCommitSupersedesPendingFlushTest {
       assertThat(held.await(30, TimeUnit.SECONDS)).as("the flush thread must be held on the blocker's batch").isTrue();
 
       try (final DatabaseInternal db = (DatabaseInternal) new DatabaseFactory(DATABASE_PATH).create()) {
-        final PaginatedComponent bucket = (PaginatedComponent) db.getSchema().createDocumentType("Item").getBuckets(false)
-            .getFirst();
-        pageSize = bucket.getPageSize();
-        pageId = new PageId(db, bucket.getFileId(), bucket.getTotalPages());
-        final PageManager pageManager = db.getPageManager();
+        try {
+          final PaginatedComponent bucket = (PaginatedComponent) db.getSchema().createDocumentType("Item").getBuckets(false)
+              .getFirst();
+          pageSize = bucket.getPageSize();
+          pageId = new PageId(db, bucket.getFileId(), bucket.getTotalPages());
+          final PageManager pageManager = db.getPageManager();
 
-        final MutablePage older = new MutablePage(pageId, pageSize);
-        markerOffset = older.getMaxContentSize() - Integer.BYTES;
-        older.writeInt(markerOffset, 1);
-        pageManager.updatePageVersion(older, true);
-        // Queued behind the held batch of the blocker
-        pageManager.writePages(List.of(older), true);
+          final MutablePage older = new MutablePage(pageId, pageSize);
+          markerOffset = older.getMaxContentSize() - Integer.BYTES;
+          older.writeInt(markerOffset, 1);
+          pageManager.updatePageVersion(older, true);
+          // Queued behind the held batch of the blocker
+          pageManager.writePages(List.of(older), true);
 
-        final MutablePage newer = pageManager.getImmutablePage(pageId, pageSize, false, false).modify();
-        newer.writeInt(markerOffset, 2);
-        pageManager.updatePageVersion(newer, false);
+          final MutablePage newer = pageManager.getImmutablePage(pageId, pageSize, false, false).modify();
+          newer.writeInt(markerOffset, 2);
+          pageManager.updatePageVersion(newer, false);
 
-        failWritesOf.set(pageId);
-        assertThatThrownBy(() -> pageManager.writePages(List.of(newer), false)).isInstanceOf(IOException.class);
-        failWritesOf.set(null);
+          failWritesOf.set(pageId);
+          assertThatThrownBy(() -> pageManager.writePages(List.of(newer), false)).isInstanceOf(IOException.class);
+          failWritesOf.set(null);
 
-        assertThat(pageManager.getFlushThread().pageIndex.get(pageId)).as("the pending copy must still be in the pipeline")
-            .isSameAs(older);
-        assertThat(older.isSupersededOnDisk()).isFalse();
-        assertThat(pageManager.getFlushThread().isOlderThanASyncWrite(older)).isFalse();
-        release.countDown();
+          assertThat(pageManager.getFlushThread().pageIndex.get(pageId)).as("the pending copy must still be in the pipeline")
+              .isSameAs(older);
+          assertThat(older.isSupersededOnDisk()).isFalse();
+          assertThat(pageManager.getFlushThread().isOlderThanASyncWrite(older)).isFalse();
+        } finally {
+          // Before the close, which waits for the held flush thread
+          release.countDown();
+        }
       } finally {
         release.countDown();
       }
@@ -362,39 +383,43 @@ class SyncCommitSupersedesPendingFlushTest {
       PageManager.setPageWriteFaultInjector(id -> {
         if (isFlushThread() && blockerName.equals(id.getDatabase().getName())) {
           held.countDown();
-          awaitQuietly(release, 30);
+          awaitQuietly(release, 100);
         }
       });
       blocker.transaction(() -> blocker.getSchema().createDocumentType("Blocker"));
       assertThat(held.await(30, TimeUnit.SECONDS)).as("the flush thread must be held on the blocker's batch").isTrue();
 
       try (final DatabaseInternal db = (DatabaseInternal) new DatabaseFactory(DATABASE_PATH).create()) {
-        db.setAsyncFlush(false);
-        final PaginatedComponent bucket = (PaginatedComponent) db.getSchema().createDocumentType("Item").getBuckets(false)
-            .getFirst();
-        pageSize = bucket.getPageSize();
-        pageId = new PageId(db, bucket.getFileId(), bucket.getTotalPages());
-        final PageManager pageManager = db.getPageManager();
+        try {
+          db.setAsyncFlush(false);
+          final PaginatedComponent bucket = (PaginatedComponent) db.getSchema().createDocumentType("Item").getBuckets(false)
+              .getFirst();
+          pageSize = bucket.getPageSize();
+          pageId = new PageId(db, bucket.getFileId(), bucket.getTotalPages());
+          final PageManager pageManager = db.getPageManager();
 
-        final MutablePage older = new MutablePage(pageId, pageSize);
-        markerOffset = older.getMaxContentSize() - Integer.BYTES;
-        older.writeInt(markerOffset, 1);
-        pageManager.updatePageVersion(older, true);
-        pageManager.writePages(List.of(older), false);
+          final MutablePage older = new MutablePage(pageId, pageSize);
+          markerOffset = older.getMaxContentSize() - Integer.BYTES;
+          older.writeInt(markerOffset, 1);
+          pageManager.updatePageVersion(older, true);
+          pageManager.writePages(List.of(older), false);
 
-        final MutablePage newer = pageManager.getImmutablePage(pageId, pageSize, false, false).modify();
-        newer.writeInt(markerOffset, 2);
-        pageManager.updatePageVersion(newer, false);
-        assertThat(newer.getVersion()).isGreaterThan(older.getVersion());
+          final MutablePage newer = pageManager.getImmutablePage(pageId, pageSize, false, false).modify();
+          newer.writeInt(markerOffset, 2);
+          pageManager.updatePageVersion(newer, false);
+          assertThat(newer.getVersion()).isGreaterThan(older.getVersion());
 
-        // The synchronous write of the newer image, as recorded when it found the page pending
-        assertThat(pageManager.flushPage(newer)).isTrue();
-        pageManager.getFlushThread().recordSyncWrite(newer);
+          // The synchronous write of the newer image, as recorded when it found the page pending
+          assertThat(pageManager.flushPage(newer)).isTrue();
+          pageManager.getFlushThread().recordSyncWrite(newer);
 
-        // The older copy reaches the flush thread only now: it must not land over the newer image
-        assertThat(pageManager.flushPage(older)).as("the older copy must be skipped").isFalse();
-        assertThat(older.isSupersededOnDisk()).isTrue();
-        release.countDown();
+          // The older copy reaches the flush thread only now: it must not land over the newer image
+          assertThat(pageManager.flushPage(older)).as("the older copy must be skipped").isFalse();
+          assertThat(older.isSupersededOnDisk()).isTrue();
+        } finally {
+          // Before the close, which waits for the held flush thread
+          release.countDown();
+        }
       } finally {
         release.countDown();
       }
@@ -407,6 +432,42 @@ class SyncCommitSupersedesPendingFlushTest {
       final PageId reopened = new PageId(db, pageId.getFileId(), pageId.getPageNumber());
       final ImmutablePage page = ((DatabaseInternal) db).getPageManager().getImmutablePage(reopened, pageSize, false, false);
       assertThat(page.readInt(markerOffset)).as("the file must hold the newer image").isEqualTo(2);
+    }
+  }
+
+  /**
+   * An older copy whose write failed while a synchronous write put a newer image on disk is not kept for a retry: the
+   * retry would land after that image, cycles later, when the recorded version may be gone.
+   */
+  @Test
+  @Timeout(value = 2, unit = TimeUnit.MINUTES)
+  void aFailedOlderCopyIsNotKeptForARetryOverASynchronousWrite() throws Exception {
+    try (final DatabaseInternal db = (DatabaseInternal) new DatabaseFactory(DATABASE_PATH).create()) {
+      final PaginatedComponent bucket = (PaginatedComponent) db.getSchema().createDocumentType("Item").getBuckets(false)
+          .getFirst();
+      final int pageSize = bucket.getPageSize();
+      final PageId pageId = new PageId(db, bucket.getFileId(), bucket.getTotalPages());
+      final PageManager pageManager = db.getPageManager();
+      final PageManagerFlushThread flushThread = pageManager.getFlushThread();
+
+      final MutablePage older = new MutablePage(pageId, pageSize);
+      pageManager.updatePageVersion(older, true);
+      pageManager.writePages(List.of(older), false);
+      final MutablePage newer = pageManager.getImmutablePage(pageId, pageSize, false, false).modify();
+      pageManager.updatePageVersion(newer, false);
+
+      // Recorded as the synchronous write does it, right after the write and before its detach (pinned)
+      flushThread.recordSyncWrite(newer);
+      flushThread.registerFailedFlush(older);
+
+      assertThat(flushThread.hasPendingCopy(pageId)).as("the failed older copy must not be kept for a retry").isFalse();
+      assertThat(older.isSupersededOnDisk()).isTrue();
+
+      // A failed copy that no synchronous write superseded is kept, as before
+      final MutablePage other = new MutablePage(new PageId(db, bucket.getFileId(), bucket.getTotalPages() + 1), pageSize);
+      flushThread.registerFailedFlush(other);
+      assertThat(flushThread.hasPendingCopy(other.getPageId())).isTrue();
+      assertThat(other.isSupersededOnDisk()).isFalse();
     }
   }
 
