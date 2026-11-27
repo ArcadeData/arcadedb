@@ -380,6 +380,11 @@ public class MatchExecutionPlanner {
           edge.setLeftClass(aliasTypes.get(edge.edge.out.alias));
           edge.setLeftFilter(aliasFilters.get(edge.edge.out.alias));
         }
+        if (edge.edge.in.alias != null) {
+          edge.setRightClass(aliasTypes.get(edge.edge.in.alias));
+          edge.setRightCluster(aliasBuckets.get(edge.edge.in.alias));
+          edge.setRightRid(aliasRids.get(edge.edge.in.alias));
+        }
       }
 
       // Try to fuse consecutive simple hops into GAV fused steps

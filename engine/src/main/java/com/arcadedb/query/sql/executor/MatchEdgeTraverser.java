@@ -523,16 +523,26 @@ public class MatchEdgeTraverser {
     return item.getFilter().getFilter();
   }
 
+  /**
+   * The type, bucket and RID of the node this walk reaches: the ones written on the walked item, else the ones the pattern gives the alias on
+   * another of its occurrences (the planner merges them over all of them, as the backwards walk already relies on), so a type, bucket or RID
+   * written on another occurrence of the alias still rejects the nodes this hop reaches (issue #12937). The merged value is taken only for
+   * this traverser's own item: the sub-items of a {@code .(...)} item are walked with no {@link EdgeTraversal} and reach intermediate nodes,
+   * and the planner rejects occurrences that disagree, so when the walked item carries a value it is the merged one.
+   */
   protected String targetClassName(final MatchPathItem item, final CommandContext iCommandContext) {
-    return item.getFilter().getTypeName(iCommandContext);
+    final String own = item.getFilter().getTypeName(iCommandContext);
+    return own != null || edge == null || item != this.item ? own : edge.getRightClass();
   }
 
   protected String targetClusterName(final MatchPathItem item, final CommandContext iCommandContext) {
-    return item.getFilter().getBucketName(iCommandContext);
+    final String own = item.getFilter().getBucketName(iCommandContext);
+    return own != null || edge == null || item != this.item ? own : edge.getRightCluster();
   }
 
   protected Rid targetRid(final MatchPathItem item, final CommandContext iCommandContext) {
-    return item.getFilter().getRid(iCommandContext);
+    final Rid own = item.getFilter().getRid(iCommandContext);
+    return own != null || edge == null || item != this.item ? own : edge.getRightRid();
   }
 
   private boolean matchesClass(final String className, final Identifiable origin) {
