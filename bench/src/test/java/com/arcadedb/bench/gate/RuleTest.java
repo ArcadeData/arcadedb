@@ -145,6 +145,7 @@ class RuleTest {
     assertThat(Rule.absoluteFloor("flag")).isEqualTo(Double.POSITIVE_INFINITY);
     assertThat(Rule.absoluteFloor("steps")).isEqualTo(Double.POSITIVE_INFINITY);
     assertThat(Rule.absoluteFloor("changes")).isEqualTo(Double.POSITIVE_INFINITY);
+    assertThat(Rule.absoluteFloor("operations")).isEqualTo(Double.POSITIVE_INFINITY);
     // a leader change from a zero baseline is a failover to look at, never a regression verdict
     assertThat(cmp(point(0, new double[] { 0, 0 }, "changes", "lower"), point(1, new double[] { 1, 1 }, "changes", "lower")))
         .isEqualTo(Verdict.Kind.SAME);

@@ -23,6 +23,7 @@ import com.arcadedb.bench.model.Metric;
 import com.arcadedb.bench.runner.BenchRunner;
 import com.arcadedb.bench.runner.CaseFailedWithMetrics;
 import com.arcadedb.bench.runner.Measurement;
+import com.arcadedb.bench.runner.Workload;
 import com.arcadedb.bench.runner.WorkloadContext;
 import com.arcadedb.bench.workload.ramp.OpenLoop;
 import com.arcadedb.bench.workload.ramp.RampSearch;
@@ -53,6 +54,11 @@ class RampWorkloadTest {
     assertThat(workload.reps()).hasValue(3);
     assertThat(workload.warmup()).hasValue(1);
     assertThat(WorkloadRegistry.all()).hasAtLeastOneElementOfType(RampWorkload.class);
+  }
+
+  @Test
+  void registryListsMixedAndHybridRag() {
+    assertThat(WorkloadRegistry.all()).extracting(Workload::name).contains("mixed", "hybrid-rag");
   }
 
   @Test
