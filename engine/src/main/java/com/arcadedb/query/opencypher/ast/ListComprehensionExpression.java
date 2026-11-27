@@ -23,6 +23,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.VariableOverlayResult;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -75,8 +76,13 @@ public class ListComprehensionExpression implements Expression {
     final List<Object> resultList = new ArrayList<>();
     // One row per evaluation, rebound per element: the outer columns are read through it, not copied (issue #12723)
     final VariableOverlayResult iterResult = new VariableOverlayResult(result, variable);
+    // The walk of one list is inside one row, past every check between rows: the statement's deadline and its termination are asked
+    // here too. The check at the first element keeps a list nested in another one answerable as well, whatever its length
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
+    int walked = 0;
 
     for (final Object item : iterable) {
+      guard.checkPeriodically(walked++);
       iterResult.bind(item);
 
       // Apply WHERE filter if present

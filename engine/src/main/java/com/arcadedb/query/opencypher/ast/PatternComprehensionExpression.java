@@ -38,6 +38,7 @@ import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.VariableOverlayResult;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayList;
 import java.util.Iterator;
@@ -90,10 +91,32 @@ public class PatternComprehensionExpression implements Expression {
    * list of a SQL subquery and of a Cypher {@code COLLECT { ... }} are (issue #10160): a pattern over a supernode or an
    * uncorrelated start enumerates as many matches as the graph holds.
    */
-  private record Collected(List<Object> values, OperationHeapLimit limit) {
+  private static final class Collected {
+    private final List<Object>       values;
+    private final OperationHeapLimit limit;
+    // The statement's deadline and its termination, asked every so often by the steps of the match: the walk of one comprehension
+    // is inside one row, past every check between rows
+    private final WorkGuard          guard;
+    private       int                steps;
+
+    private Collected(final List<Object> values, final OperationHeapLimit limit, final WorkGuard guard) {
+      this.values = values;
+      this.limit = limit;
+      this.guard = guard;
+    }
+
     void add(final Object value) {
       values.add(value);
       limit.add(values.size(), value);
+    }
+
+    List<Object> values() {
+      return values;
+    }
+
+    /** One step of the match: a candidate vertex or a relationship the walk looks at. */
+    void step() {
+      guard.checkPeriodically(steps++);
     }
   }
 
@@ -102,7 +125,7 @@ public class PatternComprehensionExpression implements Expression {
     // AN EXPRESSION'S LIST IS ITS VALUE: THE BYTES ARE HELD WHILE IT IS BUILT AND GIVEN BACK WHEN IT IS RETURNED, AS
     // OperationHeapLimit.materializeForExpression() DOES FOR A SUBQUERY
     final OperationHeapLimit limit = OperationHeapLimit.of(context, "pattern comprehension");
-    final Collected resultList = new Collected(new ArrayList<>(), limit);
+    final Collected resultList = new Collected(new ArrayList<>(), limit, WorkGuard.forCommandDeadline(context));
     final List<Object> pathElements = new ArrayList<>();
     // Relationship uniqueness spans the whole pattern, every hop and every relationship a variable-length hop walks. A
     // single fixed-length hop cannot repeat a relationship, so the common [(a)-->(b) | b] tracks nothing. A pattern with a
@@ -246,6 +269,7 @@ public class PatternComprehensionExpression implements Expression {
     final VariableOverlayResult candidateResult = new VariableOverlayResult(currentResult, startVariable);
 
     while (candidates.hasNext()) {
+      resultList.step();
       final Record record = candidates.next();
       if (!(record instanceof Vertex candidate))
         continue;
@@ -310,6 +334,7 @@ public class PatternComprehensionExpression implements Expression {
     final ResultInternal nodeWhereEvalRow = inlineWhereRow(endNodePattern, currentResult);
 
     while (edges.hasNext()) {
+      resultList.step();
       final Edge edge = edges.next();
       // Inline relationship property filter, e.g. [p = (a)-[:VE*1..4 {w:1}]->(c) | ...] (issue #5139).
       // Every relationship in the path must satisfy the map, so skip non-matching edges before recursing.
@@ -542,6 +567,7 @@ public class PatternComprehensionExpression implements Expression {
         relPattern.getVariable());
 
     while (edges.hasNext()) {
+      resultList.step();
       final Edge edge = edges.next();
       // Relationship uniqueness: an edge an earlier hop of the pattern walked cannot be walked again
       if (usedEdges != null && usedEdges.contains(edge.getIdentity()))

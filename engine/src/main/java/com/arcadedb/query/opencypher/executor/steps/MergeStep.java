@@ -140,6 +140,10 @@ public class MergeStep extends AbstractExecutionStep {
   private       DocumentType        readCheckedType;
   private       long                readCheckedSchemaVersion;
   private       boolean             readCheckedAnswer;
+  // The deadline and the termination of the statement, asked by the loops that match a row's pattern: a row's match is one call,
+  // past every check between rows. Set, with the count of steps taken, by every executeMerge, the one entry of the match
+  private       WorkGuard           matchGuard;
+  private       int                 matchSteps;
 
   public MergeStep(final MergeClause mergeClause, final CommandContext context,
                    final CypherFunctionFactory functionFactory) {
@@ -300,6 +304,8 @@ public class MergeStep extends AbstractExecutionStep {
    * @return list of results containing matched or created elements
    */
   private List<Result> executeMerge(final Result inputResult, final LabelReplacements labelReplacements) {
+    matchGuard = WorkGuard.forCommandDeadline(context);
+    matchSteps = 0;
     // Dynamic labels - MERGE (n:$($label) {...}) - are evaluated for this row first, so the match and the create below see static ones (issue #10683)
     final PathPattern pathPattern = DynamicNodeLabels.resolve(mergeClause.getPathPattern(), inputResult, evaluator, context, "MERGE");
 
@@ -361,6 +367,7 @@ public class MergeStep extends AbstractExecutionStep {
 
       // Apply ON CREATE SET or ON MATCH SET to each result
       for (final Result r : results) {
+        matchStep();
         final boolean wasCreated = Boolean.TRUE.equals(r.getProperty(WAS_CREATED));
         final boolean createSetFolded = Boolean.TRUE.equals(r.getProperty(CREATE_SET_FOLDED));
         // Remove internal flags
@@ -385,6 +392,14 @@ public class MergeStep extends AbstractExecutionStep {
     }, true);
 
     return resultsRef.get();
+  }
+
+  /**
+   * One step of the match of a row: a record, an index entry or an edge-list entry the match looks at. Asks the deadline and the
+   * termination of the statement every so often, and at the first step of each row.
+   */
+  private void matchStep() {
+    matchGuard.checkPeriodically(matchSteps++);
   }
 
   /**
@@ -452,6 +467,7 @@ public class MergeStep extends AbstractExecutionStep {
     final String variable = pathPattern.getFirstNode().getVariable();
     final List<Result> results = new ArrayList<>(matches.size());
     for (final Vertex v : matches) {
+      matchStep();
       final ResultInternal r = copyResult(baseResult);
       if (variable != null)
         r.setProperty(variable, v);
@@ -605,6 +621,7 @@ public class MergeStep extends AbstractExecutionStep {
 
     final List<Edge> matchingEdges = new ArrayList<>(2);
     while (indexIter.hasNext()) {
+      matchStep();
       final Identifiable identifiable = indexIter.next();
       if (identifiable == null)
         continue;
@@ -702,6 +719,7 @@ public class MergeStep extends AbstractExecutionStep {
     final RID rightRid = right.getIdentity();
     final Direction dir = relPattern.getDirection();
     while (candidates.hasNext()) {
+      matchStep();
       final Identifiable identifiable = candidates.next();
       if (identifiable == null)
         continue;
@@ -848,6 +866,7 @@ public class MergeStep extends AbstractExecutionStep {
         edgesBetween(internal, fromDir, target.getIdentity(), relType) :
         from.getEdges(fromDir, relType);
     for (final Edge edge : candidates) {
+      matchStep();
       try {
         if (!target.equals(edge.getVertex(otherEnd)))
           continue;
@@ -985,6 +1004,7 @@ public class MergeStep extends AbstractExecutionStep {
       final NodePattern nextPattern, final Vertex.DIRECTION edgeDir, final Vertex.DIRECTION otherEnd,
       final boolean skipSelfLoops, final ResultInternal current, final Object[] trace, final List<TracedResult> rightResults) {
     for (final Edge edge : edgesOf(currentVertex, edgeDir, relType, nextPattern, current)) {
+      matchStep();
       if (skipSelfLoops && isSelfLoop(edge))
         continue;
       if (relProps != null && !matchesProperties(edge, relProps))
@@ -1052,6 +1072,7 @@ public class MergeStep extends AbstractExecutionStep {
       final NodePattern prevPattern, final Vertex.DIRECTION edgeDir, final Vertex.DIRECTION otherEnd,
       final boolean skipSelfLoops, final ResultInternal current, final Object[] trace, final List<Result> results) {
     for (final Edge edge : edgesOf(currentVertex, edgeDir, relType, prevPattern, current)) {
+      matchStep();
       if (skipSelfLoops && isSelfLoop(edge))
         continue;
       if (relProps != null && !matchesProperties(edge, relProps))
@@ -1160,8 +1181,10 @@ public class MergeStep extends AbstractExecutionStep {
         // A lightweight edge has no record to scan, so the type holds nothing to iterate below and the path was never found, then
         // created again by every MERGE (issue #10433). The walk starts from the vertices the first node matches instead, and
         // reads the edges they store, as it does from an anchor the row already binds
-        for (final Vertex candidate : findAllNodes(nodePattern, currentResult))
+        for (final Vertex candidate : findAllNodes(nodePattern, currentResult)) {
+          matchStep();
           traverseFromNode(pathPattern, nodeIndex, candidate, currentResult, branchPathTrace(trace), results);
+        }
         return;
       }
 
@@ -1171,6 +1194,7 @@ public class MergeStep extends AbstractExecutionStep {
       @SuppressWarnings("unchecked")
       final Iterator<Identifiable> it = (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(relType, true);
       while (it.hasNext()) {
+        matchStep();
         final Identifiable id = it.next();
         if (!(id instanceof Edge edge))
           continue;
@@ -1240,6 +1264,7 @@ public class MergeStep extends AbstractExecutionStep {
 
     final NodePattern nextPattern = pathPattern.getNode(nodeIndex + 1);
     for (final Edge edge : edgesOf(vertex, edgeDir, relType, nextPattern, currentResult)) {
+      matchStep();
       try {
         if (relProps != null && !matchesProperties(edge, relProps))
           continue;
@@ -1263,6 +1288,7 @@ public class MergeStep extends AbstractExecutionStep {
     // For undirected patterns also traverse the reverse direction
     if (relPattern.getDirection() == Direction.BOTH) {
       for (final Edge edge : edgesOf(vertex, Vertex.DIRECTION.IN, relType, nextPattern, currentResult)) {
+        matchStep();
         try {
           if (isSelfLoop(edge) || (relProps != null && !matchesProperties(edge, relProps)))
             continue;
@@ -1608,6 +1634,7 @@ public class MergeStep extends AbstractExecutionStep {
       final Iterator<Record> candidates = Labels.iterateMatchingVertices(context.getDatabase(), labels,
           nodePattern.isLabelDisjunction());
       while (candidates.hasNext()) {
+        matchStep();
         final Record record = candidates.next();
         if (record instanceof Vertex vertex)
           if (evaluatedProperties == null || matchesProperties(vertex, evaluatedProperties))
@@ -1627,6 +1654,7 @@ public class MergeStep extends AbstractExecutionStep {
         final Iterator<Identifiable> indexIter = tryFindByIndex(type, label, evaluatedProperties);
         if (indexIter != null) {
           while (indexIter.hasNext()) {
+            matchStep();
             final Identifiable identifiable = indexIter.next();
             if (identifiable == null)
               continue;
@@ -1643,6 +1671,7 @@ public class MergeStep extends AbstractExecutionStep {
     @SuppressWarnings("unchecked")
     final Iterator<Identifiable> iterator = (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(label, true);
     while (iterator.hasNext()) {
+      matchStep();
       final Identifiable identifiable = iterator.next();
       if (identifiable instanceof Vertex vertex)
         if (evaluatedProperties == null || matchesProperties(vertex, evaluatedProperties))

@@ -81,7 +81,7 @@ public class CollRemove extends AbstractCollFunction {
         1;
     final LongRangeList range = asRange(list);
     if (range != null) {
-      // The loop below stops at the end of the list, so it removes min(count, size - index) elements.
+      // The removal below stops at the end of the list, so it removes min(count, size - index) elements.
       final int removed = Math.min(Math.max(count, 0), range.size() - index);
       if (index == 0)
         return range.subList(removed, range.size());
@@ -89,8 +89,10 @@ public class CollRemove extends AbstractCollFunction {
         return range.subList(0, index);
     }
     final List<Object> result = new ArrayList<>(list);
-    for (int i = 0; i < count && index < result.size(); i++)
-      result.remove(index);
+    // The elements behind the span move once, whatever the count: removing them one at a time moves them once per element removed
+    final int removed = Math.min(Math.max(count, 0), result.size() - index);
+    if (removed > 0)
+      result.subList(index, index + removed).clear();
     return result;
   }
 }

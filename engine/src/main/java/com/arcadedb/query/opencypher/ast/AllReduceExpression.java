@@ -23,6 +23,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.VariableOverlayResult;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -93,7 +94,12 @@ public class AllReduceExpression implements Expression {
     // its own that binds the accumulator only
     final VariableOverlayResult iterResult = new VariableOverlayResult(result, iteratorVariable, accumulatorVariable);
     VariableOverlayResult nullItemResult = null;
+    // The walk of one list is inside one row, past every check between rows: the statement's deadline and its termination are asked
+    // here too. The check at the first element keeps a list nested in another one answerable as well, whatever its length
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
+    int walked = 0;
     for (final Object item : iterable) {
+      guard.checkPeriodically(walked++);
       final VariableOverlayResult row;
       if (item != null)
         row = iterResult.bind(item, accumulator);

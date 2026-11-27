@@ -23,6 +23,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.VariableOverlayResult;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -86,7 +87,12 @@ public class ReduceExpression implements Expression {
     // One row per evaluation with the iterator variable and the accumulator rebound per element: the outer columns are read
     // through it, not copied (issue #12723). The accumulator is bound second, so it shadows an iterator of the same name
     final VariableOverlayResult iterResult = new VariableOverlayResult(result, iteratorVariable, accumulatorVariable);
+    // The walk of one list is inside one row, past every check between rows: the statement's deadline and its termination are asked
+    // here too. The check at the first element keeps a list nested in another one answerable as well, whatever its length
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
+    int walked = 0;
     for (final Object item : iterable) {
+      guard.checkPeriodically(walked++);
       iterResult.bind(item, accumulator);
 
       // Evaluate the reduce expression with the current accumulator and item
