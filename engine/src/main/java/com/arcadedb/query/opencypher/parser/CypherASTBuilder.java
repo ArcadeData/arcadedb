@@ -36,6 +36,7 @@ import com.arcadedb.query.opencypher.ast.LabelPredicate;
 import com.arcadedb.query.opencypher.ast.ListExpression;
 import com.arcadedb.query.opencypher.ast.LiteralExpression;
 import com.arcadedb.query.opencypher.ast.LoadCSVClause;
+import com.arcadedb.query.opencypher.ast.MapProjectionExpression;
 import com.arcadedb.query.opencypher.ast.MatchClause;
 import com.arcadedb.query.opencypher.ast.MergeClause;
 import com.arcadedb.query.opencypher.ast.NodePattern;
@@ -1006,9 +1007,11 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       final Expression expr = expressionBuilder.parseExpression(itemCtx.expression());
       final String alias = itemCtx.variable() != null ? stripBackticks(itemCtx.variable().getText()) : null;
       final ReturnClause.ReturnItem item = new ReturnClause.ReturnItem(expr, alias);
-      // When no alias, preserve original text from the query (whitespace and case)
+      // When no alias, preserve original text from the query (whitespace and case). A map projection, n {.a, b: 1}, is the exception:
+      // Neo4j names its column after the variable it projects, "n", not after the text that wrote it
       if (alias == null)
-        item.setOriginalText(getOriginalText(itemCtx.expression()));
+        item.setOriginalText(expr instanceof MapProjectionExpression projection ? projection.getVariableName() :
+            getOriginalText(itemCtx.expression()));
       // Canonical text, recorded for aliased items too, so ORDER BY can tell whether it repeats
       // this projected expression (issue #5283)
       item.setExpressionText(itemCtx.expression().getText());
