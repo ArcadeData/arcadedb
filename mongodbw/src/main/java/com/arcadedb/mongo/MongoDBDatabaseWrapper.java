@@ -669,8 +669,9 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   private Document createIndexes(final Document document) {
     final String collectionName = document.get("createIndexes").toString();
 
-    // THE PERMISSIONS COME FIRST, AS THEY DO FOR CREATE INDEX OF SQL, BEFORE ANYTHING OF THE COLLECTION IS READ: THE SCHEMA ONE, AND THE
-    // READ ONE FOR A COLLECTION THAT EXISTS. ONE THAT DOES NOT EXIST IS CREATED BELOW, WHICH THE SCHEMA PERMISSION COVERS
+    // The permissions are checked first, as CREATE INDEX of SQL does, before anything of the collection is read: the schema permission,
+    // and the read permission when the collection exists. A collection that does not exist is created below, which the schema
+    // permission covers
     ((DatabaseInternal) database).checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
     MongoDBCollectionWrapper.checkAccess(database, collectionName, SecurityDatabaseUser.ACCESS.READ_RECORD);
 

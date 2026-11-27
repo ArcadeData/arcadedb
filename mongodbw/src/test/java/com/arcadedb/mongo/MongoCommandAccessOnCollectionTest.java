@@ -88,12 +88,16 @@ class MongoCommandAccessOnCollectionTest {
 
   @AfterEach
   void tearDown() {
-    DatabaseContext.INSTANCE.init((DatabaseInternal) database).setCurrentUser(null);
-    while (database.isTransactionActive())
-      database.rollback();
-    MongoDBCollectionWrapper.forgetIdIndexes(database);
-    database.drop();
-    factory.close();
+    // a setUp that failed early leaves nothing to clean up, and its own error is the one to read
+    if (database != null) {
+      DatabaseContext.INSTANCE.init((DatabaseInternal) database).setCurrentUser(null);
+      while (database.isTransactionActive())
+        database.rollback();
+      MongoDBCollectionWrapper.forgetIdIndexes(database);
+      database.drop();
+    }
+    if (factory != null)
+      factory.close();
   }
 
   @Test
