@@ -242,6 +242,21 @@ class SubQueryUncorrelatedHoistTest extends TestHelper {
   }
 
   @Test
+  void aSubQueryInsideALetExpressionStillReadsTheOuterRowAndEarlierLets() {
+    // a LET expression is not lifted, but a map literal in it is walked: whatever the planner does with it, every row must
+    // still see its own value, through $parent or through a LET computed before it
+    for (final String sql : new String[] {
+        "SELECT id, $a.m AS v FROM T LET $a = {'m': ((SELECT count(*) AS c FROM M WHERE g = $parent.$current.g)[0].c + 0)} ORDER BY id",
+        "SELECT id, $a.m AS v FROM T LET $b = g, $a = {'m': ((SELECT count(*) AS c FROM M WHERE g = $b)[0].c + 0)} ORDER BY id",
+        "SELECT id, $a AS v FROM T LET $a = ((SELECT count(*) AS c FROM M WHERE g = $parent.$current.g)[0].c + 0) ORDER BY id" }) {
+      final List<Result> rows = run(sql);
+      assertThat(rows).as(sql).hasSize(N);
+      for (final Result row : rows)
+        assertThat(row.<Number>getProperty("v").longValue()).as(sql).isEqualTo(row.<Integer>getProperty("id") % 7 == 4 ? 1L : 0L);
+    }
+  }
+
+  @Test
   void aSubQueryInACaseBranchInsideParenthesesStaysLazy() {
     // a CASE branch that is never taken must not run its sub-query, lifted or not
     final List<Result> rows = run("SELECT id, (CASE WHEN id < 0 THEN " + MAX_ID + " ELSE 0 END) AS c FROM T");
