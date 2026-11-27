@@ -118,6 +118,30 @@ only by the scan truncation and now reads every record: `resultSetLimit` does no
 record of the type, where the scan cap used to stop it early. Only the group's `readTimeout` bounds that work: a group with a
 `resultSetLimit` and no `readTimeout` has no protection against a long scan, so set both.
 
+### openCypher: `map.groupBy` answers one element per key, as APOC does (#12107)
+
+`map.groupBy(list, key)` (and `apoc.map.groupBy`) maps each value of the key to the LAST element that holds it, as APOC does.
+It used to map each value to the list of every element holding it, and grouped the elements without the key under `"null"`.
+Those elements are now skipped, a null key answers `{}` instead of failing, and a node or a relationship is grouped by its
+property (it used to be ignored). The list-per-key form is the new `map.groupByMulti(list, key)` (and
+`apoc.map.groupByMulti`), APOC's function for it.
+
+Four more `map.*` functions answer as APOC does:
+
+- `map.sortedProperties(map, ignoreCase = true)` sorts the keys case-insensitively unless the new second argument is
+  `false`, and a null value stays null instead of becoming the string `"null"`;
+- `map.values(map, keys = [], addNullsForMissing = false)` skips a key the map does not hold unless the new third argument
+  is `true` (it used to answer null for it), and a null map holds no key;
+- `map.clean(map, keys, values)` also drops the null values and the values whose string form is listed
+  (`map.clean({a: 2, b: true}, [], ['2', 'true'])` is `{}`);
+- `map.fromPairs(pairs)` maps a pair holding only a key to null instead of skipping it.
+
+Every `map.*` function that takes a map also takes a node or a relationship, as the map of its properties.
+
+**Who sees a different answer.** A query that reads lists out of `map.groupBy`: call `map.groupByMulti` instead, which answers
+the same lists without the `"null"` group. A query that expects `map.values` to keep one slot per key: pass `true` as the third
+argument. A query that relied on the case-sensitive order of `map.sortedProperties`: pass `false` as the second argument.
+
 ## Fixes
 
 - **#11956** A DATE parameter reaches the engine as the `LocalDate` it names, as a Bolt date does, over gRPC (a

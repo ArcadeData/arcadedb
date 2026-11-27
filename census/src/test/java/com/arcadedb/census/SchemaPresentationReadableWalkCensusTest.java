@@ -92,6 +92,8 @@ class SchemaPresentationReadableWalkCensusTest {
       Map.entry("query/opencypher/query/CypherConstraintRegistry#findIndexOwner", "resolves the constraint owning an index for DDL"),
       Map.entry("query/opencypher/query/CypherSchemaCommands#dropUnrecordedConstraint", "resolves the type a dropped constraint belongs to: DDL"),
       Map.entry("query/sql/parser/DropTypeStatement#hasLightweightEdges", "DDL: checks what a DROP TYPE would leave behind"),
+      Map.entry("schema/LocalEdgeType#findLightweightEdge",
+          "DDL: looks for the lightweight edges an ALTER TYPE ... lightweight = false or unique = true would strand or duplicate (issue #12248)"),
       // MAINTENANCE
       Map.entry("database/DatabaseComparator#compareTypes", MAINTENANCE),
       Map.entry("database/DatabaseComparatorErrorsReporter#compareTypes", MAINTENANCE),

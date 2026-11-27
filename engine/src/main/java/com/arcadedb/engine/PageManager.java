@@ -117,6 +117,7 @@ public class PageManager extends LockContext {
   private final    AtomicLong                        totalConcurrentModificationExceptions = new AtomicLong();
   private final    AtomicLong                        totalEdgeAppendMerges                 = new AtomicLong();
   private final    AtomicLong                        totalTxPageSlotMerges                 = new AtomicLong();
+  private final    AtomicLong                        totalTxPageBuffersRecycled            = new AtomicLong();
   private final    AtomicLong                        totalEdgeListHeadMerges               = new AtomicLong();
   private final    AtomicLong                        totalMergesDeclinedByCoverage         = new AtomicLong();
   private final    AtomicLong                        totalChunkChainReadRevalidations      = new AtomicLong();
@@ -370,6 +371,12 @@ public class PageManager extends LockContext {
     public long concurrentModificationExceptions;
     public long edgeAppendMerges;
     public long txPageSlotMerges;
+    /**
+     * See {@link PageManager#getMutablePage(PageId, int, boolean, boolean, byte[])}: page copies written into the array of a dropped
+     * page image. Read by name by the tests that pin the recycling; not exported by the {@code Profiler} or the metrics binder, which
+     * name the counters they surface.
+     */
+    public long txPageBuffersRecycled;
     /** See {@link PageManager#incrementEdgeListHeadMerges()}: vertices written as the merge of two edge-list head moves. */
     public long edgeListHeadMerges;
     /** See {@link PageManager#incrementMergesDeclinedByCoverage()}: commit ATTEMPTS failed on a coverage decline, not pages. */
@@ -1817,10 +1824,24 @@ public class PageManager extends LockContext {
 
   public MutablePage getMutablePage(final PageId pageId, final int pageSize, final boolean isNew, final boolean createIfNotExists)
       throws IOException {
+    return getMutablePage(pageId, pageSize, isNew, createIfNotExists, null);
+  }
+
+  /**
+   * As above, the copy written into {@code recycled} when it is an array of the page's length (see {@link CachedPage#useAsMutable(byte[])}).
+   * The caller must OWN {@code recycled}: nothing else may hold or read that array after the call, because the copy of the page is
+   * written into it. Counted in {@link PPageManagerStats#txPageBuffersRecycled} when it was used.
+   */
+  public MutablePage getMutablePage(final PageId pageId, final int pageSize, final boolean isNew, final boolean createIfNotExists,
+      final byte[] recycled) throws IOException {
     final CachedPage page = getCachedPage(pageId, pageSize, isNew, createIfNotExists);
-    if (page != null)
+    if (page != null) {
       // RETURN ALWAYS A VIEW OF THE PAGE. THIS PREVENT CONCURRENCY ON THE BUFFER POSITION
-      return page.useAsMutable();
+      final MutablePage mutable = page.useAsMutable(recycled);
+      if (recycled != null && mutable.getContent().array() == recycled)
+        totalTxPageBuffersRecycled.incrementAndGet();
+      return mutable;
+    }
     return null;
   }
 
@@ -2272,6 +2293,7 @@ public class PageManager extends LockContext {
     stats.concurrentModificationExceptions = totalConcurrentModificationExceptions.get();
     stats.edgeAppendMerges = totalEdgeAppendMerges.get();
     stats.txPageSlotMerges = totalTxPageSlotMerges.get();
+    stats.txPageBuffersRecycled = totalTxPageBuffersRecycled.get();
     stats.edgeListHeadMerges = totalEdgeListHeadMerges.get();
     stats.mergesDeclinedByCoverage = totalMergesDeclinedByCoverage.get();
     stats.chunkChainReadRevalidations = totalChunkChainReadRevalidations.get();

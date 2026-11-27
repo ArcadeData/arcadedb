@@ -58,7 +58,7 @@ class Issue11582ListFunctionsOverArraysTest extends TestHelper {
       "apoc.map.fromPairs([$l])", //
       "apoc.map.clean({a: 1, b: 5}, ['x'], $l)", //
       "apoc.map.removeKeys({a: 1, `3`: 5}, $l)", //
-      "apoc.map.submap({a: 1, `3`: 5}, $l)", //
+      "apoc.map.submap({a: 1, `3`: 5}, $l, [], false)", //
       "apoc.map.values({a: 1, `3`: 5}, $l)", //
       "apoc.text.join($l, '-')", //
       "apoc.util.validate(true, 'values %s %s %s', $l)" };

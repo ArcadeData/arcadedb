@@ -359,22 +359,22 @@ class PostgresCatalogSetOperationBudgetTest {
         result.addAll(right);
         return result;
       }
-      final Set<List<Object>> seen = new HashSet<>();
+      final Set<PostgresCatalogRowKey> seen = new HashSet<>();
       for (final List<List<Object>> side : List.of(left, right))
         for (final List<Object> row : side)
-          if (seen.add(PostgresCatalogRowSets.distinctKey(row)))
+          if (seen.add(PostgresCatalogRowKey.of(row)))
             result.add(row);
       return result;
     }
 
-    final Map<List<Object>, Integer> inRight = new HashMap<>();
+    final Map<PostgresCatalogRowKey, Integer> inRight = new HashMap<>();
     for (final List<Object> row : right)
-      inRight.merge(PostgresCatalogRowSets.distinctKey(row), 1, Integer::sum);
+      inRight.merge(PostgresCatalogRowKey.of(row), 1, Integer::sum);
 
-    final Set<List<Object>> emitted = new HashSet<>();
+    final Set<PostgresCatalogRowKey> emitted = new HashSet<>();
     final boolean intersect = "INTERSECT".equals(operator);
     for (final List<Object> row : left) {
-      final List<Object> key = PostgresCatalogRowSets.distinctKey(row);
+      final PostgresCatalogRowKey key = PostgresCatalogRowKey.of(row);
       final int count = inRight.getOrDefault(key, 0);
       if (all) {
         if (count > 0)
