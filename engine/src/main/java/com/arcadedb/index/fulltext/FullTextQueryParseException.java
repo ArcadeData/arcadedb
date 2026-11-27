@@ -31,6 +31,10 @@ import com.arcadedb.index.IndexException;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class FullTextQueryParseException extends IndexException {
+  public FullTextQueryParseException(final String message) {
+    super(message);
+  }
+
   public FullTextQueryParseException(final String message, final Throwable cause) {
     super(message, cause);
   }
