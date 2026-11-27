@@ -133,7 +133,6 @@ import com.arcadedb.utility.VectorApiSupport;
 import java.io.File;
 import java.io.IOException;
 import java.io.RandomAccessFile;
-import java.io.UncheckedIOException;
 import java.nio.BufferUnderflowException;
 import java.nio.channels.ClosedByInterruptException;
 import java.nio.channels.ClosedChannelException;
@@ -165,7 +164,6 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Consumer;
 import java.util.function.UnaryOperator;
 import java.util.logging.Level;
-import java.util.stream.Stream;
 
 /**
  * Local implementation of {@link Database}. It is based on files opened on the local file system.
@@ -829,19 +827,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     return executeInReadLock(() -> {
       checkDatabaseIsOpen();
       try {
-        final Path dir = Path.of(databasePath);
-        if (!Files.exists(dir))
-          return 0L;
-        try (Stream<Path> stream = Files.walk(dir)) {
-          return stream.filter(Files::isRegularFile).mapToLong(p -> {
-            try {
-              return Files.size(p);
-            } catch (IOException e) {
-              throw new UncheckedIOException(e);
-            }
-          }).sum();
-        }
-      } catch (Exception e) {
+        return FileUtils.getDirectorySize(Path.of(databasePath));
+      } catch (final IOException e) {
         throw new DatabaseOperationException("Error calculating database size", e);
       }
     });
