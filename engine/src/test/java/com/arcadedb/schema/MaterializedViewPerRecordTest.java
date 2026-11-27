@@ -32,10 +32,13 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.serializer.json.JSONObject;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -611,13 +614,24 @@ class MaterializedViewPerRecordTest extends TestHelper {
    * one, or a delta pass would end VALID over a view missing the records of the failed pass.
    */
   @Test
-  void perRecordFailureSurvivesAReopenAsAFullPass() {
+  void perRecordFailureSurvivesAReopenAsAFullPass() throws Exception {
     createAdultsView(10);
     failNextPassOf("Adults", () -> database.transaction(() -> database.command("sql", "UPDATE Person SET age = 50 WHERE name = 'a1'")));
 
-    reopenDatabase();
+    // The status is read from the schema file, between the close and the open: an open hands the recovery full pass of a view it
+    // loads non-VALID to the scheduler thread at once (issue #11550), which ends VALID within milliseconds, so the status of the
+    // reopened view cannot be read before it races that pass
+    database.close();
+    final JSONObject stored = new JSONObject(Files.readString(Path.of(getDatabasePath(), LocalSchema.SCHEMA_FILE_NAME)));
+    assertThat(stored.getJSONObject("materializedViews").getJSONObject("Adults").getString("status"))
+        .as("the failure is still stored after the close").isNotEqualTo(MaterializedViewStatus.VALID.name());
+    database = factory.open();
     final MaterializedViewImpl view = (MaterializedViewImpl) database.getSchema().getMaterializedView("Adults");
-    assertThat(view.getStatus()).as("the failure is still visible after the reopen").isNotEqualTo(MaterializedViewStatus.VALID.name());
+    // and the open acted on it: the view either still says so, or a pass already ended (no commit ran yet, so only the recovery
+    // pass of the open can have made it). The status is read first: a pass counts itself before it says VALID
+    final String statusAfterOpen = view.getStatus();
+    assertThat(!MaterializedViewStatus.VALID.name().equals(statusAfterOpen) || view.getRefreshCount() > 0)
+        .as("the reopened view says it is not VALID (%s) or the open made its recovery pass", statusAfterOpen).isTrue();
 
     database.transaction(() -> database.command("sql", "UPDATE Person SET age = 51 WHERE name = 'a2'"));
     Awaitility.await("the view ends VALID").atMost(30, TimeUnit.SECONDS)

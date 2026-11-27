@@ -19,7 +19,6 @@
 package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.query.sql.executor.WorkGuard;
-import com.arcadedb.schema.Type;
 import com.arcadedb.database.Document;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
@@ -300,10 +299,11 @@ public class OrderByStep extends AbstractExecutionStep {
         // Priority queue with reversed comparator: worst elements bubble to top. Each entry carries the keys of its row,
         // evaluated once when the row was read: re-evaluated at every offer, ORDER BY rand() LIMIT k drew new keys for the
         // rows already kept, so the later rows won far more often than the earlier ones (issue #12341)
-        final PriorityQueue<Keyed> topK = new PriorityQueue<>(Math.min(k + 1, 1000), comparator.reversed());
+        final PriorityQueue<Keyed> topK = new PriorityQueue<>(Math.min(k, 999) + 1, comparator.reversed());
 
-        // Pull all results and maintain a top-K heap
-        final int batchSize = Math.max(1000, k * 10);
+        // Pull all results and maintain a top-K heap. 10 rows a heap slot, up to a million: a K near Integer.MAX_VALUE (a LIMIT that
+        // keeps every row) wrapped k * 10 negative (#12757)
+        final int batchSize = (int) Math.min(Math.max(1000L, k * 10L), 1_000_000L);
         final ResultSet prevResults = prev.syncPull(context, batchSize);
         final WorkGuard guard = WorkGuard.forCommandDeadline(context);
         final boolean charging = heapLimit.isCharging();
@@ -614,6 +614,13 @@ public class OrderByStep extends AbstractExecutionStep {
         if (v1 instanceof byte[] b1 && v2 instanceof byte[] b2)
           return BinaryComparator.compareBytes(b1, b2);
 
+        // Numbers by value, whatever their classes: an INTEGER past 2^53 against a FLOAT is not the double it rounds to, and a Float
+        // is read through its decimal form, so the ordering agrees with what ComparisonExpression answers for the same pair
+        // (issues #7609, #12673). Every pair goes through this one comparator, the one min() / max() use, two of the same class
+        // included: Double.compareTo put -0.0 below 0.0 while an INTEGER 0 equals both, an order no sort can follow
+        if (v1 instanceof Number number1 && v2 instanceof Number number2)
+          return BinaryComparator.compareNumbers(number1, number2);
+
         // Same-type Comparable comparison
         if (v1.getClass().equals(v2.getClass()) && v1 instanceof Comparable) {
           try {
@@ -622,11 +629,6 @@ public class OrderByStep extends AbstractExecutionStep {
             // Fall through
           }
         }
-
-        // Cross-type number comparison. A Float goes through its decimal form so the ordering agrees with what
-        // ComparisonExpression answers for the same pair, rather than ordering on the rounding error (issue #7609).
-        if (v1 instanceof Number number1 && v2 instanceof Number number2)
-          return Double.compare(toComparableDouble(number1), toComparableDouble(number2));
 
         // Different types: order by type rank
         final int rank1 = typeRank(v1);
@@ -709,7 +711,7 @@ public class OrderByStep extends AbstractExecutionStep {
       this.k = k;
       this.comparator = comparator;
       this.heapLimit = heapLimit;
-      this.heap = new PriorityQueue<>(Math.min(k + 1, 1000), comparator.reversed());
+      this.heap = new PriorityQueue<>(Math.min(k, 999) + 1, comparator.reversed());
     }
 
     /**
@@ -760,17 +762,6 @@ public class OrderByStep extends AbstractExecutionStep {
   public void close() {
     releaseHeap();
     super.close();
-  }
-
-  /**
-   * Widens a number for ordering, reading a {@link Float} through its decimal form. See {@link Type#widenFloat}.
-   *
-   * @param value the operand (never {@code null})
-   *
-   * @return the operand as a double
-   */
-  private static double toComparableDouble(final Number value) {
-    return value instanceof Float float1 ? Type.widenFloat(float1) : value.doubleValue();
   }
 
   /**

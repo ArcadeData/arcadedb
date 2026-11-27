@@ -62,20 +62,35 @@ public class TextLevenshteinDistance extends AbstractTextFunction {
     if (str1 == null || str2 == null)
       return null;
 
-    // Validate string lengths, in characters, to prevent excessive computation. The count comes first and allocates nothing, so a huge
-    // string is refused before it is copied
-    final int length1 = str1.codePointCount(0, str1.length());
-    final int length2 = str2.codePointCount(0, str2.length());
-    if (length1 > MAX_STRING_LENGTH) {
-      throw new IllegalArgumentException(
-          "String length exceeds maximum allowed for Levenshtein distance (" + MAX_STRING_LENGTH + "): " + length1);
-    }
-    if (length2 > MAX_STRING_LENGTH) {
-      throw new IllegalArgumentException(
-          "String length exceeds maximum allowed for Levenshtein distance (" + MAX_STRING_LENGTH + "): " + length2);
-    }
+    requireWithinMaxLength("Levenshtein distance", str1, str2);
 
     return (long) levenshteinDistance(str1, str2);
+  }
+
+  /**
+   * Validates the length, in characters, of the two strings a function compares character by character in O(n*m) time, so that the
+   * work stays bounded. Shared by every such function ({@code levenshteinDistance}, {@code levenshteinSimilarity},
+   * {@code jaroWinklerDistance}). The count comes before the strings are copied and allocates nothing, so a huge string is refused
+   * without being copied.
+   *
+   * @param comparison what the function computes, for the message
+   *
+   * @throws IllegalArgumentException when either string is longer than {@link #MAX_STRING_LENGTH} characters
+   */
+  static void requireWithinMaxLength(final String comparison, final String str1, final String str2) {
+    requireWithinMaxLength(comparison, str1);
+    requireWithinMaxLength(comparison, str2);
+  }
+
+  private static void requireWithinMaxLength(final String comparison, final String str) {
+    final int units = str.length();
+    // a character takes one or two UTF-16 units: a string with no more units than the limit has no more characters either
+    if (units <= MAX_STRING_LENGTH)
+      return;
+
+    final int length = str.codePointCount(0, units);
+    if (length > MAX_STRING_LENGTH)
+      throw new IllegalArgumentException("String length exceeds maximum allowed for " + comparison + " (" + MAX_STRING_LENGTH + "): " + length);
   }
 
   /**

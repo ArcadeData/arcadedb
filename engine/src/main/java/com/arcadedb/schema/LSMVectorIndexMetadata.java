@@ -29,6 +29,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -294,6 +295,18 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
       case "rerankOversample" -> rerankOversample;
       default -> null;
     };
+  }
+
+  /**
+   * Leaves out an {@code efSearch} nobody asked for: it is not in force, since a search on such an index takes the adaptive
+   * beam instead (issue #6494).
+   */
+  @Override
+  public Map<String, Object> getUserSettings() {
+    final Map<String, Object> settings = super.getUserSettings();
+    if (!efSearchConfigured)
+      settings.remove("efSearch");
+    return settings;
   }
 
   /**

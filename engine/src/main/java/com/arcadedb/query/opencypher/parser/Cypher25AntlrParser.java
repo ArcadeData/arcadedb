@@ -23,6 +23,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.function.CypherBuiltinFunctions;
 import com.arcadedb.function.CypherFunctionRegistry;
+import com.arcadedb.query.literal.LiteralParameterizer;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.grammar.Cypher25Lexer;
 import com.arcadedb.query.opencypher.grammar.Cypher25Parser;
@@ -83,8 +84,12 @@ public class Cypher25AntlrParser {
    *                                user-defined function, so they are resolved before every execution, where an
    *                                unknown one is refused as an unknown plain function is at parse time (issue #11115);
    *                                empty for the common query that calls none
+   * @param bulk                    whether the text holds more literals than a shape records
+   *                                ({@link LiteralParameterizer#MAX_LITERALS}): the data of a bulk write written in, kept out of
+   *                                the statement cache (issue #12350) and out of the plan cache, whose key would be the whole
+   *                                text (issue #12605)
    */
-  public record ParsedQuery(CypherStatement statement, Set<String> parameters, List<String> namespacedFunctionCalls) {
+  public record ParsedQuery(CypherStatement statement, Set<String> parameters, List<String> namespacedFunctionCalls, boolean bulk) {
   }
 
   /**
@@ -217,7 +222,7 @@ public class Cypher25AntlrParser {
 
       // After validation, so that an error names the query as written (issue #9598)
       return new ParsedTree(new ParsedQuery(OptionalMatchAntiJoinRewriter.rewrite(statement), collectParameterNames(statementContext, query),
-          collectNamespacedFunctionCalls(statementContext)), statementContext);
+          collectNamespacedFunctionCalls(statementContext), holdsMoreLiteralsThanAShape(tokens)), statementContext);
 
     } catch (final CommandParsingException e) {
       // semantic-validation and explicit parse errors already carry a clear, actionable message
@@ -230,6 +235,52 @@ public class Cypher25AntlrParser {
       throw new CommandParsingException("Failed to parse Cypher query: " + query, e);
     } finally {
       ExpressionRewriter.restoreMaxExpressionDepth(previousMaxDepth);
+    }
+  }
+
+  /**
+   * Whether the query holds more literals than a shape records, counted as the openCypher literal scan counts them (see
+   * {@link LiteralParameterizer#holdsMoreLiteralsThanAShape}, issue #12605). Called once the parser has read the whole query, so
+   * every token is in the stream.
+   */
+  private static boolean holdsMoreLiteralsThanAShape(final CommonTokenStream tokens) {
+    return LiteralParameterizer.holdsMoreLiteralsThanAShape(tokens.getTokens(), CypherLiteralParameterizer::isCandidate);
+  }
+
+  /**
+   * Checks that {@code tail} is exactly the {@code YIELD}/{@code WHERE} clause the grammar allows at the end of a {@code SHOW} or
+   * {@code TERMINATE} command ({@code showCommandYield}): {@code YIELD} items with their {@code ORDER BY}, {@code SKIP},
+   * {@code LIMIT} and {@code WHERE}, then an optional {@code RETURN}, or a lone {@code WHERE}. Nothing else follows it.
+   *
+   * @param tail the text of the clause, from its {@code YIELD} or {@code WHERE}
+   *
+   * @throws CommandParsingException if the text is not that clause
+   */
+  public void checkShowCommandYield(final String tail) {
+    final int maxExpressionDepth = ExpressionRewriter.maxExpressionDepth(database);
+    final int maxClauses = maxClauses(database);
+
+    try {
+      final CypherErrorListener errorListener = new CypherErrorListener();
+      final Cypher25Lexer lexer = new Cypher25Lexer(CharStreams.fromString(tail));
+      lexer.removeErrorListeners();
+      lexer.addErrorListener(errorListener);
+
+      final CommonTokenStream tokens = new CommonTokenStream(lexer);
+      final Cypher25Parser parser = new Cypher25Parser(tokens);
+      parser.removeErrorListeners();
+      parser.addErrorListener(errorListener);
+      parser.addParseListener(new CypherExpressionDepthGuard(maxExpressionDepth, maxClauses));
+
+      parser.showCommandYield();
+
+      final Token next = tokens.LT(1);
+      if (next.getType() != Token.EOF)
+        throw new CommandParsingException(String.format(Locale.ROOT,
+            "Unexpected input '%s' at line %d, column %d: only YIELD, WHERE and RETURN may follow a SHOW command", next.getText(),
+            next.getLine(), next.getCharPositionInLine()));
+    } catch (final StackOverflowError e) {
+      throw new CommandParsingException("Query is too deeply nested to be parsed (stack exhausted); simplify the query", e);
     }
   }
 

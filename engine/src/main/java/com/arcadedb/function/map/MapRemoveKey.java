@@ -22,9 +22,12 @@ import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
 
 /**
- * map.removeKey(map, key) - Remove a key from the map.
+ * map.removeKey(map, key, [config]) - Remove a key from the map. The config takes {@code recursive}, as
+ * {@link MapRemoveKeys} does, with APOC's quirk kept: a map without the key at its top level is answered unchanged, the
+ * nested maps included (issue #12105).
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -41,7 +44,7 @@ public class MapRemoveKey extends AbstractMapFunction {
 
   @Override
   public int getMaxArgs() {
-    return 2;
+    return 3;
   }
 
   @Override
@@ -53,14 +56,14 @@ public class MapRemoveKey extends AbstractMapFunction {
   public Object execute(final Object[] args, final CommandContext context) {
     final Map<String, Object> map = asMap(args[0]);
     final String key = args[1] != null ? args[1].toString() : null;
+    final boolean recursive = MapRemoveKeys.recursive(getName(), args.length > 2 ? args[2] : null);
 
     if (map == null)
       return new LinkedHashMap<>();
 
-    final Map<String, Object> result = new LinkedHashMap<>(map);
-    if (key != null) {
-      result.remove(key);
-    }
-    return result;
+    // As APOC's apoc.map.removeKey: only a key present at the top level starts a (recursive) removal
+    if (key == null || !map.containsKey(key))
+      return new LinkedHashMap<>(map);
+    return MapRemoveKeys.removeKeys(map, Set.of(key), recursive);
   }
 }

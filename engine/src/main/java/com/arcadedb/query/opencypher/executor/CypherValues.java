@@ -280,9 +280,10 @@ public final class CypherValues {
   /**
    * At most {@link #MAX_DESCRIBED_KEYS} keys, so a wide map cannot turn one refusal into a page of log. Which keys
    * those are follows the map's own iteration order: insertion order for a map the parser built, and whatever the
-   * driver's map gives for a bound parameter. The cap is the behaviour worth relying on, not the selection.
+   * driver's map gives for a bound parameter. The cap is the behaviour worth relying on, not the selection. Public so
+   * that another refusal of a map ({@code point()}, issue #12276) names its keys the same bounded and cleaned way.
    */
-  private static String describeKeys(final Map<?, ?> map) {
+  public static String describeKeys(final Map<?, ?> map) {
     if (map.isEmpty())
       return "with no entries";
     final StringJoiner keys = new StringJoiner(", ", "[", "]");

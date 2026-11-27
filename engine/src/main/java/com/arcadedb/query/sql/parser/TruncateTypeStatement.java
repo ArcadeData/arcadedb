@@ -36,6 +36,7 @@ import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.TypeHierarchy;
 import com.arcadedb.schema.TypeIndexBuilder;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.security.SecurityDatabaseUser;
@@ -365,18 +366,23 @@ public class TruncateTypeStatement extends DDLStatement {
    */
   private static boolean collectTruncationScope(final DocumentType type, final boolean polymorphic,
       final Set<String> lightweightTypeNames) {
-    boolean hasRecordBackedType;
-    if (type instanceof EdgeType edgeType && edgeType.isLightweight()) {
-      lightweightTypeNames.add(Identifier.quote(type.getName()));
-      hasRecordBackedType = false;
-    } else
-      hasRecordBackedType = true;
+    boolean hasRecordBackedType = collectTruncationScopeOf(type, lightweightTypeNames);
 
+    // each type below once, whatever the number of paths that lead down to it
     if (polymorphic)
-      for (final DocumentType subType : type.getSubTypes())
-        hasRecordBackedType |= collectTruncationScope(subType, true, lightweightTypeNames);
+      for (final DocumentType subType : TypeHierarchy.allSubTypes(type))
+        hasRecordBackedType |= collectTruncationScopeOf(subType, lightweightTypeNames);
 
     return hasRecordBackedType;
+  }
+
+  /** Adds the name of {@code type} when it is a lightweight edge type, and answers whether it is record-backed. */
+  private static boolean collectTruncationScopeOf(final DocumentType type, final Set<String> lightweightTypeNames) {
+    if (type instanceof EdgeType edgeType && edgeType.isLightweight()) {
+      lightweightTypeNames.add(Identifier.quote(type.getName()));
+      return false;
+    }
+    return true;
   }
 
   /**
@@ -561,28 +567,28 @@ public class TruncateTypeStatement extends DDLStatement {
     builder.create();
   }
 
-  private static List<IndexDefinition> collectIndexDefinitions(final DocumentType typez, final boolean polymorphic) {
-    final List<IndexDefinition> defs = new ArrayList<>();
-    collectIndexDefinitions(typez, polymorphic, new HashSet<>(), defs);
-    return defs;
-  }
-
   /**
-   * Recurses through every subtype, not only the direct ones (CodeRabbit review on this PR): {@code getSubTypes()}
+   * Walks through every subtype, not only the direct ones (CodeRabbit review on this PR): {@code getSubTypes()}
    * returns one level, so a stopped-at-depth-one walk would leave an indexed grandchild's index live while
    * {@code scanType(typeName, polymorphic, ...)} - which walks the full subtype tree regardless of depth - deletes
    * its records, re-introducing the #4352 tombstone hazard for exactly the type this method exists to protect.
-   * This gap predates {@link #collectTruncationScope}, but that method's own full-depth recursion is what first
+   * This gap predates {@link #collectTruncationScope}, but that method's own full-depth walk is what first
    * makes a deep, lightweight-mixed hierarchy reach this code path at all, so it is fixed alongside it here.
    */
-  private static void collectIndexDefinitions(final DocumentType type, final boolean polymorphic, final Set<String> seen,
-      final List<IndexDefinition> defs) {
+  private static List<IndexDefinition> collectIndexDefinitions(final DocumentType typez, final boolean polymorphic) {
+    final List<IndexDefinition> defs = new ArrayList<>();
+    final Set<String> seen = new HashSet<>();
+    collectIndexDefinitions(typez, seen, defs);
+    if (polymorphic)
+      for (final DocumentType sub : TypeHierarchy.allSubTypes(typez))
+        collectIndexDefinitions(sub, seen, defs);
+    return defs;
+  }
+
+  private static void collectIndexDefinitions(final DocumentType type, final Set<String> seen, final List<IndexDefinition> defs) {
     for (final TypeIndex index : type.getAllIndexes(false))
       if (seen.add(index.getName()))
         defs.add(IndexDefinition.from(index));
-    if (polymorphic)
-      for (final DocumentType sub : type.getSubTypes())
-        collectIndexDefinitions(sub, true, seen, defs);
   }
 
   private static final class IndexDefinition {

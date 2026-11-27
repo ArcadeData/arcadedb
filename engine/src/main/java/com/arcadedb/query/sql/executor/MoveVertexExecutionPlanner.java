@@ -107,8 +107,7 @@ public class MoveVertexExecutionPlanner {
       case UpdateOperations.TYPE_PUT:
       case UpdateOperations.TYPE_INCREMENT:
       case UpdateOperations.TYPE_ADD:
-        throw new CommandExecutionException(
-            "Cannot execute with UPDATE PUT/ADD/INCREMENT new executor: " + op);
+        throw UpdateExecutionPlanner.unsupportedOperation(op, "MOVE VERTEX");
       }
     }
   }

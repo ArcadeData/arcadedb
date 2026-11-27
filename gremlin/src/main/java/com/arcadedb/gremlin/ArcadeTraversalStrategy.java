@@ -25,6 +25,7 @@ import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.GraphViewPins;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.serializer.BinaryComparator;
 import org.apache.tinkerpop.gremlin.process.traversal.Compare;
@@ -185,7 +186,10 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
             TypeIndex chosenIndex = null;
             HasContainer chosen = null;
             int chosenRank = Integer.MAX_VALUE;
-            if (kindMatches)
+            // OVER A RemoteDatabase NO INDEX IS READ BY THE CLIENT (A RemoteTypeIndex IS NEVER READY FOR QUERIES, THE SERVER USES ITS
+            // INDEXES WHEN IT RUNS A QUERY), SO ASKING THE TYPE FOR ONE WOULD BE A ROUND TRIP PER has() KEY OF EVERY TRAVERSAL FOR AN
+            // ANSWER NO STEP CAN USE (#12193)
+            if (kindMatches && !(graph.database instanceof RemoteDatabase))
               for (final HasContainer c : hasContainers) {
                 final String key = c.getKey();
                 if (key.startsWith("~") || c.getValue() == null || !ArcadeFilterByIndexStep.isSupported(c.getBiPredicate()))
@@ -612,7 +616,7 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
 
       // Replace the where/filter step with our O(1) degree check
       final ArcadeEdgeCountFilterStep filterStep = new ArcadeEdgeCountFilterStep(
-          traversal, provider, vertexStep.getDirection(), edgeLabels, predicate::test);
+          traversal, graph, provider, vertexStep.getDirection(), edgeLabels, predicate::test);
       TraversalHelper.copyLabels(step, filterStep, false);
       traversal.removeStep(i);
       traversal.addStep(i, filterStep);

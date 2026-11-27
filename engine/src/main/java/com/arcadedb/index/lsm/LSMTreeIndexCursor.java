@@ -437,6 +437,17 @@ public class LSMTreeIndexCursor implements IndexCursor {
    * count-based heuristic here misfires on delete-heavy workloads and fails healthy queries.
    */
   private void fetchNext() {
+    try {
+      mergeToNextValue();
+    } catch (final IllegalArgumentException e) {
+      // The pages are loaded lazily, so a scan can outlive the files it was created on: on an HA replica a replicated
+      // compaction retires them as soon as the generation that no longer reads them is published (issue #12358)
+      final LSMTreeIndex mainIndex = index.getMainIndex();
+      throw LSMTreeIndex.replacedOrSelf(index, mainIndex != null ? mainIndex.getName() : index.getName(), e);
+    }
+  }
+
+  private void mergeToNextValue() {
     while (true) {
       if (currentValues != null && currentValueIndex < currentValues.length) {
         final RID value = currentValues[currentValueIndex++];
