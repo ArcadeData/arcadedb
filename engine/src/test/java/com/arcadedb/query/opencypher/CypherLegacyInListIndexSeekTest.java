@@ -124,7 +124,8 @@ class CypherLegacyInListIndexSeekTest extends TestHelper {
     final String query = "MATCH (p:Person) WHERE NOT p.id IN [1, 2] AND p.id < 5" + OPTIONAL_TAIL;
 
     assertThat(ids(query, null)).containsExactlyInAnyOrder(0, 3, 4);
-    assertThat(plan(query, null)).doesNotContain("[index:");
+    // the range beside it is what the index answers (issue #12664): the seek of the list would be named "Person[id]" alone
+    assertThat(plan(query, null)).doesNotContain("[id]]").contains("[index: Person[id], range]");
   }
 
   @Test

@@ -52,6 +52,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 
+import java.math.BigDecimal;
 import java.time.temporal.TemporalAmount;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -845,6 +846,27 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
       }
     }
 
+    final KeyBounds bounds = keyBounds(typeIndex, lowerBound, lowerInclusive, upperBound, upperInclusive);
+    if (bounds == null)
+      return null;
+    return new Range(rangeIndex, Labels.isInheritedIndex(typeIndex, label), bounds.lower(), bounds.lowerInclusive(),
+        bounds.upper(), bounds.upperInclusive());
+  }
+
+  /** The bounds a range of an index is read between, as its keys hold them; a null bound is an open side. */
+  public record KeyBounds(Object lower, boolean lowerInclusive, Object upper, boolean upperInclusive) {
+  }
+
+  /**
+   * The bounds of the keys of {@code typeIndex} that the bounds of a statement select, shared by this scan and by the MATCH NODE of
+   * the step plan (issue #12664) so that both read the same range for the same predicate. Both bounds are dropped when one is not
+   * of the kind of the key: the range is then the whole index, and the predicate, which whoever reads the range evaluates on
+   * every row, decides.
+   *
+   * @return null when no key satisfies the bounds
+   */
+  public static KeyBounds keyBounds(final TypeIndex typeIndex, Object lowerBound, boolean lowerInclusive, Object upperBound,
+      boolean upperInclusive) {
     // A bound whose type does not match the index key type cannot be pushed into the index: the
     // engine would try to coerce/compare it against the (differently typed) stored keys and throw a
     // NumberFormatException or ClassCastException (e.g. `WHERE n.val < "zzz"` on a numeric index -
@@ -881,8 +903,62 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
         && !IntegralKeyBound.isInexact(leadingKeyType, lower) && !IntegralKeyBound.isInexact(leadingKeyType, upper)
         && lower.longValue() > upper.longValue())
       return null;
-    return new Range(rangeIndex, Labels.isInheritedIndex(typeIndex, label), lowerBound, lowerInclusive, upperBound,
-        upperInclusive);
+    return new KeyBounds(lowerBound, lowerInclusive, upperBound, upperInclusive);
+  }
+
+  /**
+   * Whether {@code bound} is a value of the kind the leading key of {@code typeIndex} holds (a number for a numeric key, a string
+   * for a STRING one, a boolean, a native temporal) that the key can be compared with exactly. Stricter than what
+   * {@link #keyBounds} lets through, which reads a bound of a kind it does not know as one of the key: a reader that can leave
+   * the predicate to a walk of the label asks this first, and walks for a bound that is not one (issue #12664).
+   */
+  public static boolean isBoundOfKeyKind(final TypeIndex typeIndex, final Object bound) {
+    final Type[] keyTypes = typeIndex.getKeyTypes();
+    if (bound == null || keyTypes == null || keyTypes.length == 0 || keyTypes[0] == null)
+      return false;
+    if (bound instanceof Double d && d.isNaN() || bound instanceof Float f && f.isNaN())
+      return false; // compares with nothing, and no key range says so
+    final int keyCategory = categoryOf(keyTypes[0]);
+    return keyCategory != 0 && keyCategory == categoryOfBound(bound) && boundMatchesIndexKey(keyTypes[0], bound)
+        && isHeldExactly(keyTypes[0], bound);
+  }
+
+  /**
+   * Whether a fractional bound survives the conversion to a FLOAT, DOUBLE or DECIMAL key unchanged. One that does not is rounded
+   * onto a neighbouring key, and the range then starts or ends one key off: {@code n.f > 0.1000000001} on a FLOAT key is sought
+   * as {@code > 0.1f} and misses the vertex that holds 0.1f, which the comparison of the values accepts. A floating point bound
+   * the comparison of the values reads more loosely than the order of the keys does is not held exactly either.
+   */
+  private static boolean isHeldExactly(final Type keyType, final Object bound) {
+    // A DECIMAL key is ordered exactly, and the comparison of the values reads it against a double or a float in double
+    // precision: 0.50000000000000000001 <= 0.5d holds there and not in the index. An infinity is no DECIMAL key at all.
+    if (keyType == Type.DECIMAL && (bound instanceof Double || bound instanceof Float))
+      return false;
+    if (bound instanceof Double d)
+      return keyType != Type.FLOAT || (double) d.floatValue() == d;
+    // a DOUBLE value equals a float bound when it narrows to it, so the doubles on both sides of the float are in the range
+    if (bound instanceof Float)
+      return keyType != Type.DOUBLE;
+    if (bound instanceof BigDecimal decimal) {
+      // the exact binary expansion of the key is what is compared: its shortest text (BigDecimal.valueOf) would read 0.1 as held
+      if (keyType == Type.DOUBLE) {
+        final double d = decimal.doubleValue();
+        return !Double.isInfinite(d) && new BigDecimal(d).compareTo(decimal) == 0; // NOPMD: the exact expansion, on purpose
+      }
+      if (keyType == Type.FLOAT) {
+        final float f = decimal.floatValue();
+        return !Float.isInfinite(f) && new BigDecimal(f).compareTo(decimal) == 0; // NOPMD: the exact expansion, on purpose
+      }
+    }
+    return true;
+  }
+
+  /** Opens an ascending pass over the keys between {@code bounds}, of which one at least is set. */
+  public static IndexCursor openAscending(final RangeIndex rangeIndex, final KeyBounds bounds) {
+    if (bounds.upper() == null)
+      return rangeIndex.iterator(true, new Object[] { bounds.lower() }, bounds.lowerInclusive());
+    return rangeIndex.range(true, bounds.lower() != null ? new Object[] { bounds.lower() } : null, bounds.lowerInclusive(),
+        new Object[] { bounds.upper() }, bounds.upperInclusive());
   }
 
   /**
