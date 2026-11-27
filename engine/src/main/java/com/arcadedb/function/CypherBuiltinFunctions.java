@@ -88,7 +88,7 @@ public final class CypherBuiltinFunctions {
     add(names, "nullif", "valuetype");
     // Aggregation functions
     add(names, "collect", "collect_list", "percentiledisc", "percentile_disc", "percentilecont", "percentile_cont", "min", "max",
-        "avg");
+        "avg", "sum");
     // Temporal functions
     add(names, "timestamp");
     // Temporal constructor functions

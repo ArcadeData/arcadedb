@@ -18,6 +18,7 @@
  */
 package com.arcadedb.function.sql.math;
 
+import com.arcadedb.exception.ArithmeticErrorException;
 import com.arcadedb.schema.Type;
 
 import java.math.BigDecimal;
@@ -58,14 +59,23 @@ import java.math.MathContext;
  * infinities and NaN are summed apart (their sum does not depend on the order) and win over any finite total, and a total of
  * zeros is -0.0 only when every value was -0.0, as IEEE addition gives. The integer cannot overflow, so a total back in the
  * {@code double} range after an intermediate one that is not is exact too.
+ * <p>
+ * A sum built with {@code integralOverflowFails} (the openCypher {@code sum()}, issue #12993) does not widen a {@code long}
+ * overflow to a {@code BigDecimal}, a type Cypher does not have: the integral total goes on as the exact fixed-point sum
+ * ({@link #EXACT_INTEGRAL}), so neither the order of the values nor the split of a parallel scan changes the answer. Read, it is
+ * the {@code long} when it is back in range, and the {@code long overflow} ArithmeticError otherwise, as the integer operators
+ * of the language answer; a floating-point value added to it makes it the floating-point total of the exact sum, as it does to a
+ * {@code long} total.
  */
 public final class NumericSum {
-  private static final byte EMPTY  = 0;
-  private static final byte DOUBLE = 1;
-  private static final byte LONG   = 2;
-  private static final byte INT    = 3;
-  private static final byte FLOAT  = 4;
-  private static final byte BOXED  = 5;
+  private static final byte EMPTY          = 0;
+  private static final byte DOUBLE         = 1;
+  private static final byte LONG           = 2;
+  private static final byte INT            = 3;
+  private static final byte FLOAT          = 4;
+  private static final byte BOXED          = 5;
+  // integralOverflowFails ONLY: AN INTEGRAL TOTAL THAT LEFT THE long RANGE ON THE WAY, HELD EXACT IN THE DIGITS (#12993)
+  private static final byte EXACT_INTEGRAL = 6;
 
   // INT ONLY: THE TOTAL IS THE ONE Short OR Byte ADDED SO FAR (Type.increment() OF TWO OF THEM IS AN Integer)
   private static final byte MANY  = 0;
@@ -88,6 +98,8 @@ public final class NumericSum {
    */
   public static final long MAX_DIGITS_HEAP_BYTES = 16 + 8 * 72;
 
+  // A long OVERFLOW STAYS AN EXACT INTEGRAL TOTAL INSTEAD OF WIDENING TO A BigDecimal, AND READS AS long overflow (#12993)
+  private final boolean integralOverflowFails;
   private byte    state = EMPTY;
   private long    longSum;
   // INT ONLY: THE TOTAL LEFT THE int RANGE ONCE, SO THE BOXED TOTAL IS A Long FROM THEN ON, AS Type.increment() WIDENS IT
@@ -106,6 +118,15 @@ public final class NumericSum {
   private boolean negativeZero;
 
   public NumericSum() {
+    this(false);
+  }
+
+  /**
+   * @param integralOverflowFails true for the openCypher semantics: an integral total out of the {@code long} range is the
+   *                              {@code long overflow} ArithmeticError when read, not a {@code BigDecimal}
+   */
+  public NumericSum(final boolean integralOverflowFails) {
+    this.integralOverflowFails = integralOverflowFails;
   }
 
   /** Adds a non-null value. */
@@ -125,6 +146,7 @@ public final class NumericSum {
   public void addInt(final int value) {
     switch (state) {
     case DOUBLE, FLOAT -> exactAdd(value);
+    case EXACT_INTEGRAL -> exactAddLong(value);
     case LONG -> addChecked(value);
     case INT -> addToInt(value);
     case EMPTY -> {
@@ -150,6 +172,7 @@ public final class NumericSum {
   private void addSmall(final int value, final byte kind) {
     switch (state) {
     case DOUBLE, FLOAT -> exactAdd(value);
+    case EXACT_INTEGRAL -> exactAddLong(value);
     case LONG -> addChecked(value);
     case INT -> addToInt(value);
     case EMPTY -> {
@@ -165,7 +188,7 @@ public final class NumericSum {
   /** Adds a {@code Long} value without boxing it. */
   public void addLong(final long value) {
     switch (state) {
-    case DOUBLE, FLOAT -> exactAddLong(value);
+    case DOUBLE, FLOAT, EXACT_INTEGRAL -> exactAddLong(value);
     case LONG -> addChecked(value);
     case INT -> {
       // Integer + Long AND Long + Long ARE BOTH addExactOrWiden() IN Type.increment(): A Long TOTAL FROM HERE ON
@@ -195,6 +218,11 @@ public final class NumericSum {
       integralToFloating(DOUBLE);
       exactAdd(value);
     }
+    case EXACT_INTEGRAL -> {
+      // THE DIGITS ALREADY HOLD THE EXACT INTEGRAL TOTAL: THE SAME double SUM AS A long TOTAL MEETING A Double
+      state = DOUBLE;
+      exactAdd(value);
+    }
     case EMPTY -> {
       // THE FIRST VALUE IS THE TOTAL AS IT IS (A -0.0 STAYS -0.0)
       startFloating(DOUBLE);
@@ -215,6 +243,10 @@ public final class NumericSum {
       integralToFloating(FLOAT);
       exactAdd(value);
     }
+    case EXACT_INTEGRAL -> {
+      state = FLOAT;
+      exactAdd(value);
+    }
     case EMPTY -> {
       startFloating(FLOAT);
       exactAdd(value);
@@ -232,6 +264,9 @@ public final class NumericSum {
    * makes the result depend on which types meet first, the merge keeps its semantics: a {@code Float} total meeting a
    * {@code Double} is widened as a whole, its values one by one once the total is a {@code Double}, and a {@code long}
    * overflow widens to a {@code BigDecimal}, which takes a {@code Double} by its decimal form.
+   * <p>
+   * With {@code integralOverflowFails} an integral total that left the {@code long} range is folded in by its exact sum too, so a
+   * total back in range, or past it, does not depend on the split either (issue #12993).
    */
   public void merge(final NumericSum other) {
     switch (other.state) {
@@ -248,6 +283,10 @@ public final class NumericSum {
         integralToFloating(DOUBLE);
         mergeExact(other);
       }
+      case EXACT_INTEGRAL -> {
+        state = DOUBLE;
+        mergeExact(other);
+      }
       case EMPTY -> {
         startFloating(DOUBLE);
         mergeExact(other);
@@ -262,12 +301,31 @@ public final class NumericSum {
         integralToFloating(FLOAT);
         mergeExact(other);
       }
+      case EXACT_INTEGRAL -> {
+        state = FLOAT;
+        mergeExact(other);
+      }
       case EMPTY -> {
         startFloating(FLOAT);
         mergeExact(other);
       }
       // A Double TOTAL PLUS A Float ONE IS THE DOUBLE PLUS THE WIDENED FLOAT, AS addFloat() ADDS IT
       default -> add(other.get());
+      }
+    }
+    case EXACT_INTEGRAL -> {
+      switch (state) {
+      // A FLOATING-POINT TOTAL PLUS AN INTEGRAL ONE STAYS OF ITS FLOATING-POINT KIND, AS addLong() ADDS TO IT
+      case DOUBLE, FLOAT, EXACT_INTEGRAL -> mergeExact(other);
+      case LONG, INT -> {
+        integralToFloating(EXACT_INTEGRAL);
+        mergeExact(other);
+      }
+      case EMPTY -> {
+        startFloating(EXACT_INTEGRAL);
+        mergeExact(other);
+      }
+      default -> add(other.exactIntegral());
       }
     }
     default -> add(other.get());
@@ -291,7 +349,8 @@ public final class NumericSum {
     if (state == EMPTY)
       boxed = value;
     else
-      boxed = Type.increment(get(), value);
+      // AN INTEGRAL TOTAL PAST THE long RANGE MEETS THE VALUE AS THE DECIMAL IT IS, AS A WIDENED ONE WOULD
+      boxed = Type.increment(state == EXACT_INTEGRAL ? exactIntegral() : get(), value);
     state = BOXED;
   }
 
@@ -300,8 +359,14 @@ public final class NumericSum {
     // HACKER'S DELIGHT: OVERFLOW ONLY WHEN BOTH OPERANDS HAVE THE SIGN OPPOSITE TO THE RESULT. Type.increment() THEN
     // WIDENS TO BigDecimal: LET IT (Long + Long, Long + Integer AND Long + Short ALL WIDEN THE SAME WAY)
     if (((longSum ^ result) & (value ^ result)) < 0) {
-      boxed = Type.increment(get(), value);
-      state = BOXED;
+      if (integralOverflowFails) {
+        // NO BigDecimal: THE EXACT INTEGRAL TOTAL GOES ON IN THE DIGITS, AND ONLY ITS FINAL VALUE DECIDES (#12993)
+        integralToFloating(EXACT_INTEGRAL);
+        exactAddLong(value);
+      } else {
+        boxed = Type.increment(get(), value);
+        state = BOXED;
+      }
     } else
       longSum = result;
   }
@@ -518,10 +583,7 @@ public final class NumericSum {
 
   /** The exact sum of the finite values, divided by {@code count}, rounded to 34 significant digits. */
   private BigDecimal exactMean(final long count) {
-    normalize();
-    BigInteger units = BigInteger.ZERO;
-    for (int i = digits.length - 1; i >= 0; i--)
-      units = units.shiftLeft(32).add(BigInteger.valueOf(digits[i]));
+    BigInteger units = exactUnits();
     // digits[0] WEIGHS 2^(32 * digitBase) UNITS OF 2^-1074
     final int exponent = 32 * digitBase - INTEGER_POSITION;
     BigInteger denominator = BigInteger.valueOf(count);
@@ -532,13 +594,49 @@ public final class NumericSum {
     return new BigDecimal(units).divide(new BigDecimal(denominator), MathContext.DECIMAL128);
   }
 
-  /** The total as {@code Type.increment()} would have typed it, or null when no value was added. */
+  /** The normalized digits as one integer, in units of 2^(32 * digitBase - 1074). */
+  private BigInteger exactUnits() {
+    normalize();
+    BigInteger units = BigInteger.ZERO;
+    for (int i = digits.length - 1; i >= 0; i--)
+      units = units.shiftLeft(32).add(BigInteger.valueOf(digits[i]));
+    return units;
+  }
+
+  /** The {@link #EXACT_INTEGRAL} total, exactly: an integer, so the units divide exactly. */
+  private BigInteger exactIntegerTotal() {
+    if (digits == null)
+      return BigInteger.ZERO;
+    final BigInteger units = exactUnits();
+    final int exponent = 32 * digitBase - INTEGER_POSITION;
+    return exponent >= 0 ? units.shiftLeft(exponent) : units.shiftRight(-exponent);
+  }
+
+  /** The {@link #EXACT_INTEGRAL} total as the decimal a widened total would have been. */
+  private BigDecimal exactIntegral() {
+    return new BigDecimal(exactIntegerTotal());
+  }
+
+  /** The {@link #EXACT_INTEGRAL} total as a {@code long}, or the {@code long overflow} ArithmeticError when it is out of range. */
+  private long exactIntegralLong() {
+    try {
+      return exactIntegerTotal().longValueExact();
+    } catch (final ArithmeticException e) {
+      throw new ArithmeticErrorException("long overflow", e);
+    }
+  }
+
+  /**
+   * The total as {@code Type.increment()} would have typed it, or null when no value was added. With {@code integralOverflowFails}
+   * an integral total out of the {@code long} range throws {@link ArithmeticErrorException} ({@code long overflow}).
+   */
   public Number get() {
     return switch (state) {
       case EMPTY -> null;
       case DOUBLE -> doubleTotal();
       case FLOAT -> floatTotal();
       case LONG -> longSum;
+      case EXACT_INTEGRAL -> exactIntegralLong();
       case INT -> widened ? (Number) longSum : single == SHORT ? (Number) (short) longSum : single == BYTE ? (Number) (byte) longSum :
           (Number) (int) longSum;
       default -> boxed;
@@ -548,7 +646,7 @@ public final class NumericSum {
   /** The total as a {@code double}, without boxing it when it is not boxed already. */
   public double doubleValue() {
     return switch (state) {
-      case DOUBLE -> doubleTotal();
+      case DOUBLE, EXACT_INTEGRAL -> doubleTotal();
       // THE PRIMITIVE WIDENING, AS Float.doubleValue() OF THE BOXED TOTAL
       case FLOAT -> floatTotal();
       case LONG, INT -> longSum;

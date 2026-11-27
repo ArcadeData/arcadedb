@@ -38,12 +38,21 @@ public class SQLFunctionSum extends SQLAggregatedFunction {
   public static final String NAME = "sum";
 
   // THE CROSS-ROW TOTAL, UNBOXED WHILE THE INPUTS ARE Double, Long OR Integer (#9496)
-  private final NumericSum     sum = new NumericSum();
+  private final NumericSum     sum;
   // THE CROSS-ROW TOTAL OF A SUM OVER DURATIONS, WHICH ADD COMPONENT BY COMPONENT AND NEVER MIX WITH NUMBERS (#10198)
   private       CypherDuration durationSum;
 
   public SQLFunctionSum() {
+    this(false);
+  }
+
+  /**
+   * @param integralOverflowFails true for the openCypher {@code sum()}: an integral total out of the {@code long} range is the
+   *                              {@code long overflow} ArithmeticError instead of a DECIMAL (issue #12993, {@link NumericSum})
+   */
+  protected SQLFunctionSum(final boolean integralOverflowFails) {
     super(NAME);
+    sum = new NumericSum(integralOverflowFails);
   }
 
   /**
@@ -64,21 +73,7 @@ public class SQLFunctionSum extends SQLAggregatedFunction {
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
     if (params.length == 1) {
-      if (params[0] instanceof Number number)
-        sum(number);
-      else if (params[0] instanceof CypherDuration duration)
-        sum(duration);
-      else if (MultiValue.isMultiValue(params[0]))
-        for (final Object n : MultiValue.getMultiValueIterable(params[0]))
-          if (n instanceof CypherDuration duration)
-            sum(duration);
-          else
-            sum(requireNumericOrNull(n));
-      else
-        // A NON-NUMERIC, NON-NULL, NON-LIST VALUE MUST BE A CLIENT-FACING TYPE ERROR RATHER THAN BEING SILENTLY
-        // DROPPED, WHICH USED TO LEAVE THE ACCUMULATOR UNCHANGED AND MAKE AN ALL-INVALID INPUT INDISTINGUISHABLE
-        // FROM AN ALL-NULL ONE (ISSUE #5799). requireNumericOrNull() itself is a no-op for null.
-        sum(requireNumericOrNull(params[0]));
+      accumulate(params[0]);
       return durationSum != null ? durationSum : sum.get();
     }
 
@@ -91,6 +86,25 @@ public class SQLFunctionSum extends SQLAggregatedFunction {
         rowSum = rowSum == null ? value : Type.increment(rowSum, value);
     }
     return rowSum;
+  }
+
+  /** Adds the value of one row of the cross-row {@code sum(a)} to the total: a number, a duration, or a list of them. */
+  protected final void accumulate(final Object value) {
+    if (value instanceof Number number)
+      sum(number);
+    else if (value instanceof CypherDuration duration)
+      sum(duration);
+    else if (MultiValue.isMultiValue(value))
+      for (final Object n : MultiValue.getMultiValueIterable(value))
+        if (n instanceof CypherDuration duration)
+          sum(duration);
+        else
+          sum(requireNumericOrNull(n));
+    else
+      // A NON-NUMERIC, NON-NULL, NON-LIST VALUE MUST BE A CLIENT-FACING TYPE ERROR RATHER THAN BEING SILENTLY
+      // DROPPED, WHICH USED TO LEAVE THE ACCUMULATOR UNCHANGED AND MAKE AN ALL-INVALID INPUT INDISTINGUISHABLE
+      // FROM AN ALL-NULL ONE (ISSUE #5799). requireNumericOrNull() itself is a no-op for null.
+      sum(requireNumericOrNull(value));
   }
 
   protected void sum(final Number value) {
@@ -106,7 +120,7 @@ public class SQLFunctionSum extends SQLAggregatedFunction {
    * duration after a number, or a number after a duration, is a type error, never a silent drop.
    */
   private void sum(final CypherDuration value) {
-    if (sum.get() != null)
+    if (!sum.isEmpty())
       throw mixedInput();
     durationSum = durationSum == null ? value : durationSum.add(value);
   }
