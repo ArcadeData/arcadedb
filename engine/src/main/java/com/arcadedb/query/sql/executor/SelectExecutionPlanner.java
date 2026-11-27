@@ -4772,12 +4772,12 @@ public class SelectExecutionPlanner {
 
     // An OR with a branch no index answers is one scan of the type with the whole WHERE: the branch needs the scan anyway, and
     // planning it as a union would read the type again for every such branch, plus an index search for each of the others,
-    // only to deduplicate what the one scan returns once. Not when a branch is answered by a FULL_TEXT index: that matches by the
-    // analyzer's tokens, which the scan's own evaluation of the condition does not reproduce, so the branch stays planned on its own
+    // only to deduplicate what the one scan returns once. Only when the scan reproduces what every index of the other branches
+    // answers, which is what a key index (LSM_TREE, HASH) guarantees, see withoutKeyIndexes(): a FULL_TEXT index matches by the
+    // analyzer's tokens, which the scan's own evaluation of the condition does not, so such a branch stays planned on its own
     final List<IndexSearchDescriptor> branchIndexes =
         info.flattenedWhereClause.size() > 1 ? plainBranchIndexes(typez, info, context) : null;
-    if (branchIndexes != null && branchIndexes.contains(null)
-        && branchIndexes.stream().noneMatch(descriptor -> descriptor != null && isFullText(descriptor.index)))
+    if (branchIndexes != null && scanAnswersEveryBranch(branchIndexes))
       return false;
 
     int branchNo = 0;
@@ -4976,6 +4976,21 @@ public class SelectExecutionPlanner {
       result.add(indexes.isEmpty() ? null : findBestIndexFor(context, indexes, block, type));
     }
     return result;
+  }
+
+  /**
+   * Whether one scan of the type filtered by the whole WHERE answers the OR whose branches {@link #plainBranchIndexes} planned: a
+   * branch no index answers needs the scan anyway, and every index search of the other branches is through a key index, whose
+   * answer the scan's evaluation of the condition reproduces exactly.
+   */
+  private static boolean scanAnswersEveryBranch(final List<IndexSearchDescriptor> branchIndexes) {
+    boolean unindexedBranch = false;
+    for (final IndexSearchDescriptor descriptor : branchIndexes)
+      if (descriptor == null)
+        unindexedBranch = true;
+      else if (!isKeyIndex(descriptor.index))
+        return false;
+    return unindexedBranch;
   }
 
   /**
@@ -5763,16 +5778,17 @@ public class SelectExecutionPlanner {
     if (indexes.isEmpty())
       return null;
 
-    List<IndexSearchDescriptor> indexSearchDescriptors =
-        info.flattenedWhereClause.stream()
-            .map(x -> findBestIndexFor(context, indexes, x, typez))
-            .collect(Collectors.toList());
-
     // Fix for issue #2695: If any OR branch cannot be optimized with an index,
     // we must fall back to a full scan. Otherwise, those branches would be silently
     // ignored, causing incomplete query results (e.g., DELETE only deleting some records).
-    if (indexSearchDescriptors.contains(null))
-      return null; // some blocks could not be managed with an index, fall back to full scan
+    // The search stops at the first such branch: the branches after it are not planned for nothing (issue #12976)
+    List<IndexSearchDescriptor> indexSearchDescriptors = new ArrayList<>(info.flattenedWhereClause.size());
+    for (final AndBlock block : info.flattenedWhereClause) {
+      final IndexSearchDescriptor descriptor = findBestIndexFor(context, indexes, block, typez);
+      if (descriptor == null)
+        return null; // some blocks could not be managed with an index, fall back to full scan
+      indexSearchDescriptors.add(descriptor);
+    }
 
     // A keyset page (WHERE e = ? AND k > :after ORDER BY k LIMIT n) can cost less walking k's index in order (issue #11700)
     if (allowDeferredLetFilter && indexSearchDescriptors.size() == 1) {
@@ -6453,12 +6469,13 @@ public class SelectExecutionPlanner {
   }
 
   /** Whether a scan filtered by the condition answers exactly what {@code index} does, see {@link #withoutKeyIndexes()}. */
-  private static boolean isKeyIndex(final TypeIndex index) {
+  private static boolean isKeyIndex(final Index index) {
     try {
       final Schema.INDEX_TYPE type = index.getType();
       return type != null && type.isExactKeyLookup();
     } catch (final IndexException e) {
-      // The index went away meanwhile: answering true removes it from the candidates, where it does not belong anyway
+      // The index went away meanwhile: answering true removes it from the candidates, where it does not belong anyway, and lets
+      // an OR with an unindexed branch be answered by the scan, which does not need it
       return true;
     }
   }
