@@ -178,7 +178,7 @@ public class ResultInternal implements Result {
     // that is not there from one that could not be read. Listing the names first cost a second walk over the header, a set of them
     // and a copy of the map for every row of a result.
     if (plain.element instanceof ImmutableDocument stored && excluded.isEmpty() && plain.projectionExcludes == null
-        && (plain.tombstones == null || plain.tombstones.isEmpty())) {
+        && (plain.tombstones == null || plain.tombstones.isEmpty()) && readsInOnePass(stored.getClass())) {
       final String[] damage = new String[1];
       final Map<String, Object> read = stored.toMapReportingDamage(damage);
       if (damage[0] == null) {
@@ -229,6 +229,40 @@ public class ResultInternal implements Result {
       properties.put(name, read.get(name));
     return properties;
   }
+
+  /**
+   * Whether {@link #propertiesOf} may read a record of {@code recordClass} through
+   * {@link ImmutableDocument#toMapReportingDamage(String[])}, which reads the stored content directly, instead of through the
+   * {@code getPropertyNames()} and {@code toMap(false)} a subclass may answer differently from that content: a remote record holds
+   * no content at all, only the map the server sent (issue #12979). A class qualifies when the most derived of these three methods
+   * it inherits or declares is {@code toMapReportingDamage}, so a subclass that redefines how its map or its names are answered
+   * keeps being read through them unless it says how it reports damage too. Decided once per class.
+   */
+  static boolean readsInOnePass(final Class<?> recordClass) {
+    return READS_IN_ONE_PASS.get(recordClass);
+  }
+
+  private static final ClassValue<Boolean> READS_IN_ONE_PASS = new ClassValue<>() {
+    @Override
+    protected Boolean computeValue(final Class<?> recordClass) {
+      for (Class<?> c = recordClass; c != null && c != ImmutableDocument.class; c = c.getSuperclass()) {
+        if (declares(c, "toMapReportingDamage", String[].class))
+          return true;
+        if (declares(c, "toMap", boolean.class) || declares(c, "getPropertyNames"))
+          return false;
+      }
+      return true;
+    }
+
+    private boolean declares(final Class<?> c, final String name, final Class<?>... parameterTypes) {
+      try {
+        c.getDeclaredMethod(name, parameterTypes);
+        return true;
+      } catch (final NoSuchMethodException e) {
+        return false;
+      }
+    }
+  };
 
   private static boolean sameNamesInOrder(final Set<String> names, final Map<String, Object> read) {
     if (names.size() != read.size())

@@ -310,6 +310,15 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
     return map;
   }
 
+  /**
+   * The base read: {@link #toMap(boolean) toMap(false)} adds nothing to it. Declared because this class redefines
+   * {@code toMap(boolean)}, which would otherwise keep a vertex row off the one-pass read (see the base method).
+   */
+  @Override
+  public Map<String, Object> toMapReportingDamage(final String[] damage) {
+    return super.toMapReportingDamage(damage);
+  }
+
   @Override
   public JSONObject toJSON(final boolean includeMetadata) {
     final JSONObject json = super.toJSON(includeMetadata);

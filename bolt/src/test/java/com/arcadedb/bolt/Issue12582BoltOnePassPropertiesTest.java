@@ -248,6 +248,13 @@ class Issue12582BoltOnePassPropertiesTest {
       this.counter = counter;
     }
 
+    // the one-pass read of a record row (issue #12979): a class that counts toMap() without it is read through toMap() instead
+    @Override
+    public Map<String, Object> toMapReportingDamage(final String[] damage) {
+      ++counter.maps;
+      return super.toMapReportingDamage(damage);
+    }
+
     @Override
     public Object get(final String propertyName) {
       ++counter.gets;
@@ -294,6 +301,12 @@ class Issue12582BoltOnePassPropertiesTest {
     }
 
     @Override
+    public Map<String, Object> toMapReportingDamage(final String[] damage) {
+      ++counter.maps;
+      return super.toMapReportingDamage(damage);
+    }
+
+    @Override
     public Object get(final String propertyName) {
       ++counter.gets;
       return super.get(propertyName);
@@ -336,6 +349,12 @@ class Issue12582BoltOnePassPropertiesTest {
     CountingEdge(final Database database, final DocumentType type, final RID rid, final Counter counter) {
       super(database, type, rid, null);
       this.counter = counter;
+    }
+
+    @Override
+    public Map<String, Object> toMapReportingDamage(final String[] damage) {
+      ++counter.maps;
+      return super.toMapReportingDamage(damage);
     }
 
     @Override

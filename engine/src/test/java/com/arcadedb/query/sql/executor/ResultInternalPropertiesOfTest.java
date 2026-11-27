@@ -20,16 +20,24 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.CountingImmutableDocument;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.ImmutableDocument;
+import com.arcadedb.database.ImmutableEmbeddedDocument;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.graph.ImmutableEdge;
+import com.arcadedb.graph.ImmutableLightEdge;
+import com.arcadedb.graph.ImmutableVertex;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.schema.DocumentType;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -189,6 +197,85 @@ class ResultInternalPropertiesOfTest extends TestHelper {
         }
       }
     });
+  }
+
+  // Regression: #12979 - the one-pass read goes to the stored content, so it must not go around a subclass that answers its map
+  @Test
+  void aRecordThatRedefinesItsMapIsReadThroughIt() {
+    database.transaction(() -> {
+      final MapRedefiningDocument document = new MapRedefiningDocument(database, type(), rid);
+
+      final Map<String, Object> properties = ResultInternal.propertiesOf(new ResultInternal(document));
+
+      assertThat(properties.keySet()).as("the names decide what the row holds").containsExactly("a", "b", "c", "nothing");
+      assertThat(properties.get("b")).as("the value the map does not answer").isNull();
+      assertThat(properties.get("a")).isEqualTo(1);
+      assertThat(document.propertyReads()).as("reads by name, each a walk over the record header").isZero();
+    });
+  }
+
+  // Regression: #12979 - nor around a subclass that answers its names
+  @Test
+  void aRecordThatRedefinesItsNamesIsReadThroughThem() {
+    database.transaction(() -> {
+      final ImmutableDocument document = new NameRedefiningDocument(database, type(), rid);
+
+      final Map<String, Object> properties = ResultInternal.propertiesOf(new ResultInternal(document));
+
+      assertThat(properties).containsExactly(Map.entry("a", 1), Map.entry("b", "two"));
+    });
+  }
+
+  // Regression: #12979
+  @Test
+  void theOnePassReadIsTakenByTheRecordClassesWhoseMapIsTheStoredContent() {
+    assertThat(ResultInternal.readsInOnePass(ImmutableDocument.class)).isTrue();
+    assertThat(ResultInternal.readsInOnePass(ImmutableVertex.class)).as("toMap(false) is the base read").isTrue();
+    assertThat(ResultInternal.readsInOnePass(ImmutableEdge.class)).isTrue();
+    assertThat(ResultInternal.readsInOnePass(ImmutableLightEdge.class)).isTrue();
+    assertThat(ResultInternal.readsInOnePass(ImmutableEmbeddedDocument.class)).isTrue();
+    assertThat(ResultInternal.readsInOnePass(CountingImmutableDocument.class)).as("it counts the one-pass read as well").isTrue();
+
+    assertThat(ResultInternal.readsInOnePass(MapRedefiningDocument.class)).isFalse();
+    assertThat(ResultInternal.readsInOnePass(NameRedefiningDocument.class)).isFalse();
+    assertThat(ResultInternal.readsInOnePass(MapRedefiningVertex.class)).as("below a class that qualifies").isFalse();
+  }
+
+  /** Answers its map without "b", as a record that holds its values somewhere else than the stored content would. */
+  private static final class MapRedefiningDocument extends CountingImmutableDocument {
+    MapRedefiningDocument(final Database database, final DocumentType type, final RID rid) {
+      super(database, type, rid);
+    }
+
+    @Override
+    public Map<String, Object> toMap(final boolean includeMetadata) {
+      final Map<String, Object> map = super.toMap(includeMetadata);
+      map.remove("b");
+      return map;
+    }
+  }
+
+  /** Lists only "a" and "b". */
+  private static final class NameRedefiningDocument extends ImmutableDocument {
+    NameRedefiningDocument(final Database database, final DocumentType type, final RID rid) {
+      super(database, type, rid, null);
+    }
+
+    @Override
+    public Set<String> getPropertyNames() {
+      return new LinkedHashSet<>(List.of("a", "b"));
+    }
+  }
+
+  private static final class MapRedefiningVertex extends ImmutableVertex {
+    MapRedefiningVertex(final Database database, final DocumentType type, final RID rid) {
+      super(database, type, rid, null);
+    }
+
+    @Override
+    public Map<String, Object> toMap(final boolean includeMetadata) {
+      return new LinkedHashMap<>();
+    }
   }
 
   private CountingImmutableDocument countingDocument() {
