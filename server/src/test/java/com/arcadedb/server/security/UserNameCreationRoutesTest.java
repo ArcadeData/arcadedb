@@ -100,8 +100,9 @@ class UserNameCreationRoutesTest extends BaseGraphServerTest {
   @Test
   void theUserRouteRefusesTheName() throws Exception {
     for (final String name : REFUSED_NAMES) {
-      assertThat(post("/api/v1/server/users", new JSONObject().put("name", name).put("password", PASSWORD))).as(printable(name))
-          .isEqualTo(400);
+      final Answer answer = post("/api/v1/server/users", new JSONObject().put("name", name).put("password", PASSWORD));
+      assertThat(answer.status()).as(printable(name)).isEqualTo(400);
+      assertThat(answer.body()).as(printable(name)).contains("The user name");
       assertThat(getServer(0).getSecurity().existsUser(name)).as(printable(name)).isFalse();
     }
   }
@@ -110,7 +111,9 @@ class UserNameCreationRoutesTest extends BaseGraphServerTest {
   void theServerCommandRefusesTheName() throws Exception {
     for (final String name : REFUSED_NAMES) {
       final String command = "create user " + new JSONObject().put("name", name).put("password", PASSWORD);
-      assertThat(post("/api/v1/server", new JSONObject().put("command", command))).as(printable(name)).isEqualTo(400);
+      final Answer answer = post("/api/v1/server", new JSONObject().put("command", command));
+      assertThat(answer.status()).as(printable(name)).isEqualTo(400);
+      assertThat(answer.body()).as(printable(name)).contains("The user name");
       assertThat(getServer(0).getSecurity().existsUser(name)).as(printable(name)).isFalse();
     }
   }
@@ -121,7 +124,8 @@ class UserNameCreationRoutesTest extends BaseGraphServerTest {
 
     for (final String name : List.of("reader ", " reader", "re  ader")) {
       assertThatThrownBy(() -> database.command("opencypher", "CREATE USER `" + name + "` SET PASSWORD '" + PASSWORD + "'"))
-          .as(printable(name)).isInstanceOf(RuntimeException.class);
+          .as(printable(name)).satisfies(thrown -> assertThat(rootCauseOf(thrown)).isInstanceOf(IllegalArgumentException.class)
+              .hasMessageStartingWith("The user name"));
       assertThat(getServer(0).getSecurity().existsUser(name)).as(printable(name)).isFalse();
     }
   }
@@ -134,14 +138,14 @@ class UserNameCreationRoutesTest extends BaseGraphServerTest {
     security.createUser(userJson("jane.doe@example.com"));
     assertThat(security.existsUser("jane.doe@example.com")).isTrue();
 
-    assertThat(post("/api/v1/server/users", new JSONObject().put("name", "Mary Ann").put("password", PASSWORD))).isEqualTo(201);
+    assertThat(post("/api/v1/server/users", new JSONObject().put("name", "Mary Ann").put("password", PASSWORD)).status()).isEqualTo(201);
     assertThat(security.existsUser("Mary Ann")).isTrue();
 
     database.command("opencypher", "CREATE USER `Zo\u00eb` SET PASSWORD '" + PASSWORD + "'");
     assertThat(security.existsUser("Zo\u00eb")).isTrue();
 
     assertThat(post("/api/v1/server",
-        new JSONObject().put("command", "create user " + new JSONObject().put("name", "o'brien").put("password", PASSWORD))))
+        new JSONObject().put("command", "create user " + new JSONObject().put("name", "o'brien").put("password", PASSWORD))).status())
         .isEqualTo(200);
     assertThat(security.existsUser("o'brien")).isTrue();
 
@@ -153,7 +157,10 @@ class UserNameCreationRoutesTest extends BaseGraphServerTest {
         .put("databases", new JSONObject());
   }
 
-  private int post(final String path, final JSONObject body) throws Exception {
+  private record Answer(int status, String body) {
+  }
+
+  private Answer post(final String path, final JSONObject body) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URI(getServerHttpUrl(0, path)).toURL().openConnection();
     try {
       connection.setRequestMethod("POST");
@@ -161,10 +168,18 @@ class UserNameCreationRoutesTest extends BaseGraphServerTest {
           "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
       formatPayload(connection, body);
       connection.connect();
-      return connection.getResponseCode();
+      final int status = connection.getResponseCode();
+      return new Answer(status, status < 400 ? readResponse(connection) : readError(connection));
     } finally {
       connection.disconnect();
     }
+  }
+
+  private static Throwable rootCauseOf(final Throwable thrown) {
+    Throwable root = thrown;
+    while (root.getCause() != null && root.getCause() != root)
+      root = root.getCause();
+    return root;
   }
 
   private static void dropQuietly(final ServerSecurity security, final String name) {
