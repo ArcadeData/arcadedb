@@ -250,6 +250,72 @@ class CypherMultiHopBoundTargetReverseIssue13621Test {
     assertThat(rows(earlierClause, "a", "b")).containsExactly("1:2");
   }
 
+  @Test
+  void aFirstNodeTheReversedChainCouldNotCheckOrALookupAnswersKeepsTheWrittenOrder() {
+    // dynamic labels on the first node are checked by its node step
+    final String dynamicLabel = """
+        MATCH (p:Person {id: 3})
+        WITH p
+        MATCH (a:$('Person'))-[:KNOWS]->(b)-[:KNOWS]->(p)
+        RETURN a.id AS a, b.id AS b""";
+    assertThat(profile(dynamicLabel)).contains("MATCH NODE (a");
+    assertThat(rows(dynamicLabel, "a", "b")).containsExactly("1:2");
+
+    // an inline WHERE on the first node the planner lifts into a filter after the walk: reversed, same rows
+    final String inlineWhere = """
+        MATCH (p:Person {id: 3})
+        WITH p
+        MATCH (a WHERE a.id >= 0)-[:KNOWS]->(b)-[:KNOWS]->(p)
+        RETURN a.id AS a, b.id AS b""";
+    assertThat(rows(inlineWhere, "a", "b")).containsExactly("1:2");
+
+    // a variable-length hop keeps the written direction of its relationship list
+    final String variableLength = """
+        MATCH (p:Person {id: 3})
+        WITH p
+        MATCH (a)-[:KNOWS*1..1]->(b)-[:KNOWS]->(p)
+        RETURN a.id AS a, b.id AS b""";
+    assertThat(profile(variableLength)).contains("MATCH NODE (a");
+    assertThat(rows(variableLength, "a", "b")).containsExactly("1:2");
+
+    // a first node the row already holds is no unbound start
+    final String bothBound = """
+        MATCH (a:Person {id: 1}), (p:Person {id: 3})
+        WITH a, p
+        MATCH (a)-[:KNOWS]->(b)-[:KNOWS]->(p)
+        RETURN a.id AS a, b.id AS b""";
+    assertThat(rows(bothBound, "a", "b")).containsExactly("1:2");
+
+    // a unique key on the first node is one lookup per row: no worse than the walk
+    database.command("sql", "CREATE PROPERTY Person.id LONG");
+    database.command("sql", "CREATE INDEX ON Person (id) UNIQUE");
+    final String inlineKey = """
+        MATCH (p:Person {id: 3})
+        WITH p
+        MATCH (a:Person {id: 1})-[:KNOWS]->(b)-[:KNOWS]->(p)
+        RETURN a.id AS a, b.id AS b""";
+    assertThat(profile(inlineKey)).contains("(a:Person");
+    assertThat(rows(inlineKey, "a", "b")).containsExactly("1:2");
+
+    final String whereKey = """
+        MATCH (p:Person {id: 3})
+        WITH p
+        MATCH (a:Person)-[:KNOWS]->(b)-[:KNOWS]->(p)
+        WHERE a.id = 1
+        RETURN a.id AS a, b.id AS b""";
+    assertThat(profile(whereKey)).contains("(a:Person");
+    assertThat(rows(whereKey, "a", "b")).containsExactly("1:2");
+
+    // the same chain with no key on a is still walked from p
+    final String unkeyed = """
+        MATCH (p:Person {id: 3})
+        WITH p
+        MATCH (a:Person)-[:KNOWS]->(b)-[:KNOWS]->(p)
+        RETURN a.id AS a, b.id AS b""";
+    assertThat(profile(unkeyed)).doesNotContain("MATCH NODE (a");
+    assertThat(rows(unkeyed, "a", "b")).containsExactly("1:2");
+  }
+
   private List<String> expectedPostCounts() {
     final List<String> expected = new ArrayList<>();
     for (int f = 0; f < FORUMS; f++) {
