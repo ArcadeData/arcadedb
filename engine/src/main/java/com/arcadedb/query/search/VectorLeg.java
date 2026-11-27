@@ -30,6 +30,8 @@ import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.schema.LSMSparseVectorIndexMetadata;
 import com.arcadedb.schema.MultiTypeIndexes;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
@@ -212,10 +214,12 @@ public final class VectorLeg {
     try {
       rawIndex = database.getSchema().getIndexByName(indexName);
     } catch (final SchemaException e) {
-      // still a schema refusal, with the indexes the caller can pick from (issue #11633)
-      // no cause: a SchemaException carrying one is answered as a server fault (HTTP 500), and this one is the same refusal, re-worded
-      throw new SchemaException("Vector index '" + indexName + "' does not exist. " + describeAvailableIndexes(database, sparse));
+      throw missingIndex(database, indexName, sparse);
     }
+
+    // an index of a type the caller may not read is answered as one that does not exist, whatever its kind
+    if (!SecurityHelper.isReadable(database, rawIndex))
+      throw missingIndex(database, indexName, sparse);
 
     if (!(rawIndex instanceof final TypeIndex typeIndex))
       throw new IllegalArgumentException(
@@ -284,12 +288,22 @@ public final class VectorLeg {
     return null;
   }
 
+  /**
+   * Still a schema refusal, with the indexes the caller can pick from (issue #11633). No cause: a SchemaException carrying one is
+   * answered as a server fault (HTTP 500), and this one is the same refusal, re-worded.
+   */
+  private static SchemaException missingIndex(final Database database, final String indexName, final boolean sparse) {
+    return new SchemaException("Vector index '" + indexName + "' does not exist. " + describeAvailableIndexes(database, sparse));
+  }
+
   private static String describeAvailableIndexes(final Database database, final boolean sparse) {
     final Schema.INDEX_TYPE expectedType =
         sparse ? Schema.INDEX_TYPE.LSM_SPARSE_VECTOR : Schema.INDEX_TYPE.LSM_VECTOR;
+    final SecurityDatabaseUser user = SecurityHelper.currentUser(database);
     final Set<String> names = new TreeSet<>();
+    // only the indexes of the types the caller may read
     for (final Index index : database.getSchema().getIndexes())
-      if (index instanceof TypeIndex && index.getType() == expectedType)
+      if (index instanceof TypeIndex && index.getType() == expectedType && SecurityHelper.canAccessIndex(database, user, index))
         names.add(index.getName());
     return "Available " + expectedType + " indexes: " + names;
   }

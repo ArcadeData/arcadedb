@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseRID;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexInternal;
@@ -34,6 +35,8 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.FullTextIndexMetadata;
 import com.arcadedb.schema.MultiTypeIndexes;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import org.apache.lucene.search.FuzzyQuery;
@@ -598,16 +601,69 @@ public class FullTextSearch {
   }
 
   /**
-   * Returns the sorted names of every full-text index in the database.
+   * Returns the sorted names of the full-text indexes of the database the caller may see: those of the types the user bound to the
+   * database's context may read. No bound user (embedded usage or an internal caller) sees every index.
    */
   public static List<String> listFullTextIndexes(final Database database) {
     final List<String> names = new ArrayList<>();
+    final SecurityDatabaseUser user = SecurityHelper.currentUser(database);
 
     for (final Index index : database.getSchema().getIndexes())
-      if (index instanceof final TypeIndex typeIndex && typeIndex.getType() == Schema.INDEX_TYPE.FULL_TEXT)
+      if (index instanceof final TypeIndex typeIndex && typeIndex.getType() == Schema.INDEX_TYPE.FULL_TEXT
+          && SecurityHelper.canAccessIndex(database, user, typeIndex))
         names.add(typeIndex.getName());
 
     Collections.sort(names);
     return names;
+  }
+
+  /**
+   * Like {@link #resolveFullTextIndex(Database, String)}, for a caller that answers the name to whoever supplied it: an index of a
+   * type the user bound to the database's context may not read is answered as one that does not exist, whatever its kind.
+   *
+   * @throws com.arcadedb.exception.SchemaException if no index the caller may see carries that name
+   * @throws CommandExecutionException              if the index exists but is not a full-text type index
+   */
+  public static TypeIndex resolveReadableFullTextIndex(final Database database, final String indexName) {
+    final TypeIndex typeIndex;
+    try {
+      typeIndex = resolveFullTextIndex(database, indexName);
+    } catch (final CommandExecutionException e) {
+      throwIfNotVisible(database, indexName);
+      throw e;
+    }
+    if (!SecurityHelper.isReadable(database, typeIndex))
+      throw indexNotFound(indexName);
+    return typeIndex;
+  }
+
+  /**
+   * Like {@link #resolveFullTextIndexes(Database, String)}, with the rule of {@link #resolveReadableFullTextIndex}. The per-type
+   * indexes of a logical index over several types are the logical index's own: a name that is an index designates that one index,
+   * and is the one that is answered as missing when the caller may not read its type.
+   */
+  public static List<TypeIndex> resolveReadableFullTextIndexes(final Database database, final String indexName) {
+    final List<TypeIndex> typeIndexes;
+    try {
+      typeIndexes = resolveFullTextIndexes(database, indexName);
+    } catch (final CommandExecutionException e) {
+      throwIfNotVisible(database, indexName);
+      throw e;
+    }
+    if (typeIndexes.size() == 1 && indexName.equals(typeIndexes.getFirst().getName())
+        && !SecurityHelper.isReadable(database, typeIndexes.getFirst()))
+      throw indexNotFound(indexName);
+    return typeIndexes;
+  }
+
+  /** Raises the refusal of a missing index when {@code indexName} names an index of a type the caller may not read. */
+  private static void throwIfNotVisible(final Database database, final String indexName) {
+    final Schema schema = database.getSchema();
+    if (schema.existsIndex(indexName) && !SecurityHelper.isReadable(database, schema.getIndexByName(indexName)))
+      throw indexNotFound(indexName);
+  }
+
+  private static SchemaException indexNotFound(final String indexName) {
+    return new SchemaException("Index with name '" + indexName + "' was not found");
   }
 }

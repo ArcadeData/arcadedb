@@ -612,7 +612,7 @@ public final class HybridSearch {
     // a name that is a full-text index over several types designates the per-type indexes it spans (issue #11137)
     final List<TypeIndex> typeIndexes;
     try {
-      typeIndexes = FullTextSearch.resolveFullTextIndexes(database, indexName);
+      typeIndexes = FullTextSearch.resolveReadableFullTextIndexes(database, indexName);
     } catch (final SchemaException e) {
       // still a schema refusal, with the indexes the caller can pick from (issue #11633: it was re-wrapped as a generic one);
       // no cause: a SchemaException carrying one is answered as a server fault (HTTP 500), and this one is the same refusal
