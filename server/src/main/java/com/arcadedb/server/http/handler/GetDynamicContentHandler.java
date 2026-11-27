@@ -131,10 +131,17 @@ public class GetDynamicContentHandler extends AbstractServerHttpHandler {
   // of distinct URIs cannot grow it without limit. Templated pages are intentionally NOT cached: they embed per-request
   // dynamic content (now, uuid, role-gated protectBegin sections).
   private static final int                      STATIC_CACHE_MAX_ENTRIES = 512;
-  private static final Map<String, StaticAsset> STATIC_CONTENT_CACHE     = new ConcurrentHashMap<>();
+  /**
+   * The longest path of a resource that is served, or kept as a key of either cache below. The longest asset Studio ships
+   * has 32 characters, so the bound only refuses a path no asset has, and it bounds the memory the caches hold to their
+   * entry count times this length.
+   */
+  static final int                              STATIC_PATH_MAX_LENGTH   = 512;
+  static final Map<String, StaticAsset>         STATIC_CONTENT_CACHE     = new ConcurrentHashMap<>();
   // The resource paths found missing, for the same reason and with the same bound: a page that references an asset not on
-  // the classpath would otherwise look it up again on every render
-  private static final Set<String>              MISSING_STATIC_CONTENT   = ConcurrentHashMap.newKeySet();
+  // the classpath would otherwise look it up again on every render. Only a reference a page makes is recorded here, never
+  // a path a request asked for: the first says what the next render will look up, the second says nothing.
+  static final Set<String>                      MISSING_STATIC_CONTENT   = ConcurrentHashMap.newKeySet();
 
   // Shown at the server root when the Studio module is not on the classpath (e.g. the "base"/"headless"
   // distributions). Self-contained (no external assets) so it renders even without Studio installed.
@@ -189,8 +196,8 @@ public class GetDynamicContentHandler extends AbstractServerHttpHandler {
       throws Exception {
     String uri = exchange.getRequestURI();
 
-    if (uri.contains(".."))
-      // UNAUTHORIZED ACCESS TO RELATIVE PATH
+    if (uri.length() > STATIC_PATH_MAX_LENGTH || uri.contains(".."))
+      // NO ASSET HAS A PATH THIS LONG, AND NO RELATIVE PATH IS SERVED
       return new ExecutionResponse(404, "Not Found");
 
     if (uri.isEmpty() || "/".equals(uri))
@@ -231,8 +238,9 @@ public class GetDynamicContentHandler extends AbstractServerHttpHandler {
           stampAssetVersions(page, uri.substring(1, uri.lastIndexOf('/') + 1)).getBytes(DatabaseFactory.getDefaultCharset()));
     }
 
-    // Immutable static asset: served from the in-process cache after the first read.
-    final StaticAsset asset = loadStaticResource(resourcePath);
+    // Immutable static asset: served from the in-process cache after the first read. A path that is not there is looked up
+    // again by the next request for it, and not remembered: the requests are the caller's to choose, not the server's.
+    final StaticAsset asset = loadStaticResource(resourcePath, false);
     if (asset == null)
       return new ExecutionResponse(404, "Not Found");
 
@@ -295,8 +303,9 @@ public class GetDynamicContentHandler extends AbstractServerHttpHandler {
       if (spec == null || spec.templated() || reference.contains("..") || reference.startsWith("//"))
         continue;
 
+      // A reference of the page is looked up on every render: a miss is worth remembering
       final StaticAsset asset = loadStaticResource(
-          "static/" + (reference.startsWith("/") ? reference.substring(1) : directory + reference));
+          "static/" + (reference.startsWith("/") ? reference.substring(1) : directory + reference), true);
       if (asset == null)
         continue;
 
@@ -321,18 +330,37 @@ public class GetDynamicContentHandler extends AbstractServerHttpHandler {
    * Loads an immutable classpath static asset, caching its raw bytes and their digest for the process lifetime so
    * repeated requests avoid re-reading the stream, re-copying the bytes and hashing them again. Returns {@code null} when
    * the resource does not exist. The cache is bounded; once full, further distinct resources are still served but not
-   * cached. Package-private for direct unit testing.
+   * cached, and neither is a resource whose path is longer than {@link #STATIC_PATH_MAX_LENGTH}: the same asset can be
+   * reached under many spellings of its path where the classpath is a directory, and a spelling is not worth a key.
+   * Package-private for direct unit testing.
+   * <p>
+   * A miss is not remembered: see {@link #loadStaticResource(String, boolean)}.
    */
   static StaticAsset loadStaticResource(final String resourcePath) throws IOException {
-    final StaticAsset cached = STATIC_CONTENT_CACHE.get(resourcePath);
-    if (cached != null)
-      return cached;
-    if (MISSING_STATIC_CONTENT.contains(resourcePath))
-      return null;
+    return loadStaticResource(resourcePath, false);
+  }
+
+  /**
+   * As {@link #loadStaticResource(String)}.
+   *
+   * @param rememberMiss {@code true} to remember a resource that does not exist, so the next look-up of it is answered
+   *                     without asking the classpath: for a reference a rendered page makes, which is looked up again by
+   *                     every render. {@code false} for a path a request names, which the client chooses and nothing
+   *                     makes likely to come back.
+   */
+  static StaticAsset loadStaticResource(final String resourcePath, final boolean rememberMiss) throws IOException {
+    final boolean keyable = resourcePath.length() <= STATIC_PATH_MAX_LENGTH;
+    if (keyable) {
+      final StaticAsset cached = STATIC_CONTENT_CACHE.get(resourcePath);
+      if (cached != null)
+        return cached;
+      if (MISSING_STATIC_CONTENT.contains(resourcePath))
+        return null;
+    }
 
     final InputStream file = GetDynamicContentHandler.class.getClassLoader().getResourceAsStream(resourcePath);
     if (file == null) {
-      if (MISSING_STATIC_CONTENT.size() < STATIC_CACHE_MAX_ENTRIES)
+      if (rememberMiss && keyable && MISSING_STATIC_CONTENT.size() < STATIC_CACHE_MAX_ENTRIES)
         MISSING_STATIC_CONTENT.add(resourcePath);
       return null;
     }
@@ -346,7 +374,7 @@ public class GetDynamicContentHandler extends AbstractServerHttpHandler {
 
     final String version = digest(bytes);
     final StaticAsset asset = new StaticAsset(bytes, version, '"' + version + '"');
-    if (STATIC_CONTENT_CACHE.size() < STATIC_CACHE_MAX_ENTRIES) {
+    if (keyable && STATIC_CONTENT_CACHE.size() < STATIC_CACHE_MAX_ENTRIES) {
       final StaticAsset existing = STATIC_CONTENT_CACHE.putIfAbsent(resourcePath, asset);
       return existing != null ? existing : asset;
     }
