@@ -23,6 +23,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Record;
+import com.arcadedb.database.TransactionRetryAndRollbackTest;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.event.BeforeRecordUpdateListener;
 import com.arcadedb.exception.ConcurrentModificationException;
@@ -120,7 +121,7 @@ class DmlAtomicityTest extends TestHelper {
         UPDATE %s SET seq = seq + 1 BATCH 10;
         UPDATE %s SET seq = seq + 1;
         COMMIT RETRY 3;
-        """.formatted(ROWS, TRIGGER))).isInstanceOf(NeedRetryException.class);
+        """.formatted(ROWS, TRIGGER))).satisfies(TransactionRetryAndRollbackTest::assertNotReplayable);
 
     assertThat(attempts.get()).as("the block must be run ONCE: its durable half cannot be replayed").isEqualTo(1);
 
@@ -146,7 +147,7 @@ class DmlAtomicityTest extends TestHelper {
         UPDATE %s SET seq = seq + 1 BATCH 10;
         UPDATE %s SET seq = seq + 1;
         COMMIT RETRY 3;
-        """.formatted(ROWS, TRIGGER)), true, 1)).isInstanceOf(NeedRetryException.class);
+        """.formatted(ROWS, TRIGGER)), true, 1)).satisfies(TransactionRetryAndRollbackTest::assertNotReplayable);
 
     assertThat(attempts.get()).as("the block must be run ONCE: its durable half cannot be replayed").isEqualTo(1);
     assertThat(countRowsWithSeq(1)).isEqualTo(20);

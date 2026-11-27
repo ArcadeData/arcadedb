@@ -35,6 +35,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.TypeHierarchy;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.utility.IntHashSet;
@@ -625,11 +626,16 @@ public final class HierarchyManager {
   }
 
   private static void addStripePools(final Schema schema, final DocumentType type, final int stripes, final IntHashSet ids) {
+    addStripePool(schema, type, stripes, ids);
+    // each type below once, whatever the number of paths that lead down to it
+    for (final DocumentType subType : TypeHierarchy.allSubTypes(type))
+      addStripePool(schema, subType, stripes, ids);
+  }
+
+  private static void addStripePool(final Schema schema, final DocumentType type, final int stripes, final IntHashSet ids) {
     for (final Bucket stripe : StripedEdgeList.getStripePool(schema, type.getName(), stripes))
       if (stripe != null)
         ids.add(stripe.getFileId());
-    for (final DocumentType subType : type.getSubTypes())
-      addStripePools(schema, subType, stripes, ids);
   }
 
   private long schemaVersion() {

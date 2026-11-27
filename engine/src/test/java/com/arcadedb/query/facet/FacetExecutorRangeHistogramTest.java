@@ -24,7 +24,6 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.RID;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.index.columnar.ColumnarIndexManager;
 import com.arcadedb.index.columnar.ColumnarTestData;
@@ -530,7 +529,7 @@ class FacetExecutorRangeHistogramTest extends TestHelper {
 
     // over every record the matched values themselves span more than 100,000 buckets
     assertThatThrownBy(() -> execute(null, histogram("b", "fileSize", false, 1, null, 1, null, null))).isInstanceOf(
-        CommandExecutionException.class).hasMessageContaining("HISTOGRAM b would produce more than 100000 buckets");
+        CommandSQLParsingException.class).hasMessageContaining("FACETS b: the histogram would have more than 100000 buckets");
   }
 
   @Test

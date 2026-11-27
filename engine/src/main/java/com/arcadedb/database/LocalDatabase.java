@@ -2036,7 +2036,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       checkPermissionsOnFile(record.getIdentity().getBucketId(), SecurityDatabaseUser.ACCESS.UPDATE_RECORD);
 
     try {
-      if (record instanceof MutableDocument document) {
+      // A vertex whose edge-list head was set and whose properties were never decoded holds them exactly as they were stored: there is
+      // nothing to validate or to check for lost content, and decoding them (a 1,024-float embedding among them) is what this skips
+      if (record instanceof MutableDocument document && !isEdgeListHeadOnlyWrite(record)) {
         // #10955: NEVER SAVE BACK A RECORD THAT LOST A PROPERTY IT COULD NOT DECODE
         document.checkContentIsComplete();
         document.validate();
@@ -2079,6 +2081,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     // Known positively, not from the absence of an assignment: a list or map changed in place assigns no property either, and it
     // is content all the same.
     final boolean structural = isEdgeListWriteOnly(record);
+    // read before addUpdatedRecord() below, which clears the flag it is told by
+    final boolean headOnly = isEdgeListHeadOnlyWrite(record);
     if (!writeNow && isTransactionActive()) {
       // MARK THE RECORD FOR UPDATE IN TX AND DEFER THE SERIALIZATION AT COMMIT TIME. THIS SPEEDS UP CASES WHEN THE
       // SAME RECORDS ARE UPDATE MULTIPLE TIME INSIDE
@@ -2093,10 +2097,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         // after-update events from firing for a write that never happened.
         // #8066: remembered before queueing, so a refused update takes back only what THIS call queued
         final boolean alreadyQueued = tx.isUpdateQueued(record.getIdentity());
+        // The index entries follow the stored properties of a head-only write only while no other instance of the record is queued:
+        // one that is carries what an earlier save brought the indexes to, and this write replaces it with the stored content
+        final boolean indexesAlreadyFollow = headOnly && (!alreadyQueued || tx.isQueuedInstance(record));
         if (!tx.addUpdatedRecord(record))
           return false;
 
-        if (record instanceof Document document) {
+        // No property of a head-only write differs from what the indexes hold, so no index entry does either
+        if (record instanceof Document document && !indexesAlreadyFollow) {
           // UPDATE THE INDEX IN MEMORY BEFORE UPDATING THE PAGE
           final List<IndexInternal> indexes = indexer.getInvolvedIndexes(document);
           if (!indexes.isEmpty()) {
@@ -2242,6 +2250,19 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       tx.setRollbackOnly("a before-update listener refused the update of record " + record.getIdentity()
           + ", which the transaction had already updated, and the transaction has no savepoint to take it back to");
     return false;
+  }
+
+  /**
+   * Whether the update sets an edge-list head of a vertex that never decoded its properties: they are the stored ones, so validating
+   * them, diffing the indexes on them and serializing them again would all find nothing. What {@code GraphEngine.writeEdgeListHead}
+   * writes for the first edge of a direction, on a vertex it just took from {@code modify()}.
+   * <p>
+   * A {@code reload()} or a statement taken back ({@code restoreContent}) also leaves the properties undecoded, over content the last
+   * save did not bring the indexes to: both mark the record assigned after its save, and such a write is no head-only one.
+   */
+  private static boolean isEdgeListHeadOnlyWrite(final Record record) {
+    return record instanceof MutableVertex vertex && vertex.areEdgeListHeadsAssigned() && !vertex.arePropertiesLoaded()
+        && !((MutableDocument) vertex).isAssignedAfterSave();
   }
 
   /**
@@ -2875,6 +2896,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         if (!createdNewTx) {
           // A level the block opened itself and left open is not the caller's: take it back, keep the caller's (#10135)
           rollbackLevelsAbove(callerLevels);
+          // The caller may be no retry loop of ours, but its own code or a client: a block that committed part of its work
+          // does not reach it as a retryable conflict either (#13251)
+          if (TransactionContext.isPartiallyCommitted(txAtStart, commitCountAtStart))
+            throw TransactionContext.notReplayable(e, "Transaction block", txAtStart, commitCountAtStart);
           throw e;
         }
 
@@ -2884,21 +2909,26 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         // from the same state as this one (#10135)
         rollbackLevelsAbove(callerLevels);
 
+        // Decided before the error callback runs, so the callback is told the failure the caller is (#13251)
+        final boolean partiallyCommitted = TransactionContext.isPartiallyCommitted(txAtStart, commitCountAtStart);
+        final ArcadeDBException failure = partiallyCommitted ? TransactionContext.notReplayable(e, "Transaction block", txAtStart, commitCountAtStart) : e;
+
         if (error != null)
-          error.call(e);
+          error.call(failure);
 
         // #7916: a block that already published part of its work cannot be re-run - the rollback above could not
         // take that part back, and a second pass would apply it twice and then report clean success. The commit
         // came from a statement with an explicit batch boundary (UPDATE/DELETE/MOVE VERTEX ... BATCH n), which
         // re-begins straight after, so isTransactionActive() alone cannot see it. The conflict goes to the
-        // caller, who is the only one who knows how to compensate for the half that stands.
-        if (TransactionContext.isPartiallyCommitted(txAtStart, commitCountAtStart)) {
+        // caller, who is the only one who knows how to compensate for the half that stands. Not as the retryable conflict
+        // it is, which every layer above would retry anyway (#13251)
+        if (partiallyCommitted) {
           LogManager.instance().log(this, Level.WARNING,
               "Transaction block on database '%s' committed part of its work before failing (a statement with a BATCH "
                   + "boundary, a Cypher CALL IN TRANSACTIONS, or a write forwarded to the leader): NOT retrying, because replaying it would apply the "
                   + "already durable half a second time. Propagating %s to the caller",
               null, name, e.getClass().getSimpleName());
-          throw e;
+          throw failure;
         }
 
         // #9995: a refusal this node repeats until something outside it changes - a follower refusing leader-only work

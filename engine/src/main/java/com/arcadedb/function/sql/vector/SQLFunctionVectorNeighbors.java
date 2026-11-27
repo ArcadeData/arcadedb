@@ -492,6 +492,12 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
    * that cannot be read yet (issue #13323), and a row made without the read would answer it with no properties. The record of such a
    * row is read when the row is made, see {@link #neighbourRecord}: only the rows of a commit in flight, every other row is still
    * handed on unread.
+   * <p>
+   * The record is read as well for an index that a replicated entry is being applied to ({@link LSMVectorIndex#hasReplicatedApplyInFlight},
+   * issue #13369): the entry's pages reach the read cache one by one, so a vector the search answers can be of a record the entry has not
+   * written yet, or already removed, which only the read tells from a record that is there. Read now, such a record is no row of the answer
+   * (it costs a candidate, as a committed delete does). The question is asked after the searches, so a vector found of an entry that
+   * concluded since is found published.
    */
   private static LSMVectorIndex[] deferredRecordReads(final BasicDatabase db, final List<LSMVectorIndex> vectorIndexes) {
     if (!(db instanceof DatabaseInternal database) || !(database.getEvents() instanceof RecordEventsRegistry events)
@@ -502,7 +508,7 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
     for (int i = 0; i < vectorIndexes.size(); i++) {
       final LSMVectorIndex index = vectorIndexes.get(i);
       final int bucketId = index.getAssociatedBucketId();
-      if (bucketId < 0 || index.isWrittenByCurrentTransaction())
+      if (bucketId < 0 || index.isWrittenByCurrentTransaction() || index.hasReplicatedApplyInFlight())
         continue;
       if (!(database.getSchema().getTypeByBucketId(bucketId) instanceof LocalDocumentType type) || type.hasBeforeReadListeners()
           || type.hasAfterReadListeners())

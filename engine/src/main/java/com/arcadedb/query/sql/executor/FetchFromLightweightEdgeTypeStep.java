@@ -28,6 +28,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.TypeHierarchy;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.utility.FileUtils;
@@ -62,6 +63,11 @@ import java.util.logging.Level;
  * {@code LIMIT} is satisfied by walking vertices until enough entries have been found rather than by addressing
  * them: on a graph whose edges hang off a small corner of a large vertex set, even a small {@code LIMIT} can cost
  * most of the vertex scan. {@code EXPLAIN} names the step so that cost is visible rather than a surprise.
+ * <p>
+ * The walk checks the command deadline and the termination of the statement through a {@link WorkGuard}, every 1024
+ * steps, like the other scan sources. It has to do it itself: a count drains the whole walk in one call, and a scan of
+ * a type whose edges hang off a few vertices crosses a long stretch of vertices inside one {@code hasNext()}, so
+ * neither ever reaches a check placed between two rows.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -74,6 +80,8 @@ public class FetchFromLightweightEdgeTypeStep extends AbstractExecutionStep {
   private       Record           nextRecord;
   private       boolean          inited             = false;
   private       long             vertexSetSize      = 0;
+  private       WorkGuard        guard;
+  private       int              walked             = 0;
 
   public FetchFromLightweightEdgeTypeStep(final String edgeTypeName, final CommandContext context) {
     super(context);
@@ -134,6 +142,11 @@ public class FetchFromLightweightEdgeTypeStep extends AbstractExecutionStep {
     if (inited)
       return;
     inited = true;
+
+    // The length of the walk is the size of the graph, not of the answer: a long stretch of vertices with no edge of
+    // the type is crossed inside one call, with no row reaching a check downstream. Read once, then only compared.
+    guard = WorkGuard.forCommandDeadline(context);
+    walked = 0;
 
     final DatabaseInternal database = (DatabaseInternal) context.getDatabase();
     final Schema schema = database.getSchema();
@@ -222,8 +235,9 @@ public class FetchFromLightweightEdgeTypeStep extends AbstractExecutionStep {
       return;
 
     SecurityHelper.checkAccessOnType(database, type, SecurityDatabaseUser.ACCESS.READ_RECORD);
-    for (final DocumentType subType : type.getSubTypes())
-      checkAccessOnTypeAndSubTypes(database, subType);
+    // each type below once, whatever the number of paths that lead down to it
+    for (final DocumentType subType : TypeHierarchy.allSubTypes(type))
+      SecurityHelper.checkAccessOnType(database, subType, SecurityDatabaseUser.ACCESS.READ_RECORD);
   }
 
   /**
@@ -252,13 +266,17 @@ public class FetchFromLightweightEdgeTypeStep extends AbstractExecutionStep {
     if (nextRecord != null || nextEdge != null)
       return true;
 
+    // One step of the walk is a record served, an edge-list entry examined or a vertex opened. The first step is
+    // checked too, so a statement that is already stopped does not start the walk.
     if (typeRecords.hasNext()) {
+      guard.checkPeriodically(walked++);
       nextRecord = typeRecords.next();
       return true;
     }
 
     while (true) {
       while (currentVertexEdges.hasNext()) {
+        guard.checkPeriodically(walked++);
         final Edge edge = currentVertexEdges.next();
         // Only the entries with no record of their own: the ones that do were already served from the bucket scan
         // above, and serving them again here would double every edge of a mixed type.
@@ -273,6 +291,7 @@ public class FetchFromLightweightEdgeTypeStep extends AbstractExecutionStep {
         }
       }
 
+      guard.checkPeriodically(walked++);
       if (!vertices.hasNext())
         return false;
 
@@ -288,6 +307,8 @@ public class FetchFromLightweightEdgeTypeStep extends AbstractExecutionStep {
     typeRecords = null;
     vertices = null;
     vertexSetSize = 0;
+    guard = null;
+    walked = 0;
     currentVertexEdges = Collections.emptyIterator();
     nextEdge = null;
     nextRecord = null;
