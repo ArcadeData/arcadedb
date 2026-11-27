@@ -89,6 +89,23 @@ abstract class PostgresCatalogExpression {
   private static final Set<String> AGGREGATES = Set.of("count", "sum", "avg", "min", "max", "bool_and", "bool_or",
       "every", "string_agg", "array_agg");
 
+  /**
+   * How many nodes of an expression the work budget of a statement pays for with one unit. A unit is a row read, and evaluating a
+   * node costs a small fraction of that: a statement is charged for what its expressions cost, so that a wide one evaluated for
+   * every row is refused as a narrow one over too many rows is.
+   */
+  static final int NODES_PER_UNIT = 16;
+
+  /** How many characters of a text literal weigh as much as one node: comparing or changing a text reads all of it. */
+  private static final int CHARACTERS_PER_NODE = 16;
+
+  /**
+   * How many nodes the tree rooted here has, with the length of its text literals counted in: the most one evaluation of it reads.
+   * It is added up as the tree is built, from the nodes each node is built of, so that charging an evaluation costs no walk of the
+   * tree, and a chain a statement makes as long as it likes is not walked either.
+   */
+  private int nodes = 1;
+
   /** Supplies the column values of the row being evaluated, and the session values around it. */
   interface Resolver {
     /**
@@ -157,6 +174,7 @@ abstract class PostgresCatalogExpression {
      * @throws BudgetExceeded when the statement has spent what it may
      */
     default void evaluating(final int nodes) {
+      // a resolver that belongs to no statement has no budget to charge
     }
   }
 
@@ -206,23 +224,6 @@ abstract class PostgresCatalogExpression {
     /** {@code ARRAY(SELECT ...)}, and the right-hand side of {@code IN (SELECT ...)}: the values of its column. */
     ARRAY
   }
-
-  /**
-   * How many nodes of an expression the work budget of a statement pays for with one unit. A unit is a row read, and evaluating a
-   * node costs a small fraction of that: a statement is charged for what its expressions cost, so that a wide one evaluated for
-   * every row is refused as a narrow one over too many rows is.
-   */
-  static final int NODES_PER_UNIT = 16;
-
-  /** How many characters of a text literal weigh as much as one node: comparing or changing a text reads all of it. */
-  private static final int CHARACTERS_PER_NODE = 16;
-
-  /**
-   * How many nodes the tree rooted here has, with the length of its text literals counted in: the most one evaluation of it reads.
-   * It is added up as the tree is built, from the nodes each node is built of, so that charging an evaluation costs no walk of the
-   * tree, and a chain a statement makes as long as it likes is not walked either.
-   */
-  private int nodes = 1;
 
   abstract Object evaluate(Resolver resolver);
 
