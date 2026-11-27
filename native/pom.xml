@@ -33,6 +33,8 @@
     <packaging>jar</packaging>
 
     <properties>
+        <!-- Nothing here is published to Maven Central, so no SBOM is built for it. -->
+        <cyclonedx.skip>true</cyclonedx.skip>
         <mainClass>com.arcadedb.server.ArcadeDBServer</mainClass>
         <!--
             Do NOT go back to 1.1.6: that release's AbstractNativeImageMojo calls
@@ -48,7 +50,7 @@
             org.apache.maven.shared:maven-shared-utils in the plugin declaration below, which
             injects the jar into the plugin realm.
         -->
-        <native-maven-plugin.version>1.1.18</native-maven-plugin.version>
+        <native-maven-plugin.version>1.1.19</native-maven-plugin.version>
         <imageName>arcadedb-${project.version}-${os.detected.name}-${os.detected.arch}</imageName>
         <maven.deploy.skip>true</maven.deploy.skip>
         <!--

@@ -195,6 +195,26 @@ class OpenCypherUserManagementIT extends BaseGraphServerTest {
         .satisfies(e -> assertThat(ErrorCategory.of(e)).isEqualTo(ErrorCategory.VALIDATION));
   }
 
+  /**
+   * Root is the only principal that administers the server, so dropping it leaves a server nobody can administer (issue #12813).
+   * The REST {@code DELETE /server/users} route always refused it; {@code DROP USER} did not, with or without {@code IF EXISTS}.
+   */
+  @Test
+  void dropRootUserIsRefused() {
+    final Database database = getServerDatabase(0, getDatabaseName());
+
+    for (final String statement : List.of("DROP USER root", "DROP USER root IF EXISTS"))
+      assertThatThrownBy(() -> database.command("opencypher", statement))
+          .as(statement)
+          .hasMessageContaining("Cannot delete the root user")
+          // the caller's mistake on every protocol, not a server fault
+          .satisfies(e -> assertThat(ErrorCategory.of(e)).isEqualTo(ErrorCategory.VALIDATION));
+
+    final ServerSecurity security = getServer(0).getSecurity();
+    assertThat(security.existsUser("root")).isTrue();
+    assertThat(security.authenticate("root", DEFAULT_PASSWORD_FOR_TESTS, getDatabaseName())).isNotNull();
+  }
+
   @Test
   void alterUserSetPassword() {
     final Database database = getServerDatabase(0, getDatabaseName());

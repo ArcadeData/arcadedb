@@ -190,7 +190,11 @@ public class ExpandPathStep extends AbstractExecutionStep implements DistinctEnd
       final Result row = input.next();
       if (!(row.getProperty(sourceVariable) instanceof Vertex source))
         continue;
-      final Vertex boundTarget = row.getProperty(targetVariable) instanceof Vertex vertex ? vertex : null;
+      final Object boundTargetValue = row.getProperty(targetVariable);
+      // A target an earlier OPTIONAL MATCH left null is bound, and a null vertex cannot be reached (#12728)
+      if (boundTargetValue == null && row.hasProperty(targetVariable))
+        continue;
+      final Vertex boundTarget = boundTargetValue instanceof Vertex vertex ? vertex : null;
       final boolean boundPath = GraphTraverser.isBoundRelationshipList(row, relationshipVariable);
       final boolean byView = viewTraverser != null && countableByView && boundTarget == null && !boundPath;
 
@@ -373,11 +377,13 @@ public class ExpandPathStep extends AbstractExecutionStep implements DistinctEnd
             lastResult = prevResults.next();
             final Object sourceObj = lastResult.getProperty(sourceVariable);
 
-            // Check if target variable is already bound (e.g., from a previous MATCH)
+            // Check if target variable is already bound (e.g., from a previous MATCH). A target an earlier OPTIONAL MATCH left
+            // null is bound too, and a null vertex cannot be reached (#12728)
             final Object targetObj = lastResult.getProperty(targetVariable);
             boundTarget = targetObj instanceof Vertex vertex ? vertex : null;
+            final boolean nullBoundTarget = targetObj == null && lastResult.hasProperty(targetVariable);
 
-            if (sourceObj instanceof Vertex) {
+            if (sourceObj instanceof Vertex && !nullBoundTarget) {
               final Vertex sourceVertex = (Vertex) sourceObj;
               // A relationship list an earlier clause bound to this variable is the whole path: expanding the
               // graph instead ignored the binding and returned every walk the pattern allows (issue #9828)

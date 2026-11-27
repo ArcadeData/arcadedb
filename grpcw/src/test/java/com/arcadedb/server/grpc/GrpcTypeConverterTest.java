@@ -23,17 +23,34 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.query.opencypher.temporal.CypherDate;
+import com.arcadedb.query.opencypher.temporal.CypherDateTime;
+import com.arcadedb.query.opencypher.temporal.CypherDuration;
+import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
+import com.arcadedb.query.opencypher.temporal.CypherLocalTime;
+import com.arcadedb.query.opencypher.temporal.CypherTime;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
+import com.arcadedb.schema.Type;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.OffsetTime;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
 import java.util.Date;
+import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -464,5 +481,530 @@ class GrpcTypeConverterTest {
     } finally {
       database.drop();
     }
+  }
+
+  /*
+   * Regression tests for issue #4149: gRPC parameter binding and result encoding must preserve
+   * sub-millisecond precision for datetime values.
+   * <p>
+   * Inbound: a proto {@link Timestamp} carrying nanosecond precision (e.g.
+   * {@code seconds + 123456789 nanos}) was being converted to {@link java.util.Date} via a
+   * {@code millis} round trip, dropping the bottom 6 decimal digits. Now we map to
+   * {@link Instant} so {@code Type.convert} can truncate to the column's declared precision
+   * via {@code DateUtils.getPrecisionFromType}.
+   * <p>
+   * Outbound: ArcadeDB stores datetimes as {@link LocalDateTime}/{@link ZonedDateTime}/
+   * {@link Instant}; the converter previously had no branch for these types and fell through
+   * to {@code String.valueOf(o)} - emitting a {@code string_value} rather than the natural
+   * {@code timestamp_value}, and at {@code LocalDateTime#toString} precision rather than the
+   * column's declared precision.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  // Regression: #4149
+  @Test
+  void fromGrpcValueTimestampPreservesNanos() {
+    // 2026-05-09T12:34:56.123456789Z
+    final Instant expected = LocalDateTime.of(2026, 5, 9, 12, 34, 56, 123_456_789).toInstant(ZoneOffset.UTC);
+    final Timestamp ts = Timestamp.newBuilder()
+        .setSeconds(expected.getEpochSecond())
+        .setNanos(expected.getNano())
+        .build();
+    final GrpcValue v = GrpcValue.newBuilder().setTimestampValue(ts).build();
+
+    final Object result = GrpcTypeConverter.fromGrpcValue(v);
+
+    assertThat(result).as("TIMESTAMP_VALUE must produce a temporal carrying full nanosecond precision")
+        .isInstanceOf(Instant.class);
+    assertThat(((Instant) result).getEpochSecond()).isEqualTo(expected.getEpochSecond());
+    assertThat(((Instant) result).getNano()).isEqualTo(123_456_789);
+  }
+
+  // Regression: #4149
+  @Test
+  void toGrpcValueLocalDateTimeProducesTimestampWithNanos() {
+    final LocalDateTime ldt = LocalDateTime.of(2026, 5, 9, 12, 34, 56, 123_456_789);
+
+    final GrpcValue result = GrpcTypeConverter.toGrpcValue(ldt);
+
+    assertThat(result.hasTimestampValue()).as("LocalDateTime must serialize to proto Timestamp, not string fallback").isTrue();
+    assertThat(result.getTimestampValue().getNanos()).isEqualTo(123_456_789);
+  }
+
+  // Regression: #4149
+  @Test
+  void toGrpcValueInstantProducesTimestampWithNanos() {
+    final Instant instant = LocalDateTime.of(2026, 5, 9, 12, 34, 56, 987_654_321).toInstant(ZoneOffset.UTC);
+
+    final GrpcValue result = GrpcTypeConverter.toGrpcValue(instant);
+
+    assertThat(result.hasTimestampValue()).isTrue();
+    assertThat(result.getTimestampValue().getSeconds()).isEqualTo(instant.getEpochSecond());
+    assertThat(result.getTimestampValue().getNanos()).isEqualTo(987_654_321);
+  }
+
+  // Regression: #4149
+  @Test
+  void toGrpcValueZonedDateTimeKeepsNanos() {
+    // Issue #9969: a ZonedDateTime travels as zoned ISO text rather than as a bare instant; the nanoseconds survive in it
+    final ZonedDateTime zdt = LocalDateTime.of(2026, 5, 9, 12, 34, 56, 111_222_333).atZone(ZoneOffset.UTC);
+
+    final GrpcValue result = GrpcTypeConverter.toGrpcValue(zdt);
+
+    assertThat(result.getLogicalType()).isEqualTo("zoned_datetime");
+    assertThat(GrpcTypeConverter.fromGrpcValue(result)).isEqualTo(zdt);
+    assertThat(((ZonedDateTime) GrpcTypeConverter.fromGrpcValue(result)).getNano()).isEqualTo(111_222_333);
+  }
+
+  // Regression: #4149
+  @Test
+  void timestampRoundTripPreservesNanos() {
+    final Instant original = LocalDateTime.of(2026, 5, 9, 12, 34, 56, 123_456_789).toInstant(ZoneOffset.UTC);
+
+    final GrpcValue encoded = GrpcTypeConverter.toGrpcValue(original);
+    final Object decoded = GrpcTypeConverter.fromGrpcValue(encoded);
+
+    assertThat(decoded).isInstanceOf(Instant.class);
+    assertThat((Instant) decoded).isEqualTo(original);
+  }
+
+  // Regression: #9969
+  /**
+   * Issue #9969: a {@code ZONED_DATETIME} compares by instant, then offset, then zone id, so the gRPC wire has to carry the zone
+   * rather than a bare instant; an {@code OFFSET_TIME} and a {@code LOCAL_TIME} have to arrive typed rather than as an untagged
+   * string. These drive the server's {@link GrpcTypeConverter}, which every record and parameter path in the module shares
+   * (vector search, time series, query parameters), and the {@link GrpcTemporalCodec} it delegates to.
+   */
+  @Nested
+  class ZonedTemporalWire {
+    private static final ZonedDateTime NAMED_ZONE  = ZonedDateTime.of(2026, 1, 1, 0, 30, 0, 123_456_789, ZoneId.of("Europe/Rome"));
+    private static final ZonedDateTime OFFSET_ZONE = ZonedDateTime.of(2026, 1, 1, 0, 30, 0, 0, ZoneOffset.ofHours(2));
+    private static final OffsetTime    OFFSET_TIME = OffsetTime.of(0, 30, 15, 500_000_000, ZoneOffset.ofHours(2));
+    private static final LocalTime     LOCAL_TIME  = LocalTime.of(23, 59, 59, 999_999_999);
+
+    @Test
+    void zonedDateTimeWithNamedZoneKeepsTheZoneId() {
+      final GrpcValue encoded = GrpcTypeConverter.toGrpcValue(NAMED_ZONE);
+
+      assertThat(encoded.getKindCase()).isEqualTo(GrpcValue.KindCase.STRING_VALUE);
+      assertThat(encoded.getLogicalType()).isEqualTo(GrpcTemporalCodec.ZONED_DATETIME);
+      assertThat(encoded.getStringValue()).isEqualTo("2026-01-01T00:30:00.123456789+01:00[Europe/Rome]");
+
+      final Object decoded = GrpcTypeConverter.fromGrpcValue(encoded);
+      assertThat(decoded).isInstanceOf(ZonedDateTime.class);
+      // equals() on ZonedDateTime compares the zone id too: an instant-only round trip fails here
+      assertThat(decoded).isEqualTo(NAMED_ZONE);
+    }
+
+    @Test
+    void zonedDateTimeWithOffsetZoneKeepsTheOffset() {
+      final GrpcValue encoded = GrpcTypeConverter.toGrpcValue(OFFSET_ZONE);
+
+      assertThat(encoded.getLogicalType()).isEqualTo(GrpcTemporalCodec.ZONED_DATETIME);
+      assertThat(encoded.getStringValue()).isEqualTo("2026-01-01T00:30:00+02:00");
+      assertThat(GrpcTypeConverter.fromGrpcValue(encoded)).isEqualTo(OFFSET_ZONE);
+    }
+
+    @Test
+    void offsetTimeArrivesTyped() {
+      final GrpcValue encoded = GrpcTypeConverter.toGrpcValue(OFFSET_TIME);
+
+      assertThat(encoded.getKindCase()).isEqualTo(GrpcValue.KindCase.STRING_VALUE);
+      assertThat(encoded.getLogicalType()).isEqualTo(GrpcTemporalCodec.OFFSET_TIME);
+      assertThat(GrpcTypeConverter.fromGrpcValue(encoded)).isEqualTo(OFFSET_TIME);
+    }
+
+    @Test
+    void offsetTimeAtUtcAndAtANegativeOffsetRoundTrip() {
+      final OffsetTime utc = OffsetTime.of(12, 0, 0, 0, ZoneOffset.UTC);
+      final GrpcValue encodedUtc = GrpcTypeConverter.toGrpcValue(utc);
+      assertThat(encodedUtc.getStringValue()).isEqualTo("12:00:00Z");
+      assertThat(GrpcTypeConverter.fromGrpcValue(encodedUtc)).isEqualTo(utc);
+
+      final OffsetTime negative = OffsetTime.of(23, 59, 0, 1, ZoneOffset.ofHoursMinutes(-9, -30));
+      final GrpcValue encodedNegative = GrpcTypeConverter.toGrpcValue(negative);
+      assertThat(encodedNegative.getStringValue()).isEqualTo("23:59:00.000000001-09:30");
+      assertThat(GrpcTypeConverter.fromGrpcValue(encodedNegative)).isEqualTo(negative);
+    }
+
+    @Test
+    void localTimeArrivesTyped() {
+      final GrpcValue encoded = GrpcTypeConverter.toGrpcValue(LOCAL_TIME);
+
+      assertThat(encoded.getKindCase()).isEqualTo(GrpcValue.KindCase.STRING_VALUE);
+      assertThat(encoded.getLogicalType()).isEqualTo(GrpcTemporalCodec.LOCAL_TIME);
+      assertThat(GrpcTypeConverter.fromGrpcValue(encoded)).isEqualTo(LOCAL_TIME);
+    }
+
+    @Test
+    void temporalsInsideCollectionsAreEncodedTheSameWay() {
+      final GrpcValue list = GrpcTypeConverter.toGrpcValue(List.of(NAMED_ZONE, LOCAL_TIME));
+      assertThat(GrpcTypeConverter.fromGrpcValue(list)).isEqualTo(List.of(NAMED_ZONE, LOCAL_TIME));
+
+      final GrpcValue map = GrpcTypeConverter.toGrpcValue(Map.of("t", OFFSET_TIME));
+      assertThat(GrpcTypeConverter.fromGrpcValue(map)).isEqualTo(Map.of("t", OFFSET_TIME));
+    }
+
+    @Test
+    void untaggedStringStaysAString() {
+      final GrpcValue plain = GrpcValue.newBuilder().setStringValue("2026-01-01T00:30+02:00").build();
+      assertThat(GrpcTypeConverter.fromGrpcValue(plain)).isEqualTo("2026-01-01T00:30+02:00");
+    }
+
+    @Test
+    void timesWithZeroSecondsRoundTrip() {
+      final LocalTime local = LocalTime.of(0, 30);
+      assertThat(GrpcTypeConverter.fromGrpcValue(GrpcTypeConverter.toGrpcValue(local))).isEqualTo(local);
+
+      final OffsetTime offset = OffsetTime.of(0, 30, 0, 0, ZoneOffset.ofHours(5));
+      assertThat(GrpcTypeConverter.fromGrpcValue(GrpcTypeConverter.toGrpcValue(offset))).isEqualTo(offset);
+    }
+
+    @Test
+    void tagsMatchCaseInsensitively() {
+      final GrpcValue upper = GrpcValue.newBuilder().setStringValue("00:30:00+02:00").setLogicalType("OFFSET_TIME").build();
+      assertThat(GrpcTypeConverter.fromGrpcValue(upper)).isEqualTo(OffsetTime.of(0, 30, 0, 0, ZoneOffset.ofHours(2)));
+    }
+
+    @Test
+    void malformedTaggedTextDegradesToTheString() {
+      // A hand-built message from a third-party client must not fail the whole row
+      final GrpcValue bad = GrpcValue.newBuilder().setStringValue("not a time").setLogicalType(GrpcTemporalCodec.LOCAL_TIME).build();
+      assertThat(GrpcTypeConverter.fromGrpcValue(bad)).isEqualTo("not a time");
+    }
+
+    @Test
+    void instantShapedTemporalsKeepTheirTimestampEncoding() {
+      // The shared encoder must not change what the instant-shaped types already sent (issues #4149, #5045)
+      final LocalDateTime ldt = LocalDateTime.of(2026, 5, 9, 12, 34, 56, 123_456_789);
+      final GrpcValue dt = GrpcTypeConverter.toGrpcValue(ldt);
+      assertThat(dt.getLogicalType()).isEqualTo(GrpcTemporalCodec.DATETIME);
+      assertThat(dt.getTimestampValue().getSeconds()).isEqualTo(ldt.toEpochSecond(ZoneOffset.UTC));
+      assertThat(dt.getTimestampValue().getNanos()).isEqualTo(123_456_789);
+
+      final GrpcValue d = GrpcTypeConverter.toGrpcValue(LocalDate.of(1969, 12, 31));
+      assertThat(d.getLogicalType()).isEqualTo(GrpcTemporalCodec.DATE);
+      assertThat(d.getTimestampValue().getSeconds()).isEqualTo(-86_400L);
+
+      final GrpcValue date = GrpcTypeConverter.toGrpcValue(new Date(-1L));
+      assertThat(date.getLogicalType()).isEqualTo(GrpcTemporalCodec.DATETIME);
+      assertThat(date.getTimestampValue().getSeconds()).isEqualTo(-1L);
+      assertThat(date.getTimestampValue().getNanos()).isEqualTo(999_000_000);
+
+      final Instant instant = Instant.ofEpochSecond(1_000_000_000L, 7);
+      assertThat(GrpcTypeConverter.fromGrpcValue(GrpcTypeConverter.toGrpcValue(instant))).isEqualTo(instant);
+    }
+  }
+
+  /*
+   * Issue #10034: a {@code DURATION} ({@link CypherDuration}) travels as its ISO text tagged {@code duration}, like the other
+   * values #9969 moved onto {@link GrpcTemporalCodec}, instead of falling through to the untagged {@code String.valueOf}
+   * fallback. The text is the storage encoding ({@code toString()} / {@code parse()}), so every component combination has to
+   * round-trip exactly, including the negative-seconds-with-positive-nanos case {@code toString()} special-cases.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  private static final List<CypherDuration> EDGE_CASES = List.of(//
+      new CypherDuration(0, 0, 0, 0),//
+      new CypherDuration(1, 0, 0, 0),//
+      new CypherDuration(14, 0, 0, 0),//
+      new CypherDuration(-5, 0, 0, 0),//
+      new CypherDuration(-13, 0, 0, 0),//
+      new CypherDuration(0, 10, 0, 0),//
+      new CypherDuration(0, -10, 0, 0),//
+      new CypherDuration(0, 0, 1, 0),//
+      new CypherDuration(0, 0, 3723, 0),//
+      new CypherDuration(0, 0, 0, 1),//
+      new CypherDuration(0, 0, 0, 999_999_999),//
+      new CypherDuration(0, 0, 1, 500_000_000),//
+      // MONTHS + DAYS + TIME
+      new CypherDuration(14, 3, 3723, 4_500_000),//
+      new CypherDuration(-14, -3, -3723, 0),//
+      // NEGATIVE SECONDS WITH POSITIVE NANOS: toString() WRITES THE EFFECTIVE (LESS NEGATIVE) VALUE
+      new CypherDuration(0, 0, -1, 500_000_000),//
+      new CypherDuration(0, 0, -1, 1),//
+      new CypherDuration(0, 0, -1, 999_999_999),//
+      new CypherDuration(0, 0, -61, 500_000_000),//
+      new CypherDuration(0, 0, -3601, 1),//
+      new CypherDuration(0, 0, -4, 500_000_000),//
+      new CypherDuration(3, -2, -7, 250_000_000),//
+      // THE LIMITS OF EVERY COMPONENT
+      new CypherDuration(Long.MAX_VALUE, 0, 0, 0),//
+      new CypherDuration(Long.MIN_VALUE, 0, 0, 0),//
+      new CypherDuration(0, Long.MAX_VALUE, 0, 0),//
+      new CypherDuration(0, Long.MIN_VALUE, 0, 0),//
+      new CypherDuration(0, 0, Long.MAX_VALUE, 999_999_999),//
+      new CypherDuration(0, 0, Long.MIN_VALUE, 0),//
+      new CypherDuration(0, 0, Long.MIN_VALUE, 1),//
+      new CypherDuration(Long.MAX_VALUE, Long.MAX_VALUE, Long.MAX_VALUE, 999_999_999),//
+      new CypherDuration(Long.MIN_VALUE, Long.MIN_VALUE, Long.MIN_VALUE, 1));
+
+  // Regression: #10034
+  @Test
+  void aDurationTravelsAsTaggedIsoText() {
+    final CypherDuration duration = new CypherDuration(14, 3, 3723, 4_500_000);
+
+    final GrpcValue encoded = GrpcTypeConverter.toGrpcValue(duration);
+
+    assertThat(encoded.getKindCase()).isEqualTo(GrpcValue.KindCase.STRING_VALUE);
+    assertThat(encoded.getLogicalType()).isEqualTo(GrpcTemporalCodec.DURATION);
+    assertThat(encoded.getStringValue()).isEqualTo("P1Y2M3DT1H2M3.0045S");
+
+    final Object decoded = GrpcTypeConverter.fromGrpcValue(encoded);
+    assertThat(decoded).isInstanceOf(CypherDuration.class);
+    assertThat(decoded).isEqualTo(duration);
+  }
+
+  // Regression: #10034
+  @Test
+  void everyEdgeCaseRoundTripsExactly() {
+    for (final CypherDuration duration : EDGE_CASES) {
+      final GrpcValue encoded = GrpcTypeConverter.toGrpcValue(duration);
+
+      assertThat(encoded.getLogicalType()).as("tag of %s", duration).isEqualTo(GrpcTemporalCodec.DURATION);
+      assertThat(GrpcTypeConverter.fromGrpcValue(encoded)).as("round trip of %s", duration).isEqualTo(duration);
+    }
+  }
+
+  // Regression: #10034
+  @Test
+  void randomDurationsRoundTripExactly() {
+    // Seeded, so a failure names a value that can be replayed
+    final Random random = new Random(10034L);
+    for (int i = 0; i < 20_000; i++) {
+      final CypherDuration duration = new CypherDuration(component(random), component(random), component(random),
+          random.nextInt(1_000_000_000));
+
+      final Object decoded = GrpcTypeConverter.fromGrpcValue(GrpcTypeConverter.toGrpcValue(duration));
+
+      assertThat(decoded).as("round trip of %s (months=%d days=%d seconds=%d nanos=%d)", duration, duration.getMonths(),
+          duration.getDays(), duration.getSeconds(), duration.getNanosAdjustment()).isEqualTo(duration);
+    }
+  }
+
+  // Regression: #10034
+  @Test
+  void durationsInsideCollectionsAreEncodedTheSameWay() {
+    final CypherDuration duration = new CypherDuration(0, 0, -1, 500_000_000);
+
+    final GrpcValue list = GrpcTypeConverter.toGrpcValue(List.of(duration));
+    assertThat(GrpcTypeConverter.fromGrpcValue(list)).isEqualTo(List.of(duration));
+
+    final GrpcValue map = GrpcTypeConverter.toGrpcValue(Map.of("d", duration));
+    assertThat(GrpcTypeConverter.fromGrpcValue(map)).isEqualTo(Map.of("d", duration));
+  }
+
+  // Regression: #10034
+  @Test
+  void untaggedTextStaysAString() {
+    final GrpcValue plain = GrpcValue.newBuilder().setStringValue("P1Y").build();
+    assertThat(GrpcTypeConverter.fromGrpcValue(plain)).isEqualTo("P1Y");
+  }
+
+  // Regression: #10034
+  @Test
+  void theTagMatchesCaseInsensitively() {
+    final GrpcValue upper = GrpcValue.newBuilder().setStringValue("P1Y2M").setLogicalType("DURATION").build();
+    assertThat(GrpcTypeConverter.fromGrpcValue(upper)).isEqualTo(new CypherDuration(14, 0, 0, 0));
+  }
+
+  // Regression: #10034
+  @Test
+  void textThatIsNotADurationDegradesToTheString() {
+    // A hand-built message from a third-party client must not fail the whole row
+    for (final String text : List.of("not a duration", "", "1Y", "PT1H1", "P1.2.3Y", "P99999999999999999999Y")) {
+      final GrpcValue bad = GrpcValue.newBuilder().setStringValue(text).setLogicalType(GrpcTemporalCodec.DURATION).build();
+      assertThat(GrpcTypeConverter.fromGrpcValue(bad)).as("text '%s'", text).isEqualTo(text);
+    }
+  }
+
+  /** Mostly small magnitudes, where the carries between hours, minutes and seconds live, with the odd huge one. */
+  private static long component(final Random random) {
+    return switch (random.nextInt(4)) {
+      case 0 -> random.nextInt(200) - 100;
+      case 1 -> random.nextInt(2_000_000) - 1_000_000;
+      case 2 -> random.nextLong() / 3;
+      default -> random.nextLong() >> random.nextInt(63);
+    };
+  }
+
+  /*
+   * Issue #10091: the rule "a value that holds more than an instant travels as its own typed text" was written down twice
+   * in the engine ({@code Type.isConvertedFromStoredString()} and {@code JsonSerializer.isNativeCypherTemporal()}) and a
+   * third time, by hand, in {@link GrpcTemporalCodec}, which named three of the four types: a {@code DURATION} fell past it
+   * into the untagged {@code String.valueOf} fallback and reached the client as a {@code String}. The arm itself was added by
+   * issue #10034.
+   * <p>
+   * What is left of #10091 is the guarantee it asks for: the codec must not be a list that has to be kept in step by
+   * memory. This walks {@code Type.values()}, takes every type the schema authority says is read back from stored text, and
+   * requires that a representative value of it crosses the wire tagged, comes back as the same type and equal. A type added
+   * to the authority fails here, by name, instead of silently becoming a {@code String} on the wire.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  /** One value per type the schema authority converts from stored text. A new member of the set must be given one here. */
+  private static final Map<Type, Object> REPRESENTATIVES = new EnumMap<>(Type.class);
+
+  static {
+    REPRESENTATIVES.put(Type.OFFSET_TIME, OffsetTime.of(13, 45, 30, 123_456_789, ZoneOffset.ofHoursMinutes(5, 30)));
+    REPRESENTATIVES.put(Type.LOCAL_TIME, LocalTime.of(13, 45, 30, 123_456_789));
+    REPRESENTATIVES.put(Type.ZONED_DATETIME, ZonedDateTime.of(2026, 10, 15, 13, 45, 30, 123_456_789, ZoneId.of("Europe/Rome")));
+    REPRESENTATIVES.put(Type.DURATION, new CypherDuration(14, 3, 3723, 4_500_000));
+  }
+
+  // Regression: #10091
+  @Test
+  void everyTypeTheSchemaConvertsFromStoredTextTravelsTaggedAndComesBackEqual() {
+    for (final Type type : Type.values()) {
+      if (!type.isConvertedFromStoredString())
+        continue;
+
+      final Object value = REPRESENTATIVES.get(type);
+      assertThat(value).as("Type.%s is read back from stored text, so GrpcTemporalCodec must carry it as its own tagged text: "
+          + "give it a representative value here and an arm in the codec", type).isNotNull();
+      assertThat(Type.getTypeByValue(value)).as("the representative of %s", type).isEqualTo(type);
+
+      final GrpcValue encoded = GrpcTemporalCodec.encode(value);
+      assertThat(encoded).as("GrpcTemporalCodec.encode(%s) for %s", value, type).isNotNull();
+      assertThat(encoded.getKindCase()).as("wire kind of %s", type).isEqualTo(GrpcValue.KindCase.STRING_VALUE);
+      assertThat(encoded.getLogicalType()).as("an empty logical_type is what makes the client hand back a String (%s)", type)
+          .isNotEmpty();
+
+      final Object decoded = GrpcTemporalCodec.decodeString(encoded.getStringValue(), encoded.getLogicalType());
+      assertThat(decoded).as("decoded %s", type).isEqualTo(value);
+      assertThat(Type.getTypeByValue(decoded)).as("the type identity of %s survives the wire", type).isEqualTo(type);
+    }
+  }
+
+  // Regression: #10091
+  @Test
+  void theServerConverterAgreesWithTheCodecForEveryOfThem() {
+    for (final Map.Entry<Type, Object> entry : REPRESENTATIVES.entrySet()) {
+      final GrpcValue encoded = GrpcTypeConverter.toGrpcValue(entry.getValue());
+
+      assertThat(encoded.getLogicalType()).as("tag of %s", entry.getKey()).isNotEmpty();
+      assertThat(GrpcTypeConverter.fromGrpcValue(encoded)).as("round trip of %s", entry.getKey()).isEqualTo(entry.getValue());
+    }
+  }
+
+  // Regression: #10091
+  @Test
+  void theRepresentativesAreExactlyTheTypesTheSchemaConverts() {
+    // The other direction: a representative whose type left the authority's set is a stale row, not a guarantee
+    for (final Type type : REPRESENTATIVES.keySet())
+      assertThat(type.isConvertedFromStoredString()).as("Type.%s is no longer converted from stored text", type).isTrue();
+  }
+
+  // Regression: #11955
+  /**
+   * Issue #11955: a Cypher date, time or datetime reached the client as an untagged {@code string_value}, where SQL sends the
+   * same property as a tagged value. Each wrapper is now encoded as the {@code java.time} value it wraps, on the one converter
+   * every record and parameter path of the module shares, alone and inside a list or a map.
+   *
+   * @author lvca (l.garulli@arcadedata.com)
+   */
+  @Nested
+  class CypherTemporalWire {
+    private static final LocalDate     LOCAL_DATE      = LocalDate.of(2024, 2, 29);
+    private static final LocalDateTime LOCAL_DATETIME  = LocalDateTime.of(2024, 2, 29, 13, 14, 15, 123_000_000);
+    private static final ZonedDateTime ZONED_DATETIME  = ZonedDateTime.of(LOCAL_DATETIME, ZoneOffset.UTC);
+    private static final LocalTime     LOCAL_TIME      = LocalTime.of(10, 0);
+    private static final OffsetTime    OFFSET_TIME     = OffsetTime.of(LOCAL_TIME, ZoneOffset.ofHours(1));
+
+    private static final Object[][] PAIRS = { { new CypherDate(LOCAL_DATE), LOCAL_DATE },
+        { new CypherLocalDateTime(LOCAL_DATETIME), LOCAL_DATETIME }, { new CypherDateTime(ZONED_DATETIME), ZONED_DATETIME },
+        { new CypherLocalTime(LOCAL_TIME), LOCAL_TIME }, { new CypherTime(OFFSET_TIME), OFFSET_TIME } };
+
+    @Test
+    void aWrapperIsEncodedAsTheValueItWraps() {
+      for (final Object[] pair : PAIRS) {
+        final GrpcValue encoded = GrpcTypeConverter.toGrpcValue(pair[0]);
+        assertThat(encoded).as(pair[0].getClass().getSimpleName()).isEqualTo(GrpcTypeConverter.toGrpcValue(pair[1]));
+        assertThat(encoded.getLogicalType()).as("the tag of %s", pair[0].getClass().getSimpleName()).isNotEmpty();
+      }
+    }
+
+    @Test
+    void theTagsAreTheOnesSqlGetsForTheSameProperty() {
+      final GrpcValue date = GrpcTypeConverter.toGrpcValue(new CypherDate(LOCAL_DATE));
+      assertThat(date.getKindCase()).isEqualTo(GrpcValue.KindCase.TIMESTAMP_VALUE);
+      assertThat(date.getLogicalType()).isEqualTo(GrpcTemporalCodec.DATE);
+
+      final GrpcValue dateTime = GrpcTypeConverter.toGrpcValue(new CypherLocalDateTime(LOCAL_DATETIME));
+      assertThat(dateTime.getKindCase()).isEqualTo(GrpcValue.KindCase.TIMESTAMP_VALUE);
+      assertThat(dateTime.getLogicalType()).isEqualTo(GrpcTemporalCodec.DATETIME);
+
+      assertThat(GrpcTypeConverter.toGrpcValue(new CypherDateTime(ZONED_DATETIME)).getLogicalType()).isEqualTo(
+          GrpcTemporalCodec.ZONED_DATETIME);
+      assertThat(GrpcTypeConverter.toGrpcValue(new CypherLocalTime(LOCAL_TIME)).getLogicalType()).isEqualTo(GrpcTemporalCodec.LOCAL_TIME);
+
+      final GrpcValue time = GrpcTypeConverter.toGrpcValue(new CypherTime(OFFSET_TIME));
+      assertThat(time.getLogicalType()).isEqualTo(GrpcTemporalCodec.OFFSET_TIME);
+      assertThat(time.getStringValue()).isEqualTo("10:00:00+01:00");
+    }
+
+    @Test
+    void aWrapperComesBackAsTheJavaTimeValue() {
+      for (final Object[] pair : PAIRS)
+        assertThat(GrpcTypeConverter.fromGrpcValue(GrpcTypeConverter.toGrpcValue(pair[0]))).as(pair[0].getClass().getSimpleName())
+            .isEqualTo(roundTripped(pair[1]));
+    }
+
+    @Test
+    void aWrapperInsideAListOrAMapIsEncodedTheSameWay() {
+      for (final Object[] pair : PAIRS) {
+        assertThat(GrpcTypeConverter.toGrpcValue(List.of(pair[0]))).as("list of %s", pair[0].getClass().getSimpleName())
+            .isEqualTo(GrpcTypeConverter.toGrpcValue(List.of(pair[1])));
+        assertThat(GrpcTypeConverter.toGrpcValue(Map.of("t", pair[0]))).as("map of %s", pair[0].getClass().getSimpleName())
+            .isEqualTo(GrpcTypeConverter.toGrpcValue(Map.of("t", pair[1])));
+      }
+    }
+
+    /** What the client reads back for a java.time value: the encoder of a date or a datetime carries an instant, not the type. */
+    private static Object roundTripped(final Object javaTime) {
+      return GrpcTypeConverter.fromGrpcValue(GrpcTypeConverter.toGrpcValue(javaTime));
+    }
+  }
+
+  /*
+   * Issue #11956: a {@code timestamp_value} tagged {@code date}, the encoding the server itself writes for a DATE, was decoded
+   * as an {@link Instant}, so a date parameter was a datetime to the engine. It decodes to the {@link LocalDate} it names.
+   */
+  private static final LocalDate DAY = LocalDate.of(2024, 2, 29);
+
+  // Regression: #11956
+  @Test
+  void aTimestampTaggedDateDecodesToALocalDate() {
+    final GrpcValue encoded = GrpcTypeConverter.toGrpcValue(DAY);
+    assertThat(encoded.getLogicalType()).isEqualTo(GrpcTemporalCodec.DATE);
+
+    assertThat(GrpcTypeConverter.fromGrpcValue(encoded)).isEqualTo(DAY);
+  }
+
+  // Regression: #11956
+  @Test
+  void aDateBeforeTheEpochRoundTrips() {
+    final LocalDate before = LocalDate.of(1500, 1, 1);
+    assertThat(GrpcTypeConverter.fromGrpcValue(GrpcTypeConverter.toGrpcValue(before))).isEqualTo(before);
+  }
+
+  // Regression: #11956
+  @Test
+  void datesInsideParametersCollectionsAndMapsDecodeToLocalDates() {
+    final GrpcValue date = GrpcTypeConverter.toGrpcValue(DAY);
+    assertThat(GrpcTypeConverter.convertParameters(Map.of("p", date))).containsEntry("p", DAY);
+    assertThat(GrpcTypeConverter.fromGrpcValue(GrpcTypeConverter.toGrpcValue(List.of(DAY)))).isEqualTo(List.of(DAY));
+    assertThat(GrpcTypeConverter.fromGrpcValue(GrpcTypeConverter.toGrpcValue(Map.of("d", DAY)))).isEqualTo(Map.of("d", DAY));
+  }
+
+  // Regression: #11956
+  @Test
+  void aTimestampTaggedDatetimeOrUntaggedStaysAnInstant() {
+    final Timestamp ts = Timestamp.newBuilder().setSeconds(1709212455L).setNanos(123_456_789).build();
+    final Instant instant = Instant.ofEpochSecond(1709212455L, 123_456_789);
+
+    assertThat(GrpcTypeConverter.fromGrpcValue(GrpcValue.newBuilder().setTimestampValue(ts).build())).isEqualTo(instant);
+    assertThat(GrpcTypeConverter.fromGrpcValue(
+        GrpcValue.newBuilder().setTimestampValue(ts).setLogicalType(GrpcTemporalCodec.DATETIME).build())).isEqualTo(instant);
   }
 }

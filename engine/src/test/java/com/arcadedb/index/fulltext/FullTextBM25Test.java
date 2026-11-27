@@ -657,7 +657,7 @@ class FullTextBM25Test extends TestHelper {
     });
 
     database.transaction(() -> {
-      // A pure-negative query materializes the whole index (collectAllIndexedRids) and subtracts the matches of the negated term.
+      // A pure-negative query materializes the whole index (collectIndexedRidsExcept) less the matches of the negated term.
       // '-java' must return exactly the documents that do NOT contain 'java'.
       final Map<String, Float> scores = searchScores("Doc[content]", "-java");
       assertThat(scores.keySet()).containsExactly("b");

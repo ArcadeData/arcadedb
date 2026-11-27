@@ -190,12 +190,45 @@ final class MongoFilter {
       return;
 
     sqlText.append(" WHERE ");
-    if (idPart != null)
-      MongoDBToSqlTranslator.buildExpression(sqlText, params, idPart);
+    if (idPart != null) {
+      if (type != null && MongoKeys.hasIdKeyIndex(type)) {
+        // the unique index of the _id is on its derived key, exact for an equality (issue #12073): a superset of the candidates
+        // when the part has several conditions on the _id, the matcher tests them all
+        final List<String> keys = new ArrayList<>();
+        collectIdKeys(idPart, keys);
+        sqlText.append(Identifier.quote(MongoKeys.ID_KEY)).append(" IN (");
+        MongoDBToSqlTranslator.bindStored(sqlText, params, keys);
+        sqlText.append(')');
+      } else
+        MongoDBToSqlTranslator.buildExpression(sqlText, params, idPart);
+    }
     if (fields != null) {
       if (idPart != null)
         sqlText.append(" AND ");
       MongoDBToSqlTranslator.buildExpression(sqlText, params, fields);
+    }
+  }
+
+  /**
+   * The keys of the values the {@code _id} part of a filter compares the {@code _id} with: a plain value, {@code $eq} and the
+   * elements of {@code $in}, under {@code $and} and {@code $or} too (see {@link #narrows(Document)} for the shapes).
+   */
+  private static void collectIdKeys(final Document query, final List<String> keys) {
+    for (final Map.Entry<String, Object> entry : query.entrySet()) {
+      final Object value = entry.getValue();
+      if ("_id".equals(entry.getKey())) {
+        if (value instanceof Document operators && isOperatorDocument(operators)) {
+          if (operators.containsKey("$eq"))
+            keys.add(MongoKeys.key(operators.get("$eq")));
+          if (operators.get("$in") instanceof List<?> in)
+            for (final Object item : in)
+              keys.add(MongoKeys.key(item));
+        } else
+          keys.add(MongoKeys.key(value));
+      } else if (value instanceof List<?> items)
+        for (final Object item : items)
+          if (item instanceof Document document)
+            collectIdKeys(document, keys);
     }
   }
 
@@ -416,8 +449,9 @@ final class MongoFilter {
   }
 
   /**
-   * A regular expression operand (alone or in a list) is a pattern only the matcher evaluates, and an embedded document or a list
-   * is compared by SQL in ways (key order) not proven to match MongoDB's: SQL compares them as a value, so none of them narrows.
+   * A regular expression operand (alone or in a list) is evaluated by the matcher only, as a pattern or, under {@code $eq}, as a value
+   * compared with a stored regular expression; an embedded document or a list is compared by SQL in ways (key order) not proven to
+   * match MongoDB's: SQL compares them as a value, so none of them narrows.
    */
   private static boolean isNonScalarOperand(final Object operand) {
     if (operand instanceof BsonRegularExpression || operand instanceof Document)
@@ -620,21 +654,31 @@ final class MongoFilter {
    * filter is, so every regular expression of the pipeline draws on one budget. The library evaluates no other regular expression: it has no
    * {@code $expr}, {@code $regexMatch} or {@code $regexFind}, and {@code $merge}/{@code $out} cannot resolve a collection here. The stages are copied, the pipeline of the request is
    * left as it is.
+   * <p>
+   * The top-level {@code $match} stages of a pipeline are tested with {@link MongoQueryMatcher} (see
+   * {@code MongoDBDatabaseWrapper#computeResult}), which reads a document that holds {@code $regex} among other fields as a value to
+   * compare with, exactly as a find filter does. Every other {@code $match} (the stages of a sub-pipeline, and the stages after a
+   * {@code $changeStream}) is tested by the library, which reads any document that holds {@code $regex} as a pattern: there
+   * {@link #requireBoundedRegexes} refuses the ones the preparation did not turn into a bounded expression.
    */
   static List<Document> boundPipeline(final List<Document> pipeline, final RegexBudget budget) {
+    final boolean libraryMatch = !pipeline.isEmpty() && pipeline.getFirst().containsKey("$changeStream");
     final List<Document> bounded = new ArrayList<>(pipeline.size());
     for (final Document stage : pipeline)
-      bounded.add(boundStage(stage, budget));
+      bounded.add(boundStage(stage, budget, libraryMatch));
     return bounded;
   }
 
-  private static Document boundStage(final Document stage, final RegexBudget budget) {
+  /**
+   * @param libraryMatch whether a {@code $match} of this stage is tested by the library
+   */
+  private static Document boundStage(final Document stage, final RegexBudget budget, final boolean libraryMatch) {
     final Document result = new Document();
     for (final Map.Entry<String, Object> entry : stage.entrySet()) {
       final String name = entry.getKey();
       final Object value = entry.getValue();
       switch (name) {
-      case "$match" -> result.put(name, value instanceof Document query ? normalizeQuery(query, budget) : value);
+      case "$match" -> result.put(name, value instanceof Document query ? matchQuery(query, budget, libraryMatch) : value);
       case "$facet" -> {
         if (value instanceof Document branches) {
           final Document converted = new Document();
@@ -655,7 +699,7 @@ final class MongoFilter {
       case "$graphLookup" -> {
         if (value instanceof Document options && options.get("restrictSearchWithMatch") instanceof Document query) {
           final Document converted = new Document(options);
-          converted.put("restrictSearchWithMatch", normalizeQuery(query, budget));
+          converted.put("restrictSearchWithMatch", matchQuery(query, budget, true));
           result.put(name, converted);
         } else
           result.put(name, value);
@@ -666,13 +710,44 @@ final class MongoFilter {
     return result;
   }
 
+  /** The stages of a sub-pipeline: the library tests all of their {@code $match} queries. */
   private static Object boundStages(final Object stages, final RegexBudget budget) {
     if (!(stages instanceof List<?> list))
       return stages;
     final List<Object> converted = new ArrayList<>(list.size());
     for (final Object stage : list)
-      converted.add(stage instanceof Document document ? boundStage(document, budget) : stage);
+      converted.add(stage instanceof Document document ? boundStage(document, budget, true) : stage);
     return converted;
+  }
+
+  private static Document matchQuery(final Document query, final RegexBudget budget, final boolean libraryMatch) {
+    final Document prepared = normalizeQuery(query, budget);
+    if (libraryMatch)
+      requireBoundedRegexes(prepared, null);
+    return prepared;
+  }
+
+  /**
+   * Refuses a query of the library's matcher that still holds a document with a {@code $regex} key, at any depth: the library searches
+   * any such document as a pattern, whatever its other keys and wherever it sits, and only the expressions {@link #normalizeQuery}
+   * turned into a {@link BoundedRegex} are bounded by the time budget. That leaves the shapes MongoDB itself does not take as a
+   * pattern: a {@code $regex} after a plain key, as an item of {@code $in}, {@code $nin} or {@code $all}, or in the operand of
+   * {@code $not} and {@code $elemMatch}. The operand of {@code $expr} is an expression, which is evaluated and never searched, and
+   * whose {@code $literal} can hold any document: it is left alone.
+   *
+   * @param under the name the value is held under, to say where the refused condition is, or {@code null} at the top of the query
+   */
+  private static void requireBoundedRegexes(final Object value, final String under) {
+    if (value instanceof Document document) {
+      if (document.containsKey("$regex"))
+        throw new IllegalArgumentException(
+            under == null ? "$regex is not supported in this position" : "$regex is not supported in this position, under '" + under + "'");
+      for (final Map.Entry<String, Object> entry : document.entrySet())
+        if (!"$expr".equals(entry.getKey()))
+          requireBoundedRegexes(entry.getValue(), entry.getKey());
+    } else if (value instanceof List<?> list)
+      for (final Object item : list)
+        requireBoundedRegexes(item, under);
   }
 
   static boolean isOperatorDocument(final Document document) {
