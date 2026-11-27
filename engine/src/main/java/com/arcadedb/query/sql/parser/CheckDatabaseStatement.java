@@ -28,6 +28,7 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.security.SecurityDatabaseUser.DATABASE_ACCESS;
 
 import java.util.HashSet;
@@ -214,11 +215,12 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
    * database (issue #12845).
    */
   private Set<String> resolveTypes(final CommandContext context) {
+    final Schema schema = context.getDatabase().getSchema();
     final Set<String> names = new HashSet<>();
     for (final Identifier type : types) {
       final String text = type.getStringValue();
       final String name = text.startsWith("\"") || text.startsWith("'") ? text.substring(1, text.length() - 1) : text;
-      names.add(context.getDatabase().getSchema().getType(name).getName());
+      names.add(schema.getType(name).getName());
     }
     return names;
   }
@@ -226,16 +228,20 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
   /**
    * The names of the buckets the check is limited to, which is what the checker matches: the {@link PInteger} it used to be
    * handed for a bucket id never equalled a name, so the bucket it named was skipped, and a name that is no bucket reported a clean
-   * database (issue #12845).
+   * database (issue #12845). An input parameter (which the grammar does not produce today) is resolved to its bound value, an id
+   * when it is a number, rather than looked up by the text of the parser node.
    */
   private Set<Object> resolveBuckets(final CommandContext context) {
+    final Schema schema = context.getDatabase().getSchema();
     final Set<Object> names = new HashSet<>();
     for (final BucketIdentifier bucket : buckets) {
-      final Object value = bucket.getValue();
+      final Object value = bucket.inputParam != null ? bucket.inputParam.getValue(context.getInputParameters()) : bucket.getValue();
       if (value instanceof PInteger id)
-        names.add(context.getDatabase().getSchema().getBucketById(id.getValue().intValue()).getName());
+        names.add(schema.getBucketById(id.getValue().intValue()).getName());
+      else if (value instanceof Number id)
+        names.add(schema.getBucketById(id.intValue()).getName());
       else
-        names.add(context.getDatabase().getSchema().getBucketByName(value.toString()).getName());
+        names.add(schema.getBucketByName(String.valueOf(value)).getName());
     }
     return names;
   }
