@@ -174,6 +174,7 @@ class CypherMultiHopBoundTargetReverseIssue13621Test {
         WITH p
         MATCH (a)-[:KNOWS]-(b)-[:KNOWS]-(p)
         RETURN a.id AS a, b.id AS b ORDER BY a""";
+    assertThat(profile(middle)).doesNotContain("MATCH NODE (a");
     assertThat(rows(middle, "a", "b")).containsExactly("3:4", "7:6");
   }
 
@@ -184,6 +185,9 @@ class CypherMultiHopBoundTargetReverseIssue13621Test {
         WITH p
         MATCH (a)-[:KNOWS]->(b)-[:KNOWS]->(p), (x)-[:KNOWS]->(a)
         RETURN a.id AS a, b.id AS b, x.id AS x""";
+    // the chain is walked from p; a is only checked again as the start of the second pattern
+    final String plan = profile(query);
+    assertThat(plan.indexOf("MATCH RELATIONSHIP (p)<-[:KNOWS]-(b)")).as(plan).isNotNegative().isLessThan(plan.indexOf("MATCH NODE (a"));
     assertThat(rows(query, "a", "b", "x")).containsExactly("1:2:0");
 
     final String written = """
@@ -192,6 +196,24 @@ class CypherMultiHopBoundTargetReverseIssue13621Test {
         MATCH (p)<-[:KNOWS]-(b)<-[:KNOWS]-(a), (x)-[:KNOWS]->(a)
         RETURN a.id AS a, b.id AS b, x.id AS x""";
     assertThat(rows(query, "a", "b", "x")).isEqualTo(rows(written, "a", "b", "x"));
+  }
+
+  @Test
+  void aChainEndingOnANodeAnEarlierPatternOfTheSameMatchBoundIsReversed() {
+    final String query = """
+        MATCH (p:Person {id: 3})
+        WITH p
+        MATCH (p)<-[:KNOWS]-(q), (a)-[:KNOWS]->(b)-[:KNOWS]->(q)
+        RETURN a.id AS a, b.id AS b, q.id AS q""";
+    assertThat(profile(query)).doesNotContain("MATCH NODE (a");
+    assertThat(rows(query, "a", "b", "q")).containsExactly("0:1:2");
+
+    final String written = """
+        MATCH (p:Person {id: 3})
+        WITH p
+        MATCH (p)<-[:KNOWS]-(q), (q)<-[:KNOWS]-(b)<-[:KNOWS]-(a)
+        RETURN a.id AS a, b.id AS b, q.id AS q""";
+    assertThat(rows(query, "a", "b", "q")).isEqualTo(rows(written, "a", "b", "q"));
   }
 
   @Test
