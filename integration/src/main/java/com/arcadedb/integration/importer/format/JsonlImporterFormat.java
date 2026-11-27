@@ -1669,9 +1669,9 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
         if (!(next.getKey() instanceof String name))
           continue;
 
-        final Object value = mutable.get(name);
-        final Object resolved = resolveLinks(value, next.getValue(), false, resolution);
-        if (resolved != value)
+        final int before = resolution.replaced;
+        final Object resolved = resolveLinks(mutable.get(name), next.getValue(), false, resolution);
+        if (resolution.replaced != before)
           mutable.set(name, resolved);
       }
       return mutable;
