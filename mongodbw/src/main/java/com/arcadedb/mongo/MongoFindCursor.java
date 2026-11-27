@@ -31,7 +31,12 @@ import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.NoSuchElementException;
+import java.util.Spliterator;
+import java.util.Spliterators;
 import java.util.logging.Level;
+import java.util.stream.Stream;
+import java.util.stream.StreamSupport;
 
 /**
  * The rows a {@code find} selects, read and converted to reply documents one batch at a time (issue #13052: a {@code find} used to
@@ -53,6 +58,8 @@ final class MongoFindCursor implements Cursor {
   static final int  DEFAULT_FIRST_BATCH = 101;
   /** What mongod keeps a batch under (BSONObjMaxUserSize): the reply is held in memory whole, and a driver refuses one past 48 MB. */
   static final long MAX_BATCH_BYTES     = 16L * 1024 * 1024;
+  /** The documents {@link #documents()} reads from the cursor at once. */
+  static final int  ITERATION_BATCH     = 128;
 
   private final Iterator<?>    rows;
   private final AutoCloseable  resource;
@@ -223,6 +230,44 @@ final class MongoFindCursor implements Cursor {
 
   synchronized boolean isClosed() {
     return closed;
+  }
+
+  /**
+   * The documents of the cursor one at a time, read from it {@link #ITERATION_BATCH} at a time as they are asked for: the rows past
+   * the last one asked for are neither read nor converted. The cursor is released when the last document is taken, and by
+   * {@link #close()} before.
+   */
+  Iterator<Document> documents() {
+    return new Iterator<>() {
+      private List<Document> batch = Collections.emptyList();
+      private int            position;
+
+      @Override
+      public boolean hasNext() {
+        while (position >= batch.size()) {
+          if (isDrained())
+            return false;
+          batch = takeBatch(ITERATION_BATCH, Long.MAX_VALUE);
+          position = 0;
+          if (batch.isEmpty())
+            return false;
+        }
+        return true;
+      }
+
+      @Override
+      public Document next() {
+        if (!hasNext())
+          throw new NoSuchElementException();
+        return batch.get(position++);
+      }
+    };
+  }
+
+  /** {@link #documents()} as a stream, which releases the cursor when it is closed. */
+  Stream<Document> stream() {
+    return StreamSupport.stream(Spliterators.spliteratorUnknownSize(documents(), Spliterator.ORDERED | Spliterator.NONNULL), false)
+        .onClose(this::close);
   }
 
   static Document toDocument(final Object row) {

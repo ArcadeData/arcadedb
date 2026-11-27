@@ -302,6 +302,11 @@ final class MongoSortOrder implements Comparator<Object[]> {
         heap.poll();
     }
 
+    /** How many entries are held. */
+    int size() {
+      return heap.size();
+    }
+
     List<Entry<T>> sorted() {
       final List<Entry<T>> result = new ArrayList<>(heap);
       result.sort(order);

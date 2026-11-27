@@ -32,9 +32,7 @@ import com.arcadedb.exception.ValidationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.ProfiledLimitScope;
-import com.arcadedb.query.sql.executor.IteratorResultSet;
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.schema.DocumentType;
@@ -80,7 +78,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Lock;
 import java.util.logging.Level;
-import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static de.bwaldvogel.mongo.backend.Utils.markOkay;
@@ -307,11 +304,10 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     return database instanceof DatabaseInternal internal ? internal.getResultSetLimit() : -1L;
   }
 
-  /** The documents of an answer, cut at the quota of the user's groups: {@code documents} itself when it holds no more. */
-  private static List<Document> capped(final List<Document> documents, final long quota) {
-    return quota < 0 || documents.size() <= quota ? documents : new ArrayList<>(documents.subList(0, (int) quota));
-  }
-
+  /**
+   * The documents a query of the {@code mongo} query language selects, read from the collection as the caller consumes the rows: a
+   * caller that stops early (the row limit of an HTTP request) never reads the rest, and the rows are not held in memory together.
+   */
   public ResultSet query(final String query) throws MongoServerException {
     final JSONObject queryJson = new JSONObject(query);
 
@@ -325,18 +321,40 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     final MongoQuery mongoQuery = new MongoQuery(null, null, getFullCollectionNamespace(collection), numberToSkip, numberToReturn,
         transformedQuery, null);
 
-    final QueryResult result = handleQuery(mongoQuery);
+    return new MongoCursorResultSet(openQueryCursor(mongoQuery));
+  }
 
-    // TRANSFORM THE RESULT INTO ARCADEDB RESULT SET
-    final IteratorResultSet resultset = new IteratorResultSet(result.iterator()) {
-      @Override
-      public Result next() {
-        final Map doc = (Map) ResultInternal.wrap(super.next().getProperty("value"));
-        return new ResultInternal(doc);
+  /**
+   * The cursor over the documents a query selects, for a caller that consumes them as it goes: what {@link #runQuery} answers whole,
+   * under the same quota. Opened inside the {@link ProfiledLimitScope}, as the cursor of a {@code find} is: the SQL statement it runs
+   * must not take the quota as its LIMIT.
+   */
+  private MongoFindCursor openQueryCursor(final MongoQuery query) throws MongoServerException {
+    purgeIdleCursorsOnce(System.nanoTime());
+    final long quota = profiledLimit();
+    ProfiledLimitScope.enter();
+    try {
+      this.clearLastStatus(query.getChannel());
+      if (!(getCollection(query.getCollectionName()) instanceof MongoDBCollectionWrapper collection))
+        return MongoFindCursor.empty();
+
+      final int numSkip = query.getNumberToSkip();
+      if (quota == 0) {
+        // NO DOCUMENT IS ANSWERED, AND 0 MEANS NO LIMIT TO THE COLLECTION: THE QUERY STILL RUNS, FOR ONE ROW, SO A MALFORMED ONE IS REFUSED
+        final MongoFindCursor probe = collection.openCursor(new QueryParameters(query.getQuery(), numSkip, 1), null);
+        try {
+          probe.takeBatch(1, MongoFindCursor.MAX_BATCH_BYTES);
+        } finally {
+          probe.close();
+        }
+        return MongoFindCursor.empty();
       }
-    };
-
-    return resultset;
+      return collection.openCursor(new QueryParameters(query.getQuery(), numSkip, tighterLimit(query.getNumberToReturn(), quota)), null);
+    } catch (final Exception e) {
+      throw wireException("Error on executing MongoDB query", e);
+    } finally {
+      ProfiledLimitScope.exit();
+    }
   }
 
   private Document json2Document(final JSONObject map) {
@@ -507,8 +525,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     aggregation.validate(document);
 
     // THE PIPELINE RUNS OVER EVERY DOCUMENT, A STAGE THAT WRITES ($out, $merge) INCLUDED: THE QUOTA CAPS THE DOCUMENTS IT ANSWERS
-    return firstBatchCursorResponse(collectionName, "firstBatch", capped(computeResult(aggregation, pipeline, collection, oplog), quota),
-        0);
+    return firstBatchCursorResponse(collectionName, "firstBatch", computeResult(aggregation, pipeline, collection, oplog, quota), 0);
   }
 
   /**
@@ -517,36 +534,53 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * two {@code $match} run as the library runs them, on the stream the previous part produced; the failures are reported as
    * {@link Aggregation#computeResult()} reports them. A {@code $match} nested in a sub-pipeline ({@code $facet}, {@code $lookup},
    * {@code $unionWith}) is still the library's.
+   * <p>
+   * The collection is read as the stages consume it, so a pipeline that keeps little (a count, a group, a limit) never holds the
+   * collection. What is held is counted against the heap limits, as the buffers of the SQL operations are: the documents a
+   * {@code $sort} takes in, which it all holds, and the documents of the answer. The pipeline runs over every document, a stage that
+   * writes ({@code $out}, {@code $merge}) included: only the answer is cut at the quota.
    */
   private List<Document> computeResult(final Aggregation aggregation, final List<Document> pipeline, final MongoCollection<?> collection,
-      final Oplog oplog) {
-    boolean matches = false;
-    for (final Document stage : pipeline)
-      if (stage.get("$match") instanceof Document) {
-        matches = true;
-        break;
-      }
-    if (!matches)
-      return aggregation.computeResult();
-
+      final Oplog oplog, final long quota) {
     // a malformed $match is refused before any document is read, as mongod refuses it when it parses the pipeline
     for (final Document stage : pipeline)
       if (stage.size() == 1 && stage.get("$match") instanceof Document query)
         new MongoQueryMatcher().validate(query);
 
+    final OperationHeapLimit heap = MongoResultHeap.of(database, "MongoDB aggregation");
+    final Stream<Document> input = collection.queryAllAsStream();
     try {
-      Stream<Document> stream = collection.queryAllAsStream();
+      Stream<Document> stream = input;
       List<Document> segment = new ArrayList<>();
+      boolean split = false;
       for (final Document stage : pipeline) {
         if (stage.size() == 1 && stage.get("$match") instanceof Document query) {
           stream = runSegment(segment, stream, collection, oplog);
           segment = new ArrayList<>();
+          split = true;
           final MongoQueryMatcher matcher = new MongoQueryMatcher();
           stream = stream.filter(candidate -> matcher.matches(candidate, query));
-        } else
+        } else {
+          if (stage.size() == 1 && stage.containsKey("$sort")) {
+            // the documents that reach the sort are all held until it has seen the last one
+            stream = runSegment(segment, stream, collection, oplog);
+            segment = new ArrayList<>();
+            split = true;
+            stream = heldBy(stream, heap);
+          }
           segment.add(stage);
+        }
       }
-      return runSegment(segment, stream, collection, oplog).collect(Collectors.toList());
+      stream = split ? runSegment(segment, stream, collection, oplog) : aggregation.runStagesAsStream(stream);
+
+      final List<Document> result = new ArrayList<>();
+      stream.forEach(document -> {
+        if (quota < 0 || result.size() < quota) {
+          result.add(document);
+          heap.add(result.size(), document);
+        }
+      });
+      return result;
     } catch (final TypeMismatchException | FailedToOptimizePipelineError | ProjectStage.InvalidProjectException e) {
       throw e;
     } catch (final MongoServerError e) {
@@ -554,7 +588,17 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         throw e;
       throw new MongoServerError(e.getCode(), e.getCodeName(),
           "PlanExecutor error during aggregation :: caused by :: " + e.getMessageWithoutErrorCode(), e);
+    } finally {
+      // the list is the answer by now: the limits count what a query buffers, not a reply on its way out
+      heap.release();
+      input.close();
     }
+  }
+
+  /** The documents of {@code stream}, each counted against {@code heap} as a stage that holds them all takes it in. */
+  private static Stream<Document> heldBy(final Stream<Document> stream, final OperationHeapLimit heap) {
+    final long[] held = { 0L };
+    return stream.peek(document -> heap.add(++held[0], document));
   }
 
   private Stream<Document> runSegment(final List<Document> segment, final Stream<Document> stream, final MongoCollection<?> collection,
