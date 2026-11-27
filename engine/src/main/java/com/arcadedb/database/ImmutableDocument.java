@@ -530,10 +530,9 @@ public class ImmutableDocument extends BaseDocument {
    * the values it was handed are every property the record holds, and skips the second pass over the header that listing the names
    * costs (issue #12979).
    * <p>
-   * It reads the stored content directly. A subclass that redefines {@link #toMap(boolean)} or {@link #getPropertyNames()} answers
-   * them from something else (a remote record holds the map the server sent, and no content), so {@code ResultInternal.propertiesOf}
-   * reads such a subclass through those two methods unless the subclass redefines this one as well, matching its own
-   * {@code toMap(false)}.
+   * It reads the stored content directly, which a subclass may not answer its map and its names from (a remote record holds the map
+   * the server sent, and no content), so {@code ResultInternal.propertiesOf} reads a record through this method only when its class
+   * is one of the engine's own record classes or declares this method itself, matching its own {@code toMap(false)}.
    *
    * @return a NEW, mutable map the caller owns
    */

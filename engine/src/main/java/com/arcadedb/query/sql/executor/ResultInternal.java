@@ -21,6 +21,9 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.database.*;
 import com.arcadedb.database.Record;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.ImmutableEdge;
+import com.arcadedb.graph.ImmutableLightEdge;
+import com.arcadedb.graph.ImmutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
@@ -234,9 +237,12 @@ public class ResultInternal implements Result {
    * Whether {@link #propertiesOf} may read a record of {@code recordClass} through
    * {@link ImmutableDocument#toMapReportingDamage(String[])}, which reads the stored content directly, instead of through the
    * {@code getPropertyNames()} and {@code toMap(false)} a subclass may answer differently from that content: a remote record holds
-   * no content at all, only the map the server sent (issue #12979). A class qualifies when the most derived of these three methods
-   * it inherits or declares is {@code toMapReportingDamage}, so a subclass that redefines how its map or its names are answered
-   * keeps being read through them unless it says how it reports damage too. Decided once per class.
+   * no content at all, only the map the server sent (issue #12979). A class qualifies when it is one of the engine's own record
+   * classes, whose {@code toMap(false)} is that read (pinned by {@code ResultInternalPropertiesOfTest}), or when it declares
+   * {@code toMapReportingDamage} itself, saying how a record of its own reports damage. Any other subclass keeps the read through
+   * its names and its map. Only a declaration found counts: in a native image a method whose reflection metadata is not registered
+   * reads as not declared, which leaves the class on the read through its names and its map, never on a read of content it may not
+   * have. Decided once per class.
    */
   static boolean readsInOnePass(final Class<?> recordClass) {
     return READS_IN_ONE_PASS.get(recordClass);
@@ -245,18 +251,11 @@ public class ResultInternal implements Result {
   private static final ClassValue<Boolean> READS_IN_ONE_PASS = new ClassValue<>() {
     @Override
     protected Boolean computeValue(final Class<?> recordClass) {
-      for (Class<?> c = recordClass; c != null && c != ImmutableDocument.class; c = c.getSuperclass()) {
-        if (declares(c, "toMapReportingDamage", String[].class))
-          return true;
-        if (declares(c, "toMap", boolean.class) || declares(c, "getPropertyNames"))
-          return false;
-      }
-      return true;
-    }
-
-    private boolean declares(final Class<?> c, final String name, final Class<?>... parameterTypes) {
+      if (recordClass == ImmutableDocument.class || recordClass == ImmutableVertex.class || recordClass == ImmutableEdge.class
+          || recordClass == ImmutableLightEdge.class || recordClass == ImmutableEmbeddedDocument.class)
+        return true;
       try {
-        c.getDeclaredMethod(name, parameterTypes);
+        recordClass.getDeclaredMethod("toMapReportingDamage", String[].class);
         return true;
       } catch (final NoSuchMethodException e) {
         return false;
