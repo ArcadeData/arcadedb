@@ -56,6 +56,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
+import java.util.function.IntFunction;
 
 /**
  * Execution step for shortestPath() and allShortestPaths() patterns in MATCH clauses.
@@ -501,8 +502,12 @@ public class ShortestPathStep extends AbstractExecutionStep {
     if (shortest == null || !bounds.accepts(shortest))
       return Collections.emptyIterator();
 
-    return new PredicatePathIterator(source, targetRid, shortest, bounds.getMax(), expandDirections(direction), typesArray,
-        constraint, toTarget, evalRow, context, guard);
+    final Vertex.DIRECTION[] directions = expandDirections(direction);
+    return new PredicatePathIterator(shortest, bounds.getMax(), length -> {
+      // A walk of this length never asks for a vertex farther from the target than the length itself
+      toTarget.expandTo(length);
+      return new PathPredicateSearch(source, targetRid, length, directions, typesArray, constraint, toTarget, context, guard);
+    }, evalRow, context);
   }
 
   /**
@@ -512,37 +517,24 @@ public class ShortestPathStep extends AbstractExecutionStep {
    * passing path.
    */
   private final class PredicatePathIterator implements Iterator<List<Object>> {
-    private final Vertex              source;
-    private final RID                 targetRid;
-    private final int                 maxLength;
-    private final Vertex.DIRECTION[]  directions;
-    private final String[]            typesArray;
-    private final EdgeConstraint      constraint;
-    private final LayeredDistances    toTarget;
-    private final ResultInternal      evalRow;
-    private final CommandContext      context;
-    private final WorkGuard           guard;
-    private       int                 length;
-    private       PathPredicateSearch search;
-    private       boolean             foundAtThisLength;
-    private       boolean             exhausted;
-    private       List<Object>        pending;
+    private final int                                maxLength;
+    private final IntFunction<PathPredicateSearch>   searchOfLength;
+    private final ResultInternal                     evalRow;
+    private final CommandContext                     context;
+    private       int                                length;
+    private       PathPredicateSearch                search;
+    private       boolean                            foundAtThisLength;
+    private       boolean                            exhausted;
+    private       List<Object>                       pending;
 
-    PredicatePathIterator(final Vertex source, final RID targetRid, final int shortest, final int maxLength,
-        final Vertex.DIRECTION[] directions, final String[] typesArray, final EdgeConstraint constraint,
-        final LayeredDistances toTarget, final ResultInternal evalRow, final CommandContext context, final WorkGuard guard) {
-      this.source = source;
-      this.targetRid = targetRid;
+    PredicatePathIterator(final int shortest, final int maxLength, final IntFunction<PathPredicateSearch> searchOfLength,
+        final ResultInternal evalRow, final CommandContext context) {
       this.maxLength = maxLength;
-      this.directions = directions;
-      this.typesArray = typesArray;
-      this.constraint = constraint;
-      this.toTarget = toTarget;
+      this.searchOfLength = searchOfLength;
       this.evalRow = evalRow;
       this.context = context;
-      this.guard = guard;
       this.length = shortest;
-      this.search = newSearch();
+      this.search = searchOfLength.apply(shortest);
     }
 
     @Override
@@ -568,26 +560,19 @@ public class ShortestPathStep extends AbstractExecutionStep {
 
     private List<Object> advance() {
       while (true) {
-        for (List<Object> path = search.next(); path != null; path = search.next()) {
-          if (!passes(evalRow, path, context))
-            continue;
+        List<Object> path = search.next();
+        while (path != null && !passes(evalRow, path, context))
+          path = search.next();
+        if (path != null) {
           foundAtThisLength = true;
-          if (!pattern.isAllPaths())
-            // shortestPath() answers one path: nothing follows it
-            exhausted = true;
+          // shortestPath() answers one path: nothing follows it
+          exhausted = !pattern.isAllPaths();
           return path;
         }
         if (foundAtThisLength || !search.couldGoLonger || length >= maxLength)
           return null;
-        length++;
-        search = newSearch();
+        search = searchOfLength.apply(++length);
       }
-    }
-
-    private PathPredicateSearch newSearch() {
-      // A walk of this length never asks for a vertex farther from the target than the length itself
-      toTarget.expandTo(length);
-      return new PathPredicateSearch(source, targetRid, length, directions, typesArray, constraint, toTarget, context, guard);
     }
   }
 

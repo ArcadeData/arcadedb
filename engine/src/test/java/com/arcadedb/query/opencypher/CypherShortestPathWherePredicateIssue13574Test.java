@@ -224,19 +224,7 @@ class CypherShortestPathWherePredicateIssue13574Test extends TestHelper {
 
       final Vertex k = database.query("opencypher", "MATCH (k:Person {name:'K'}) RETURN k").next().getProperty("k");
       final Vertex a = database.query("opencypher", "MATCH (a:Person {name:'A'}) RETURN a").next().getProperty("a");
-      final AbstractExecutionStep input = new AbstractExecutionStep(context) {
-        private boolean done;
-
-        @Override
-        public ResultSet syncPull(final CommandContext ctx, final int nRecords) {
-          final InternalResultSet rs = new InternalResultSet();
-          if (!done) {
-            done = true;
-            rs.add(new ResultInternal().setProperty("k", k).setProperty("a", a));
-          }
-          return rs;
-        }
-      };
+      final AbstractExecutionStep input = oneRowStep(context, k, a);
 
       final ShortestPathPattern pattern = new ShortestPathPattern(
           List.of(new NodePattern("k", null, null), new NodePattern("a", null, null)),
@@ -247,6 +235,20 @@ class CypherShortestPathWherePredicateIssue13574Test extends TestHelper {
       final ResultSet rs = step.syncPull(context, 1);
       assertThat(rs.hasNext()).isTrue();
       assertThat(rs.next().<Object>getProperty("p")).isNotNull();
+      assertThat(evaluations[0]).isEqualTo(1);
+
+      // shortestPath() stops after its first passing path, even when the consumer keeps reading
+      evaluations[0] = 0;
+      final ShortestPathPattern single = new ShortestPathPattern(pattern.getNodes(), pattern.getRelationships(), "p", false);
+      final ShortestPathStep singleStep = new ShortestPathStep("k", "a", "p", single, countingPredicate, context);
+      singleStep.setPrevious(oneRowStep(context, k, a));
+      final ResultSet all = singleStep.syncPull(context, 100);
+      int rows = 0;
+      while (all.hasNext()) {
+        all.next();
+        rows++;
+      }
+      assertThat(rows).isEqualTo(1);
       assertThat(evaluations[0]).isEqualTo(1);
     });
   }
@@ -261,6 +263,22 @@ class CypherShortestPathWherePredicateIssue13574Test extends TestHelper {
       assertThat(rs.next().<Number>getProperty("len").intValue()).isEqualTo(2);
       assertThat(rs.hasNext()).isFalse();
     }
+  }
+
+  private static AbstractExecutionStep oneRowStep(final CommandContext context, final Vertex k, final Vertex a) {
+    return new AbstractExecutionStep(context) {
+      private boolean done;
+
+      @Override
+      public ResultSet syncPull(final CommandContext ctx, final int nRecords) {
+        final InternalResultSet rs = new InternalResultSet();
+        if (!done) {
+          done = true;
+          rs.add(new ResultInternal().setProperty("k", k).setProperty("a", a));
+        }
+        return rs;
+      }
+    };
   }
 
   private List<List<String>> namesOf(final String query, final Map<String, Object> params) {
