@@ -120,10 +120,22 @@
             <artifactId>postgresql</artifactId>
             <version>${postgresql.version}</version>
         </dependency>
+        <!-- The bench logs through SLF4J. Declared directly so the project's 2.x API wins the mediation over the
+             slf4j-api 1.7 that testcontainers brings: a 1.7 API never sees the ServiceLoader provider of a 2.x
+             binding and falls back to the NOP logger (#13662). -->
         <dependency>
-            <groupId>ch.qos.logback</groupId>
-            <artifactId>logback-classic</artifactId>
-            <version>${logback-classic.version}</version>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+            <version>${slf4j.version}</version>
+        </dependency>
+        <!-- Runtime SLF4J binding of the bench jar: routes the bench and Testcontainers logs to java.util.logging
+             (stderr by default), the channel the ArcadeDB client already logs to. Declared here at runtime because
+             the parent keeps slf4j-jdk14 at test scope; see console/pom.xml. Keep it the only SLF4J binding. -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-jdk14</artifactId>
+            <version>${slf4j.version}</version>
+            <scope>runtime</scope>
         </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
