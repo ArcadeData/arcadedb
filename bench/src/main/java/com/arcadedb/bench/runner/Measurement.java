@@ -23,7 +23,14 @@ import com.arcadedb.bench.model.Metric;
 import java.util.List;
 
 /**
- * The metrics of one repetition: one value per metric.
+ * The metrics of one repetition: one value per metric, and the base64 latency histogram when the workload recorded one.
  */
-public record Measurement(List<Metric> perRep) {
+public record Measurement(List<Metric> perRep, String histogram) {
+  public Measurement(final List<Metric> perRep) {
+    this(perRep, null);
+  }
+
+  public static Measurement of(final List<Metric> perRep, final LatencyRecorder recorder) {
+    return new Measurement(perRep, recorder.encodedHistogram());
+  }
 }

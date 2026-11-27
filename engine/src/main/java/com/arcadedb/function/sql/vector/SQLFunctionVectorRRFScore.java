@@ -74,7 +74,7 @@ public class SQLFunctionVectorRRFScore extends SQLFunctionVectorAbstract {
       long k = DEFAULT_K;
       if (params.length == 2) {
         if (params[1] instanceof Map<?, ?> rawMap)
-          k = new FunctionOptions(NAME, rawMap, OPTIONS).getLong("k", DEFAULT_K);
+          k = new FunctionOptions(NAME, rawMap, OPTIONS).getNonNegativeLong("k", DEFAULT_K);
         else
           throw new CommandSQLParsingException("Second argument of the array form must be an options map { k: <long> }");
       } else if (params.length > 2) {
@@ -91,7 +91,7 @@ public class SQLFunctionVectorRRFScore extends SQLFunctionVectorAbstract {
     int rankCount = params.length;
     final Object lastParam = params[params.length - 1];
     if (lastParam instanceof Map<?, ?> rawMap) {
-      k = new FunctionOptions(NAME, rawMap, OPTIONS).getLong("k", DEFAULT_K);
+      k = new FunctionOptions(NAME, rawMap, OPTIONS).getNonNegativeLong("k", DEFAULT_K);
       rankCount = params.length - 1;
     }
 

@@ -1,0 +1,12 @@
+name: unguarded-attach
+on:
+  workflow_dispatch:
+    inputs:
+      attach_to_release:
+        type: boolean
+jobs:
+  attest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sign blob
+        run: cosign sign-blob --yes file

@@ -72,7 +72,10 @@ public class CreateEdgeAsyncTask extends DatabaseAsyncAbstractTask {
       final boolean createdSourceVertex, final boolean createdDestinationVertex) {
 
     final GraphEngine graphEngine = database.getGraphEngine();
-    final VertexInternal source = (VertexInternal) sourceVertex.getRecord();
+    // READ INSIDE THIS WORKER'S TRANSACTION: THE VERTEX THE CALLER PASSED WAS READ ON ITS THREAD, BEFORE THE EARLIER TASKS OF THIS OPEN
+    // BATCH REWROTE IT, AND ITS EDGE LIST HEAD IS NOT THE ONE THE TRANSACTION HOLDS ANY MORE (ConcurrentModificationException, WHOLE BATCH
+    // ROLLED BACK, issue #12719)
+    final VertexInternal source = (VertexInternal) database.lookupByRID(sourceVertex.getIdentity(), true);
     final RID destination = destinationVertex.getIdentity();
 
     final Edge edge;

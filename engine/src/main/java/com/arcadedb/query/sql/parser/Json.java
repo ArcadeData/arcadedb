@@ -164,10 +164,18 @@ public class Json extends SimpleNode {
     return true;
   }
 
+  /**
+   * A value of the map can read the outer row ({@code {'v': $parent.$current.id}}): a sub-query holding such a map is
+   * correlated, and the planner must lift it into a per-record LET, not into a global one computed once (issue #12714).
+   */
   @Override
   public boolean refersToParent() {
+    for (final JsonItem item : items)
+      if (item.refersToParent())
+        return true;
     return false;
   }
+
   @Override
   public Map<String, Object> toJSON() {
     final Map<String, Object> json = super.toJSON();

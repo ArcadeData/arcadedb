@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.RefusedBeforePublishingException;
 import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.ArithmeticErrorException;
 import com.arcadedb.exception.ConcurrentModificationException;
@@ -125,6 +126,18 @@ class LeaderExceptionReconstructionTest {
 
     assertThat(rebuilt).isInstanceOf(ReplicationQueueFullException.class);
     assertThat(rebuilt).isInstanceOf(NeedRetryException.class);
+    assertThat(rebuilt.getMessage()).isEqualTo(detail);
+  }
+
+  // Regression for #13437: a schema session the leader refused before publishing anything is rebuilt as the plain retryable refusal
+  @Test
+  void aRefusalBeforePublishingOnTheLeaderIsRebuiltAsAPlainRetryableRefusal() {
+    final String detail = "Refused a schema change on database 'graph' allocated in Raft term 7";
+    final RuntimeException rebuilt = RaftReplicatedDatabase.reconstructLeaderException(503,
+        leaderBody(RefusedBeforePublishingException.class.getName(), detail), null);
+
+    // Its watermark describes the leader's thread, so the follower holds the refusal it extends, never the subtype
+    assertThat(rebuilt).isExactlyInstanceOf(NeedRetryException.class);
     assertThat(rebuilt.getMessage()).isEqualTo(detail);
   }
 

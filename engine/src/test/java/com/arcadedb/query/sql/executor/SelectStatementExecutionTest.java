@@ -27,6 +27,7 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.index.Index;
 import com.arcadedb.schema.DocumentType;
@@ -1931,13 +1932,14 @@ public class SelectStatementExecutionTest extends TestHelper {
     }
     assertThat(count).isEqualTo(3);
 
-    // Nested usage is not supported: must fail with a clear, actionable message (not "Unknown function name 'distinct'").
+    // Nested usage is not supported: must fail with a clear, actionable message (not "Unknown function name 'distinct'"), as the
+    // caller's mistake (issue #12795)
     assertThatThrownBy(() -> database.query("sql", "SELECT first(distinct(*)) FROM (SELECT expand([1,2,3,1]) AS x)").close())
-        .isInstanceOf(CommandExecutionException.class)
+        .isInstanceOf(CommandSemanticException.class)
         .hasMessageContaining("'distinct' is supported only as the whole SELECT projection");
 
     assertThatThrownBy(() -> database.query("sql", "SELECT distinct(*).type() FROM (SELECT expand([1,2,3,1]) AS x)").close())
-        .isInstanceOf(CommandExecutionException.class)
+        .isInstanceOf(CommandSemanticException.class)
         .hasMessageContaining("'distinct' is supported only as the whole SELECT projection");
 
     // Inside an aggregate function the DISTINCT modifier is the standard `count(DISTINCT x)` form, so a parenthesized

@@ -38,6 +38,11 @@ public class ArcadeDbFixture : IAsyncLifetime
     private IContainer _container = null!;
     public NpgsqlDataSource DataSource { get; private set; } = null!;
 
+    /// <summary>The connection string of <see cref="DataSource"/>, for a test that needs its own data source settings.</summary>
+    public string ConnectionString { get; private set; } = null!;
+
+    private string _httpBase = null!;
+
     public async Task InitializeAsync()
     {
         var imageEnv = Environment.GetEnvironmentVariable("ARCADEDB_DOCKER_IMAGE");
@@ -80,11 +85,26 @@ public class ArcadeDbFixture : IAsyncLifetime
                 "application/json"));
         createTypeResponse.EnsureSuccessStatusCode();
 
+        _httpBase = $"http://{_container.Hostname}:{httpPort}";
+
         var pgPort = _container.GetMappedPublicPort(5432);
-        DataSource = NpgsqlDataSource.Create(
+        ConnectionString =
             $"Host={_container.Hostname};Port={pgPort};Database=NpgsqlE2ETest;" +
             $"Username={RootUser};Password={RootPassword};SSL Mode=Disable;" +
-            "Server Compatibility Mode=NoTypeLoading;No Reset On Close=true");
+            "Server Compatibility Mode=NoTypeLoading;No Reset On Close=true";
+        DataSource = NpgsqlDataSource.Create(ConnectionString);
+    }
+
+    /// <summary>Runs a JSON command body against the NpgsqlE2ETest database through the HTTP API.</summary>
+    public async Task HttpCommandAsync(string jsonBody)
+    {
+        using var http = new HttpClient();
+        http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Basic", Convert.ToBase64String(Encoding.UTF8.GetBytes($"{RootUser}:{RootPassword}")));
+        using var response = await http.PostAsync(
+            $"{_httpBase}/api/v1/command/NpgsqlE2ETest",
+            new StringContent(jsonBody, Encoding.UTF8, "application/json"));
+        response.EnsureSuccessStatusCode();
     }
 
     public async Task DisposeAsync()

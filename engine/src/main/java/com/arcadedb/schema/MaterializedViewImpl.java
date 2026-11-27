@@ -51,6 +51,13 @@ public class MaterializedViewImpl implements MaterializedView, TypeNameDependant
   private final long refreshInterval;
   private volatile long lastRefreshTime;
   private volatile MaterializedViewStatus status;
+  /**
+   * The status the schema saves (issue #12252): the last one set with {@link #setStatus}, never the BUILDING of a running pass
+   * ({@link #markPassRunning}). Any schema save made while a pass runs (another DDL, a continuous aggregate's late-sample record)
+   * writes this, and under HA that saved document is what the followers load, so a pass in progress no longer reaches them as the
+   * BUILDING a load turns into STALE. A BUILDING set by {@link #setStatus} (creation, an ALTER upgrade) is saved as before.
+   */
+  private volatile MaterializedViewStatus persistedStatus;
   private volatile MaterializedViewChangeListener changeListener;
   /**
    * The rows carry a {@code _sourceRID} link to the source record they were computed from, indexed UNIQUE (issue #11475). Decided
@@ -83,7 +90,10 @@ public class MaterializedViewImpl implements MaterializedView, TypeNameDependant
   private       boolean          pendingRecovery;
   /** The delta of the commits since the last pass of a grouped view drained it (issue #11937); under {@link #pendingDeltaLock}. */
   private       MaterializedViewGroupedState.Groups pendingGroups;
-  /** The transactions of a grouped view between their commit point and the delivery of their delta; under the same lock. */
+  /**
+   * The transactions of a grouped view between their commit point and the delivery of their delta, both made while they hold their
+   * locks (issue #12720); under the same lock.
+   */
   private final Set<MaterializedViewChangeListener.GroupedCapture> groupedInFlight = new LinkedHashSet<>();
   /** The watch of the rebuild pass running, or null; under the same lock. */
   private       MaterializedViewGroupedState.Watch groupedWatch;
@@ -115,6 +125,7 @@ public class MaterializedViewImpl implements MaterializedView, TypeNameDependant
     this.refreshInterval = refreshInterval;
     this.lastRefreshTime = 0;
     this.status = MaterializedViewStatus.VALID;
+    this.persistedStatus = MaterializedViewStatus.VALID;
   }
 
   @Override
@@ -492,11 +503,12 @@ public class MaterializedViewImpl implements MaterializedView, TypeNameDependant
   }
 
   /**
-   * The transaction committed: takes it out of flight and, unless a rebuild pass took its changes over, hands its delta to the view.
-   * One critical section, not two: a rebuild that begins between the two would no longer find the transaction in flight, yet its
-   * scan reads what the transaction published, and the delta handed over after would then be applied on top of a state that
-   * already holds it. The rebuild takes the same lock to begin, so it either finds the transaction in flight (and takes it over) or
-   * begins after the delta is pending (and drops it).
+   * The transaction published its pages: takes it out of flight and, unless a rebuild pass took its changes over, hands its delta to
+   * the view. Called while the transaction still holds its locks, from {@code GroupedCapture.onPublished()}, unless it never reached
+   * its commit point. One critical section, not two: a rebuild that begins between the two would no longer find the transaction in
+   * flight, yet its scan reads what the transaction published, and the delta handed over after would then be applied on top of a
+   * state that already holds it. The rebuild takes the same lock to begin, so it either finds the transaction in flight (and takes it
+   * over) or begins after the delta is pending (and drops it).
    *
    * @param delta what the view adopts, null when the transaction has nothing to hand over (the caller then asks for a full pass if
    *              it owes one)
@@ -533,6 +545,11 @@ public class MaterializedViewImpl implements MaterializedView, TypeNameDependant
    * Opens the watch of a rebuild pass: every transaction between its commit point and its delivery is taken over by the rebuild, as
    * is every one reaching its commit point until {@link #closeGroupedWatch}. The pending delta is dropped: the transactions it holds
    * have published their changes, which the rebuild's scan reads.
+   * <p>
+   * The after-image a transaction in flight holds of each record it changed is the newest one, which the rebuild counts in place of
+   * whatever its scan reads (issue #12720): the transaction is in flight only while it holds its locks, so no other transaction can
+   * have committed a change of the same records on top of it. One that commits afterwards reaches its commit point after this one
+   * left flight, and is absorbed by the watch if it is still open, or hands its delta over to the next pass otherwise.
    */
   MaterializedViewGroupedState.Watch openGroupedWatch() {
     synchronized (pendingDeltaLock) {
@@ -575,6 +592,15 @@ public class MaterializedViewImpl implements MaterializedView, TypeNameDependant
 
   public void setStatus(final MaterializedViewStatus status) {
     this.status = status;
+    this.persistedStatus = status;
+  }
+
+  /**
+   * Reports BUILDING while a refresh pass runs, without changing the status the schema saves (issue #12252): the pass ends by
+   * setting the status it settles in.
+   */
+  void markPassRunning() {
+    this.status = MaterializedViewStatus.BUILDING;
   }
 
   public MaterializedViewChangeListener getChangeListener() {
@@ -731,7 +757,8 @@ public class MaterializedViewImpl implements MaterializedView, TypeNameDependant
         database, name, query, backingTypeName, sourceTypeNames,
         newMode, simpleQuery, newInterval);
     copy.lastRefreshTime = this.lastRefreshTime;
-    copy.status = this.status;
+    // The settled status, not the BUILDING of a pass of this instance running now: no pass of the copy is (issue #12252)
+    copy.setStatus(this.persistedStatus);
     // The rows keep their link whatever the new mode (issue #11475); the derived query is rebuilt by the copy on first use
     copy.perRecord = this.perRecord;
     // What this view still owes goes with it: a full pass owed after a failed pass, dropped here, let the copy's next delta pass
@@ -767,7 +794,7 @@ public class MaterializedViewImpl implements MaterializedView, TypeNameDependant
     json.put("simpleQuery", simpleQuery);
     json.put("refreshInterval", refreshInterval);
     json.put("lastRefreshTime", lastRefreshTime);
-    json.put("status", status.name());
+    json.put("status", persistedStatus.name());
     json.put("perRecord", perRecord);
     final JSONArray srcTypes = new JSONArray();
     for (final String src : sourceTypeNames)
@@ -796,7 +823,7 @@ public class MaterializedViewImpl implements MaterializedView, TypeNameDependant
         json.getBoolean("simpleQuery", false),
         json.getLong("refreshInterval", 0));
     view.lastRefreshTime = json.getLong("lastRefreshTime", 0);
-    view.status = MaterializedViewStatus.valueOf(json.getString("status", "VALID"));
+    view.setStatus(MaterializedViewStatus.valueOf(json.getString("status", "VALID")));
     view.perRecord = json.getBoolean("perRecord", false);
     return view;
   }

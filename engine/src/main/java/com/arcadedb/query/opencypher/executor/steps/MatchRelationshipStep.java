@@ -218,6 +218,9 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
     return new ResultSet() {
       private ResultSet prevResults = null;
       private Result lastResult = null;
+      // The edge `lastResult` already binds the relationship variable to, resolved once per source row by
+      // resolveRelationshipBinding(): the only definition of "bound" this step has (#12621)
+      private Edge boundRelationshipEdge = null;
       private Iterator<Edge> currentEdges = null;
       private Iterator<Vertex> currentVertices = null;
       // GAV reference path: iterate int[] neighbor IDs directly, zero OLTP
@@ -299,7 +302,9 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
               }
 
               lastResult = prevResults.next();
-              final Object sourceObj = lastResult.getProperty(sourceVariable);
+              // A target an earlier OPTIONAL MATCH left null is bound, and a null vertex cannot be reached: the row has no
+              // source for this hop (#12728)
+              final Object sourceObj = isNullBoundTarget(lastResult) ? null : lastResult.getProperty(sourceVariable);
 
               // Resolve source: accept both GAVVertex and Vertex
               int sourceNodeId = -1;
@@ -312,7 +317,9 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
               } else if (sourceObj instanceof Vertex)
                 sourceVertex = (Vertex) sourceObj;
 
-              if (sourceVertex != null || sourceNodeId >= 0) {
+              // A relationship variable an earlier clause bound to no edge (null, as an OPTIONAL MATCH that found nothing
+              // leaves it) matches no edge from this source either (#12621)
+              if ((sourceVertex != null || sourceNodeId >= 0) && resolveRelationshipBinding(lastResult)) {
 
                 // Determine if we can use fast path for this vertex
                 useFastPath = canUseFastPath(lastResult);
@@ -376,6 +383,26 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
             }
           }
         }
+      }
+
+      /**
+       * Resolves, once per source row, what the row already binds the relationship variable to, and answers whether the hop
+       * can match any edge from this source at all. The row holding the NAME is what makes the variable bound, never its value
+       * and never the plan-time {@code boundVariableNames}: that set also lists the name this hop is about to bind, and it is
+       * empty for a body seeded directly from an outer row (EXISTS/COUNT/COLLECT with no leading WITH, #5696). Bound to an
+       * edge, the hop is constrained to that edge ({@code boundRelationshipEdge}); bound to anything else - null, as an
+       * OPTIONAL MATCH that found nothing leaves it - it matches nothing (#12621). An internal name is never bound by an
+       * earlier clause, so a non-edge value under one (a GAV edge reference) leaves the hop free.
+       */
+      private boolean resolveRelationshipBinding(final Result row) {
+        boundRelationshipEdge = null;
+        if (relationshipVariable == null || relationshipVariable.isEmpty() || !row.hasProperty(relationshipVariable))
+          return true;
+        if (row.getProperty(relationshipVariable) instanceof Edge edge) {
+          boundRelationshipEdge = edge;
+          return true;
+        }
+        return relationshipVariable.startsWith("  ");
       }
 
       /**
@@ -506,20 +533,8 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
         } else
           whereEvalResult = null;
 
-        // Resolve the pre-bound relationship edge (if any) once per source vertex: `lastResult` and
-        // `relationshipVariable` are loop-invariant across the candidate-edge iteration below.
-        // `boundVariableNames` is a plan-time set and can be empty for a body seeded directly from an
-        // outer row (EXISTS/COUNT/COLLECT with no leading WITH), so also check the incoming row itself -
-        // mirroring MatchNodeStep's runtime check for a pre-bound node variable (see #5696).
-        final Edge boundRelationshipEdge;
-        if (relationshipVariable != null
-            && ((boundVariableNames != null && boundVariableNames.contains(relationshipVariable))
-                || lastResult.listsProperty(relationshipVariable))
-            && lastResult.getProperty(relationshipVariable) instanceof Edge)
-          boundRelationshipEdge = (Edge) lastResult.getProperty(relationshipVariable);
-        else
-          boundRelationshipEdge = null;
-
+        // The pre-bound relationship edge (if any) is `boundRelationshipEdge`, resolved once per source row in
+        // fetchMore() by resolveRelationshipBinding()
         while (currentEdges.hasNext() && buffer.size() < n) {
           guard.check();
           final long begin = context.isProfiling() ? System.nanoTime() : 0;
@@ -818,6 +833,15 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
       return null;
     final Object boundValue = lastResult.getProperty(targetVariable);
     return boundValue instanceof Vertex boundVertex ? boundVertex.getIdentity() : null;
+  }
+
+  /**
+   * Whether the target variable is bound by an earlier clause to null, as an OPTIONAL MATCH that found nothing leaves it. The plan-time
+   * name set also holds the names this MATCH is about to bind, so the row must hold the name, with no vertex, for it to count.
+   */
+  private boolean isNullBoundTarget(final Result lastResult) {
+    return boundVariableNames != null && boundVariableNames.contains(targetVariable) && lastResult.getProperty(targetVariable) == null
+        && lastResult.hasProperty(targetVariable);
   }
 
   /**

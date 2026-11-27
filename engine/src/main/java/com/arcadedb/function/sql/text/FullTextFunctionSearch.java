@@ -29,6 +29,7 @@ import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.fulltext.FullTextRecordScorer;
+import com.arcadedb.index.fulltext.FullTextPostingsReuse;
 import com.arcadedb.index.fulltext.FullTextSearch;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.IndexedFunctionPushdown;
@@ -42,10 +43,12 @@ import com.arcadedb.schema.DocumentType;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.IntPredicate;
 import java.util.function.Predicate;
@@ -193,10 +196,15 @@ final class FullTextFunctionSearch {
     final RIDFilter recordFilter = ridFilter != null && ridFilter.hasRecordPredicate() ? ridFilter : null;
     final IndexedFunctionPushdown.Order order = pushdown.order();
     final int limit = order == IndexedFunctionPushdown.Order.FUNCTION ? pushdown.limit() : -1;
+    // The postings the limited search reads, for the complete search that continues it: both belong to this fetch, so a write
+    // between two statements of a script is never missed. Kept only when a filter follows the fetch, which is what pulls the plan
+    // past its limit: without one the postings would stay referenced for the iteration for a continuation that a record gone since
+    // the index was read is the only reason for
+    final FullTextPostingsReuse reuse = pushdown.filtered() ? new FullTextPostingsReuse() : null;
     final Supplier<Map<RID, Float>> complete = () -> {
       @SuppressWarnings("unchecked")
       final Map<RID, Float> allResults = (Map<RID, Float>) context.getCachedValue(cacheKey);
-      return allResults != null ? allResults : completeSearch(context);
+      return allResults != null ? allResults : completeSearch(context, reuse);
     };
 
     // The Iterable builds a fresh heap on every iterator() call: a plan pulls it once, and re-iterating it re-orders the same
@@ -214,7 +222,7 @@ final class FullTextFunctionSearch {
       return new AllMatches(database, accepted, null, recordFilter, order, guard);
     }
 
-    final Map<RID, Float> best = searchAll(limit, guard, ridFilter);
+    final Map<RID, Float> best = searchAll(limit, guard, ridFilter, reuse);
     // The map holds each bucket's best matches, so up to buckets x limit entries: their union contains the global best
     // `limit`, which is the prefix the iteration trusts
     rememberSubset(context, best);
@@ -224,32 +232,47 @@ final class FullTextFunctionSearch {
         recordFilter, order, guard);
   }
 
-  Object explainScoring() {
+  Object explainScoring(final CommandContext context) {
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
     if (indexes.size() == 1)
-      return FullTextSearch.explainScoring(indexes.getFirst(), query, restrictedFields);
+      return FullTextSearch.explainScoring(indexes.getFirst(), query, restrictedFields, guard);
     // a logical index: one explanation per member, under its name
     final JSONObject explain = new JSONObject();
     for (final TypeIndex index : indexes)
-      explain.put(index.getName(), FullTextSearch.explainScoring(index, query, restrictedFields));
+      explain.put(index.getName(), FullTextSearch.explainScoring(index, query, restrictedFields, guard));
     return explain;
   }
 
   /** The matches of every index, each searched with the limit and the filter; a limit of -1 is unbounded. */
   private Map<RID, Float> searchAll(final int limit, final WorkGuard guard, final RIDFilter ridFilter) {
+    return searchAll(limit, guard, ridFilter, null);
+  }
+
+  /**
+   * With {@code reuse}, not null, the postings the limited search of this fetch read are scored again by its continuation, with the
+   * corpus statistics it scored them with, instead of read again.
+   */
+  private Map<RID, Float> searchAll(final int limit, final WorkGuard guard, final RIDFilter ridFilter,
+      final FullTextPostingsReuse reuse) {
     if (indexes.size() == 1)
-      return FullTextSearch.search(indexes.getFirst(), query, limit, guard, restrictedFields, ridFilter);
+      return FullTextSearch.search(indexes.getFirst(), query, limit, guard, restrictedFields, ridFilter, reuse);
     // a record belongs to one type, so no two indexes match the same RID and putAll never overwrites; each index brings up to `limit`
     // matches, so the plan's own limit trims the union (the best `limit` of it contain the global best)
     final Map<RID, Float> merged = new HashMap<>();
     for (final TypeIndex index : indexes)
-      merged.putAll(FullTextSearch.search(index, query, limit, guard, restrictedFields, ridFilter));
+      merged.putAll(FullTextSearch.search(index, query, limit, guard, restrictedFields, ridFilter, reuse));
     return merged;
   }
 
   /** Every match with its score, cached for the statement. Stops when the statement is terminated or past its deadline. */
   private Map<RID, Float> completeSearch(final CommandContext context) {
+    return completeSearch(context, null);
+  }
+
+  /** As {@link #completeSearch(CommandContext)}, scoring the postings in {@code reuse}, if any, where the limited search left them. */
+  private Map<RID, Float> completeSearch(final CommandContext context, final FullTextPostingsReuse reuse) {
     completeSearches.incrementAndGet();
-    final Map<RID, Float> allResults = searchAll(-1, WorkGuard.forCommandDeadline(context), null);
+    final Map<RID, Float> allResults = searchAll(-1, WorkGuard.forCommandDeadline(context), null, reuse);
     context.setCachedValue(cacheKey, allResults);
     return allResults;
   }
@@ -430,8 +453,9 @@ final class FullTextFunctionSearch {
    * costs a logarithmic pop, and a match is held as one reference and, best first, one primitive.
    * <p>
    * When the matches are only the best ones of a search with a limit, the first {@code trustedPrefix} of them are the first
-   * of the complete order. Past that point the iteration switches to the complete search and skips the rows already served,
-   * which the shared order (score, then RID) makes exactly the same rows.
+   * of the complete order. Past that point the iteration switches to the complete search and leaves out the rows already served
+   * (by RID, see {@link #continueWithCompleteSearch}), which the shared order (score, then RID) makes the rows it would have
+   * skipped by count, and keeps each row answered once when it is not.
    */
   private static final class MatchingRecords implements Iterator<Record> {
     private final DatabaseInternal              database;
@@ -463,7 +487,7 @@ final class FullTextFunctionSearch {
       this.complete = complete;
       this.continuationFilter = continuationFilter;
       this.recordFilter = recordFilter;
-      buildHeap(matches, filter);
+      buildHeap(matches, filter, null);
     }
 
     @Override
@@ -504,22 +528,24 @@ final class FullTextFunctionSearch {
     }
 
     /**
-     * The best matches are used up and more rows are pulled: continue in the order of the complete search. Skipping the
-     * {@code served} first rows of it is exact only because the order is total - equal scores are broken by RID - so the
-     * best matches' heap and the complete one put every shared row in the same position.
+     * The best matches are used up and more rows are pulled: continue in the order of the complete search, without the rows
+     * already served. Those are skipped by RID, not by count: when the complete search puts the rest in the order the best matches
+     * would have given it (equal scores are broken by RID, so the order is total) both are the same rows, but a commit between the
+     * two searches, or a query shape the complete search reads again, can order the rest differently, and a count would then repeat
+     * some rows and drop others.
      */
     private void continueWithCompleteSearch() {
       final Supplier<Map<RID, Float>> search = complete;
       complete = null;
       trustedPrefix = -1;
-      buildHeap(search.get(), continuationFilter);
-      for (int i = 0; i < served && size > 0; i++) {
-        guard.checkPeriodically(++ticks);
-        pop();
-      }
+      // pop() leaves the rows it served behind the heap, in the tail of its array
+      final Set<RID> done = HashSet.newHashSet(Math.max(12, served));
+      for (int i = size; i < size + served; i++)
+        done.add(rids[i]);
+      buildHeap(search.get(), continuationFilter, done);
     }
 
-    private void buildHeap(final Map<RID, Float> matches, final RIDFilter filter) {
+    private void buildHeap(final Map<RID, Float> matches, final RIDFilter filter, final Set<RID> skip) {
       final boolean byScore = order == IndexedFunctionPushdown.Order.FUNCTION;
       rids = new RID[matches.size()];
       scores = byScore ? new float[rids.length] : null;
@@ -527,7 +553,7 @@ final class FullTextFunctionSearch {
       for (final Map.Entry<RID, Float> entry : matches.entrySet()) {
         guard.checkPeriodically(++ticks);
         final RID rid = entry.getKey();
-        if (filter != null && !filter.accepts(rid))
+        if (filter != null && !filter.accepts(rid) || skip != null && skip.contains(rid))
           continue;
         rids[size] = rid;
         if (byScore)
@@ -544,7 +570,8 @@ final class FullTextFunctionSearch {
       final RID first = rids[0];
       --size;
       rids[0] = rids[size];
-      rids[size] = null;
+      // the row served stays behind the heap, where the continuation reads which rows it must not answer again
+      rids[size] = first;
       if (scores != null)
         scores[0] = scores[size];
       if (size > 1)

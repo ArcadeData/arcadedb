@@ -32,6 +32,9 @@ import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
+import java.util.function.LongSupplier;
 import java.util.logging.Level;
 
 /**
@@ -56,12 +59,25 @@ final class DropDatabaseApplier {
   /** The drops this node's own verb is waiting on (issue #8035); see {@link #applyDropDatabaseEntry}. */
   private volatile LocalDropVerbs localDropVerbs = new LocalDropVerbs();
 
+  /** What the entry of a drop whose files could not be removed is held for, followed by the database name (issue #12611). */
+  private static final String UNDELETED_DROP_KEY_PREFIX = "drop:";
+
+  // Apply thread only: when retryUndeletedDropsIfDue runs next, and the clock it reads
+  private long         nextUndeletedDropRetryNanos;
+  private LongSupplier undeletedDropRetryClock = System::nanoTime;
+
   DropDatabaseApplier(final ArcadeStateMachine sm) {
     this.sm = sm;
   }
 
+  /**
+   * Applies the DROP_DATABASE entry at {@code index}.
+   *
+   * @throws EntryLeftForReplayException when the files of the database could not be removed (issue #12611): the entry is
+   *                                     held for the replay, see {@link #holdUndeletedDrop}
+   */
   // @VisibleForTesting
-  void applyDropDatabaseEntry(final RaftLogEntryCodec.DecodedEntry decoded) {
+  void applyDropDatabaseEntry(final RaftLogEntryCodec.DecodedEntry decoded, final long index) {
     final String databaseName = decoded.databaseName();
     // Whatever the database's pages were reserved at, the pages are going away: evict its ledger here so the
     // per-database map does not keep the names of dropped databases for the node's lifetime (same rule as the
@@ -111,7 +127,7 @@ final class DropDatabaseApplier {
     if (coordinator != null
         && (coordinator.isInProgress(databaseName, BackupCoordinator.Operation.DROP)
         || coordinator.isInProgress(databaseName, BackupCoordinator.Operation.RESTORE))
-        && localDropVerbs.runUnderLocalVerb(databaseName, () -> dropHoldingMaintenanceSlot(databaseName)))
+        && localDropVerbs.runUnderLocalVerb(databaseName, () -> dropHoldingMaintenanceSlot(databaseName, index)))
       return;
 
     // Bounded, and proceeding when the bound expires, for the reason SnapshotInstaller.install gives for the
@@ -130,7 +146,7 @@ final class DropDatabaseApplier {
           GlobalConfiguration.HA_SNAPSHOT_INSTALL_BACKUP_WAIT_MS.getKey());
 
     try {
-      dropHoldingMaintenanceSlot(databaseName);
+      dropHoldingMaintenanceSlot(databaseName, index);
     } finally {
       // Only what was actually reserved: a wait that expired took nothing, and releasing then would drop the
       // reservation the operation still in flight is holding.
@@ -143,12 +159,13 @@ final class DropDatabaseApplier {
    * The drop itself, with this node's maintenance slot already held (or deliberately given up on) by
    * {@link #applyDropDatabaseEntry}.
    */
-  private void dropHoldingMaintenanceSlot(final String databaseName) {
+  private void dropHoldingMaintenanceSlot(final String databaseName, final long index) {
     // Only the rename below runs on the apply thread: the recursive delete costs one unlink per file and is
     // unbounded in the size of the database, and this loop is sequential and shared by every database
     // multiplexed on the state machine. Close, deregister and rename hold the databases lock as one unit -
     // mirroring the snapshot installer's swap - so no concurrent open can reopen the directory in between.
-    final Path staged;
+    Path staged = null;
+    UncheckedIOException undeleted = null;
     final boolean absent;
     synchronized (sm.server.getDatabasesLock()) {
       final Path databaseDirectory;
@@ -173,9 +190,26 @@ final class DropDatabaseApplier {
       // stageForDeletion falls back to deleting inline when the rename is impossible, and that fallback
       // belongs inside the lock even though it is slow: the directory still carries its live name, so
       // releasing the lock first would let a concurrent create of the same name meet a half-deleted one.
-      staged = databaseDirectory == null ? null : deferredDatabaseDeleter.stageForDeletion(databaseDirectory);
+      if (databaseDirectory != null)
+        try {
+          staged = deferredDatabaseDeleter.stageForDeletion(databaseDirectory);
+        } catch (final UncheckedIOException e) {
+          undeleted = e;
+        }
       absent = databaseDirectory == null;
+      // A drop ends the close that `close database` asked for, and only removeDatabase ends it (issue #11739): without it GET
+      // /exists kept answering true for a database the cluster had dropped. Idempotent, and it lists the directories again after
+      // the rename. Not when the inline delete of stageForDeletion left the directory behind (issue #12611): the database is
+      // then marked closed, whether a `close database` had marked it or it was open until this drop closed it, so no request
+      // reopens the copy the cluster dropped. Under the lock, like the deregistration it goes with.
+      if (undeleted == null)
+        sm.server.removeDatabase(databaseName);
+      else
+        sm.server.markClosedByCommand(databaseName);
     }
+    if (undeleted != null)
+      // Before the baseline is evicted and the quarantine retired below: this database was not dropped here
+      throw holdUndeletedDrop(databaseName, index, undeleted);
     if (absent) {
       // Neither registered nor on disk any more: the removal this entry asks for already happened elsewhere.
       retireAbsentDatabase(databaseName);
@@ -192,9 +226,112 @@ final class DropDatabaseApplier {
     // actually dropped - the #5100 failure mode).
     sm.baselines.evictBootstrapBaseline(databaseName);
     clearDroppedDatabaseQuarantine(databaseName);
+    // A drop of the name completed: an earlier one whose files could not be removed has nothing left to replay
+    sm.applyRetry.releaseHeldEntry(undeletedDropKey(databaseName));
 
     LogManager.instance().log(sm, Level.INFO, "Database '%s' dropped via Raft drop-database entry%s", databaseName,
         staged != null ? " (files staged as '" + staged.getFileName() + "' for background deletion)" : "");
+  }
+
+  /**
+   * Holds the DROP entry at {@code index} for the replay because the files of {@code databaseName} are still on disk under
+   * its name (issue #12611): the rename aside was not possible and the inline deletion was refused (a read-only or faulty
+   * filesystem, a permission problem). Reported as applied, the entry left nothing {@code takeSnapshot()} consults, so the
+   * next checkpoint let Ratis purge it, and after a restart, or once the filesystem recovered, this node served a database
+   * the rest of the cluster had dropped.
+   * <p>
+   * Held, not quarantined, by the rule of {@code ha-raft/CLAUDE.md}: a quarantine is lifted by a resync, and the leader has
+   * no copy of a dropped database to resync from. Its targeted resync would end in "the leader does not hold it", lift the
+   * quarantine and leave the files and a purgeable entry, having held the whole node out of the ready set meanwhile. The
+   * hold lasts until a drop of the name completes: {@link #retryUndeletedDropsIfDue} tries again, a restart replays the
+   * entry, or a Raft install covers it.
+   */
+  private EntryLeftForReplayException holdUndeletedDrop(final String databaseName, final long index,
+      final UncheckedIOException undeleted) {
+    // Not on the very next entry: the filesystem that has just refused the deletion gets an interval to recover
+    nextUndeletedDropRetryNanos = undeletedDropRetryClock.getAsLong()
+        + TimeUnit.MILLISECONDS.toNanos(SecurityDurabilityFloor.RETRY_INTERVAL_MS);
+    return sm.applyRetry.holdEntryForReplay(undeletedDropKey(databaseName), index, "Database '" + databaseName
+        + "' was dropped by the cluster but its files could not be removed from this node (" + undeleted.getCause().getMessage()
+        + "): it stays closed here and the drop is tried again", undeleted);
+  }
+
+  static String undeletedDropKey(final String databaseName) {
+    return UNDELETED_DROP_KEY_PREFIX + databaseName;
+  }
+
+  /**
+   * Tries again, at most once per {@link SecurityDurabilityFloor#RETRY_INTERVAL_MS}, to remove the files of every database
+   * whose drop is held because they could not be removed (issue #12611), so a filesystem that takes the deletion again stops
+   * holding the Raft log without waiting for a restart to replay the entry. Costs one map check while nothing is held.
+   * <p>
+   * On the apply thread and driven by applied entries, as {@link ConfigurationEntryApplier#retryHeldConfigurationsIfDue} is,
+   * so no apply of the same database can interleave with it; blocking included, like that retry.
+   */
+  void retryUndeletedDropsIfDue() {
+    final Map<String, Long> held = sm.applyRetry.heldEntryFloors;
+    if (held.isEmpty())
+      return;
+
+    final long now = undeletedDropRetryClock.getAsLong();
+    if (now - nextUndeletedDropRetryNanos < 0)
+      return;
+    nextUndeletedDropRetryNanos = now + TimeUnit.MILLISECONDS.toNanos(SecurityDurabilityFloor.RETRY_INTERVAL_MS);
+
+    for (final Map.Entry<String, Long> entry : held.entrySet()) {
+      if (!entry.getKey().startsWith(UNDELETED_DROP_KEY_PREFIX))
+        continue;
+      final String databaseName = entry.getKey().substring(UNDELETED_DROP_KEY_PREFIX.length());
+      try {
+        retryUndeletedDrop(databaseName, entry.getValue());
+      } catch (final RuntimeException e) {
+        // Runs inside applyTransaction, whose catch-all halts the node: a retry that cannot run is a retry for later
+        LogManager.instance().log(sm, Level.FINE, "The files of dropped database '%s' still cannot be removed: %s",
+            databaseName, e.getMessage());
+      }
+    }
+  }
+
+  /** One retry of {@link #retryUndeletedDropsIfDue}; throws when the files are still there. */
+  private void retryUndeletedDrop(final String databaseName, final long index) {
+    if (sm.appliedIndexes.isOfEarlierIncarnation(databaseName, index)) {
+      // A copy created or acquired after the held drop stands under the name: a replay would skip the entry (issue #11919)
+      sm.applyRetry.releaseHeldEntry(undeletedDropKey(databaseName));
+      return;
+    }
+
+    final Path staged;
+    synchronized (sm.server.getDatabasesLock()) {
+      // Registered again, by an operator's `open database`: not closed under them here, the replay on restart drops it
+      if (sm.server.existsDatabase(databaseName))
+        return;
+      final Path databaseDirectory = closedDatabaseDirectory(databaseName);
+      if (databaseDirectory == null)
+        staged = null;
+      else {
+        closeUnregisteredInstance(databaseDirectory);
+        staged = deferredDatabaseDeleter.stageForDeletion(databaseDirectory);
+      }
+      // Ends the close mark the failed drop left
+      sm.server.removeDatabase(databaseName);
+    }
+    if (staged != null)
+      deferredDatabaseDeleter.deleteInBackground(staged);
+
+    // What the apply of the entry would have done had the deletion succeeded then; the global position moved on since
+    sm.appliedIndexes.writePersistedDatabaseAppliedIndex(index, databaseName, true);
+    sm.baselines.evictBootstrapBaseline(databaseName);
+    clearDroppedDatabaseQuarantine(databaseName);
+    sm.applyRetry.releaseHeldEntry(undeletedDropKey(databaseName));
+    LogManager.instance().log(sm, Level.INFO,
+        "The files of database '%s', dropped by the Raft entry at index %d, are removed from this node now; snapshot "
+            + "checkpoints may cover the entry (issue #12611)", databaseName, index);
+  }
+
+  /** Paces {@link #retryUndeletedDropsIfDue} on {@code clock} instead of {@link System#nanoTime()}, for a test. */
+  // @VisibleForTesting
+  void setUndeletedDropRetryClock(final LongSupplier clock) {
+    this.undeletedDropRetryClock = clock;
   }
 
   /**
@@ -207,6 +344,8 @@ final class DropDatabaseApplier {
   private void retireAbsentDatabase(final String databaseName) {
     sm.baselines.evictBootstrapBaseline(databaseName);
     clearDroppedDatabaseQuarantine(databaseName);
+    // Nor a drop held because its files could not be removed (issue #12611): they are gone now
+    sm.applyRetry.releaseHeldEntry(undeletedDropKey(databaseName));
     HALog.log(sm, HALog.TRACE, "Database '%s' already absent, skipping drop-database entry", databaseName);
   }
 

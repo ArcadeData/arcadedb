@@ -524,7 +524,9 @@ public final class LabelReplacements {
     final TraversalPath rebuilt = new TraversalPath(liveVertices.get(0));
     for (int i = 0; i < liveEdges.size(); i++)
       rebuilt.addStep(liveEdges.get(i), liveVertices.get(i + 1));
-    return rebuilt;
+    // The rebuilt path reads what the statement deleted as the original did (issue #12548)
+    final DeletedReferences.Deletions deletions = path.getDeletions();
+    return deletions != null ? rebuilt.withDeletions(deletions) : rebuilt;
   }
 
   /**
@@ -581,24 +583,26 @@ public final class LabelReplacements {
                 + "cost is acceptable");
     }
 
-    final MutableVertex newVertex = copyOf(database, newTypeName, vertex);
+    // #13477: everything the rewrite needs is read from the original first, the original (and its edges) is deleted next, and
+    // only then are the copy and its edges written. The copy inherits the original's indexes (the composite type extends the
+    // original label), so writing it while the original was still live met the original's key in a UNIQUE index of the same
+    // transaction and failed with a DuplicatedKeyException; the delete turns the original's keys into REMOVE entries first.
+    // The same holds for an edge whose type has a UNIQUE index: it is re-created only once the original edge is gone.
+    final MutableVertex newVertex = unsavedCopyOf(database, newTypeName, vertex);
 
-    long migratedEdges = 0;
+    final List<EdgeToMigrate> toMigrate = new ArrayList<>();
     // Outgoing first, so a self-loop is migrated exactly once: the incoming pass below skips it rather than
     // re-creating it as a second edge between the same pair.
     for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.OUT)) {
       final RID in = edge.getIn();
-      final Identifiable target = originalRid.equals(in) ? newVertex : in;
-      track(edge, newVertex.newEdge(edge.getTypeName(), target, propertiesOf(edge)));
-      ++migratedEdges;
+      toMigrate.add(new EdgeToMigrate(edge, edge.getTypeName(), null, originalRid.equals(in) ? null : in, propertiesOf(edge)));
     }
     final boolean anyUnidirectional = database.getSchema().hasUnidirectionalEdgeTypes();
     for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.IN)) {
       // A pointer a bulk load stored for a unidirectional type is migrated with the edges below, which answer for it
       if (originalRid.equals(edge.getOut()) || (anyUnidirectional && isUnidirectional(database, edge)))
         continue;
-      track(edge, edge.getVertex(Vertex.DIRECTION.OUT).newEdge(edge.getTypeName(), newVertex, propertiesOf(edge)));
-      ++migratedEdges;
+      toMigrate.add(new EdgeToMigrate(edge, edge.getTypeName(), edge.getOut(), null, propertiesOf(edge)));
     }
     // The edges of a unidirectional type that end in the vertex are stored on their source only: the delete below would
     // drop them, so they are migrated like the others (issue #8629). The same edges the delete finds.
@@ -606,11 +610,25 @@ public final class LabelReplacements {
       for (final Edge edge : IncomingEdgeLookup.getIncomingUnidirectionalEdges((DatabaseInternal) database, originalRid)) {
         if (originalRid.equals(edge.getOut()))
           continue;
-        track(edge, edge.getVertex(Vertex.DIRECTION.OUT).newEdge(edge.getTypeName(), newVertex, propertiesOf(edge)));
-        ++migratedEdges;
+        toMigrate.add(new EdgeToMigrate(edge, edge.getTypeName(), edge.getOut(), null, propertiesOf(edge)));
       }
 
+    // The delete also deletes every edge collected above, on both of its endpoints
     vertex.delete();
+
+    newVertex.save();
+    for (final EdgeToMigrate edge : toMigrate) {
+      final Edge replacement;
+      if (edge.from == null)
+        // An outgoing edge, or a self-loop when it has no other endpoint
+        replacement = newVertex.newEdge(edge.typeName, edge.to != null ? edge.to : newVertex, edge.properties);
+      else
+        // The source is loaded after the delete, which rewrote its edge list
+        replacement = edge.from.asVertex(true).newEdge(edge.typeName, newVertex, edge.properties);
+      track(edge.original, replacement);
+    }
+    final long migratedEdges = toMigrate.size();
+
     if (vertices.put(originalRid, newVertex) == null)
       holdPosition(database, originalRid);
     final Identifiable vertexOrigin = originOf(vertex);
@@ -724,14 +742,23 @@ public final class LabelReplacements {
   }
 
   /**
-   * A new vertex of {@code typeName} carrying {@code source}'s properties. It never lands on the slot of a record this
-   * statement replaced: those are held ({@link #holdPosition}), so the RID keeps naming the record the map answers for.
+   * A new, not yet saved, vertex of {@code typeName} carrying {@code source}'s properties: {@link #replace} saves it once the
+   * original is deleted (issue #13477). It never lands on the slot of a record this statement replaced: those are held
+   * ({@link #holdPosition}), so the RID keeps naming the record the map answers for.
    */
-  private static MutableVertex copyOf(final Database database, final String typeName, final Vertex source) {
+  private static MutableVertex unsavedCopyOf(final Database database, final String typeName, final Vertex source) {
     final MutableVertex created = database.newVertex(typeName);
     for (final String property : source.getPropertyNames())
       created.set(property, source.get(property));
-    return created.save();
+    return created;
+  }
+
+  /**
+   * An edge of the vertex {@link #replace} rewrites, read before the vertex is deleted: {@code from} is the source of an
+   * incoming edge, {@code null} for an outgoing one; {@code to} is the target of an outgoing edge, {@code null} for an incoming
+   * one and for a self-loop, whose both endpoints are the replacement.
+   */
+  private record EdgeToMigrate(Edge original, String typeName, RID from, RID to, Object[] properties) {
   }
 
   /**
