@@ -109,7 +109,7 @@ class CypherStatementTimeBoundTest {
   @Test
   void aUnionBranchIsBoundedByTheReadTimeout() {
     bindUser(user(SHORT_MS));
-    // NEITHER BRANCH ANSWERS A ROW, SO THE UNION ITSELF NEVER HAS A ROW TO CHECK THE TIME ON: THE BOUND HAS TO REACH THE BRANCHES
+    // Neither branch answers a row, so the UNION itself never has a row to check the time on: the bound has to reach the branches
     assertTimesOut(() -> pausedRows(
         "UNWIND range(1, " + GENERATED + ") AS i WITH i WHERE i < 0 RETURN i UNION ALL UNWIND range(1, " + GENERATED
             + ") AS i WITH i WHERE i < 0 RETURN i"));
@@ -187,8 +187,14 @@ class CypherStatementTimeBoundTest {
     });
 
     bindUser(null);
-    try (final ResultSet rs = database.query("opencypher", "MATCH (s:Scratch) RETURN count(s) AS c")) {
-      assertThat(rs.next().<Number>getProperty("c").intValue()).isEqualTo(2000);
+    // The rows themselves are counted: count(s) is answered from the counter of the type, which says nothing of what a scan reads
+    try (final ResultSet rs = database.query("opencypher", "MATCH (s:Scratch) RETURN s.n AS n")) {
+      int rows = 0;
+      while (rs.hasNext()) {
+        rs.next();
+        ++rows;
+      }
+      assertThat(rows).isEqualTo(2000);
     }
   }
 
