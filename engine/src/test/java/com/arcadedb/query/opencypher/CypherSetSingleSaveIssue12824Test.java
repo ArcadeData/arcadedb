@@ -201,6 +201,12 @@ class CypherSetSingleSaveIssue12824Test extends TestHelper {
     try (final ResultSet rs = database.query("sql", "SELECT count(*) AS n FROM E")) {
       assertThat(intOf(rs.next(), "n")).isEqualTo(1);
     }
+    // The move rewrites the edge list of x, which is a save of x of its own: x cannot be saved only once here, but the last
+    // UPDATE its triggers see is the final state of the clause
+    final List<String> audit = audit();
+    assertThat(audit).isNotEmpty();
+    assertThat(audit.get(audit.size() - 2)).isEqualTo("before k=1 a=1 b=3 c=0");
+    assertThat(audit.get(audit.size() - 1)).isEqualTo("after k=1 a=1 b=3 c=0");
   }
 
   @Test
