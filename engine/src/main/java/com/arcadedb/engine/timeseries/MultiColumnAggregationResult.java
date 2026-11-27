@@ -481,6 +481,19 @@ public final class MultiColumnAggregationResult {
   }
 
   /**
+   * The answer of a request as a wire protocol serializes it (issue #11983): the {@link #getExactValue exact} number of an exact
+   * request - MIN/MAX/SUM of an integral column past 2^53 is not the nearest double of it - and {@link #getValue} otherwise. A
+   * request no sample contributed to answers {@link TimeSeriesNaN#ABSENT} on both arms, so a caller has one absent test for
+   * either.
+   */
+  public Number getWireValue(final long bucketTs, final int requestIndex) {
+    if (!isExact(requestIndex))
+      return getValue(bucketTs, requestIndex);
+    final Number value = getExactValue(bucketTs, requestIndex);
+    return value != null ? value : TimeSeriesNaN.ABSENT;
+  }
+
+  /**
    * The exact answer of an exact request in a bucket (issues #9718, #9720), or {@code null} when no sample contributed to it
    * (or the bucket does not exist): MIN/MAX as the {@link Long} sample, SUM as a {@link Long} when the total fits one and an exact
    * {@link java.math.BigDecimal} otherwise, AVG as the {@link Double} the generic {@code avg()} computes from that total.

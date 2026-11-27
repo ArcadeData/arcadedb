@@ -31,6 +31,7 @@ import com.arcadedb.index.IntegralKeyBound;
 import com.arcadedb.index.MultiIndexCursor;
 import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.log.LogManager;
@@ -115,7 +116,9 @@ public class SelectExecutor {
       SelectOperator.ge, SelectOperator.lt, SelectOperator.le);
 
   /** What {@link #integralLowerBound} and {@link #integralUpperBound} answer when no key of the index can satisfy the bound. */
-  private static final Object NO_KEY = new Object();
+  private static final Object NO_KEY  = new Object();
+  /** What {@link #decimalLowerBound} and {@link #decimalUpperBound} answer when every key of the index satisfies the bound. */
+  private static final Object ANY_KEY = new Object();
 
   static class IndexInfo {
     public final Index   index;
@@ -1005,27 +1008,38 @@ public class SelectExecutor {
     } else if (node.operator == SelectOperator.between) {
       // BETWEEN: range scan
       if (rightValue instanceof Object[] range && range.length == 2) {
-        final Object from = integralLowerBound(node.index, range[0]);
-        final Object to = integralUpperBound(node.index, range[1]);
+        final Object from = decimalLowerBound(node.index, integralLowerBound(node.index, range[0]));
+        final Object to = decimalUpperBound(node.index, integralUpperBound(node.index, range[1]));
         // 12.2 BETWEEN 12.7 maps to [13, 12]: an empty range, which the index is not asked to read backwards, as in SQL and Cypher
-        cursor = from == NO_KEY || to == NO_KEY || ((from != range[0] || to != range[1]) && from instanceof Number lower
-            && to instanceof Number upper && lower.longValue() > upper.longValue()) ?
-            new TempIndexCursor(Collections.emptyList()) :
-            node.index.range(ascendingOrder, new Object[] { from }, true, new Object[] { to }, true);
+        if (from == NO_KEY || to == NO_KEY || ((from != range[0] || to != range[1]) && from instanceof Number lower
+            && to instanceof Number upper && lower.longValue() > upper.longValue()))
+          cursor = new TempIndexCursor(Collections.emptyList());
+        else if (from == ANY_KEY)
+          cursor = node.index.range(ascendingOrder, keysPastTheNullKeys(node.index), false, to == ANY_KEY ? null : new Object[] { to },
+              true);
+        else
+          cursor = node.index.range(ascendingOrder, new Object[] { from }, true, to == ANY_KEY ? null : new Object[] { to }, true);
       } else
         return;
     } else if (node.operator == SelectOperator.gt || node.operator == SelectOperator.ge) {
       // A bound no integral key equals (12.5, 1e19) is moved onto the smallest key above it, inclusive (issue #9021)
-      final Object from = integralLowerBound(node.index, rightValue);
-      cursor = from == NO_KEY ?
-          new TempIndexCursor(Collections.emptyList()) :
-          node.index.range(ascendingOrder, new Object[] { from }, from != rightValue || node.operator == SelectOperator.ge, null, false);
+      final Object from = decimalLowerBound(node.index, integralLowerBound(node.index, rightValue));
+      if (from == NO_KEY)
+        cursor = new TempIndexCursor(Collections.emptyList());
+      else if (from == ANY_KEY)
+        cursor = node.index.range(ascendingOrder, keysPastTheNullKeys(node.index), false, null, false);
+      else
+        // a mapped bound is a key, read inclusive
+        cursor = node.index.range(ascendingOrder, new Object[] { from },
+            node.operator == SelectOperator.ge || isInexactIntegralBound(node.index, rightValue), null, false);
     } else if (node.operator == SelectOperator.lt || node.operator == SelectOperator.le) {
-      // ... and the greatest key below it
-      final Object to = integralUpperBound(node.index, rightValue);
+      // ... and the greatest key below it. The range starts past the null keys, which sort first: a candidate cap (a limit) was
+      // spent on them, and the condition then dropped every one
+      final Object to = decimalUpperBound(node.index, integralUpperBound(node.index, rightValue));
       cursor = to == NO_KEY ?
           new TempIndexCursor(Collections.emptyList()) :
-          node.index.range(ascendingOrder, null, false, new Object[] { to }, to != rightValue || node.operator == SelectOperator.le);
+          node.index.range(ascendingOrder, keysPastTheNullKeys(node.index), false, to == ANY_KEY ? null : new Object[] { to },
+              node.operator == SelectOperator.le || isInexactIntegralBound(node.index, rightValue));
     } else
       return;
 
@@ -1205,6 +1219,45 @@ public class SelectExecutor {
       return bound;
     final Number mapped = IntegralKeyBound.floor(keyType, (Number) bound);
     return mapped == null ? NO_KEY : mapped;
+  }
+
+  /**
+   * The lower bound to seek an index with once a DECIMAL key meets an infinite or NaN {@code double}/{@code float} bound, which
+   * has no decimal form, so the index would refuse it and answer no row (issue #12694). A scan orders it against a decimal in
+   * {@code double}: negative infinity holds for every key ({@link #ANY_KEY}), positive infinity and NaN for none
+   * ({@link #NO_KEY}). Any other bound is returned as it is.
+   */
+  private static Object decimalLowerBound(final TypeIndex index, final Object bound) {
+    if (!isNonFiniteDecimalBound(index, bound))
+      return bound;
+    return ((Number) bound).doubleValue() == Double.NEGATIVE_INFINITY ? ANY_KEY : NO_KEY;
+  }
+
+  /** The upper-bound twin of {@link #decimalLowerBound}: positive infinity and NaN hold for every key, negative infinity for none. */
+  private static Object decimalUpperBound(final TypeIndex index, final Object bound) {
+    if (!isNonFiniteDecimalBound(index, bound))
+      return bound;
+    return ((Number) bound).doubleValue() == Double.NEGATIVE_INFINITY ? NO_KEY : ANY_KEY;
+  }
+
+  private static boolean isNonFiniteDecimalBound(final TypeIndex index, final Object bound) {
+    if (!(bound instanceof Number number) || Type.isFinite(number))
+      return false;
+    final Type[] keyTypes = index.getKeyTypes();
+    return keyTypes != null && keyTypes.length > 0 && keyTypes[0] == Type.DECIMAL;
+  }
+
+  /**
+   * The exclusive lower bound of a range with no lower bound of its own: past the null keys where the index holds them, as they
+   * sort lowest and a comparison with null is never true, so they would only spend the candidate cap; else no bound.
+   */
+  private static Object[] keysPastTheNullKeys(final TypeIndex index) {
+    return index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.INDEX ? new Object[] { null } : null;
+  }
+
+  /** Whether {@link #integralLowerBound}/{@link #integralUpperBound} replace {@code bound} with a key of the index. */
+  private static boolean isInexactIntegralBound(final TypeIndex index, final Object bound) {
+    return IntegralKeyBound.isInexact(leadingIntegralKeyType(index), bound);
   }
 
   private static byte leadingIntegralKeyType(final TypeIndex index) {

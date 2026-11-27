@@ -92,6 +92,16 @@ public abstract class AbstractDateFunction implements StatelessFunction {
   }
 
   /**
+   * Whether {@link #toMillis(Object)} reads {@code timestamp} as a point in time (a {@link Date}, {@link Instant},
+   * {@link ZonedDateTime} or {@link LocalDateTime}) rather than as a count (a number or its text). A time unit argument says what a
+   * count is counted in, so it must not scale a point in time, which {@link #toMillis(Object)} already answers in milliseconds.
+   */
+  protected static boolean isPointInTime(final Object timestamp) {
+    return timestamp instanceof Date || timestamp instanceof Instant || timestamp instanceof ZonedDateTime
+        || timestamp instanceof LocalDateTime;
+  }
+
+  /**
    * Converts a unit string to milliseconds multiplier.
    */
   protected long unitToMillis(final String unit) {
