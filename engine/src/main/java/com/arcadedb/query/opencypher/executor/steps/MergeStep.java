@@ -74,6 +74,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.TypeHierarchy;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityHelper;
 
@@ -743,26 +744,27 @@ public class MergeStep extends AbstractExecutionStep {
     final List<DocumentType> superTypes = type.getSuperTypes();
     if (superTypes.isEmpty())
       return canReadTypeAndSubTypes(type);
-    for (final DocumentType superType : superTypes)
-      if (!canReadEveryRecordAnIndexOfCanAnswer(superType))
-        return false;
-    return true;
+    // the root super types, each once: a type above this one reached through more than one path is asked once
+    return !TypeHierarchy.anySuperType(type, superType -> superType.getSuperTypes().isEmpty() && !canReadTypeAndSubTypes(superType));
   }
 
   private boolean canReadTypeAndSubTypes(final DocumentType type) {
+    if (!canReadType(type))
+      return false;
+    // each type below once, whatever the number of paths that lead down to it
+    return !TypeHierarchy.anySubType(type, subType -> !canReadType(subType));
+  }
+
+  /** Whether the user may read the records of the type itself, those of its subtypes not included. */
+  private boolean canReadType(final DocumentType type) {
     // every bucket, not one of them (SecurityHelper.canAccessType): a user may be granted some buckets of a type and not others, and
     // the lookup loads a record from whichever bucket holds it
     final List<Integer> bucketIds = type.getBucketIds(false);
-    if (bucketIds.isEmpty()) {
-      if (!SecurityHelper.canAccessType(context.getDatabase(), type, SecurityDatabaseUser.ACCESS.READ_RECORD))
-        return false;
-    } else
-      for (int i = 0; i < bucketIds.size(); i++)
-        if (!SecurityHelper.canAccessFile((DatabaseInternal) context.getDatabase(), bucketIds.get(i),
-            SecurityDatabaseUser.ACCESS.READ_RECORD))
-          return false;
-    for (final DocumentType subType : type.getSubTypes())
-      if (!canReadTypeAndSubTypes(subType))
+    if (bucketIds.isEmpty())
+      return SecurityHelper.canAccessType(context.getDatabase(), type, SecurityDatabaseUser.ACCESS.READ_RECORD);
+    for (int i = 0; i < bucketIds.size(); i++)
+      if (!SecurityHelper.canAccessFile((DatabaseInternal) context.getDatabase(), bucketIds.get(i),
+          SecurityDatabaseUser.ACCESS.READ_RECORD))
         return false;
     return true;
   }

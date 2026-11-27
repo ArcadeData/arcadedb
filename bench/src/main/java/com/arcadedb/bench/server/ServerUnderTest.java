@@ -83,6 +83,8 @@ public final class ServerUnderTest implements AutoCloseable {
 
   private static final int  HTTP_PORT         = 2480;
   private static final int  GRPC_PORT         = 50051;
+  private static final int  BOLT_PORT         = 7687;
+  private static final int  POSTGRES_PORT     = 5432;
   private static final long GIB               = 1024L * 1024 * 1024;
   private static final long FRESH_SAMPLE_WAIT = 1_500L;
   /** How long one probe of the liveness check waits for {@code /api/v1/ready}. */
@@ -183,7 +185,7 @@ public final class ServerUnderTest implements AutoCloseable {
       container.withEnv("ARCADEDB_OPTS_MEMORY", memoryOpts);
     else
       container.withCommand(memoryOpts.split("\\s+"));
-    container.withExposedPorts(HTTP_PORT, GRPC_PORT)
+    container.withExposedPorts(HTTP_PORT, GRPC_PORT, BOLT_PORT, POSTGRES_PORT)
         .withStartupTimeout(Duration.ofSeconds(120))
         .withFileSystemBind(hostDir.toString(), "/home/arcadedb/databases")
         .withCreateContainerCmdModifier(cmd -> cmd.getHostConfig().withCpusetCpus(cpuset).withMemory(memory).withMemorySwap(memory))
@@ -204,6 +206,16 @@ public final class ServerUnderTest implements AutoCloseable {
 
   public ServerWrapper wrapper() {
     return wrapper;
+  }
+
+  /** The host port mapped to the Bolt port of the server (the BoltProtocolPlugin must be enabled). */
+  public int boltPort() {
+    return container.getMappedPort(BOLT_PORT);
+  }
+
+  /** The host port mapped to the PostgreSQL port of the server (the PostgresProtocolPlugin must be enabled). */
+  public int postgresPort() {
+    return container.getMappedPort(POSTGRES_PORT);
   }
 
   public String httpUrl() {

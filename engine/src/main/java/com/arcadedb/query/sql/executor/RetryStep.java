@@ -145,9 +145,11 @@ public class RetryStep extends AbstractExecutionStep {
           throw new TimeoutException(
               "COMMIT RETRY gave up after " + (attempt + 1) + " of " + retries + " attempts: the command exceeded the "
                   + ctx.getCommandDeadlineDescription(),
-              partiallyCommitted(txAtStart, commitCountAtStart, attempt, ex) ? TransactionContext.notReplayable(ex, "COMMIT RETRY block") : ex);
+              partiallyCommitted(txAtStart, commitCountAtStart, attempt, ex) ?
+                  TransactionContext.notReplayable(ex, "COMMIT RETRY block", txAtStart, commitCountAtStart) :
+                  ex);
         if (partiallyCommitted(txAtStart, commitCountAtStart, attempt, ex))
-          throw TransactionContext.notReplayable(ex, "COMMIT RETRY block");
+          throw TransactionContext.notReplayable(ex, "COMMIT RETRY block", txAtStart, commitCountAtStart);
         // A refusal this node repeats until something outside it changes (a follower naming the leader) is not a conflict
         // that clears on its own: every remaining attempt would fail the same way, and an ELSE body would run on a block
         // that never had a chance (issue #9995). A duplicated key gets one retry, for a commit that raced the attempt (an

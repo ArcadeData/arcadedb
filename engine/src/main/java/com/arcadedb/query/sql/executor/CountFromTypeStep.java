@@ -115,4 +115,15 @@ public class CountFromTypeStep extends AbstractExecutionStep {
     }
     return result;
   }
+
+  /** The type is counted when the step runs, by its name: a plan holding this step answers every execution (issue #13059). */
+  @Override
+  public boolean canBeCached() {
+    return true;
+  }
+
+  @Override
+  public ExecutionStep copy(final CommandContext context) {
+    return new CountFromTypeStep(target, alias, context);
+  }
 }

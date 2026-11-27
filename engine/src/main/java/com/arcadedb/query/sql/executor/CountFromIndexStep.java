@@ -99,4 +99,15 @@ public class CountFromIndexStep extends AbstractExecutionStep {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     return spaces + "+ CALCULATE INDEX SIZE: " + target;
   }
+
+  /** The index is looked up and counted when the step runs, by its name: a plan holding this step answers every execution (issue #13059). */
+  @Override
+  public boolean canBeCached() {
+    return true;
+  }
+
+  @Override
+  public ExecutionStep copy(final CommandContext context) {
+    return new CountFromIndexStep(target.copy(), alias, context);
+  }
 }

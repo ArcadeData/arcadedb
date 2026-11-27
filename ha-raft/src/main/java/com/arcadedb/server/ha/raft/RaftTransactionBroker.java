@@ -181,19 +181,40 @@ public class RaftTransactionBroker {
       final List<RaftLogEntryCodec.TsSealedBlob> sealedFileBlobs,
       final List<RaftLogEntryCodec.TsSealedChunk> sealedFileChunks, final SchemaDelta.Payload schemaDelta,
       final Map<Integer, String> filesToRename) {
+    replicateSchema(dbName, schemaJson, filesToAdd, filesToRemove, walEntries, bucketDeltas, sealedFileBlobs, sealedFileChunks,
+        schemaDelta, filesToRename, null);
+  }
+
+  /**
+   * @param onEntryCommitted run after each Raft entry the change is sent as has committed, or {@code null}. A change over the
+   *                         entry cap is several entries, and a refusal of a later one finds the earlier ones on the followers:
+   *                         the caller learns from this whether anything of its change reached the cluster (issue #13437).
+   */
+  public void replicateSchema(final String dbName, final String schemaJson,
+      final Map<Integer, String> filesToAdd, final Map<Integer, String> filesToRemove,
+      final List<byte[]> walEntries, final List<Map<Integer, Integer>> bucketDeltas,
+      final List<RaftLogEntryCodec.TsSealedBlob> sealedFileBlobs,
+      final List<RaftLogEntryCodec.TsSealedChunk> sealedFileChunks, final SchemaDelta.Payload schemaDelta,
+      final Map<Integer, String> filesToRename, final Runnable onEntryCommitted) {
     final ByteString entry = RaftLogEntryCodec.encodeSchemaEntry(dbName, schemaJson,
         filesToAdd, filesToRemove, walEntries, bucketDeltas, sealedFileBlobs, false, sealedFileChunks, schemaDelta,
         filesToRename);
 
     final long cap = groupCommitter.maxEntrySize();
     if (entry.size() <= cap) {
-      groupCommitter.submitAndWait(entry.toByteArray());
+      submitAndWait(entry, onEntryCommitted);
       return;
     }
 
     for (final ByteString chunk : splitSchemaEntry(dbName, schemaJson, filesToAdd, filesToRemove, walEntries,
         bucketDeltas, sealedFileBlobs, sealedFileChunks, cap, entry.size(), false, schemaDelta, filesToRename))
-      groupCommitter.submitAndWait(chunk.toByteArray());
+      submitAndWait(chunk, onEntryCommitted);
+  }
+
+  private void submitAndWait(final ByteString entry, final Runnable onEntryCommitted) {
+    groupCommitter.submitAndWait(entry.toByteArray());
+    if (onEntryCommitted != null)
+      onEntryCommitted.run();
   }
 
   /**
@@ -245,12 +266,21 @@ public class RaftTransactionBroker {
    */
   public void replicateSchemaInstalment(final String dbName, final Map<Integer, String> filesToAdd,
       final List<byte[]> walEntries, final List<Map<Integer, Integer>> bucketDeltas) {
+    replicateSchemaInstalment(dbName, filesToAdd, walEntries, bucketDeltas, null);
+  }
+
+  /**
+   * @param onEntryCommitted run after each Raft entry the instalment is sent as has committed, or {@code null}: see the same
+   *                         parameter of {@link #replicateSchema(String, String, Map, Map, List, List, List, List, SchemaDelta.Payload, Map, Runnable)}
+   */
+  public void replicateSchemaInstalment(final String dbName, final Map<Integer, String> filesToAdd,
+      final List<byte[]> walEntries, final List<Map<Integer, Integer>> bucketDeltas, final Runnable onEntryCommitted) {
     final ByteString entry = RaftLogEntryCodec.encodeSchemaEntry(dbName, "", filesToAdd, Collections.emptyMap(),
         walEntries, bucketDeltas, Collections.emptyList(), true);
 
     final long cap = groupCommitter.maxEntrySize();
     if (entry.size() <= cap) {
-      groupCommitter.submitAndWait(entry.toByteArray());
+      submitAndWait(entry, onEntryCommitted);
       return;
     }
 
@@ -258,7 +288,7 @@ public class RaftTransactionBroker {
     // overshoot it - and the cap is hard, so the splitter still has to be reachable from here.
     for (final ByteString chunk : splitSchemaEntry(dbName, "", filesToAdd, Collections.emptyMap(), walEntries,
         bucketDeltas, Collections.emptyList(), cap, entry.size(), true))
-      groupCommitter.submitAndWait(chunk.toByteArray());
+      submitAndWait(chunk, onEntryCommitted);
   }
 
   /**

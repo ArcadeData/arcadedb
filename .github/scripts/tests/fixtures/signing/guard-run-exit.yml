@@ -1,0 +1,18 @@
+name: x
+on:
+  workflow_dispatch:
+    inputs:
+      attach_to_release:
+        type: boolean
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require main
+        run: |
+          if [ "${{ github.ref }}" != "refs/heads/main" ]; then
+            echo "::error::attach_to_release must be dispatched from main"
+            exit 2
+          fi
+      - name: Sign
+        run: cosign sign --yes img
