@@ -49,8 +49,10 @@ class CypherStatementTimeBoundTest {
   private static final String PATH        = "target/databases/CypherStatementTimeBoundTest";
   private static final int    SPOKES      = 3000;
   private static final int    GENERATED   = 5000;
+  /** A timeout that is over before the statement is first pulled, because the pause below always outlasts it */
   private static final long   SHORT_MS    = 1L;
   private static final long   LONG_MS     = 600_000L;
+  /** Between the statement being started and its first pull: longer than {@link #SHORT_MS}, so the outcome does not depend on the speed of the run */
   private static final long   PAUSE_MS    = 50L;
   private static final String UNWIND_ROWS = "UNWIND range(1, " + GENERATED + ") AS i RETURN i";
   private static final String HUB_ROWS    = "MATCH (a:Person {id: 0})-[:KNOWS]->(b:Person) RETURN b.id AS id";
