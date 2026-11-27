@@ -19,6 +19,7 @@
 package com.arcadedb.database;
 
 import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -60,6 +61,7 @@ class Issue12865DropReportsUndeletedFilesTest {
   @AfterEach
   void tearDown() {
     new File(PARENT).setWritable(true);
+    new File(PATH).setReadable(true);
     new File(PATH).setWritable(true);
     final Database leftOpen = DatabaseFactory.getActiveDatabaseInstance(PATH);
     if (leftOpen != null && leftOpen.isOpen())
@@ -92,11 +94,39 @@ class Issue12865DropReportsUndeletedFilesTest {
     // REMOVES IT
     assertThat(factory.exists()).isTrue();
     final Database reopened = new DatabaseFactory(PATH).open();
-    assertThat(reopened.countType("T", false)).isEqualTo(1);
+    // READ THE RECORD ITSELF: countType() CAN ANSWER FROM THE CACHED BUCKET COUNTER
+    try (final ResultSet rows = reopened.query("sql", "SELECT k FROM T")) {
+      assertThat(rows.hasNext()).isTrue();
+      assertThat(rows.next().<Integer>getProperty("k")).isEqualTo(1);
+      assertThat(rows.hasNext()).isFalse();
+    }
     reopened.drop();
 
     assertThat(directory).doesNotExist();
     assertThat(DatabaseFactory.getActiveDatabaseInstance(PATH)).isNull();
+  }
+
+  @Test
+  @Timeout(60)
+  void aDirectoryLeftBehindWhoseContentCannotBeListedIsAFailedDrop() {
+    final Database db = new DatabaseFactory(PATH).open();
+    final File directory = new File(PATH);
+
+    // NEITHER READABLE NOR WRITABLE: THE DELETE CANNOT LIST NOR REMOVE ANYTHING, AND list() ANSWERS NULL, WHICH IS NOT "EMPTY"
+    directory.setReadable(false);
+    directory.setWritable(false);
+    try {
+      assumeTrue(!directory.canRead() && !directory.canWrite(), "the directory cannot be made unreadable here (running as root?)");
+
+      assertThatThrownBy(db::drop).isInstanceOf(DatabaseOperationException.class)
+          .hasMessageContaining("was closed but its files could not be deleted").hasMessageContaining("cannot be listed");
+    } finally {
+      directory.setReadable(true);
+      directory.setWritable(true);
+    }
+
+    assertThat(DatabaseFactory.getActiveDatabaseInstance(PATH)).isNull();
+    assertThat(new DatabaseFactory(PATH).exists()).isTrue();
   }
 
   @Test

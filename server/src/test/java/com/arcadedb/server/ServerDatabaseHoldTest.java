@@ -29,6 +29,7 @@ import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
@@ -234,7 +235,12 @@ class ServerDatabaseHoldTest {
         assertThat(server.existsDatabase(NAME)).isTrue();
         final ServerDatabase reopened = server.getDatabaseForRequest(NAME);
         assertThat(reopened.isOpen()).isTrue();
-        assertThat(reopened.countType("Doc", false)).isEqualTo(1);
+        // The record itself, not countType(), which can answer from the cached bucket counter
+        try (final ResultSet rows = reopened.query("sql", "SELECT k FROM Doc")) {
+          assertThat(rows.hasNext()).isTrue();
+          assertThat(rows.next().<Integer>getProperty("k")).isEqualTo(1);
+          assertThat(rows.hasNext()).isFalse();
+        }
       } finally {
         dropIfPresent(server, NAME);
       }
