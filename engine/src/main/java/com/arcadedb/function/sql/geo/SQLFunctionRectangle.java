@@ -22,6 +22,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.query.sql.executor.CommandContext;
 import org.locationtech.spatial4j.context.SpatialContext;
+import org.locationtech.spatial4j.exception.InvalidShapeException;
 
 /**
  * Deprecated alias for {@code rectangle()}: returns a rectangle shape from two corner coordinates,
@@ -60,8 +61,13 @@ public class SQLFunctionRectangle extends SQLFunctionAbstract {
     final SpatialContext spatialContext = GeoUtils.getSpatialContext();
     final double y1 = GeoUtils.getDoubleValue(params[1]);
     final double y2 = GeoUtils.getDoubleValue(params[3]);
-    return spatialContext.getShapeFactory()
-        .rect(GeoUtils.getDoubleValue(params[0]), GeoUtils.getDoubleValue(params[2]), Math.min(y1, y2), Math.max(y1, y2));
+    try {
+      return spatialContext.getShapeFactory()
+          .rect(GeoUtils.getDoubleValue(params[0]), GeoUtils.getDoubleValue(params[2]), Math.min(y1, y2), Math.max(y1, y2));
+    } catch (final InvalidShapeException e) {
+      // an invalid rectangle (e.g. a latitude outside [-90, 90]) is a client error, not a raw spatial4j exception (issue #12744)
+      throw new IllegalArgumentException(NAME + "() " + e.getMessage(), e);
+    }
   }
 
   @Override

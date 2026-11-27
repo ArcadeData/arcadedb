@@ -25,15 +25,38 @@ To help us triage quickly, please include:
 
 ## Supported versions
 
-Security fixes are delivered on the latest stable minor release line. Older minor lines receive fixes only when the issue is severe and a backport is practical.
+Security fixes are delivered on the latest stable minor release line. After a new minor release, the previous minor line keeps receiving all security fixes for 90 days, then critical fixes only, when a backport is practical.
 
 | Version                 | Status                           |
 | ----------------------- | -------------------------------- |
 | Latest stable (main)    | Supported                        |
-| Previous minor release  | Critical fixes only              |
+| Previous minor release  | All security fixes for 90 days after the next minor release, then critical fixes only |
 | Older versions          | Not supported - please upgrade   |
 
 Check [GitHub Releases](https://github.com/ArcadeData/arcadedb/releases) for the current supported version.
+
+## Verifying releases
+
+Every release can be checked independently of us, for what it contains and for who built it. A release carries:
+
+- **SBOMs.** One CycloneDX SBOM per module on Maven Central (classifier `cyclonedx`). CycloneDX and SPDX SBOMs of the
+  distributions on the GitHub release; inside the archives, under `sbom/`, only the CycloneDX ones. SBOMs of the JVM
+  image and of each per-architecture native image attached to the image as signed attestations.
+- **VEX.** `arcadedb-<version>.openvex.json` on the GitHub release, listing the findings we assessed as not affecting
+  ArcadeDB.
+- **Checksums.** `SHA256SUMS` for every release asset, signed with cosign keyless (`SHA256SUMS.sigstore.json`) and with
+  GPG (`SHA256SUMS.asc`).
+- **Provenance.** SLSA build provenance for the jars, the distribution and native archives, the contract files and the
+  images.
+- **Image signatures.** A cosign signature on every container image, including the multi-architecture native tag,
+  which carries a signature but no SBOM attestation of its own.
+
+The accepted signer identity is one of the workflows `mvn-release.yml`, `native-image.yml`, `release-assets.yml` or
+`publish-contract.yml` of `ArcadeData/arcadedb`, running on `main` or on a release tag, with the OIDC issuer
+`https://token.actions.githubusercontent.com`. A signature from any other identity must be treated as invalid.
+
+`.github/scripts/verify-release.sh` runs these checks for a release tag. Copy-paste commands for each artifact are on the
+"Verifying ArcadeDB releases" page of the documentation.
 
 ## Our response
 

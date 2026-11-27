@@ -80,6 +80,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ErrorConcealment;
 import com.arcadedb.server.ServerControlPlane;
+import com.arcadedb.server.StandaloneTransactionControl;
 import com.arcadedb.server.network.PreAuthConnectionGate;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.security.ServerSecurityException;
@@ -742,13 +743,14 @@ public class BoltNetworkExecutor extends Thread {
   }
 
   /**
-   * Rolls back the explicit transaction, if any, and forgets it. Never throws: it runs on the teardown paths,
-   * where a rollback failure must not stop the rest of the teardown.
+   * Rolls back the explicit transaction, if any, and forgets it. Every level of the transaction of this connection's thread is
+   * rolled back, nested ones included, so a RESET, a LOGOFF, a new LOGON and the close all leave the connection without an open
+   * transaction. Never throws: it runs on the teardown paths, where a rollback failure must not stop the rest of the teardown.
    */
   private void rollbackExplicitTransaction() {
-    if (explicitTransaction && database != null) {
+    if (database != null) {
       try {
-        database.rollback();
+        database.rollbackAllNested();
       } catch (final Exception e) {
         // WARNING, not FINE: teardown carries on either way, but a rollback that threw may have left the
         // transaction only half cleaned up, which is worth seeing in the log.
@@ -898,10 +900,6 @@ public class BoltNetworkExecutor extends Thread {
     resolveRequestDatabase(db);
 
     final String query = message.getQuery();
-    final Map<String, Object> params = message.getParameters();
-
-    if (debug)
-      LogManager.instance().log(this, Level.FINE, "BOLT executing: %s with params %s (db=%s)", query, params, databaseName);
 
     final BoltQueryStream stream = new BoltQueryStream(nextQid);
 
@@ -912,6 +910,22 @@ public class BoltNetworkExecutor extends Thread {
     // connection's GQL session to the thread context, which the engine reads for SESSION statements.
     if (!ensureDatabase())
       return;
+
+    // The transaction of a connection is the one its BEGIN, COMMIT and ROLLBACK messages manage: the statement of the same name
+    // is not a way to begin or end it. Refused before anything runs, in READY and inside a transaction alike
+    if (StandaloneTransactionControl.isTransactionControl(database, "opencypher", query)) {
+      sendFailure(BoltErrorCodes.SEMANTIC_ERROR, "A transaction control statement is not accepted as a query: use the BEGIN, COMMIT "
+          + "and ROLLBACK messages of the protocol (the transaction functions of the driver)");
+      state = State.FAILED;
+      return;
+    }
+
+    // The first read of the parameters turns them into the values the engine binds: only a RUN that every check above let
+    // through pays for it. It comes before the time budget below is taken, so the conversion is part of what the budget spent
+    final Map<String, Object> params = message.getParameters();
+
+    if (debug)
+      LogManager.instance().log(this, Level.FINE, "BOLT executing: %s with params %s (db=%s)", query, params, databaseName);
 
     // The time this statement may run (issue #11392): what is left of the explicit transaction's timeout, or the auto-commit
     // query's own tx_timeout. A transaction already past its timeout runs nothing more
@@ -1356,7 +1370,7 @@ public class BoltNetworkExecutor extends Thread {
     try {
       closeAllStreams("ROLLBACK");
       if (database != null) {
-        database.rollback();
+        database.rollbackAllNested();
       }
       explicitTransaction = false;
 
@@ -2083,6 +2097,9 @@ public class BoltNetworkExecutor extends Thread {
     // it back to READY serving the previous user. "Authentication did not succeed" always means no principal and the bounded
     // pre-authentication read timeout armed, as LOGOFF leaves it.
     final boolean wasAuthenticated = user != null;
+    if (wasAuthenticated)
+      // The transaction of the connection ends before the principal changes
+      rollbackExplicitTransaction();
     user = null;
     // Same for the GQL session parameters: an attempt to change identity, successful or not, starts from an empty session
     session.reset();
