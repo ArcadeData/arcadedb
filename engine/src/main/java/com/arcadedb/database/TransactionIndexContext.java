@@ -116,6 +116,12 @@ public class TransactionIndexContext {
 
   /** The cached stand-in for "this transaction has written nothing to this index". See {@link #cacheIndexView}. */
   public static final Object NO_VIEW = new Object();
+  /**
+   * The holders of the reusable undo journal kept when a statement or a transaction ends: what the entries of one record need.
+   * A statement that journals more regrows the journal, allocating about 40 bytes for each holder past this bound, which a bulk
+   * statement of thousands of records pays once per statement, a small fraction of the records it writes (measured in issue #13107).
+   */
+  static final int RECORD_UNDO_RETAINED = 256;
 
   /**
    * The journal of what one record's indexing added, so it can be taken back exactly (issue #7467).
@@ -137,7 +143,9 @@ public class TransactionIndexContext {
    * holders once rather than once per record. Nothing is recorded while disarmed, which is every path but the one
    * that is about to have to undo.
    */
-  private final List<RecordUndoEntry>                                        recordUndo       = new ArrayList<>();
+  private       RecordUndoEntry[]                                            recordUndo       = new RecordUndoEntry[0];
+  /** How many holders {@link #recordUndo} has been given, the first of its slots: the others are null. */
+  private       int                                                          recordUndoHolders;
   /** How many entries {@link #recordUndo} holds right now; -1 when nothing is journalled. */
   private       int                                                          recordUndoSize   = -1;
   /** Where the entries of the record being indexed right now begin: the ones before it belong to the statement (issue #10346). */
@@ -1003,13 +1011,41 @@ public class TransactionIndexContext {
     statementJournalBroken = false;
     if (recordUndoSize > 0)
       for (int i = 0; i < recordUndoSize; i++)
-        recordUndo.get(i).clear();
+        recordUndo[i].clear();
     recordUndoSize = -1;
+    trimRecordUndo();
+  }
+
+  /** How many holders the reusable journal keeps right now, for the test that holds {@link #trimRecordUndo()} to its bound. */
+  int recordUndoHolders() {
+    return recordUndoHolders;
+  }
+
+  /** How many holders the reusable journal has room for right now: what the array backing it keeps on the heap, whatever it holds. */
+  int recordUndoCapacity() {
+    return recordUndo.length;
+  }
+
+  /**
+   * Gives back the holders a bulk statement grew the journal by. The journal is reused across the records of a statement, but a
+   * statement of a few hundred records journals tens of thousands of entries, and the holders were kept for as long as the thread
+   * lived: with a thread per transaction in a pool that is millions of empty holders on the heap, scanned by every collection, for a
+   * depth only the largest statement ever reached. What a record needs stays, so a small statement still allocates nothing.
+   */
+  private void trimRecordUndo() {
+    if (recordUndoHolders > RECORD_UNDO_RETAINED) {
+      Arrays.fill(recordUndo, RECORD_UNDO_RETAINED, recordUndoHolders, null);
+      recordUndoHolders = RECORD_UNDO_RETAINED;
+    }
+    // The slots too, whatever the number of holders is: a statement that went past the journal limit drops the holders of the
+    // records it already indexed, which leaves few holders in an array as long as the limit
+    if (recordUndo.length > RECORD_UNDO_RETAINED)
+      recordUndo = Arrays.copyOf(recordUndo, RECORD_UNDO_RETAINED);
   }
 
   private void undoJournalDownTo(final int mark) {
     for (int i = recordUndoSize - 1; i >= mark; i--) {
-      final RecordUndoEntry undo = recordUndo.get(i);
+      final RecordUndoEntry undo = recordUndo[i];
 
       if (undo.lane != null) {
         // Append-only lane: our entry is the one we appended, and nothing was displaced to restore.
@@ -1054,9 +1090,15 @@ public class TransactionIndexContext {
   private RecordUndoEntry nextUndoEntry() {
     if (statementJournal && recordUndoSize >= statementJournalLimit)
       abandonStatementJournal();
-    if (recordUndoSize == recordUndo.size())
-      recordUndo.add(new RecordUndoEntry());
-    return recordUndo.get(recordUndoSize++);
+    if (recordUndoSize == recordUndoHolders) {
+      if (recordUndoHolders == recordUndo.length)
+        // Below the bound the array doubles up to it and never past it, so a statement that stays inside the bound leaves an array
+        // trimRecordUndo() has nothing to give back from
+        recordUndo = Arrays.copyOf(recordUndo, recordUndoHolders < RECORD_UNDO_RETAINED ?
+            Math.min(RECORD_UNDO_RETAINED, Math.max(16, recordUndoHolders * 2)) : recordUndoHolders + (recordUndoHolders >> 1));
+      recordUndo[recordUndoHolders++] = new RecordUndoEntry();
+    }
+    return recordUndo[recordUndoSize++];
   }
 
   /**
@@ -1066,9 +1108,12 @@ public class TransactionIndexContext {
    */
   private void abandonStatementJournal() {
     for (int i = 0; i < recordUndoMark; i++)
-      recordUndo.get(i).clear();
+      recordUndo[i].clear();
     if (recordUndoMark > 0) {
-      recordUndo.subList(0, recordUndoMark).clear();
+      // The holders of the records already indexed go, and the slots they leave are released with the array when the statement ends
+      System.arraycopy(recordUndo, recordUndoMark, recordUndo, 0, recordUndoHolders - recordUndoMark);
+      Arrays.fill(recordUndo, recordUndoHolders - recordUndoMark, recordUndoHolders, null);
+      recordUndoHolders -= recordUndoMark;
       recordUndoSize -= recordUndoMark;
       recordUndoMark = 0;
     }
@@ -1088,9 +1133,10 @@ public class TransactionIndexContext {
       cachedViews.clear();
     // The holders stay - they are the reusable journal - but not the maps and keys they point at, which the
     // three clears above have just made garbage.
-    for (int i = 0; i < recordUndo.size(); i++)
-      recordUndo.get(i).clear();
+    for (int i = 0; i < recordUndoHolders; i++)
+      recordUndo[i].clear();
     recordUndoSize = -1;
+    trimRecordUndo();
     statementJournal = false;
     statementJournalBroken = false;
   }
