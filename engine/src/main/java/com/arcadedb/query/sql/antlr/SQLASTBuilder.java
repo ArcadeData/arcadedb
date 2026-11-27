@@ -7239,7 +7239,11 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
             if (bodyCtx.children.get(j) instanceof TerminalNode tn2
                 && tn2.getSymbol().getType() == SQLParser.INTEGER_LITERAL) {
               stmt.shards = new PInteger();
-              stmt.shards.setValue(Integer.parseInt(tn2.getText()));
+              try {
+                stmt.shards.setValue(Integer.parseInt(tn2.getText()));
+              } catch (final NumberFormatException e) {
+                throw new CommandSQLParsingException("SHARDS value '" + tn2.getText() + "' is not a valid shard count", e);
+              }
               break;
             }
           }
