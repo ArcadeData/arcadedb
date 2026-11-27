@@ -281,11 +281,16 @@ public class TextEmbeddingsImporterLSM {
       final List<TextFloatsEmbedding> texts = parser.map(line -> {
         final List<String> tokens = CodeUtils.split(line, ' ', -1, vectorSize.get());
 
-        String word = tokens.getFirst();
+        // THE WORD IS THE FIRST TOKEN WITH CONTENT: A LINE THAT STARTS WITH A SEPARATOR HAS AN EMPTY ONE IN FRONT OF IT. THE LINE
+        // IS NOT BLANK, SO THERE IS ONE
+        int first = 0;
+        while (tokens.get(first).isEmpty())
+          ++first;
+        final String word = tokens.get(first);
 
-        float[] vector = new float[tokens.size() - 1];
+        float[] vector = new float[tokens.size() - 1 - first];
         int dimensions = 0;
-        for (int i = 1; i < tokens.size(); i++) {
+        for (int i = first + 1; i < tokens.size(); i++) {
           final String token = tokens.get(i);
           // TWO SEPARATORS IN A ROW LEAVE AN EMPTY TOKEN BETWEEN THEM, WHICH IS NO COMPONENT (issue #12772)
           if (!token.isEmpty())

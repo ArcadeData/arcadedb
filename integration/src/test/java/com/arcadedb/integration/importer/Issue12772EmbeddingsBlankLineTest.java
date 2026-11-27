@@ -119,6 +119,43 @@ class Issue12772EmbeddingsBlankLineTest {
   }
 
   @Test
+  void aLeadingSeparatorIsNotTheWord() throws Exception {
+    try {
+      // THE WORD IS THE FIRST TOKEN WITH CONTENT, NOT THE EMPTY ONE IN FRONT OF A LEADING SEPARATOR
+      importText("2 3\n alpha 1 2 3\n   beta 4 5 6\n");
+      assertWords(2, "alpha", "beta");
+    } finally {
+      cleanup();
+    }
+  }
+
+  @Test
+  void theFormatIsSniffedFromTheTokensTheImporterReads() throws Exception {
+    // THE SNIFFING COUNTS THE FIELDS OF THE FIRST TWO LINES. COUNTING THE EMPTY ONES BETWEEN SEPARATORS SENT THESE FILES TO THE
+    // CSV FALLBACK, WHICH NEVER REACHES THE EMBEDDINGS: A WORD2VEC HEADER WITH A DOUBLED SEPARATOR, GLOVE ROWS (NO HEADER)
+    // SPACED DIFFERENTLY, A GLOVE ROW WITH A LEADING OR A TRAILING SEPARATOR
+    for (final String content : new String[] { "2  3\nalpha 1 2 3\nbeta 4 5 6\n", "alpha 1 2 3\nbeta  4 5 6\n",
+        " alpha 1 2 3\nbeta 4 5 6\n", "alpha 1 2 3\nbeta 4  5 6 \n" }) {
+      try {
+        importText(content);
+        assertWords(2, "alpha", "beta");
+      } finally {
+        cleanup();
+      }
+    }
+  }
+
+  @Test
+  void theTokensOfALineAreCountedWithoutTheEmptyOnes() {
+    assertThat(SourceDiscovery.countSpaceSeparatedTokens("")).isZero();
+    assertThat(SourceDiscovery.countSpaceSeparatedTokens("   ")).isZero();
+    assertThat(SourceDiscovery.countSpaceSeparatedTokens("2 3")).isEqualTo(2);
+    assertThat(SourceDiscovery.countSpaceSeparatedTokens("2  3")).isEqualTo(2);
+    assertThat(SourceDiscovery.countSpaceSeparatedTokens(" alpha 1  2 3 ")).isEqualTo(4);
+    assertThat(SourceDiscovery.countSpaceSeparatedTokens("alpha 1 2 3 \r")).isEqualTo(4);
+  }
+
+  @Test
   void aMalformedRowIsStillRefused() throws Exception {
     try {
       assertThatThrownBy(() -> importText("2 3\nalpha 1 2 3\nbeta 4 5\n")).hasStackTraceContaining("Vector dimension does not match");

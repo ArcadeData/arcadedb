@@ -713,12 +713,14 @@ public class SourceDiscovery {
             line2 = parser.isAvailable() ? readLine(parser) : "";
           } while (line2.isBlank() && parser.isAvailable());
 
-          final String[] fields1 = line.split(" ");
-          final String[] fields2 = line2.split(" ");
+          // COUNTED THE WAY THE IMPORTER SPLITS A ROW: A LEADING, DOUBLED OR TRAILING SEPARATOR IS NO FIELD. String.split(" ")
+          // KEPT THE EMPTY ONES, SO "2  3" WAS NO WORD2VEC HEADER AND TWO GLOVE ROWS SPACED DIFFERENTLY FELL BACK TO CSV
+          final int fields1 = countSpaceSeparatedTokens(line);
+          final int fields2 = countSpaceSeparatedTokens(line2);
 
-          if (fields1.length == 2 && fields2.length > 2)
+          if (fields1 == 2 && fields2 > 2)
             format = new Word2VecImporterFormat();
-          else if (fields1.length == fields2.length)
+          else if (fields1 == fields2)
             format = new GloVeImporterFormat();
         }
 
@@ -739,6 +741,26 @@ public class SourceDiscovery {
 
     // UNKNOWN
     throw new ImportException("Cannot determine the file type. If it is a CSV file, please specify the header via settings");
+  }
+
+  /**
+   * The number of non-empty space-separated tokens of {@code line}, which is how the text embeddings importer reads a row
+   * (issue #12772): a leading, doubled or trailing separator is no token, and neither is the carriage return of a CRLF line
+   * ending. Counted in place, no array of substrings is built.
+   */
+  static int countSpaceSeparatedTokens(final CharSequence line) {
+    int tokens = 0;
+    boolean insideToken = false;
+    for (int i = 0; i < line.length(); ++i) {
+      final char c = line.charAt(i);
+      if (c == ' ' || c == '\r')
+        insideToken = false;
+      else if (!insideToken) {
+        insideToken = true;
+        ++tokens;
+      }
+    }
+    return tokens;
   }
 
   /**
