@@ -31,7 +31,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class CypherPreparserPrefixTest extends TestHelper {
   private static final String[] PREFIXES = { "CYPHER 5\n", "CYPHER 5 ", "cypher 25\n", "CYPHER 5 runtime=slotted\n",
-      "CYPHER planner=cost runtime=interpreted\n", "  CYPHER 5\n\n", "// c\nCYPHER 5\n", "CYPHER 5\n// c\n", "CYPHER\n5\n" };
+      "CYPHER planner=cost runtime=interpreted\n", "  CYPHER 5\n\n", "// c\nCYPHER 5\n", "CYPHER 5\n// c\n", "CYPHER\n5\n",
+      "CYPHER 5\nCYPHER runtime=interpreted\n", "CYPHER runtime=slotted CYPHER 25 " };
 
   @Test
   void prefixedQueryAndCommandRunAsTheStatementItPrefixes() {
@@ -80,6 +81,7 @@ class CypherPreparserPrefixTest extends TestHelper {
     assertThat(OpenCypherQueryEngine.stripCypherPreparser("CYPHER")).isEqualTo("CYPHER");
     assertThat(OpenCypherQueryEngine.stripCypherPreparser("CYPHER 5\nRETURN 1")).isEqualTo("RETURN 1");
     assertThat(OpenCypherQueryEngine.stripCypherPreparser("CYPHER 25 runtime=slotted RETURN 1")).isEqualTo("RETURN 1");
+    assertThat(OpenCypherQueryEngine.stripCypherPreparser("CYPHER 5\nCYPHER runtime=interpreted\nRETURN 1")).isEqualTo("RETURN 1");
     assertThat(OpenCypherQueryEngine.stripCypherPreparser(null)).isNull();
   }
 }

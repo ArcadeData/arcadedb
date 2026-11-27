@@ -367,26 +367,33 @@ public class OpenCypherQueryEngine implements QueryEngine {
   }
 
   /**
-   * The index at which the statement starts after a {@code CYPHER [version] [option=value ...]} prefix that begins at {@code from},
-   * or {@code from} when the text there is not such a prefix. The version is a number and an option is {@code name=value}, each a
-   * whitespace-delimited word; the first word that is neither is the first word of the statement.
+   * The index at which the statement starts after the {@code CYPHER [version] [option=value ...]} prefixes that begin at
+   * {@code from}, or {@code from} when the text there is not such a prefix. Neo4j accepts several in a row, and
+   * {@code @neo4j/graphql} sends two when it is given planner options ({@code CYPHER 5\nCYPHER runtime=interpreted\n...}). The version
+   * is a number and an option is {@code name=value}, each a whitespace-delimited word; the first word that is neither is the first
+   * word of the statement (or of the next prefix).
    */
   private static int skipCypherPreparser(final String query, final int from) {
     final int len = query.length();
-    if (!query.regionMatches(true, from, "CYPHER", 0, 6) || from + 6 >= len || !Character.isWhitespace(query.charAt(from + 6)))
-      return from;
-    int i = from + 6;
-    while (true) {
-      int word = i;
-      while (word < len && Character.isWhitespace(query.charAt(word)))
-        word++;
-      int end = word;
-      while (end < len && !Character.isWhitespace(query.charAt(end)))
-        end++;
-      if (word == end || !isPreparserWord(query, word, end))
-        return word;
-      i = end;
+    int start = from;
+    while (query.regionMatches(true, start, "CYPHER", 0, 6) && start + 6 < len && Character.isWhitespace(query.charAt(start + 6))) {
+      int i = start + 6;
+      while (true) {
+        int word = i;
+        while (word < len && Character.isWhitespace(query.charAt(word)))
+          word++;
+        int end = word;
+        while (end < len && !Character.isWhitespace(query.charAt(end)))
+          end++;
+        if (word == end || !isPreparserWord(query, word, end)) {
+          i = word;
+          break;
+        }
+        i = end;
+      }
+      start = skipWhitespaceAndComments(query, i);
     }
+    return start;
   }
 
   private static boolean isPreparserWord(final String query, final int from, final int to) {
