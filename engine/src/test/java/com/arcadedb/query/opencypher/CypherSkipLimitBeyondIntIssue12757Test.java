@@ -145,4 +145,34 @@ class CypherSkipLimitBeyondIntIssue12757Test extends TestHelper {
     assertThatThrownBy(() -> xs(limit, Map.of("n", new BigDecimal("1.5")))).isInstanceOf(CommandParsingException.class)
         .hasMessageContaining("InvalidArgumentType");
   }
+
+  /**
+   * A BigDecimal holds its exponent as a number, so one of two billion costs nothing to pass in. The refusal has to stay that
+   * cheap: written out digit by digit ({@code toPlainString()}) it is a string of gigabytes.
+   */
+  @Test
+  void aBigDecimalWithAHugeExponentIsAnsweredWithoutWritingItsDigitsOut() {
+    final String limit = "UNWIND [1, 2, 3] AS x RETURN x LIMIT $n";
+    assertThat(xs(limit, Map.of("n", new BigDecimal("1E+2000000000")))).hasSize(3);
+    assertThatThrownBy(() -> xs(limit, Map.of("n", new BigDecimal("-1E+2000000000")))).isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("NegativeIntegerArgument").hasMessageContaining("-1E+2000000000");
+    assertThatThrownBy(() -> xs(limit, Map.of("n", new BigDecimal("1E-2000000000")))).isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("InvalidArgumentType").hasMessageContaining("1E-2000000000");
+  }
+
+  /** A SKIP at the int limit under an ORDER BY: SKIP + LIMIT is past the int range, so every row is sorted and then skipped. */
+  @Test
+  void skipAtIntMaxUnderOrderBySkipsEveryRow() {
+    assertThat(xs("UNWIND [3, 1, 2] AS x RETURN x ORDER BY x SKIP 2147483647 LIMIT 1")).isEmpty();
+    assertThat(xs("UNWIND [3, 1, 2] AS x WITH x ORDER BY x SKIP 2147483647 LIMIT 1 RETURN x")).isEmpty();
+    assertThat(xs("UNWIND [3, 1, 2] AS x RETURN x ORDER BY x SKIP $s LIMIT $n", Map.of("s", 2147483646L, "n", 1L))).isEmpty();
+  }
+
+  /** A literal no 64-bit integer holds is refused by the parser, as it is anywhere else in a statement: it never reaches the clamp. */
+  @Test
+  void aLiteralPastLongIsRefusedNotClamped() {
+    for (final String clause : new String[] { "LIMIT", "SKIP" })
+      assertThatThrownBy(() -> xs("UNWIND [1, 2, 3] AS x RETURN x " + clause + " 9223372036854775808")).as(clause)
+          .isInstanceOf(CommandParsingException.class).hasMessageContaining("IntegerOverflow");
+  }
 }

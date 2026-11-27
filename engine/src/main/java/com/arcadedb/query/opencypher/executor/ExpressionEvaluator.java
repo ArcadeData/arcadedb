@@ -314,12 +314,13 @@ public class ExpressionEvaluator {
           throw new CommandParsingException("InvalidArgumentType: SKIP/LIMIT value must be an integer, got: Float(" + d + ")");
       }
       if (num instanceof BigInteger || num instanceof BigDecimal) {
-        // longValue() keeps the low 64 bits of these: the sign and the size are read before any narrowing
+        // longValue() keeps the low 64 bits of these: the sign and the size are read before any narrowing. The messages print the
+        // value as it is held, never with toPlainString(): that one writes a digit per unit of exponent, gigabytes for -1E+2000000000
         final BigDecimal exact = num instanceof BigInteger big ? new BigDecimal(big) : (BigDecimal) num;
         if (exact.signum() < 0)
-          throw new CommandParsingException("NegativeIntegerArgument: SKIP/LIMIT value must not be negative, got: " + exact.toPlainString());
+          throw new CommandParsingException("NegativeIntegerArgument: SKIP/LIMIT value must not be negative, got: " + exact);
         if (exact.stripTrailingZeros().scale() > 0)
-          throw new CommandParsingException("InvalidArgumentType: SKIP/LIMIT value must be an integer, got: Decimal(" + exact.toPlainString() + ")");
+          throw new CommandParsingException("InvalidArgumentType: SKIP/LIMIT value must be an integer, got: Decimal(" + exact + ")");
         return exact.compareTo(MAX_INT) > 0 ? Integer.MAX_VALUE : exact.intValue();
       }
       final long longVal = num.longValue();
