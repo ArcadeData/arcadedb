@@ -1,0 +1,89 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.6",
+  "serialNumber": "urn:uuid:3e671687-395b-41f5-a30f-a58921a69b79",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-11-26T10:00:00Z",
+    "tools": {
+      "components": [
+        {
+          "type": "library",
+          "author": "OWASP Foundation",
+          "name": "cyclonedx-maven-plugin",
+          "version": "2.9.1"
+        }
+      ]
+    },
+    "component": {
+      "type": "application",
+      "bom-ref": "pkg:maven/com.arcadedb/arcadedb-parent@26.12.1?type=pom",
+      "group": "com.arcadedb",
+      "name": "arcadedb-parent",
+      "version": "26.12.1",
+      "purl": "pkg:maven/com.arcadedb/arcadedb-parent@26.12.1?type=pom"
+    }
+  },
+  "components": [
+    {
+      "type": "library",
+      "bom-ref": "pkg:maven/com.arcadedb/arcadedb-engine@26.12.1?type=jar",
+      "group": "com.arcadedb",
+      "name": "arcadedb-engine",
+      "version": "26.12.1",
+      "description": "ArcadeDB module",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "purl": "pkg:maven/com.arcadedb/arcadedb-engine@26.12.1?type=jar"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:maven/com.arcadedb/arcadedb-network@26.12.1?type=jar",
+      "group": "com.arcadedb",
+      "name": "arcadedb-network",
+      "version": "26.12.1",
+      "description": "ArcadeDB module",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "purl": "pkg:maven/com.arcadedb/arcadedb-network@26.12.1?type=jar"
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "pkg:maven/com.arcadedb/arcadedb-parent@26.12.1?type=pom",
+      "dependsOn": [
+        "pkg:maven/com.arcadedb/arcadedb-engine@26.12.1?type=jar"
+      ]
+    },
+    {
+      "ref": "pkg:maven/com.arcadedb/arcadedb-engine@26.12.1?type=jar",
+      "dependsOn": [
+        "pkg:maven/com.arcadedb/arcadedb-network@26.12.1?type=jar"
+      ]
+    }
+  ]
+}

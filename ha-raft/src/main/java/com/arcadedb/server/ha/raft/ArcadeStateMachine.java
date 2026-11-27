@@ -1706,7 +1706,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
             schemaHistory.recordSchemaChangeApplied(decoded.databaseName(), index);
         }
         case INSTALL_DATABASE_ENTRY -> bootstrapInstalls.applyInstallDatabaseEntry(decoded, index);
-        case DROP_DATABASE_ENTRY -> applyDropDatabaseEntry(decoded);
+        case DROP_DATABASE_ENTRY -> dropEntries.applyDropDatabaseEntry(decoded, index);
         case SECURITY_USERS_ENTRY -> securitySuperseded[0] = !securityEntries.applySecurityUsersEntry(decoded, index);
         case SECURITY_GROUPS_ENTRY -> securitySuperseded[0] = !securityEntries.applySecurityGroupsEntry(decoded, index);
         case SECURITY_API_TOKENS_ENTRY -> securitySuperseded[0] = !securityEntries.applySecurityApiTokensEntry(decoded, index);
@@ -1787,6 +1787,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
         securityDurabilityFloor.retryIfDue(srv.getSecurity());
       // The same for a database configuration whose configuration.json could not be written (issue #10124)
       configurationEntries.retryHeldConfigurationsIfDue();
+      // And for a dropped database whose files could not be removed (issue #12611)
+      dropEntries.retryUndeletedDropsIfDue();
       // And the creation boundaries, whose last write failed (issue #11919)
       if (appliedIndexes.isCreatedIndexFilePending())
         appliedIndexes.retryCreatedIndexFile();
@@ -4171,8 +4173,24 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
   // DropDatabaseApplier holds the implementation of these; they stay here for the callers outside this class.
 
+  /**
+   * For the tests that drive the drop outside the log: with no index of its own, a failed drop has no entry to hold. The
+   * hold it registers at {@link RaftLog#INVALID_LOG_INDEX} is below every install boundary, so {@link #lowestHeldEntry()}
+   * drops it and no checkpoint is lowered by it.
+   */
+  // @VisibleForTesting
   void applyDropDatabaseEntry(final RaftLogEntryCodec.DecodedEntry decoded) {
-    dropEntries.applyDropDatabaseEntry(decoded);
+    dropEntries.applyDropDatabaseEntry(decoded, RaftLog.INVALID_LOG_INDEX);
+  }
+
+  // @VisibleForTesting
+  void applyDropDatabaseEntry(final RaftLogEntryCodec.DecodedEntry decoded, final long index) {
+    dropEntries.applyDropDatabaseEntry(decoded, index);
+  }
+
+  // @VisibleForTesting
+  void setUndeletedDropRetryClock(final LongSupplier clock) {
+    dropEntries.setUndeletedDropRetryClock(clock);
   }
 
   void setLocalDropVerbs(final LocalDropVerbs localDropVerbs) {

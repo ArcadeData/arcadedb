@@ -25,6 +25,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.ErrorConcealment;
 import com.arcadedb.server.info.SchemaInfo;
 import com.arcadedb.server.info.ServerInfo;
 import com.arcadedb.server.security.DatabaseUserContext;
@@ -73,7 +74,9 @@ public class ToolDispatcher {
         default -> errorJson("Unknown tool: " + toolName);
       };
     } catch (final SecurityException e) {
-      return errorJson(e.getMessage());
+      // The engine's refusal of a record or a type names the schema objects of the database: the placeholder in production mode,
+      // with the detail in the server log, like every other surface
+      return errorJson(ErrorConcealment.clientMessage(ErrorConcealment.isConcealing(server), this, "AI chat", e.getMessage(), e));
     } catch (final IllegalArgumentException e) {
       return errorJson(e.getMessage());
     } catch (final Exception e) {

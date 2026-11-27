@@ -173,6 +173,8 @@ public class LocalDocumentType implements DocumentType {
   protected final RecordEventsRegistry              triggerEvents;
   // The trigger registries a record of this type fires, stamped with the schema's types serial they were computed at
   private volatile TriggerLineage                   triggerLineage;
+  // This type and every type above it, each once, stamped with the schema's types serial it was computed at: see getLineage()
+  private volatile Lineage                          lineage;
   // changed by ALTER TYPE ... CUSTOM and read by toJSON() after the schema lock is released: copy-on-write, an unmodifiable
   // map replaced as a whole, so neither a reader nor a schema reload ever sees it half changed (#9989)
   protected volatile Map<String, Object>            custom                       = Collections.emptyMap();
@@ -501,11 +503,14 @@ public class LocalDocumentType implements DocumentType {
     if (cached != null && cached.serial() == serial)
       return cached.registries();
 
+    // By identity: equals() compares two types' definitions, and two distinct types can be defined alike
+    final Set<LocalDocumentType> seen = Collections.newSetFromMap(new IdentityHashMap<>());
     final List<LocalDocumentType> lineage = new ArrayList<>();
     lineage.add(this);
+    seen.add(this);
     for (int i = 0; i < lineage.size(); i++)
       for (final LocalDocumentType superType : lineage.get(i).superTypes)
-        if (!containsInstance(lineage, superType))
+        if (seen.add(superType))
           lineage.add(superType);
 
     final RecordEventsRegistry[] registries = new RecordEventsRegistry[lineage.size()];
@@ -515,15 +520,82 @@ public class LocalDocumentType implements DocumentType {
     return registries;
   }
 
-  // By identity: equals() compares two types' definitions, and two distinct types can be defined alike
-  private static boolean containsInstance(final List<LocalDocumentType> types, final LocalDocumentType type) {
-    for (final LocalDocumentType t : types)
-      if (t == type)
-        return true;
-    return false;
+  private record TriggerLineage(long serial, RecordEventsRegistry[] registries) {
   }
 
-  private record TriggerLineage(long serial, RecordEventsRegistry[] registries) {
+  /**
+   * This type followed by every type above it, each once, in the order a depth-first walk of the super type lists meets them first
+   * (the order a recursion over those lists lists a type for the first time), so a lookup that takes the first match answers what
+   * the recursion answered. What every polymorphic walk up the hierarchy iterates: a type is visited once, where a recursion over
+   * {@link #superTypes} visits it once per path that leads to it.
+   * <p>
+   * Computed once per change of the type graph, not per call: served only under the schema's types serial it was computed at, which
+   * every super type link and unlink moves. Read before the walk, so an answer computed while a link is landing carries the serial
+   * the link then moves, and is never served again. A lock-free read allocates nothing: the array is published whole through a
+   * volatile field and never changed in place. A type with no super type answers a one-element array it builds on the spot, which
+   * the callers avoid by testing {@link #superTypes} first.
+   */
+  private LocalDocumentType[] getLineage() {
+    if (schema == null)
+      // A TYPE BUILT DETACHED FROM ANY DATABASE (A TEST FIXTURE) HAS NO SERIAL TO STAMP AN ANSWER WITH
+      return collectLineage(this, false);
+
+    final long serial = schema.getTypesChangeSerial();
+    final Lineage cached = lineage;
+    if (cached != null && cached.serial() == serial)
+      return cached.types();
+
+    final LocalDocumentType[] types = collectLineage(this, false);
+    lineage = new Lineage(serial, types);
+    return types;
+  }
+
+  private record Lineage(long serial, LocalDocumentType[] types) {
+  }
+
+  /**
+   * {@code start} followed by every type above it, each once, never from a cached answer: for the schema changes that mutate the
+   * links themselves, which cannot trust an answer stamped before the mutation they are making.
+   *
+   * @param subTypesFirst {@code false} for the order a depth-first walk meets the types first; {@code true} for the reverse of the
+   *                      order it leaves them last, in which every type comes before each of its super types, so that a value derived
+   *                      from the sub types of a type is final by the time the type is reached
+   */
+  private static LocalDocumentType[] collectLineage(final LocalDocumentType start, final boolean subTypesFirst) {
+    if (start.superTypes.isEmpty())
+      return new LocalDocumentType[] { start };
+
+    // By identity: equals() compares two types' definitions, and two distinct types can be defined alike
+    final Set<LocalDocumentType> visited = Collections.newSetFromMap(new IdentityHashMap<>());
+    final List<LocalDocumentType> entered = new ArrayList<>();
+    final List<LocalDocumentType> left = subTypesFirst ? new ArrayList<>() : null;
+    // The super type lists are copy-on-write: each iterator walks the snapshot it was taken from, whatever changes meanwhile
+    final ArrayDeque<LocalDocumentType> path = new ArrayDeque<>();
+    final ArrayDeque<Iterator<LocalDocumentType>> pending = new ArrayDeque<>();
+    visited.add(start);
+    entered.add(start);
+    path.push(start);
+    pending.push(start.superTypes.iterator());
+    while (!pending.isEmpty()) {
+      final Iterator<LocalDocumentType> level = pending.peek();
+      if (!level.hasNext()) {
+        pending.pop();
+        final LocalDocumentType done = path.pop();
+        if (left != null)
+          left.add(done);
+        continue;
+      }
+      final LocalDocumentType next = level.next();
+      if (visited.add(next)) {
+        entered.add(next);
+        path.push(next);
+        pending.push(next.superTypes.iterator());
+      }
+    }
+
+    if (left != null)
+      Collections.reverse(left);
+    return (subTypesFirst ? left : entered).toArray(new LocalDocumentType[0]);
   }
 
   @Override
@@ -533,8 +605,9 @@ public class LocalDocumentType implements DocumentType {
       return own;
 
     final HashSet<String> set = new HashSet<>(own);
-    for (final LocalDocumentType superType : superTypes)
-      set.addAll(superType.getPolymorphicPropertiesWithDefaultDefined());
+    final LocalDocumentType[] lineage = getLineage();
+    for (int i = 1; i < lineage.length; i++)
+      set.addAll(lineage[i].propertiesWithDefaultDefined.get());
     return set;
   }
 
@@ -1248,8 +1321,13 @@ public class LocalDocumentType implements DocumentType {
     if (aliases.contains(type))
       return true;
 
-    for (final DocumentType t : superTypes) {
-      if (t.instanceOf(type))
+    if (superTypes.isEmpty())
+      return false;
+
+    final LocalDocumentType[] lineage = getLineage();
+    for (int i = 1; i < lineage.length; i++) {
+      final LocalDocumentType t = lineage[i];
+      if (t.name.equals(type) || t.aliases.contains(type))
         return true;
     }
 
@@ -1417,8 +1495,9 @@ public class LocalDocumentType implements DocumentType {
       return getProperties();
 
     final Set<Property> allProperties = new HashSet<>(getProperties());
-    for (final DocumentType p : superTypes)
-      allProperties.addAll(p.getPolymorphicProperties());
+    final LocalDocumentType[] lineage = getLineage();
+    for (int i = 1; i < lineage.length; i++)
+      allProperties.addAll(lineage[i].getProperties());
     return allProperties;
   }
 
@@ -1435,9 +1514,26 @@ public class LocalDocumentType implements DocumentType {
       return getPropertyNames();
 
     final Set<String> allProperties = new HashSet<>(getPropertyNames());
-    for (final DocumentType p : superTypes)
-      allProperties.addAll(p.getPolymorphicPropertyNames());
+    final LocalDocumentType[] lineage = getLineage();
+    for (int i = 1; i < lineage.length; i++)
+      allProperties.addAll(lineage[i].getPropertyNames());
     return allProperties;
+  }
+
+  /** The first declaration of the property along {@link #getLineage()}, which is the one the recursion over the super types found. */
+  @Override
+  public Property getPolymorphicPropertyIfExists(final String propertyName) {
+    final Property own = getPropertyIfExists(propertyName);
+    if (own != null || superTypes.isEmpty())
+      return own;
+
+    final LocalDocumentType[] lineage = getLineage();
+    for (int i = 1; i < lineage.length; i++) {
+      final Property inherited = lineage[i].getPropertyIfExists(propertyName);
+      if (inherited != null)
+        return inherited;
+    }
+    return null;
   }
 
   /**
@@ -1588,12 +1684,8 @@ public class LocalDocumentType implements DocumentType {
     if (type instanceof LocalTimeSeriesType tsType)
       return tsType;
 
-    for (final LocalDocumentType subType : type.subTypes) {
-      final LocalTimeSeriesType found = findTimeSeriesInSubtree(subType);
-      if (found != null)
-        return found;
-    }
-    return null;
+    // Each type once, whatever the number of paths that lead down to it
+    return TypeHierarchy.findInSubTypes(type, subType -> subType instanceof LocalTimeSeriesType tsType ? tsType : null);
   }
 
   /**
@@ -1804,11 +1896,11 @@ public class LocalDocumentType implements DocumentType {
   }
 
   private void collectSubTypeIndexesOnProperty(final String propertyName, final List<TypeIndex> result) {
-    collectSubTypeIndexesOnProperty(this, properties.get(propertyName), propertyName, result);
+    collectSubTypeIndexesOnProperty(this, properties.get(propertyName), propertyName, result, Collections.newSetFromMap(new IdentityHashMap<>()));
   }
 
   private void collectSubTypeIndexesOnProperty(final LocalDocumentType changed, final Property changedDeclaration, final String propertyName,
-      final List<TypeIndex> result) {
+      final List<TypeIndex> result, final Set<LocalDocumentType> visited) {
     for (final LocalDocumentType subType : subTypes) {
       if (subType.getPropertyIfExists(propertyName) != null || subType.keepsDeclarationOfTheSameKind(propertyName, changed, changedDeclaration,
           new HashSet<>()))
@@ -1822,11 +1914,15 @@ public class LocalDocumentType implements DocumentType {
         // the index would be left keyed by the type of the declaration that went.
         continue;
 
+      // A type below two of the types walked is walked once
+      if (!visited.add(subType))
+        continue;
+
       for (final TypeIndex index : subType.getAllIndexes(false))
         if (index.getPropertyNames().contains(propertyName) && !result.contains(index))
           result.add(index);
 
-      subType.collectSubTypeIndexesOnProperty(changed, changedDeclaration, propertyName, result);
+      subType.collectSubTypeIndexesOnProperty(changed, changedDeclaration, propertyName, result, visited);
     }
   }
 
@@ -2705,7 +2801,7 @@ public class LocalDocumentType implements DocumentType {
 
   @Override
   public boolean existsPolymorphicProperty(final String propertyName) {
-    return getPolymorphicPropertyNames().contains(propertyName);
+    return getPolymorphicPropertyIfExists(propertyName) != null;
   }
 
   @Override
@@ -2725,8 +2821,11 @@ public class LocalDocumentType implements DocumentType {
     final Set<TypeIndex> set = new HashSet<>(indexesByProperties.values());
     set.addAll(columnarIndexesByProperties.values());
 
-    for (final DocumentType t : superTypes)
-      set.addAll(t.getAllIndexes(true));
+    final LocalDocumentType[] lineage = getLineage();
+    for (int i = 1; i < lineage.length; i++) {
+      set.addAll(lineage[i].indexesByProperties.values());
+      set.addAll(lineage[i].columnarIndexesByProperties.values());
+    }
 
     return Collections.unmodifiableSet(set);
   }
@@ -2763,8 +2862,18 @@ public class LocalDocumentType implements DocumentType {
     }
 
     final List<IndexInternal> result = r != null ? new ArrayList<>(r) : new ArrayList<>();
-    for (final DocumentType t : superTypes)
-      result.addAll(t.getPolymorphicBucketIndexByBucketId(bucketId, filterByProperties));
+    final LocalDocumentType[] lineage = getLineage();
+    for (int i = 1; i < lineage.length; i++) {
+      final List<IndexInternal> inherited = lineage[i].bucketIndexesByBucket.get(bucketId);
+      if (inherited == null)
+        continue;
+      if (filterByProperties == null)
+        result.addAll(inherited);
+      else
+        for (final IndexInternal idx : inherited)
+          if (idx.getPropertyNames().equals(filterByProperties))
+            result.add(idx);
+    }
 
     return result;
   }
@@ -2777,8 +2886,12 @@ public class LocalDocumentType implements DocumentType {
       return r == null ? Collections.emptyList() : Collections.unmodifiableList(r);
 
     final List<IndexInternal> result = r != null ? new ArrayList<>(r) : new ArrayList<>();
-    for (final DocumentType t : superTypes)
-      result.addAll(t.getPolymorphicBucketIndexMaintainedInTransaction(bucketId));
+    final LocalDocumentType[] lineage = getLineage();
+    for (int i = 1; i < lineage.length; i++) {
+      final List<IndexInternal> inherited = lineage[i].maintainedIndexesByBucket.get(bucketId);
+      if (inherited != null)
+        result.addAll(inherited);
+    }
     return result;
   }
 
@@ -2825,12 +2938,11 @@ public class LocalDocumentType implements DocumentType {
     if (family != Schema.INDEX_TYPE.COLUMNAR)
       return getPolymorphicIndexByProperties(properties);
     TypeIndex idx = columnarIndexesByProperties.get(properties);
-    if (idx == null)
-      for (final LocalDocumentType t : superTypes) {
-        idx = t.getPolymorphicIndexByProperties(properties, family);
-        if (idx != null)
-          break;
-      }
+    if (idx == null && !superTypes.isEmpty()) {
+      final LocalDocumentType[] lineage = getLineage();
+      for (int i = 1; i < lineage.length && idx == null; i++)
+        idx = lineage[i].columnarIndexesByProperties.get(properties);
+    }
     return idx;
   }
 
@@ -2843,12 +2955,11 @@ public class LocalDocumentType implements DocumentType {
   @Override
   public TypeIndex getPolymorphicColumnarIndex(final String property) {
     TypeIndex index = getColumnarIndex(property);
-    if (index == null)
-      for (final LocalDocumentType t : superTypes) {
-        index = t.getPolymorphicColumnarIndex(property);
-        if (index != null)
-          break;
-      }
+    if (index == null && !superTypes.isEmpty()) {
+      final LocalDocumentType[] lineage = getLineage();
+      for (int i = 1; i < lineage.length && index == null; i++)
+        index = lineage[i].getColumnarIndex(property);
+    }
     return index;
   }
 
@@ -2888,12 +2999,11 @@ public class LocalDocumentType implements DocumentType {
   public TypeIndex getPolymorphicIndexByProperties(final List<String> properties) {
     TypeIndex idx = indexesByProperties.get(properties);
 
-    if (idx == null)
-      for (final DocumentType t : superTypes) {
-        idx = t.getPolymorphicIndexByProperties(properties);
-        if (idx != null)
-          break;
-      }
+    if (idx == null && !superTypes.isEmpty()) {
+      final LocalDocumentType[] lineage = getLineage();
+      for (int i = 1; i < lineage.length && idx == null; i++)
+        idx = lineage[i].indexesByProperties.get(properties);
+    }
 
     return idx;
   }
@@ -3162,15 +3272,18 @@ public class LocalDocumentType implements DocumentType {
   }
 
   public void removeTypeIndexInternal(final TypeIndex index) {
+    // This type and every type above it, once each, from the links as they are now
+    for (final LocalDocumentType type : collectLineage(this, false))
+      type.removeOwnTypeIndexInternal(index);
+  }
+
+  private void removeOwnTypeIndexInternal(final TypeIndex index) {
     // by identity: TypeIndex.equals() reads the sub-indexes, which a dropped index no longer answers for
     if (removeByIdentity(indexesByProperties, index) || removeByIdentity(columnarIndexesByProperties, index))
       refreshOwnIndexes();
 
     for (final IndexInternal idx : index.getIndexesOnBuckets())
       removeBucketIndexInternal(idx);
-
-    for (final LocalDocumentType superType : superTypes)
-      superType.removeTypeIndexInternal(index);
   }
 
   private static boolean removeByIdentity(final Map<List<String>, TypeIndex> indexes, final TypeIndex index) {
@@ -3242,8 +3355,7 @@ public class LocalDocumentType implements DocumentType {
     if (!superTypes.isEmpty()) {
       final List<Bucket>  addedBuckets   = List.of(bucket);
       final List<Integer> addedBucketIds = List.of(bucket.getFileId());
-      for (final LocalDocumentType s : superTypes)
-        s.updatePolymorphicBucketsCache(true, addedBuckets, addedBucketIds);
+      updateSuperTypesPolymorphicBucketsCache(true, addedBuckets, addedBucketIds);
     }
 
     bucketSelectionStrategy.setType(this);
@@ -3323,8 +3435,11 @@ public class LocalDocumentType implements DocumentType {
   public boolean hasExternalProperties() {
     if (ownExternalPropertyCount.get() > 0)
       return true;
-    for (final LocalDocumentType st : superTypes)
-      if (st.hasExternalProperties())
+    if (superTypes.isEmpty())
+      return false;
+    final LocalDocumentType[] lineage = getLineage();
+    for (int i = 1; i < lineage.length; i++)
+      if (lineage[i].ownExternalPropertyCount.get() > 0)
         return true;
     return false;
   }
@@ -3351,8 +3466,9 @@ public class LocalDocumentType implements DocumentType {
   /** Recurses into subtypes: records of a subtype live in subtype primary buckets, so each needs its own paired ext. */
   public void ensureExternalBucketsRecursive() {
     ensureExternalBuckets();
-    for (final LocalDocumentType sub : subTypes)
-      sub.ensureExternalBucketsRecursive();
+    // Each type once, whatever the number of paths that lead down to it
+    for (final DocumentType sub : TypeHierarchy.allSubTypes(this))
+      ((LocalDocumentType) sub).ensureExternalBuckets();
   }
 
   private void ensureExternalBucketFor(final LocalBucket primary) {
@@ -3574,8 +3690,7 @@ public class LocalDocumentType implements DocumentType {
     if (!superTypes.isEmpty()) {
       final List<Bucket>  removedBuckets   = List.of(bucket);
       final List<Integer> removedBucketIds = List.of(bucket.getFileId());
-      for (final LocalDocumentType s : superTypes)
-        s.updatePolymorphicBucketsCache(false, removedBuckets, removedBucketIds);
+      updateSuperTypesPolymorphicBucketsCache(false, removedBuckets, removedBucketIds);
     }
 
     // SYMMETRIC TO addBucketInternal: REBIND THE STRATEGY SO ITS CACHED BUCKET COUNT (E.G. RoundRobinBucketSelectionStrategy.total)
@@ -3619,17 +3734,27 @@ public class LocalDocumentType implements DocumentType {
     if (type == null)
       return false;
 
+    if (isOrIsAliasedAs(type))
+      return true;
+    if (superTypes.isEmpty())
+      return false;
+    // each type above this one once, whatever the number of paths that lead up to it
+    final LocalDocumentType[] lineage = getLineage();
+    for (int i = 1; i < lineage.length; i++)
+      if (lineage[i].isOrIsAliasedAs(type))
+        return true;
+    return false;
+  }
+
+  private boolean isOrIsAliasedAs(final String type) {
     if (type.equalsIgnoreCase(getName()))
       return true;
     // most types have no alias: no iterator for them, this runs once per record a type filter reads
+    final Set<String> aliases = this.aliases;
     if (!aliases.isEmpty())
       for (final String alias : aliases)
         if (type.equalsIgnoreCase(alias))
           return true;
-    for (final DocumentType superType : superTypes) {
-      if (superType.isSubTypeOf(type))
-        return true;
-    }
     return false;
   }
 
@@ -3640,11 +3765,10 @@ public class LocalDocumentType implements DocumentType {
 
     if (type.equalsIgnoreCase(getName()))
       return true;
-    for (final DocumentType subType : subTypes) {
-      if (subType.isSuperTypeOf(type))
-        return true;
-    }
-    return false;
+    if (subTypes.isEmpty())
+      return false;
+    // each type below this one once, whatever the number of paths that lead down to it
+    return TypeHierarchy.anySubType(this, subType -> type.equalsIgnoreCase(subType.getName()));
   }
 
   @Override
@@ -3806,21 +3930,31 @@ public class LocalDocumentType implements DocumentType {
     return schema.recordFileChanges(callback);
   }
 
+  /**
+   * Adds the buckets to, or removes them from, the polymorphic caches of this type and of every type above it, each once. Only the
+   * incoming buckets are forwarded, symmetric with the removal: forwarding the whole cache would hand every ancestor the buckets it
+   * already owns on every single update, which is O(tree) work per bucket and only stays correct because
+   * {@code addAllToUnmodifiableList} deduplicates.
+   */
   private void updatePolymorphicBucketsCache(final boolean add, final List<Bucket> buckets, final List<Integer> bucketIds) {
+    for (final LocalDocumentType type : collectLineage(this, false))
+      type.updateOwnPolymorphicBucketsCache(add, buckets, bucketIds);
+  }
+
+  /** As {@link #updatePolymorphicBucketsCache}, for the types above this one only: this type's own lists are already changed. */
+  private void updateSuperTypesPolymorphicBucketsCache(final boolean add, final List<Bucket> buckets, final List<Integer> bucketIds) {
+    final LocalDocumentType[] lineage = collectLineage(this, false);
+    for (int i = 1; i < lineage.length; i++)
+      lineage[i].updateOwnPolymorphicBucketsCache(add, buckets, bucketIds);
+  }
+
+  private void updateOwnPolymorphicBucketsCache(final boolean add, final List<Bucket> buckets, final List<Integer> bucketIds) {
     if (add) {
       cachedPolymorphicBuckets = CollectionUtils.addAllToUnmodifiableList(cachedPolymorphicBuckets, buckets);
       cachedPolymorphicBucketIds = CollectionUtils.addAllToUnmodifiableList(cachedPolymorphicBucketIds, bucketIds);
-      // ADD ONLY THE INCOMING BUCKETS, SYMMETRIC WITH THE REMOVE BRANCH: FORWARDING THE WHOLE CACHE WOULD HAND EVERY
-      // ANCESTOR THE BUCKETS IT ALREADY OWNS ON EVERY SINGLE UPDATE, WHICH IS O(TREE) WORK PER BUCKET AND ONLY STAYS
-      // CORRECT BECAUSE addAllToUnmodifiableList HAPPENS TO DEDUPLICATE
-      for (LocalDocumentType s : superTypes)
-        s.updatePolymorphicBucketsCache(add, buckets, bucketIds);
     } else {
       cachedPolymorphicBuckets = CollectionUtils.removeAllFromUnmodifiableList(cachedPolymorphicBuckets, buckets);
       cachedPolymorphicBucketIds = CollectionUtils.removeAllFromUnmodifiableList(cachedPolymorphicBucketIds, bucketIds);
-      // REMOVE ONLY THE BUCKETS OF THE REMOVED TYPE
-      for (LocalDocumentType s : superTypes)
-        s.updatePolymorphicBucketsCache(add, buckets, bucketIds);
     }
   }
 
@@ -3851,11 +3985,19 @@ public class LocalDocumentType implements DocumentType {
    * derived from this one. Each list is published as a fresh unmodifiable copy, the same copy-on-write contract the
    * lock-free readers of the two volatile fields rely on (issue #6678).
    * <p>
-   * The order is load-bearing: a type's cache is read by its super types and never by its sub types, so this type is
-   * rebuilt BEFORE the walk goes up, and the sub types' caches it reads are already final because the change that
-   * triggered the rebuild happened above them. Rebuilding a super type first would read this type's stale cache.
+   * The order is load-bearing: a type's cache is read by its super types and never by its sub types, so a type is rebuilt
+   * BEFORE every type above it, and the sub types' caches it reads are already final because the change that triggered the
+   * rebuild happened above them, or, for a sub type that is itself on the way up, because it was rebuilt first. Rebuilding a
+   * super type first would read a stale cache. Each type is rebuilt once, after every one of its sub types that is above this
+   * type: a type reached through more than one of them is not rebuilt once per path.
    */
   private void rebuildPolymorphicBucketsCache() {
+    // This type and every type above it, once each, every type before the types above it
+    for (final LocalDocumentType type : collectLineage(this, true))
+      type.rebuildOwnPolymorphicBucketsCache();
+  }
+
+  private void rebuildOwnPolymorphicBucketsCache() {
     final List<Bucket> polymorphicBuckets = new ArrayList<>(buckets);
     final List<Integer> polymorphicBucketIds = new ArrayList<>(bucketIds);
     // A DIAMOND HANDS THE SAME BUCKET OVER THROUGH MORE THAN ONE SUB TYPE: IT IS LISTED ONCE
@@ -3869,9 +4011,6 @@ public class LocalDocumentType implements DocumentType {
 
     cachedPolymorphicBuckets = Collections.unmodifiableList(polymorphicBuckets);
     cachedPolymorphicBucketIds = Collections.unmodifiableList(polymorphicBucketIds);
-
-    for (final LocalDocumentType superType : superTypes)
-      superType.rebuildPolymorphicBucketsCache();
   }
 
   /**
