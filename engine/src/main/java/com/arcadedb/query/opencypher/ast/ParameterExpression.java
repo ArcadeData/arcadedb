@@ -18,8 +18,13 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
+import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
+
+import java.time.LocalTime;
+import java.time.OffsetTime;
+import java.time.ZonedDateTime;
 
 /**
  * Expression representing a query parameter.
@@ -38,10 +43,26 @@ public class ParameterExpression implements Expression {
   @Override
   public Object evaluate(final Result result, final CommandContext context) {
     // Look up the parameter value from the context
-    if (context != null && context.getInputParameters() != null) {
-      return context.getInputParameters().get(parameterName);
-    }
+    if (context != null && context.getInputParameters() != null)
+      return asCypherValue(context.getInputParameters().get(parameterName));
     return null;
+  }
+
+  /**
+   * A temporal a Bolt driver sends is decoded to a {@code java.time} value (BoltStructureMapper). Handed to the expression as such,
+   * it is refused by temporal arithmetic and by the {@code date()}, {@code datetime()}, {@code time()} ... constructors and the
+   * {@code truncate()} functions, which only know the Cypher temporal classes, although the literal of the same value is accepted
+   * (issue #13569). The parameter is therefore the Cypher temporal the literal would be.
+   * <p>
+   * Only the classes that were refused are wrapped. A {@code LocalDateTime} and a {@code LocalDate} are left as they are: the
+   * arithmetic and the constructors take them, and a {@code LocalDateTime} parameter deliberately compares with a zoned datetime by
+   * instant, which its Cypher wrapper would not (CypherTemporalTest). An {@code Instant}, {@code OffsetDateTime} or
+   * {@code java.util.Date} bound through the Java API keeps the type it is stored as.
+   */
+  private static Object asCypherValue(final Object value) {
+    if (value instanceof ZonedDateTime || value instanceof LocalTime || value instanceof OffsetTime)
+      return TemporalUtil.fromCoreJavaType(value);
+    return value;
   }
 
   @Override
