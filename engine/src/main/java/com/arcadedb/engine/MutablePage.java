@@ -140,6 +140,10 @@ public class MutablePage extends BasePage implements TrackableContent {
   // a read taken back with its statement costs at most a retry. The bit set is allocated at the first read of a single slot.
   private              BitSet  slotsRead;
   private              boolean wholePageRead;
+  // #13572: whether one of those reads was made when the image was ALREADY stale, another transaction having committed to the page
+  // after this transaction's first write to it. A read made while the image was still the committed page plus this transaction's own
+  // writes is a valid READ_COMMITTED read: a commit landing after it is an ordinary phantom and must not refuse the merge
+  private              boolean staleReadRecorded;
   // #11590: the owning transaction read, through a page a scan kept from an earlier batch, an older version of the page than the one
   // this image was taken from: those reads missed a commit this image already holds, so no comparison with the committed page at
   // commit can vouch for them, and the commit is refused
@@ -661,6 +665,19 @@ public class MutablePage extends BasePage implements TrackableContent {
   /** Whether the owning transaction read this image as a whole (#11590). */
   public boolean isWholePageRead() {
     return wholePageRead;
+  }
+
+  /**
+   * Records that the owning transaction read this image after another transaction had committed to the page it was taken from
+   * (#13572): only such a read can rest on what the image misses.
+   */
+  public void markStaleReadRecorded() {
+    staleReadRecorded = true;
+  }
+
+  /** Whether the owning transaction read this image after another transaction had committed to its page (#13572). */
+  public boolean isStaleReadRecorded() {
+    return staleReadRecorded;
   }
 
   /** Records that the owning transaction read this page, kept by a scan, at an older version than this image's (#11590). */
