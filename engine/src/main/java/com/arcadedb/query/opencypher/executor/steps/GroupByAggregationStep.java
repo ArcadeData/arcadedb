@@ -367,10 +367,15 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
           groupAgg = groups.get(keyValues);
           if (groupAgg == null) {
             groupAgg = createGroupAggregators(aggregationItems, complexAggregationItems);
-            groupAgg.representativeRow = inputRow;
             groups.put(keyValues, groupAgg);
-            // THE GROUP KEEPS ITS FIRST INPUT ROW, FOR THE COMPLEX AGGREGATION ITEMS
-            heapLimit.add(groups.size(), new Object[] { keyValues.values, inputRow }, groupOverhead);
+            if (complexAggregationItems.isEmpty())
+              heapLimit.add(groups.size(), keyValues.values, groupOverhead);
+            else {
+              // THE GROUP KEEPS ITS FIRST INPUT ROW, FOR THE COMPLEX AGGREGATION ITEMS: ONLY THEY READ IT. A GROUP WITHOUT ONE HOLDS
+              // ITS KEYS AND ITS AGGREGATES, NOT EVERY RECORD THE ROW BOUND (ISSUE #13584)
+              groupAgg.representativeRow = inputRow;
+              heapLimit.add(groups.size(), new Object[] { keyValues.values, inputRow }, groupOverhead);
+            }
           }
           lastGroup = groupAgg;
         }
