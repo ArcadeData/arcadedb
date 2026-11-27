@@ -133,6 +133,13 @@ final class AggregationValidator {
     }
   }
 
+  /**
+   * Walks a projected expression for the two shapes an aggregate cannot take: nested in another aggregate, and inside an
+   * expression that runs once per element of a list (a comprehension, a list predicate, the body of a reduce), where it has
+   * no group to fold. The walk names the precise refusal for the shapes it descends into; the nesting itself is decided by
+   * {@link Expression#containsAggregation()} on the arguments of the aggregate, which every expression node implements, so a
+   * node the walk does not list cannot hide an aggregate from it (issue #13019).
+   */
   private static void checkNestedAggregation(final Expression expr, final boolean insideAggregation) {
     if (expr == null)
       return;
@@ -145,8 +152,12 @@ final class AggregationValidator {
         // Check for non-deterministic functions inside aggregation (e.g., count(rand()))
         for (final Expression arg : func.getArguments())
           checkNonConstantInAggregation(arg);
-        for (final Expression arg : func.getArguments())
+        for (final Expression arg : func.getArguments()) {
           checkNestedAggregation(arg, true);
+          // whatever position the walk does not descend into: {a: count(x)}.a, x IN [count(x)], ... (issue #13019)
+          if (arg != null && arg.containsAggregation())
+            throw new CommandParsingException("NestedAggregation: Nested aggregation functions are not allowed");
+        }
         return;
       }
       for (final Expression arg : func.getArguments())
@@ -158,17 +169,26 @@ final class AggregationValidator {
       checkNestedAggregation(((TernaryLogicalExpression) expr).getLeft(), insideAggregation);
       if (((TernaryLogicalExpression) expr).getRight() != null)
         checkNestedAggregation(((TernaryLogicalExpression) expr).getRight(), insideAggregation);
-    } else if (expr instanceof BooleanWrapperExpression) {
-      final BooleanExpression boolExpr = ((BooleanWrapperExpression) expr).getBooleanExpression();
-      checkNestedAggregationInBoolean(boolExpr, insideAggregation);
+    } else if (expr instanceof BooleanWrapperExpression wrapper) {
+      // every operand of a comparison, AND/OR/NOT, IN, IS NULL, STARTS WITH, =~, a label check... (issue #13019)
+      BooleanWrapperExpression.forEachOperand(wrapper.getBooleanExpression(), operand -> checkNestedAggregation(operand, insideAggregation));
+    } else if (expr instanceof ComparisonExpressionWrapper wrapper) {
+      checkNestedAggregation(wrapper.getComparison().getLeft(), insideAggregation);
+      checkNestedAggregation(wrapper.getComparison().getRight(), insideAggregation);
     } else if (expr instanceof ListExpression) {
       for (final Expression elem : ((ListExpression) expr).getElements())
         checkNestedAggregation(elem, insideAggregation);
     } else if (expr instanceof ListComprehensionExpression) {
       final ListComprehensionExpression lce = (ListComprehensionExpression) expr;
       checkNestedAggregation(lce.getListExpression(), insideAggregation);
-      if (lce.getMapExpression() != null)
-        checkAggregationInListComprehension(lce.getMapExpression());
+      // the filter runs once per element as much as the projection does (issue #13019)
+      checkAggregationInListComprehension(lce.getWhereExpression());
+      checkAggregationInListComprehension(lce.getMapExpression());
+    } else if (expr instanceof ListPredicateExpression predicate) {
+      // all/any/none/single: the list is evaluated once per group, the WHERE once per element of it (issue #13019)
+      checkNestedAggregation(predicate.getListExpression(), insideAggregation);
+      if (predicate.getWhereExpression() != null && predicate.getWhereExpression().containsAggregation())
+        throw new CommandParsingException("InvalidAggregation: Aggregation functions are not allowed in list predicates");
     } else if (expr instanceof PatternComprehensionExpression pce) {
       // The projection of a pattern comprehension runs once per match of the pattern, inside one outer row: an aggregate
       // there has no group to fold, as in a list comprehension (issue #12316)
@@ -190,11 +210,12 @@ final class AggregationValidator {
       checkNestedAggregation(reduce.getListExpression(), insideAggregation);
       checkAggregationInReduce(reduce.getReduceExpression());
     } else if (expr instanceof AllReduceExpression allReduce) {
-      // the initial value and the list of an allReduce are evaluated once per group, so an aggregate there is legal; the body runs
-      // once per element of the list, inside one outer row, as in a reduce (issue #13019)
+      // the initial value and the list of an allReduce are evaluated once per group, so an aggregate there is legal; the body and
+      // the predicate run once per element of the list, inside one outer row, as in a reduce (issue #13019)
       checkNestedAggregation(allReduce.getInitialValue(), insideAggregation);
       checkNestedAggregation(allReduce.getListExpression(), insideAggregation);
       checkAggregationInReduce(allReduce.getReduceExpression());
+      checkAggregationInReduce(allReduce.getPredicateExpression());
     } else if (expr instanceof ChainedPropertyAccessExpression access) {
       // the base of a property access can be an expression: the '.a' of '{a: count(n.x)}.a' hides the aggregate from the walk
       // (issue #13019)
@@ -217,17 +238,6 @@ final class AggregationValidator {
       }
       if (caseExpr.getElseExpression() != null)
         checkNestedAggregation(caseExpr.getElseExpression(), insideAggregation);
-    }
-  }
-
-  private static void checkNestedAggregationInBoolean(final BooleanExpression boolExpr, final boolean insideAggregation) {
-    if (boolExpr instanceof ComparisonExpression) {
-      checkNestedAggregation(((ComparisonExpression) boolExpr).getLeft(), insideAggregation);
-      checkNestedAggregation(((ComparisonExpression) boolExpr).getRight(), insideAggregation);
-    } else if (boolExpr instanceof LogicalExpression) {
-      checkNestedAggregationInBoolean(((LogicalExpression) boolExpr).getLeft(), insideAggregation);
-      if (((LogicalExpression) boolExpr).getRight() != null)
-        checkNestedAggregationInBoolean(((LogicalExpression) boolExpr).getRight(), insideAggregation);
     }
   }
 
@@ -270,55 +280,19 @@ final class AggregationValidator {
       }
   }
 
+  /**
+   * Every operand of the condition, through AND/OR/NOT: a comparison, IN, IS NULL (count(x) IS NOT NULL is as much an
+   * aggregate in a WHERE as count(x) > 0, issue #10559), STARTS WITH, =~, IS NORMALIZED, IS TYPED, a label check, a coerced
+   * value.
+   */
   private static void checkAggregationInBooleanExpression(final BooleanExpression boolExpr) {
-    if (boolExpr == null)
-      return;
-
-    if (boolExpr instanceof LogicalExpression) {
-      final LogicalExpression logExpr = (LogicalExpression) boolExpr;
-      checkAggregationInBooleanExpression(logExpr.getLeft());
-      if (logExpr.getRight() != null)
-        checkAggregationInBooleanExpression(logExpr.getRight());
-    } else if (boolExpr instanceof ComparisonExpression) {
-      final ComparisonExpression comp = (ComparisonExpression) boolExpr;
-      checkAggregationInExpression(comp.getLeft());
-      checkAggregationInExpression(comp.getRight());
-    } else if (boolExpr instanceof InExpression) {
-      final InExpression inExpr = (InExpression) boolExpr;
-      checkAggregationInExpression(inExpr.getExpression());
-      for (final Expression elem : inExpr.getList())
-        checkAggregationInExpression(elem);
-    } else if (boolExpr instanceof IsNullExpression isNull) {
-      // count(x) IS NOT NULL is as much an aggregate in a WHERE as count(x) > 0 (issue #10559)
-      checkAggregationInExpression(isNull.getExpression());
-    } else if (boolExpr instanceof RegexExpression regex) {
-      checkAggregationInExpression(regex.getExpression());
-      checkAggregationInExpression(regex.getPattern());
-    } else if (boolExpr instanceof StringMatchExpression match) {
-      checkAggregationInExpression(match.getExpression());
-      checkAggregationInExpression(match.getPattern());
-    } else if (boolExpr instanceof IsNormalizedExpression normalized) {
-      checkAggregationInExpression(normalized.getValueExpression());
-    } else if (boolExpr instanceof IsTypedExpression typed) {
-      checkAggregationInExpression(typed.getValueExpression());
-    } else if (boolExpr instanceof BooleanCoercionExpression coercion) {
-      checkAggregationInExpression(coercion.getExpression());
-    }
+    BooleanWrapperExpression.forEachOperand(boolExpr, AggregationValidator::checkAggregationInExpression);
   }
 
+  /** Any aggregate in any position: {@code [count(x)][0]} as much as {@code count(x)} (issue #13019). */
   private static void checkAggregationInOrderBy(final Expression expr) {
-    if (expr == null)
-      return;
-
-    if (expr instanceof FunctionCallExpression) {
-      if (((FunctionCallExpression) expr).isAggregation())
-        throw new CommandParsingException("InvalidAggregation: Aggregation functions are not allowed in ORDER BY after RETURN");
-      for (final Expression arg : ((FunctionCallExpression) expr).getArguments())
-        checkAggregationInOrderBy(arg);
-    } else if (expr instanceof ArithmeticExpression) {
-      checkAggregationInOrderBy(((ArithmeticExpression) expr).getLeft());
-      checkAggregationInOrderBy(((ArithmeticExpression) expr).getRight());
-    }
+    if (expr != null && expr.containsAggregation())
+      throw new CommandParsingException("InvalidAggregation: Aggregation functions are not allowed in ORDER BY after RETURN");
   }
 
   /**
@@ -621,18 +595,9 @@ final class AggregationValidator {
     }
   }
 
+  /** Any aggregate in any position: {@code {a: count(x)}.a > 0} as much as {@code count(x) > 0} (issue #13019). */
   private static void checkAggregationInExpression(final Expression expr) {
-    if (expr == null)
-      return;
-
-    if (expr instanceof FunctionCallExpression) {
-      if (((FunctionCallExpression) expr).isAggregation())
-        throw new CommandParsingException("InvalidAggregation: Aggregation functions are not allowed in WHERE");
-      for (final Expression arg : ((FunctionCallExpression) expr).getArguments())
-        checkAggregationInExpression(arg);
-    } else if (expr instanceof ArithmeticExpression) {
-      checkAggregationInExpression(((ArithmeticExpression) expr).getLeft());
-      checkAggregationInExpression(((ArithmeticExpression) expr).getRight());
-    }
+    if (expr != null && expr.containsAggregation())
+      throw new CommandParsingException("InvalidAggregation: Aggregation functions are not allowed in WHERE");
   }
 }
