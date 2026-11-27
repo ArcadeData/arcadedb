@@ -60,14 +60,16 @@ public class LocalTimeTruncateFunction implements StatelessFunction {
       return null;
     final String unit = args[0].toString();
     final LocalTime time;
-    if (args[1] instanceof CypherLocalTime)
-      time = ((CypherLocalTime) args[1]).getValue();
-    else if (args[1] instanceof CypherTime)
-      time = ((CypherTime) args[1]).getValue().toLocalTime();
-    else if (args[1] instanceof CypherLocalDateTime)
-      time = ((CypherLocalDateTime) args[1]).getValue().toLocalTime();
-    else if (args[1] instanceof CypherDateTime)
-      time = ((CypherDateTime) args[1]).getValue().toLocalTime();
+    // A native temporal (a parameter a driver sent, a value read off a map or a list) is the Cypher temporal its literal is (issue #13569)
+    final Object temporal = TemporalUtil.fromCoreJavaType(args[1]);
+    if (temporal instanceof CypherLocalTime)
+      time = ((CypherLocalTime) temporal).getValue();
+    else if (temporal instanceof CypherTime)
+      time = ((CypherTime) temporal).getValue().toLocalTime();
+    else if (temporal instanceof CypherLocalDateTime)
+      time = ((CypherLocalDateTime) temporal).getValue().toLocalTime();
+    else if (temporal instanceof CypherDateTime)
+      time = ((CypherDateTime) temporal).getValue().toLocalTime();
     else
       // Not a time-bearing temporal value: determined entirely by the supplied argument, so it is a client error
       // (HTTP 400) rather than a CommandExecutionException (HTTP 500). See issue #6638.

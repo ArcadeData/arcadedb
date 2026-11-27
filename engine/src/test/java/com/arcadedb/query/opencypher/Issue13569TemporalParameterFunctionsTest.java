@@ -25,12 +25,17 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.OffsetDateTime;
 import java.time.OffsetTime;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
+import java.util.Date;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -103,6 +108,58 @@ class Issue13569TemporalParameterFunctionsTest extends TestHelper {
     assertThat(vertex.get("z")).isInstanceOf(ZonedDateTime.class);
     assertThat(vertex.get("l")).isInstanceOf(LocalDateTime.class);
     assertThat(vertex.get("d")).isInstanceOf(LocalDate.class);
+    assertThat(vertex.get("t")).isInstanceOf(LocalTime.class);
+  }
+
+  /**
+   * The fix is in the consumers (the arithmetic, the constructors, the truncate and duration functions, the map bases), so every
+   * native temporal is taken, not only the three classes a Bolt driver decodes to, and so is one that never went through the
+   * parameter expression: an element of a list parameter, an entry of a map parameter.
+   */
+  @Test
+  void everyNativeTemporalIsTakenWhereverItComesFrom() {
+    final OffsetDateTime offsetDateTime = UTC.toOffsetDateTime();
+    final Instant instant = UTC.toInstant();
+    assertThat(single("RETURN $d + duration({days: 1}) AS x", Map.of("d", offsetDateTime))).isEqualTo("2012-06-02T08:05Z");
+    assertThat(single("RETURN $d + duration({hours: 1}) AS x", Map.of("d", instant))).isEqualTo("2012-06-01T09:05Z");
+    assertThat(single("RETURN date($d) AS x", Map.of("d", Date.from(instant)))).isEqualTo("2012-06-01");
+    assertThat(single("RETURN datetime.truncate('day', $d) AS x", Map.of("d", instant))).isEqualTo("2012-06-01T00:00Z");
+    assertThat(single("RETURN $d + $p AS x", Map.of("d", UTC, "p", Duration.ofHours(1)))).isEqualTo("2012-06-01T09:05Z");
+
+    assertThat(single("UNWIND $ds AS d RETURN d + duration({days: 1}) AS x", Map.of("ds", List.of(UTC)))).isEqualTo("2012-06-02T08:05Z");
+    assertThat(single("UNWIND $ds AS d RETURN date(d) AS x", Map.of("ds", List.of(UTC)))).isEqualTo("2012-06-01");
+    assertThat(single("RETURN date.truncate('month', $m.d) AS x", Map.of("m", Map.of("d", UTC)))).isEqualTo("2012-06-01");
+  }
+
+  @Test
+  void aNativeTemporalAsTheBaseOfATemporalMap() {
+    assertThat(single("RETURN datetime({datetime: $d, timezone: '+02:00'}) AS x", Map.of("d", UTC))).isEqualTo("2012-06-01T10:05+02:00");
+    assertThat(single("RETURN date({date: $d, day: 3}) AS x", Map.of("d", UTC))).isEqualTo("2012-06-03");
+    assertThat(single("RETURN localtime({time: $t, minute: 0}) AS x", Map.of("t", LocalTime.of(8, 5)))).isEqualTo("08:00");
+    assertThat(single("RETURN time({time: $t}) AS x", Map.of("t", OffsetTime.of(8, 5, 0, 0, ZoneOffset.ofHours(2)))))
+        .isEqualTo("08:05+02:00");
+  }
+
+  @Test
+  void durationFunctionsTakeANativeTime() {
+    assertThat(single("RETURN duration.between($a, $b) AS x", Map.of("a", LocalTime.of(8, 5), "b", LocalTime.of(9, 5)))).isEqualTo("PT1H");
+    assertThat(single("RETURN duration.inSeconds($a, $b) AS x",
+        Map.of("a", OffsetTime.of(8, 5, 0, 0, ZoneOffset.UTC), "b", OffsetTime.of(9, 5, 0, 0, ZoneOffset.UTC)))).isEqualTo("PT1H");
+  }
+
+  @Test
+  void aReturnedParameterKeepsItsJavaType() {
+    try (final ResultSet resultSet = database.query("opencypher", "RETURN $d AS x", Map.of("d", UTC))) {
+      assertThat((Object) resultSet.next().getProperty("x")).isEqualTo(UTC);
+    }
+  }
+
+  @Test
+  void aTemporalParameterSetOnAPropertyIsStoredAsTheNativeTypeItWas() {
+    database.transaction(() -> database.command("opencypher", "CREATE (n:S2) SET n.z = $z, n.t = $t",
+        Map.of("z", UTC, "t", LocalTime.of(8, 5))));
+    final var vertex = database.query("sql", "SELECT FROM S2").next().getVertex().get();
+    assertThat(vertex.get("z")).isInstanceOf(ZonedDateTime.class);
     assertThat(vertex.get("t")).isInstanceOf(LocalTime.class);
   }
 
