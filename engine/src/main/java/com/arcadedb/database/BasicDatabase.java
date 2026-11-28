@@ -140,7 +140,7 @@ public interface BasicDatabase extends AutoCloseable {
    * @param joinCurrentTx if active joins the current transaction, otherwise always create a new one
    * @param attempts      number of attempts in case the NeedRetryException exception is thrown
    * @param ok            callback invoked if the transaction completes the commit
-   * @param error         callback invoked if the transaction cannot complete the commit, after the rollback
+   * @param error         callback invoked, after the rollback, once for each attempt that fails to complete the commit (also for an attempt that is retried)
    *
    * @return true if a new transaction has been created or false if an existent transaction has been joined
    */
