@@ -227,6 +227,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
   // Floor for the automatically sized search cache (issue #5412). At 768 dimensions this is ~25MB, small
   // enough to never matter and large enough that a small index is fully resident from the first query.
   private static final int MIN_SEARCH_CACHE_SIZE = 8_192;
+  // Smallest capacity a search cache is given, whatever the budget would afford (perf, issue #13242): the cache of an
+  // index plans on the vector ids that index holds, rounded up to a power of two, and never on MIN_SEARCH_CACHE_SIZE. A type
+  // has one vector index per bucket (16 in the deployments that pick the hot types' bucket count), so a floor of 8,192 slots
+  // planned 33 MB per bucket index at 1024 dimensions for indexes holding a few hundred vectors, and the shared budget was gone
+  // before the last indexes were asked: their searches then read every vector from the graph file, one float[] each.
+  private static final int MIN_SEARCH_CACHE_SLOTS = 1_024;
   // Taken by every search cache that grows, in every index (issue #12391): the budget its size is read from is shared by the
   // caches of all the database's vector indexes, so it is read and taken in one step. Sizing is rare - a cache grows
   // O(log n) times over its index's life - and searches on a cache that covers its range never take it.
@@ -15730,7 +15736,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (heapPercent <= 0)
       return 0;
 
-    final long idRange = Math.max(MIN_SEARCH_CACHE_SIZE, Math.max(nextId.get(), vectorIndex().size()));
+    final long idRange = Math.max(MIN_SEARCH_CACHE_SLOTS, Math.max(nextId.get(), vectorIndex().size()));
     if (currentCapacity >= idRange)
       return currentCapacity;
 
@@ -15773,10 +15779,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * a search cache sized next to it used to plan on the very bytes the build had just taken. A database with a build running
    * therefore has no "first cache" either: the floor below applies only when nothing else plans on the budget.
    * <p>
-   * {@code MIN_SEARCH_CACHE_SIZE} is the floor of the database's first cache only, so that a small index is still fully
-   * resident from its first query on a small heap. Applied to every one of dozens of bucket indexes, the floor alone was
-   * 25 MB each at 768 dimensions; past the first, an index gets what the shared budget leaves, and none when it leaves
-   * less than that many entries: its searches read the vectors from the pages.
+   * {@code MIN_SEARCH_CACHE_SIZE} is the room the database's first cache is always granted by the budget, so that a small
+   * index is still fully resident from its first query on a small heap, and the smallest remainder worth handing to a later
+   * one: past the first, an index gets what the shared budget leaves, and none when it leaves less than that many entries:
+   * its searches read the vectors from the pages. It is a budget figure and no longer what an index plans on (issue #13242):
+   * the capacity an index is given is the range of its own vector ids rounded up to a power of two ({@code MIN_SEARCH_CACHE_SLOTS}
+   * at least, 1,024), cut to that room. A small index therefore plans on a small cache, even as the first of the database, and a
+   * type of small bucket indexes no longer spends the budget on the floor.
    * <p>
    * The share is the database's, and only the database's: the walk sees the caches of this schema, while the heap reading is
    * the JVM's. The caches of another database in the same JVM reach this budget only once they are filled and a collection
@@ -15888,7 +15897,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * and every growth starts the cache over empty. It only grows by an eighth or more, unless the eighth would leave
    * the range uncovered while the budget covers it.
    *
-   * @param idRange         the vector ids to hold, at least {@code MIN_SEARCH_CACHE_SIZE}
+   * @param idRange         the vector ids to hold, at least {@code MIN_SEARCH_CACHE_SLOTS}
    * @param affordable      the entries the budget affords, 0 when it affords none (issue #12391) and otherwise at least
    *                        {@code MIN_SEARCH_CACHE_SIZE}, and at most what the cache can hold
    * @param currentCapacity capacity of the cache the index holds, 0 for none
