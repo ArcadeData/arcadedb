@@ -67,6 +67,7 @@ import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.opencypher.ast.CypherDDLStatement;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
+import com.arcadedb.query.opencypher.procedures.db.DbInfo;
 import com.arcadedb.query.opencypher.query.CypherSchemaCommands;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.opencypher.query.ShowCommandTail;
@@ -1896,9 +1897,11 @@ public class BoltNetworkExecutor extends Thread {
 
     } else if (BoltSystemProcedures.isSystemCall(normalized, "dbms.info")) {
       // CALL dbms.info() - returns basic server info
+      // Of the database the connection is bound to, as Neo4j's is and as db.info answers it (issue #13543)
       stream.fields = List.of("id", "name", "creationDate");
       stream.syntheticResults = new ArrayList<>();
-      stream.syntheticResults.add(List.of("arcadedb-" + server.getServerName(), server.getServerName(), ""));
+      stream.syntheticResults.add(database != null ? DbInfo.describe(database) :
+          List.of("arcadedb-" + server.getServerName(), server.getServerName(), ""));
       return true;
 
     } else if (BoltSystemProcedures.isSystemCall(normalized, "db.ping")) {

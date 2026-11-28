@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.procedures.db;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Record;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -27,6 +28,8 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.security.SecurityHelper;
 
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -35,14 +38,17 @@ import java.util.stream.Stream;
 /**
  * Neo4j-compatible procedure: {@code db.propertyKeys()}
  * <p>
- * Returns one row per distinct property name declared across every type in the database, under the field
- * {@code propertyKey}.
+ * Returns one row per distinct property key of the database, under the field {@code propertyKey}: the properties its types declare,
+ * then the ones its records carry. The engine keeps no register of the keys written by plain Cypher, which declares nothing, so
+ * the records are read, at most {@link #SAMPLE_PER_TYPE} of each type (a key that only a later record carries is not listed).
  * </p>
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class DbPropertyKeys implements CypherProcedure {
   public static final String NAME = "db.propertyKeys";
+  /** How many records of a type are read for the keys they carry: a bound on the cost of the call, not on the answer of a small database. */
+  static final int SAMPLE_PER_TYPE = 1000;
 
   @Override
   public String getName() {
@@ -61,7 +67,8 @@ public class DbPropertyKeys implements CypherProcedure {
 
   @Override
   public String getDescription() {
-    return "Returns every distinct property key declared across all types in the database (Neo4j-compatible)";
+    return "Returns every distinct property key declared across all types in the database and carried by the first " + SAMPLE_PER_TYPE
+        + " records of each type (Neo4j-compatible)";
   }
 
   @Override
@@ -74,9 +81,20 @@ public class DbPropertyKeys implements CypherProcedure {
     final Set<String> propertyKeys = new LinkedHashSet<>();
     final DatabaseInternal database = (DatabaseInternal) context.getDatabase();
     // Types the current user cannot read are hidden, as schema:types hides them in SQL
-    for (final DocumentType type : SecurityHelper.readableTypes(database))
+    final Collection<? extends DocumentType> readable = SecurityHelper.readableTypes(database);
+    for (final DocumentType type : readable)
       if (!type.getName().contains("~"))
         propertyKeys.addAll(type.getPropertyNames());
+
+    // What the records carry that nothing declared. The composite types of a multi-label node ('A~B') hold the records of those
+    // nodes, so they are read too, though they declare nothing of their own
+    for (final DocumentType type : readable) {
+      if (type.getBuckets(false).isEmpty())
+        continue;
+      final Iterator<Record> records = database.iterateType(type.getName(), false);
+      for (int read = 0; read < SAMPLE_PER_TYPE && records.hasNext(); ++read)
+        propertyKeys.addAll(records.next().asDocument().getPropertyNames());
+    }
 
     final List<Result> results = new ArrayList<>(propertyKeys.size());
     for (final String key : propertyKeys) {

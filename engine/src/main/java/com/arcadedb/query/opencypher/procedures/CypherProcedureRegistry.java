@@ -27,6 +27,7 @@ import com.arcadedb.query.opencypher.procedures.db.DbAnalyticalViewRebuild;
 import com.arcadedb.query.opencypher.procedures.db.DbIndexFulltextQueryNodes;
 import com.arcadedb.query.opencypher.procedures.db.DbIndexFulltextQueryRelationships;
 import com.arcadedb.query.opencypher.procedures.db.DbIndexVectorQueryNodes;
+import com.arcadedb.query.opencypher.procedures.db.DbInfo;
 import com.arcadedb.query.opencypher.procedures.db.DbLabels;
 import com.arcadedb.query.opencypher.procedures.db.DbMigrateLegacyTemporals;
 import com.arcadedb.query.opencypher.procedures.db.DbPropertyKeys;
@@ -106,6 +107,8 @@ import com.arcadedb.query.opencypher.procedures.create.CreateVRelationshipProced
 import com.arcadedb.query.opencypher.procedures.control.DoWhen;
 import com.arcadedb.query.opencypher.procedures.merge.MergeNode;
 import com.arcadedb.query.opencypher.procedures.merge.MergeRelationship;
+import com.arcadedb.query.opencypher.procedures.meta.DbSchemaNodeTypeProperties;
+import com.arcadedb.query.opencypher.procedures.meta.DbSchemaRelTypeProperties;
 import com.arcadedb.query.opencypher.procedures.meta.MetaGraph;
 import com.arcadedb.query.opencypher.procedures.meta.MetaNodeTypeProperties;
 import com.arcadedb.query.opencypher.procedures.meta.MetaRelTypeProperties;
@@ -416,6 +419,7 @@ public final class CypherProcedureRegistry {
     register(new DbMigrateLegacyTemporals());
     register(new DbRelationshipTypes());
     register(new DbPropertyKeys());
+    register(new DbInfo());
     register(new DbSchemaVisualization("db.schema"));
     register(new DbSchemaVisualization("db.schema.visualization"));
     register(new DbAnalyticalViewCreate());
@@ -430,6 +434,8 @@ public final class CypherProcedureRegistry {
     register(new MetaStats());
     register(new MetaNodeTypeProperties());
     register(new MetaRelTypeProperties());
+    register(new DbSchemaNodeTypeProperties());
+    register(new DbSchemaRelTypeProperties());
   }
 
   private static void registerControlProcedures() {
