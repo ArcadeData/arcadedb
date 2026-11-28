@@ -1588,16 +1588,18 @@ public enum GlobalConfiguration {
       (dimensions * 4) bytes per vector cached. A BINARY index caches the one-bit codes its searches are \
       scored on instead: cacheSize times (ceil(dimensions / 64) * 8 + 8) bytes, the code \
       held in whole 64-bit words plus two ints per slot (about 200 MB for 1M slots of 1536 dimensions). \
-      0 (default) sizes it automatically from the range of vector ids, rounded up to a power of two for growth, \
-      capped by arcadedb.vectorIndex.searchCacheMaxHeapPercent. -1 disables the cache entirely.""",
+      0 (default) sizes it automatically from the range of vector ids of the index, rounded up to a power of two for \
+      growth, capped by arcadedb.vectorIndex.searchCacheMaxHeapPercent: when the caches of all the indexes together \
+      would plan on more than that share, each is cut to the same level (an index that holds less than the level keeps \
+      all it wants). -1 disables the cache entirely.""",
       Integer.class, 0),
 
   VECTOR_INDEX_SEARCH_CACHE_MAX_HEAP_PERCENT("arcadedb.vectorIndex.searchCacheMaxHeapPercent", SCOPE.DATABASE,
       """
       Upper bound, as a percentage of the JVM heap currently AVAILABLE rather than of the ceiling (issue #6503), \
       on the RAM the automatically sized search caches of a database may use TOGETHER (see \
-      arcadedb.vectorIndex.searchCacheSize): a type has one vector index per bucket, and an index that finds the share \
-      taken by the others' caches gets no cache, so its searches read the vectors from the pages (issue #12391). \
+      arcadedb.vectorIndex.searchCacheSize): a type has one vector index per bucket, and past the share the plans of \
+      all the indexes are scaled down together, so that every index that holds vectors keeps a cache (issues #12391 and #13260). \
       Ignored when the cache size is set explicitly. Values above 90 are clamped to 90: no cache is allowed to \
       plan on the whole heap.""",
       Integer.class, 25),

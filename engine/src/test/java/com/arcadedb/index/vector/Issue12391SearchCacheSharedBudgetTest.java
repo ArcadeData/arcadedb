@@ -49,8 +49,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class Issue12391SearchCacheSharedBudgetTest extends TestHelper {
   private static final int DIMENSIONS = 32;
-  /** The floor of the first cache, and the smallest cache worth publishing after it (LSMVectorIndex.MIN_SEARCH_CACHE_SIZE). */
+  /** The room the budget grants the first cache, and the smallest remainder worth handing to a later one (LSMVectorIndex.MIN_SEARCH_CACHE_SIZE). */
   private static final int FLOOR      = 8_192;
+  /** What an index holding no vector plans on, and the smallest search cache (LSMVectorIndex.MIN_SEARCH_CACHE_SLOTS). */
+  private static final int SLOTS      = 1_024;
 
   @Test
   void theSearchCachesOfTheDatabaseShareOnePercentOfTheHeap() {
@@ -118,19 +120,19 @@ class Issue12391SearchCacheSharedBudgetTest extends TestHelper {
   void theBucketIndexesOfATypeAreHandedNoMoreThanOneBudgetBetweenThem() {
     final LSMVectorIndex[] buckets = createBucketIndexes(database, "Doc", 4, null);
     final long bytesPerEntry = FlatVectorCache.bytesPerVector(DIMENSIONS);
-    final long planOfAFloorCache = FLOOR * bytesPerEntry;
-    final long budget = planOfAFloorCache * 5 / 2;
+    // two caches of an empty index (the smallest ones) and a remainder one entry short of the plan of a third
+    final long budget = (3L * SLOTS - 1) * bytesPerEntry;
     final long available = availableFor(budget);
 
     final FlatVectorCache first = buckets[0].getSearchVectorCache(() -> available);
     final FlatVectorCache second = buckets[1].getSearchVectorCache(() -> available);
-    assertThat(first).as("the first cache is the floor").isNotNull();
-    assertThat(first.capacity()).isEqualTo(FLOOR);
-    assertThat(second).as("room for one more whole cache is left").isNotNull();
-    assertThat(second.capacity()).isEqualTo(FLOOR);
+    assertThat(first).as("the first cache is handed out").isNotNull();
+    assertThat(first.capacity()).as("an empty index plans on the smallest cache, not on the floor").isEqualTo(SLOTS);
+    assertThat(second).as("the remainder is a useful cache").isNotNull();
+    assertThat(second.capacity()).isEqualTo(SLOTS);
 
     assertThat(buckets[2].getSearchVectorCache(() -> available))
-        .as("half a cache is left, which is under the smallest useful one: none, not the floor and not a sliver").isNull();
+        .as("what is left is under the plan of the index: none, not the floor and not a sliver").isNull();
     assertThat(buckets[3].getSearchVectorCache(() -> available)).as("and nothing for the one after").isNull();
 
     long planned = 0L;
@@ -140,13 +142,71 @@ class Issue12391SearchCacheSharedBudgetTest extends TestHelper {
   }
 
   /**
+   * The behaviour of issue #13242: the 16 bucket indexes of a type that hold a few hundred vectors each plan on those vectors, not
+   * on the 8,192-slot floor each, so a budget of three floor caches reaches every one of them. With the floor charged to each of them
+   * the last indexes were left with no cache and read every vector of their searches from the graph file.
+   */
+  @Test
+  void everyBucketIndexOfATypeThatHoldsLittleGetsACache() {
+    final int buckets = 16;
+    final LSMVectorIndex[] indexes = createBucketIndexes(database, "Doc", buckets, null);
+    final long bytesPerEntry = FlatVectorCache.bytesPerVector(DIMENSIONS);
+    final long budget = 3L * FLOOR * bytesPerEntry;
+    final long available = availableFor(budget);
+
+    long planned = 0L;
+    for (final LSMVectorIndex index : indexes) {
+      final FlatVectorCache cache = index.getSearchVectorCache(() -> available);
+      assertThat(cache).as("a cache for %s", index.getName()).isNotNull();
+      assertThat(cache.capacity()).isEqualTo(SLOTS);
+      planned += cache.capacity() * bytesPerEntry;
+    }
+    assertThat(planned).as("the caches of the type plan on no more than the budget").isLessThanOrEqualTo(budget);
+  }
+
+  /** An index plans on the range of the vector ids it holds, rounded up to a power of two, once that range is past the smallest cache. */
+  @Test
+  void anIndexPlansOnTheRangeOfItsOwnVectorIds() {
+    assertThat(capacityAfterInserting(1_500)).as("1,500 vector ids").isEqualTo(2_048);
+  }
+
+  /** The rounding rule at the edge of the smallest cache: exactly 1,024 ids fit it, one more id needs the next power of two. */
+  @Test
+  void theCapacityRoundsUpToThePowerOfTwoAtTheEdgeOfTheSmallestCache() {
+    assertThat(capacityAfterInserting(SLOTS)).as("exactly %d vector ids", SLOTS).isEqualTo(SLOTS);
+  }
+
+  @Test
+  void oneIdPastTheSmallestCacheDoublesIt() {
+    assertThat(capacityAfterInserting(SLOTS + 1)).as("%d vector ids", SLOTS + 1).isEqualTo(2 * SLOTS);
+  }
+
+  /** The capacity the only index of a type is given for the vector ids {@code ids} it holds, with room for far more than that. */
+  private int capacityAfterInserting(final int ids) {
+    final LSMVectorIndex index = createBucketIndexes(database, "Doc", 1, null)[0];
+    final float[] vector = new float[DIMENSIONS];
+    database.transaction(() -> {
+      for (int i = 0; i < ids; i++) {
+        vector[i % DIMENSIONS] = i + 1;
+        database.newDocument("Doc").set("embedding", vector.clone()).save();
+      }
+    });
+    final long available = availableFor(100L * FLOOR * FlatVectorCache.bytesPerVector(DIMENSIONS));
+
+    final FlatVectorCache cache = index.getSearchVectorCache(() -> available);
+    assertThat(cache).isNotNull();
+    return cache.capacity();
+  }
+
+  /**
    * Two bucket indexes growing at once each read a budget the other was about to take. 16 threads, room for three caches.
    */
   @Test
   void bucketIndexesGrowingAtOnceDoNotTakeTheSameRoom() throws Exception {
     final int threads = 16;
     final LSMVectorIndex[] buckets = createBucketIndexes(database, "Doc", threads, null);
-    final long budget = FLOOR * FlatVectorCache.bytesPerVector(DIMENSIONS) * 7 / 2;
+    // room for three caches of an empty index and a remainder one entry short of the plan of a fourth
+    final long budget = (4L * SLOTS - 1) * FlatVectorCache.bytesPerVector(DIMENSIONS);
     final long available = availableFor(budget);
 
     final ExecutorService pool = Executors.newFixedThreadPool(threads);
@@ -185,7 +245,7 @@ class Issue12391SearchCacheSharedBudgetTest extends TestHelper {
   @Test
   void anIndexWithNoRoomDoesNotPayForTheBudgetOnEverySearch() {
     final LSMVectorIndex[] buckets = createBucketIndexes(database, "Doc", 2, null);
-    final long available = availableFor(FLOOR * FlatVectorCache.bytesPerVector(DIMENSIONS));
+    final long available = availableFor(SLOTS * FlatVectorCache.bytesPerVector(DIMENSIONS));
     assertThat(buckets[0].getSearchVectorCache(() -> available)).as("precondition: the first index takes the budget").isNotNull();
 
     final AtomicInteger readings = new AtomicInteger();
@@ -215,7 +275,7 @@ class Issue12391SearchCacheSharedBudgetTest extends TestHelper {
       final LSMVectorIndex first = createBucketIndexes(other, "Doc", 1, null)[0];
       final FlatVectorCache cache = first.getSearchVectorCache(() -> 0L);
       assertThat(cache).as("the first cache of the other database is the floor too, whatever this one holds").isNotNull();
-      assertThat(cache.capacity()).isEqualTo(FLOOR);
+      assertThat(cache.capacity()).as("an empty index plans on the smallest cache").isEqualTo(SLOTS);
     } finally {
       other.drop();
     }
