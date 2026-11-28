@@ -138,7 +138,9 @@ public class StatisticsProvider {
             // a range over the leading column of a composite index whose other columns can leave a record without an entry
             // (one indexed BY ITEM, or null in an index that skips nulls) misses it: such an index answers its whole key only,
             // as a hash index does (issue #11576)
-            index.supportsOrderedIterations() && index.prefixReachesEveryRecord(1)
+            index.supportsOrderedIterations() && index.prefixReachesEveryRecord(1),
+            // its whole iteration is n.p IS NOT NULL (issue #12285)
+            SelectExecutionPlanner.isNotNullIndexProperty(index, type) != null
         ));
       } catch (final IndexException e) {
         // dropped or rebuilt by a concurrent DDL while being read: not a candidate (issue #8918)

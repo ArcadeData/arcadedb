@@ -25,6 +25,7 @@ import com.arcadedb.query.sql.parser.BetweenCondition;
 import com.arcadedb.query.sql.parser.BinaryCompareOperator;
 import com.arcadedb.query.sql.parser.BinaryCondition;
 import com.arcadedb.query.sql.parser.BooleanExpression;
+import com.arcadedb.query.sql.parser.IsNotNullCondition;
 
 import java.util.Collections;
 import java.util.List;
@@ -67,7 +68,9 @@ public class IndexSearchDescriptor {
    */
   public boolean requiresMultipleIndexLookups() {
     for (BooleanExpression oBooleanExpression : getSubBlocks()) {
-      if (!(oBooleanExpression instanceof BinaryCondition) && !(oBooleanExpression instanceof BetweenCondition))
+      // IS NOT NULL is one iteration of the whole index, which holds one entry per record (issue #12285)
+      if (!(oBooleanExpression instanceof BinaryCondition) && !(oBooleanExpression instanceof BetweenCondition)
+          && !(oBooleanExpression instanceof IsNotNullCondition))
         return true;
     }
     return false;

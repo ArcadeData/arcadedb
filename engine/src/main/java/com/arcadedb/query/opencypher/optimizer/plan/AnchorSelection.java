@@ -129,7 +129,8 @@ public class AnchorSelection {
     this.variable = variable;
     this.node = node;
     this.useIndex = useIndex;
-    this.isRangeScan = rangePredicates != null && !rangePredicates.isEmpty();
+    // An empty list is the whole index, the walk that answers n.p IS NOT NULL (issue #12285)
+    this.isRangeScan = rangePredicates != null;
     this.index = index;
     this.propertyName = propertyName;
     this.propertyValue = propertyValue;
