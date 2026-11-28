@@ -88,8 +88,9 @@ public class Issue11973BoltFailureMessageIT extends BaseBoltServerTest {
 
   @Test
   void droppingAnIndexOrConstraintThatDoesNotExistNamesIt() {
-    assertFailure("DROP INDEX nope", "Neo.ClientError.Statement.SemanticError", "'nope'", "does not exist");
-    assertFailure("DROP CONSTRAINT nope", "Neo.ClientError.Statement.SemanticError", "'nope'", "does not exist");
+    // Neo4j's codes and words since issue #13686
+    assertFailure("DROP INDEX nope", "Neo.DatabaseError.Schema.IndexDropFailed", "`nope`", "There is no such index.");
+    assertFailure("DROP CONSTRAINT nope", "Neo.DatabaseError.Schema.ConstraintDropFailed", "`nope`", "No such constraint nope.");
   }
 
   @Test

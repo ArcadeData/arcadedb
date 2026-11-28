@@ -34,7 +34,9 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParameterMissingException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSemanticException;
+import com.arcadedb.exception.ConstraintDropFailedException;
 import com.arcadedb.exception.ImplicitTransactionRequiredException;
+import com.arcadedb.exception.IndexDropFailedException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.SchemaException;
@@ -1724,7 +1726,9 @@ public class OpenCypherQueryEngine implements QueryEngine {
       return;
     }
     if (!ddl.isIfExists())
-      throw new SchemaException("Constraint '" + constraintName + "' does not exist");
+      // Neo4j's failure and words (issue #13686): a Bolt client tells a failed drop from a statement the schema cannot answer
+      throw new ConstraintDropFailedException(
+          "Unable to drop constraint `" + constraintName + "`: No such constraint " + constraintName + ".");
   }
 
   /** Puts back the declaration a type constraint replaced, through the same checks as the retype that replaced it. */
@@ -2177,11 +2181,12 @@ public class OpenCypherQueryEngine implements QueryEngine {
     if (!schema.existsIndex(indexName)) {
       if (ddl.isIfExists())
         return;
-      throw new SchemaException("Index '" + indexName + "' does not exist");
+      // Neo4j's failure and words (issue #13686): a Bolt client tells a failed drop from a statement the schema cannot answer
+      throw new IndexDropFailedException("Unable to drop index called `" + indexName + "`. There is no such index.");
     }
     final String owner = CypherConstraintRegistry.findIndexOwner(schema, indexName);
     if (owner != null)
-      throw new SchemaException(
+      throw new IndexDropFailedException(
           "Index '" + indexName + "' belongs to constraint '" + owner + "': use DROP CONSTRAINT " + owner + " to drop it");
     MultiTypeIndexes.requireNotMember(schema, indexName);
     // the bucket index of a type index goes with the type index, never alone (#11303)
