@@ -20,18 +20,22 @@ package com.arcadedb.function.polyglot;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.function.FunctionDefinition;
+import com.arcadedb.function.FunctionExecutionException;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Concurrency regressions of the polyglot function library (#7006).
@@ -109,10 +113,10 @@ class PolyglotFunctionConcurrencyTest {
    * {@code registerFunction()}) reassigns without holding that same monitor. A call already in flight on the old
    * engine had it closed underneath it instead of either completing first or being serialized behind the swap.
    * <p>
-   * The fix introduces a dedicated, never-reassigned {@code engineLock} monitor: {@code execute()} and
-   * {@code reloadEngine()} both synchronize on it (a plain mutex, not a read-write lock, since the shared GraalVM
-   * {@code Context} does not support concurrent callers either - see {@link ConcurrentCallSerialization}),
-   * so a redefinition always waits for in-flight calls to finish before closing their engine.
+   * Every call locks the engine it runs on (a plain mutex, not a read-write lock, since the shared GraalVM
+   * {@code Context} does not support concurrent callers either - see {@link ConcurrentCallSerialization}). A
+   * redefinition publishes a new engine and leaves the replaced one to be closed by the last call that holds it, so an
+   * in-flight call always completes on the engine it started on.
    *
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
@@ -120,7 +124,7 @@ class PolyglotFunctionConcurrencyTest {
   class ConcurrentRedefinition extends TestHelper {
 
     @Test
-    void redefinitionWaitsForInFlightCallInsteadOfClosingItsEngine() throws Exception {
+    void redefinitionLeavesTheEngineOfAnInFlightCallOpenUntilItReturns() throws Exception {
       final JavascriptFunctionLibraryDefinition library = new JavascriptFunctionLibraryDefinition(database, "issue7006");
       database.getSchema()
           .registerFunctionLibrary(library.registerFunction(new JavascriptFunctionDefinition("sum", "return a + b;", "a", "b")));
@@ -156,8 +160,8 @@ class PolyglotFunctionConcurrencyTest {
       caller.start();
       assertThat(callStarted.await(10, TimeUnit.SECONDS)).isTrue();
 
-      // The redefinition is started while the caller is inside execute(), holding engineLock: reloadEngine() must
-      // block on that same monitor until the call below releases it, rather than closing the engine underneath it.
+      // The redefinition is started while the caller is inside execute(), holding the lock of its engine: reloadEngine()
+      // must not close that engine underneath it.
       redefiner.start();
       // Best-effort nudge to increase the odds the redefiner has actually reached (and blocked on) the lock before
       // we release the call; not required for correctness (the assertions below hold either way), just makes the
@@ -171,6 +175,161 @@ class PolyglotFunctionConcurrencyTest {
       assertThat(callError.get()).isNull();
       assertThat(callResult.get()).isEqualTo(42);
       assertThat(database.getSchema().getFunctionLibrary("issue7006").hasFunction("avg")).isTrue();
+    }
+  }
+
+  /**
+   * A definition added to a library while one of its calls is running completes without waiting for that call. The
+   * running call keeps the engine it started on until it returns, and the next call sees the new definition.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  @Nested
+  class DefinitionDuringCall extends TestHelper {
+
+    @Test
+    @Timeout(value = 60, unit = TimeUnit.SECONDS)
+    void definitionCompletesWhileACallOfTheSameLibraryIsRunning() throws Exception {
+      database.getSchema().createDocumentType("Item");
+      database.transaction(() -> database.newDocument("Item").set("name", "first").save());
+
+      database.command("sql", """
+          DEFINE FUNCTION calls.sum "return a + b;" PARAMETERS [a, b] LANGUAGE js;
+          """);
+      final JavascriptFunctionLibraryDefinition library = (JavascriptFunctionLibraryDefinition) database.getSchema()
+          .getFunctionLibrary("calls");
+
+      final CountDownLatch callStarted = new CountDownLatch(1);
+      final CountDownLatch releaseCall = new CountDownLatch(1);
+      final AtomicBoolean readInCall = new AtomicBoolean(true);
+      final AtomicReference<Throwable> callError = new AtomicReference<>();
+      final AtomicReference<Object> callResult = new AtomicReference<>();
+      final AtomicReference<Throwable> definitionError = new AtomicReference<>();
+
+      final Thread caller = new Thread(() -> {
+        try {
+          callResult.set(library.execute(polyglotEngine -> {
+            callStarted.countDown();
+            try {
+              assertThat(releaseCall.await(30, TimeUnit.SECONDS)).isTrue();
+            } catch (final InterruptedException e) {
+              Thread.currentThread().interrupt();
+            }
+            final long items = readInCall.get() ? database.query("sql", "select from Item").stream().count() : -1L;
+            try {
+              return polyglotEngine.eval("40 + " + items).asInt();
+            } catch (final Exception e) {
+              throw new RuntimeException(e);
+            }
+          }));
+        } catch (final Throwable t) {
+          callError.set(t);
+        }
+      }, "library-caller");
+
+      final Thread definer = new Thread(() -> {
+        try {
+          database.command("sql", """
+              DEFINE FUNCTION calls.avg "return (a + b) / 2;" PARAMETERS [a, b] LANGUAGE js;
+              """);
+        } catch (final Throwable t) {
+          definitionError.set(t);
+        }
+      }, "library-definer");
+
+      caller.start();
+      assertThat(callStarted.await(10, TimeUnit.SECONDS)).isTrue();
+
+      definer.start();
+      definer.join(10_000);
+      final boolean definitionCompletedDuringCall = !definer.isAlive();
+
+      if (definitionCompletedDuringCall)
+        // THE DATABASE STAYS READABLE WHILE THE CALL IS STILL RUNNING
+        assertThat(database.query("sql", "select from Item").stream().count()).isEqualTo(1L);
+      else
+        // LET THE CALL RETURN WITHOUT READING, SO THE TEST ENDS
+        readInCall.set(false);
+
+      releaseCall.countDown();
+      caller.join(30_000);
+      definer.join(30_000);
+
+      assertThat(definitionCompletedDuringCall).as("the definition must complete while the call is running").isTrue();
+      assertThat(caller.isAlive()).isFalse();
+      assertThat(callError.get()).isNull();
+      assertThat(definitionError.get()).isNull();
+      // THE RUNNING CALL KEPT ITS ENGINE AND READ THE DATABASE
+      assertThat(callResult.get()).isEqualTo(41);
+
+      // THE NEXT CALLS SEE BOTH FUNCTIONS
+      assertThat(database.getSchema().getFunction("calls", "avg").execute(4, 8)).isEqualTo(6);
+      assertThat(database.getSchema().getFunction("calls", "sum").execute(4, 8)).isEqualTo(12);
+    }
+
+    @Test
+    @Timeout(value = 60, unit = TimeUnit.SECONDS)
+    void aCallThatAddsAFunctionToItsOwnLibraryKeepsItsEngine() {
+      final JavascriptFunctionLibraryDefinition library = new JavascriptFunctionLibraryDefinition(database, "nested");
+      database.getSchema()
+          .registerFunctionLibrary(library.registerFunction(new JavascriptFunctionDefinition("sum", "return a + b;", "a", "b")));
+
+      final Object result = library.execute(polyglotEngine -> {
+        library.registerFunction(new JavascriptFunctionDefinition("twice", "return a * 2;", "a"));
+        try {
+          return polyglotEngine.eval("40 + 2").asInt();
+        } catch (final Exception e) {
+          throw new RuntimeException(e);
+        }
+      });
+
+      assertThat(result).isEqualTo(42);
+      assertThat(library.getFunction("twice").execute(21)).isEqualTo(42);
+      assertThat(library.getFunction("sum").execute(40, 2)).isEqualTo(42);
+    }
+
+    @Test
+    @Timeout(value = 60, unit = TimeUnit.SECONDS)
+    void aNestedCallRunsOnTheEngineOfTheCallAroundIt() {
+      final JavascriptFunctionLibraryDefinition library = new JavascriptFunctionLibraryDefinition(database, "nestedEngine");
+      database.getSchema().registerFunctionLibrary(
+          library.registerFunction(new JavascriptFunctionDefinition("readMarker", "return globalThis.marker || -1;")));
+
+      final Object result = library.execute(polyglotEngine -> {
+        try {
+          polyglotEngine.eval("globalThis.marker = 41");
+          // A NEWER ENGINE IS PUBLISHED WHILE THIS CALL RUNS
+          library.registerFunction(new JavascriptFunctionDefinition("twice", "return a * 2;", "a"));
+          return library.getFunction("readMarker").execute();
+        } catch (final RuntimeException e) {
+          throw e;
+        } catch (final Exception e) {
+          throw new RuntimeException(e);
+        }
+      });
+
+      assertThat(result).isEqualTo(41);
+      // A NEW CALL RUNS ON THE NEWER ENGINE
+      assertThat(library.getFunction("readMarker").execute()).isEqualTo(-1);
+      assertThat(library.getFunction("twice").execute(21)).isEqualTo(42);
+    }
+
+    @Test
+    @Timeout(value = 60, unit = TimeUnit.SECONDS)
+    void aRefusedDefinitionLeavesTheOtherFunctionsCallable() {
+      final JavascriptFunctionLibraryDefinition library = new JavascriptFunctionLibraryDefinition(database, "refused");
+      database.getSchema()
+          .registerFunctionLibrary(library.registerFunction(new JavascriptFunctionDefinition("sum", "return a + b;", "a", "b")));
+
+      assertThatThrownBy(() -> library.registerFunction(new JavascriptFunctionDefinition("broken", "return (;", "a")))
+          .isInstanceOf(FunctionExecutionException.class);
+
+      assertThat(library.hasFunction("broken")).isFalse();
+      assertThat(library.getFunction("sum").execute(40, 2)).isEqualTo(42);
+      // A LATER DEFINITION STILL WORKS
+      library.registerFunction(new JavascriptFunctionDefinition("twice", "return a * 2;", "a"));
+      assertThat(library.getFunction("twice").execute(21)).isEqualTo(42);
+      assertThat(library.getFunction("sum").execute(1, 2)).isEqualTo(3);
     }
   }
 }

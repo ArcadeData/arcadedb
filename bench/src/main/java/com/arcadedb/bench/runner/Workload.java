@@ -19,6 +19,7 @@
 package com.arcadedb.bench.runner;
 
 import com.arcadedb.bench.workload.Scale;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.List;
 import java.util.Map;
@@ -71,5 +72,29 @@ public interface Workload {
   }
 
   default void teardown(WorkloadContext ctx) {
+  }
+
+  /**
+   * True for a workload that starts and stops its own servers (a cluster) from {@link WorkloadContext#spec()}: the runner then
+   * starts no server for it, and has none to watch or restart between its cases.
+   */
+  default boolean ownsServers() {
+    return false;
+  }
+
+  /**
+   * What the run file records about the servers of a workload that {@link #ownsServers() owns its servers}, in place of the single
+   * server's config; null while it has started none.
+   */
+  default JSONObject serverConfig() {
+    return null;
+  }
+
+  /**
+   * The image the servers of a workload that {@link #ownsServers() owns its servers} run, as {@code ServerUnderTest.imageInfo()}
+   * describes it (revision, digest); null while it has started none. The run id and the commit of the run file come from it.
+   */
+  default JSONObject imageInfo() {
+    return null;
   }
 }

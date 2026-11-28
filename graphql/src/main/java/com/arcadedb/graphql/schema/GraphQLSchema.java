@@ -23,7 +23,9 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.exception.QueryTerminatedException;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graphql.parser.AbstractValue;
 import com.arcadedb.graphql.parser.Argument;
 import com.arcadedb.graphql.parser.Arguments;
@@ -283,7 +285,9 @@ public class GraphQLSchema {
       return new GraphQLResultSet(this, registry, resultSet, projection != null ? projection.getSelections() : null, returnType,
           variables, fragments);
 
-    } catch (final CommandParsingException | CommandExecutionException e) {
+    } catch (final CommandParsingException | CommandExecutionException | TimeoutException | QueryTerminatedException e) {
+      // The stop of a query that exceeded its timeout or was terminated is no failure of the document either.
+      //
       // An execution failure raised by the statement this query delegates to keeps the classification the engine
       // gave it. Rewrapping it as a parsing exception reported a runtime error - an arithmetic error, or the
       // NoSuchElementException #5219 covers - as a malformed document. See issue #5628.

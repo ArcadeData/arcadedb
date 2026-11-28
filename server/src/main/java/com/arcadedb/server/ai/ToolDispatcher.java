@@ -21,6 +21,7 @@ package com.arcadedb.server.ai;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngine;
+import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONArray;
@@ -53,11 +54,19 @@ public class ToolDispatcher {
   private final ArcadeDBServer      server;
   private final ServerSecurityUser  user;
   private final String              defaultDatabase;
+  private final RunningQuery.Client client;
 
   public ToolDispatcher(final ArcadeDBServer server, final ServerSecurityUser user, final String defaultDatabase) {
+    this(server, user, defaultDatabase, RunningQuery.Client.NONE);
+  }
+
+  /** @param client who the tools run for, as "list queries" shows it beside the user */
+  public ToolDispatcher(final ArcadeDBServer server, final ServerSecurityUser user, final String defaultDatabase,
+      final RunningQuery.Client client) {
     this.server = server;
     this.user = user;
     this.defaultDatabase = defaultDatabase;
+    this.client = client;
   }
 
   /**
@@ -155,6 +164,14 @@ public class ToolDispatcher {
 
     final DatabaseInternal database = server.getDatabaseForClient(databaseName);
 
+    // A statement is work like any other client request: it waits for a slot of the query admission gate, is listed by
+    // "list queries" and obeys a terminate. Taken per call, never for the whole chat request, which holds its thread for as
+    // long as the model takes to answer
+    return AiRunningQuery.run(server, user, client, databaseName, true, language, command,
+        () -> runQuery(database, language, command));
+  }
+
+  private String runQuery(final DatabaseInternal database, final String language, final String command) {
     // Bind the authenticated principal for the duration of the read so the engine's per-type/bucket ACL
     // layer enforces (LocalDatabase.checkPermissionsOnFile is a no-op when no principal is bound) - mirrors
     // SchemaInfo.forUser's use of the same helper for the get_schema tool. Scoped per call rather than for
@@ -202,7 +219,9 @@ public class ToolDispatcher {
     if (databaseName == null || databaseName.isEmpty())
       return errorJson("get_schema requires a 'database' argument");
 
-    return SchemaInfo.forUser(server, user, databaseName).toString();
+    // Listed and terminable, but never held behind the queries: the schema stays answerable on a server busy with them
+    return AiRunningQuery.run(server, user, client, databaseName, false, AiRunningQuery.PROTOCOL, "get_schema",
+        () -> SchemaInfo.forUser(server, user, databaseName).toString());
   }
 
   private String executeGetType(final JSONObject args) {
@@ -218,7 +237,8 @@ public class ToolDispatcher {
 
     // The principal is bound while the type is read, so a type the user may not read is refused like an unknown one
     final DatabaseInternal database = server.getDatabaseForClient(databaseName);
-    return DatabaseUserContext.runAs(database, user, () -> AiSchemaDigest.typeDetail(database, name).toString());
+    return AiRunningQuery.run(server, user, client, databaseName, false, AiRunningQuery.PROTOCOL, "get_type " + name,
+        () -> DatabaseUserContext.runAs(database, user, () -> AiSchemaDigest.typeDetail(database, name).toString()));
   }
 
   private String executeServerInfo() {

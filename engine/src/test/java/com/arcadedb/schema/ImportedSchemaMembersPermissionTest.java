@@ -21,6 +21,7 @@ package com.arcadedb.schema;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityDatabaseUser.DATABASE_ACCESS;
 import com.arcadedb.serializer.json.JSONArray;
@@ -162,6 +163,30 @@ class ImportedSchemaMembersPermissionTest {
     schema.createTrigger(new TriggerImpl("audit", Trigger.TriggerTiming.AFTER, Trigger.TriggerEvent.CREATE, "Target",
         Trigger.ActionType.JAVASCRIPT, "true;"));
     assertThat(schema.existsTrigger("audit")).isTrue();
+  }
+
+  /**
+   * Issue #12904: CREATE TRIGGER checks that the body parses. The check comes after the permissions, so a principal that may not
+   * create the trigger is told so whatever the body is, and cannot use the refusal to learn whether a script compiles (nor make
+   * the server build a script context to find out).
+   */
+  @Test
+  void aBodyThatDoesNotParseIsNotCheckedForAPrincipalThatMayNotCreateTheTrigger() {
+    actAs(DATABASE_ACCESS.UPDATE_SCHEMA);
+
+    assertThatThrownBy(() -> schema.createTrigger(new TriggerImpl("audit", Trigger.TriggerTiming.AFTER, Trigger.TriggerEvent.CREATE,
+        "Target", Trigger.ActionType.JAVASCRIPT, "var = ;"))).isInstanceOf(SecurityException.class);
+
+    actAs(DATABASE_ACCESS.UPDATE_SECURITY);
+
+    assertThatThrownBy(() -> schema.createTrigger(new TriggerImpl("audit", Trigger.TriggerTiming.AFTER, Trigger.TriggerEvent.CREATE,
+        "Target", Trigger.ActionType.SQL, "THIS IS NOT SQL"))).isInstanceOf(SecurityException.class);
+
+    actAs(DATABASE_ACCESS.UPDATE_SCHEMA, DATABASE_ACCESS.UPDATE_SECURITY);
+
+    assertThatThrownBy(() -> schema.createTrigger(new TriggerImpl("audit", Trigger.TriggerTiming.AFTER, Trigger.TriggerEvent.CREATE,
+        "Target", Trigger.ActionType.JAVASCRIPT, "var = ;"))).isInstanceOf(CommandParsingException.class);
+    assertThat(schema.existsTrigger("audit")).isFalse();
   }
 
   private static JSONObject schemaDeclaringTrigger(final String actionType, final String actionCode) {

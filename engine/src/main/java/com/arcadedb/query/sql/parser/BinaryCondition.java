@@ -20,6 +20,7 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.TypeMismatchException;
@@ -40,6 +41,13 @@ public class BinaryCondition extends BooleanExpression {
   public Expression            left;
   public BinaryCompareOperator operator;
   public Expression            right;
+  // see mirroredOperator(); one immutable holder, so a plan shared between threads never reads a half-written decision. A cache
+  // derived from left/operator/right, which the AST walkers reach on their own: transient, so they do not walk it
+  private transient volatile Mirror mirror;
+
+  /** The operator {@link #mirroredOperator()} decided for these operands, {@code mirrored} being null when not mirrored. */
+  private record Mirror(Expression left, BinaryCompareOperator operator, Expression right, BinaryCompareOperator mirrored) {
+  }
 
   /** The key of the memo an execution converts the right operand with, assigned at its first use; see {@link #rightConversion}. */
   private volatile String rightConversionKey;
@@ -98,14 +106,39 @@ public class BinaryCondition extends BooleanExpression {
   private Boolean compare(final CommandContext context, final Object leftVal, final Object rightVal) {
     if ((leftVal == null || rightVal == null) && operator.isUnknownOnNull())
       return null;
+    final BinaryCompareOperator mirrored = mirroredOperator();
     try {
-      return operator.execute(context != null ? context.getDatabase() : null, leftVal, rightVal,
+      final DatabaseInternal database = context != null ? context.getDatabase() : null;
+      if (mirrored != null && mirrored.isMirrorableWith(leftVal, rightVal))
+        // the constant operand is the one written on the left, which the mirrored operator takes as its right operand
+        return mirrored.execute(database, rightVal, leftVal,
+            ConstantOperandConversion.isStringToConvert(rightVal, leftVal) ? rightConversion(context) : null);
+      return operator.execute(database, leftVal, rightVal,
           ConstantOperandConversion.isStringToConvert(leftVal, rightVal) && isRightConstant() ? rightConversion(context) : null);
     } catch (final ClassCastException e) {
       if (!operator.isRangeOperator())
         throw e;
       throw noOrder(leftVal, rightVal, operator.toString(), e);
     }
+  }
+
+  /**
+   * The mirror of the operator ({@code >} for {@code <}) when the comparison is written with a literal or a parameter on the left
+   * and something read from the record on the right, or null. The operators convert their right operand to the class of the left
+   * one, which is what the declared type of a property on the left asks for, but with the literal on the left the property was
+   * converted to the literal's class: {@code '2024-06-01 12:00:00' = d} compared a DATETIME as text and never matched, and
+   * {@code '10' > i} ordered an INTEGER as text. Evaluating {@code lit op p} as {@code p op' lit} makes it answer what the
+   * same comparison written the other way answers (issue #12921).
+   */
+  private BinaryCompareOperator mirroredOperator() {
+    Mirror current = mirror;
+    if (current == null || current.left != left || current.operator != operator || current.right != right) {
+      final BinaryCompareOperator mirrored =
+          left != null && right != null && left.isLiteral(true) && !right.isLiteral(true) ? operator.mirrored() : null;
+      current = new Mirror(left, operator, right, mirrored);
+      mirror = current;
+    }
+    return current.mirrored;
   }
 
   /**

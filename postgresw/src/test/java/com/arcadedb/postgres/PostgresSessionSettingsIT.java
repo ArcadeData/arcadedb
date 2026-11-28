@@ -1501,6 +1501,30 @@ class PostgresSessionSettingsIT extends PostgresWireProtocolTestBase {
     });
   }
 
+  @Test
+  @DisplayName("the database command timeout bounds a statement of a session that set no statement_timeout")
+  void commandTimeoutOfTheDatabaseBoundsTheStatement() throws Exception {
+    run((out, in) -> {
+      final Database database = getServer(0).getDatabaseForOperator(getDatabaseName());
+      database.getSchema().getOrCreateDocumentType("Issue9329Doc");
+      database.transaction(() -> {
+        for (int i = 0; i < 3_000; i++)
+          database.newDocument("Issue9329Doc").set("n", i).save();
+      });
+
+      assertThat(show(out, in, "statement_timeout")).isEqualTo("0");
+      database.getConfiguration().setValue(GlobalConfiguration.COMMAND_TIMEOUT, 1L);
+      try {
+        assertThat(sqlStateOf(simple(out, in, SLOW_STATEMENT))).isEqualTo("57014");
+      } finally {
+        database.getConfiguration().setValue(GlobalConfiguration.COMMAND_TIMEOUT, 0L);
+      }
+
+      // The same statement is a valid one, so the cancellation above was the setting's doing and nothing else's
+      assertThat(messageTypesOf(simple(out, in, SLOW_STATEMENT))).doesNotContain('E');
+    });
+  }
+
   // Regression: #9329
   @Test
   @DisplayName("[#9329] statement_timeout is no longer stored and read back unhonoured")
