@@ -34,7 +34,11 @@ public class CypherAdminStatement implements CypherStatement {
   private final Kind kind;
   private final String userName;
   private final String password;
+  // SET PASSWORD $name: the parameter the password is read from when the statement runs, when it is not a literal
+  private final String passwordParameter;
   private final boolean ifNotExists;
+  // CREATE OR REPLACE USER: an existing user is replaced instead of refused
+  private final boolean orReplace;
   private final boolean ifExists;
   // SHOW/TERMINATE TRANSACTIONS: the ids named as string literals, or the expression that yields them (a parameter, a
   // list, a column of the SHOW a TERMINATE is composed with); neither for a SHOW of every transaction
@@ -45,10 +49,21 @@ public class CypherAdminStatement implements CypherStatement {
 
   public CypherAdminStatement(final Kind kind, final String userName, final String password,
       final boolean ifNotExists, final boolean ifExists) {
+    this(kind, userName, password, null, ifNotExists, false, ifExists);
+  }
+
+  /**
+   * A user management statement. The password is either the literal {@code password} or, when {@code passwordParameter} names a
+   * parameter ({@code SET PASSWORD $pw}), the value that parameter is bound to when the statement runs.
+   */
+  public CypherAdminStatement(final Kind kind, final String userName, final String password, final String passwordParameter,
+      final boolean ifNotExists, final boolean orReplace, final boolean ifExists) {
     this.kind = kind;
     this.userName = userName;
     this.password = password;
+    this.passwordParameter = passwordParameter;
     this.ifNotExists = ifNotExists;
+    this.orReplace = orReplace;
     this.ifExists = ifExists;
     this.transactionIds = null;
     this.transactionIdsExpression = null;
@@ -61,7 +76,9 @@ public class CypherAdminStatement implements CypherStatement {
     this.kind = kind;
     this.userName = null;
     this.password = null;
+    this.passwordParameter = null;
     this.ifNotExists = false;
+    this.orReplace = false;
     this.ifExists = false;
     this.transactionIds = transactionIds;
     this.transactionIdsExpression = transactionIdsExpression;
@@ -78,6 +95,15 @@ public class CypherAdminStatement implements CypherStatement {
 
   public String getPassword() {
     return password;
+  }
+
+  /** The name of the parameter the password is read from, or null when the password is a literal. */
+  public String getPasswordParameter() {
+    return passwordParameter;
+  }
+
+  public boolean isOrReplace() {
+    return orReplace;
   }
 
   public boolean isIfNotExists() {

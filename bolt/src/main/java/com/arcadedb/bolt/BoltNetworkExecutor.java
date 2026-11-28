@@ -941,7 +941,8 @@ public class BoltNetworkExecutor extends Thread {
     final Map<String, Object> params = message.getParameters();
 
     if (debug)
-      LogManager.instance().log(this, Level.FINE, "BOLT executing: %s with params %s (db=%s)", query, params, databaseName);
+      LogManager.instance().log(this, Level.FINE, "BOLT executing: %s (db=%s)", RunMessage.loggable(query, params),
+          databaseName);
 
     // The time this statement may run (issue #11392): what is left of the explicit transaction's timeout, or the auto-commit
     // query's own tx_timeout. A transaction already past its timeout runs nothing more
