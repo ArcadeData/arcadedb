@@ -416,18 +416,18 @@ public final class InlineProperties {
   }
 
   /**
-   * Compares two numbers by value. Integral types compare as longs so the full 64-bit range survives;
-   * anything else compares as a double, which keeps a stored {@code Float} 1.5 apart from a {@code Double}
-   * 1.9 - truncating both to long would have declared them equal.
+   * Compares two numbers by value. Integral types compare as longs so the full 64-bit range survives, except a
+   * {@link BigInteger}, whose low 64 bits are not the number (2^64 + 1 is not 1); anything else compares as a double, which
+   * keeps a stored {@code Float} 1.5 apart from a {@code Double} 1.9 - truncating both to long would have declared them
+   * equal.
    */
   private static boolean numbersEqual(final Number a, final Number b) {
-    if (isIntegral(a) && isIntegral(b))
+    if (isLongSized(a) && isLongSized(b))
       return a.longValue() == b.longValue();
     return ComparisonExpression.floatAwareEquals(a, b);
   }
 
-  private static boolean isIntegral(final Number number) {
-    return number instanceof Long || number instanceof Integer || number instanceof Short || number instanceof Byte
-        || number instanceof BigInteger;
+  private static boolean isLongSized(final Number number) {
+    return number instanceof Long || number instanceof Integer || number instanceof Short || number instanceof Byte;
   }
 }
