@@ -21,10 +21,13 @@ package com.arcadedb.query.opencypher;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.QueryHeapBudgetTestSupport;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -34,7 +37,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * every group was charged its keys twice, and 1.5M groups exhausted the 2 GB budget that Neo4j needs a second for.
  */
 class Issue13584GroupByNodeKeysHeapTest extends TestHelper {
-  private static final int PAIRS = 30_000;
+  private static final int  PAIRS     = 30_000;
+  // Measured for PAIRS groups: the query needs 48 MB when every group is charged its first row too, 26 MB when it is charged its
+  // keys only. The budget sits near the geometric middle of the two, so a change of the estimator of about 20% either way still
+  // refuses the first and admits the second
+  private static final long BUDGET_MB = 36;
 
   @BeforeEach
   void noReservationLeft() {
@@ -62,6 +69,10 @@ class Issue13584GroupByNodeKeysHeapTest extends TestHelper {
     }
   }
 
+  /**
+   * A guard of the other branch, green before the fix too: a group with a complex aggregation item still keeps its first row, which
+   * the item is evaluated against.
+   */
   @Test
   void aComplexAggregationItemStillReadsTheFirstRowOfItsGroup() {
     database.getSchema().createVertexType("V");
@@ -73,13 +84,11 @@ class Issue13584GroupByNodeKeysHeapTest extends TestHelper {
         "MATCH (v:V) WITH v.g AS g, v.n AS n, v RETURN g, n, v{.n, c: count(*)} AS m ORDER BY n")) {
       int seen = 0;
       while (rows.hasNext()) {
-        final var row = rows.next();
-        assertThat(row.<java.util.Map<String, Object>>getProperty("m")).containsEntry("n", row.<Number>getProperty("n").intValue());
+        final Result row = rows.next();
+        assertThat(row.<Map<String, Object>>getProperty("m")).containsEntry("n", row.<Number>getProperty("n").intValue());
         ++seen;
       }
       assertThat(seen).isEqualTo(6);
     }
   }
-
-  private static final long BUDGET_MB = 40;
 }
