@@ -530,11 +530,11 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
    * judged by {@link IndexEntrySkip}; the first one it cannot judge without its record stops the skip and is served as before, the
    * caller discarding what is left of the SKIP from the rows.
    *
-   * @param typeName the type the rows must be an instance of, as the FILTER ITEMS BY TYPE after this step checks, or null
+   * @param typeFilter the FILTER ITEMS BY TYPE after this step, whose decision a row passed over must have, or null
    *
    * @return the rows passed over
    */
-  int skipUnloaded(final CommandContext context, final int n, final String typeName) {
+  int skipUnloaded(final CommandContext context, final int n, final FilterByTypeStep typeFilter) {
     final ExecutionStepInternal prevStep = checkForPrevious();
     if (strategy == null)
       chooseStrategy(context, prevStep);
@@ -545,7 +545,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
     final long begin = context.isProfiling() ? System.nanoTime() : 0;
     try {
       final WorkGuard guard = WorkGuard.forCommandDeadline(context);
-      final IndexEntrySkip judge = new IndexEntrySkip(context.getDatabase(), typeName);
+      final IndexEntrySkip judge = IndexEntrySkip.of(context.getDatabase(), typeFilter);
       int skipped = 0;
       for (int entries = 0; skipped < n; ++entries) {
         guard.checkPeriodically(entries);

@@ -2059,8 +2059,12 @@ public class SelectExecutionPlanner {
       final AndBlock ridRangeConditions = extractRidRanges(info.flattenedWhereClause, context);
       if (ridRangeConditions != null && !ridRangeConditions.isEmpty()) {
         info.ridRangeConditions = ridRangeConditions;
-        filterBuckets = filterBuckets.stream()
-            .filter(x -> clusterMatchesRidRange(x, ridRangeConditions, context.getDatabase(), context)).collect(Collectors.toSet());
+        if (filterBuckets instanceof BucketIdSet byId)
+          // by id, as the set holds them (issue #12758)
+          filterBuckets = byId.filter(bucketId -> bucketMatchesRidRange(bucketId, ridRangeConditions, context));
+        else
+          filterBuckets = filterBuckets.stream()
+              .filter(x -> clusterMatchesRidRange(x, ridRangeConditions, context.getDatabase(), context)).collect(Collectors.toSet());
       }
       handleTypeAsTarget(info.fetchExecutionPlan, filterBuckets, info, context);
     } else if (target.getBucket() != null) {
@@ -2143,7 +2147,10 @@ public class SelectExecutionPlanner {
 
   private boolean clusterMatchesRidRange(final String bucketName, final AndBlock ridRangeConditions, final Database database,
       final CommandContext context) {
-    final int thisClusterId = database.getSchema().getBucketByName(bucketName).getFileId();
+    return bucketMatchesRidRange(database.getSchema().getBucketByName(bucketName).getFileId(), ridRangeConditions, context);
+  }
+
+  private boolean bucketMatchesRidRange(final int thisClusterId, final AndBlock ridRangeConditions, final CommandContext context) {
     for (final BooleanExpression ridRangeCondition : ridRangeConditions.getSubBlocks()) {
       if (ridRangeCondition instanceof BinaryCondition condition) {
         final BinaryCompareOperator operator = condition.getOperator();
@@ -2329,7 +2336,8 @@ public class SelectExecutionPlanner {
     // A RID naming a bucket this schema does not know is in none of the filter's buckets
     // Fully qualified like the other lookups here: the SQL parser's Bucket node is the imported one
     final com.arcadedb.engine.Bucket bucket = context.getDatabase().getSchema().getBucketByIdIfExists(resolved.getBucketId());
-    return bucket != null && filterClusters.contains(bucket.getName());
+    // by id when the filter holds the buckets of a type that way: a concurrent ALTER TYPE ... NAME renames them (issue #12758)
+    return bucket != null && BucketIdSet.includes(filterClusters, bucket);
   }
 
   private void handleNoTarget(final SelectExecutionPlan result, final CommandContext context) {
@@ -2750,7 +2758,7 @@ public class SelectExecutionPlanner {
     // WHERE @rid IN [<RID list>], fetch the records directly by RID address instead of
     // scanning the whole type. This is always cheaper than an index lookup, so it is checked
     // before the index-based paths below. See issue #5824.
-    if (handleTypeWithRidFilter(plan, identifier, info, context))
+    if (handleTypeWithRidFilter(plan, identifier, docType, info, context))
       return;
 
     // A lightweight edge allocates no record, so a scan of the edge type's buckets, an index, or an indexed
@@ -2785,17 +2793,17 @@ public class SelectExecutionPlanner {
     }
 
     if (handleTypeAsTargetWithIndexedFunction(plan, effectiveClusters, identifier, info, context)) {
-      plan.chain(new FilterByTypeStep(identifier, context));
+      plan.chain(new FilterByTypeStep(identifier, docType, context));
       return;
     }
 
     if (handleTypeAsTargetWithIndex(plan, identifier, effectiveClusters, info, context)) {
-      plan.chain(new FilterByTypeStep(identifier, context));
+      plan.chain(new FilterByTypeStep(identifier, docType, context));
       return;
     }
 
     if (info.orderBy != null && handleClassWithIndexForSortOnly(plan, identifier, effectiveClusters, info, context)) {
-      plan.chain(new FilterByTypeStep(identifier, context));
+      plan.chain(new FilterByTypeStep(identifier, docType, context));
       return;
     }
 
@@ -3016,8 +3024,8 @@ public class SelectExecutionPlanner {
    *
    * @return true if the optimization was applied
    */
-  private boolean handleTypeWithRidFilter(final SelectExecutionPlan plan, final Identifier identifier, final QueryPlanningInfo info,
-      final CommandContext context) {
+  private boolean handleTypeWithRidFilter(final SelectExecutionPlan plan, final Identifier identifier, final DocumentType docType,
+      final QueryPlanningInfo info, final CommandContext context) {
     if (info.flattenedWhereClause == null || info.flattenedWhereClause.size() != 1)
       return false; // OR at the top level: other branches may match records outside this RID set
 
@@ -3075,7 +3083,7 @@ public class SelectExecutionPlanner {
       // execution - see EmptyStep.canBeCached()'s "DON'T TOUCH" comment for exactly this hazard, and
       // issue #5855.
       plan.chain(new FetchFromRidsStep(expr, context));
-      plan.chain(new FilterByTypeStep(identifier, context));
+      plan.chain(new FilterByTypeStep(identifier, docType, context));
 
       final List<BooleanExpression> remaining = new ArrayList<>(andBlock.getSubBlocks());
       // The literal/parameter shapes resolve to exactly the RIDs the condition accepts, so the fetch step fully
@@ -3411,6 +3419,8 @@ public class SelectExecutionPlanner {
     // fall back to the caller's filterClusters. The union of bucket names across blocks is the
     // pruned set the OR-disjuncts collectively need to cover.
     final Set<String> derivedBuckets = new HashSet<>();
+    // the same buckets by file id, which a concurrent rename of the type cannot change (issue #12758)
+    final IntHashSet derivedBucketIds = new IntHashSet();
     // A plan depends on the values of its parameters when a parameter sits in a block that binds every partition coordinate:
     // pruning then happens or not, and to which bucket, by the value bound (a null prunes nothing, another value prunes to
     // its own bucket). A block that leaves a coordinate open never prunes, whatever is bound, so its plan can be cached.
@@ -3503,6 +3513,7 @@ public class SelectExecutionPlanner {
         return filterClusters;  // Strategy returned an out-of-range index; abort defensively.
       }
       derivedBuckets.add(typeBuckets.get(bucketIndex).getName());
+      derivedBucketIds.add(typeBuckets.get(bucketIndex).getFileId());
       prunedOnParameter |= parameterInBlock;
     }
 
@@ -3518,7 +3529,10 @@ public class SelectExecutionPlanner {
       return filterClusters;
 
     final Set<String> result;
-    if (filterClusters == null || filterClusters.contains("*")) {
+    if (filterClusters instanceof BucketIdSet byId) {
+      // the buckets of the type target, a superset of the ones derived from its own buckets: kept by id (issue #12758)
+      result = byId.filter(derivedBucketIds::contains);
+    } else if (filterClusters == null || filterClusters.contains("*")) {
       result = derivedBuckets;
     } else {
       final Set<String> intersected = new HashSet<>(derivedBuckets);
@@ -3549,11 +3563,15 @@ public class SelectExecutionPlanner {
     // lookup to detect.
     if (!result.isEmpty()) {
       final IntHashSet bucketFileIds = new IntHashSet(result.size());
-      for (final String bucketName : result) {
-        final com.arcadedb.engine.Bucket bucket = context.getDatabase().getSchema().getBucketByNameIfExists(bucketName);
-        if (bucket != null)
-          bucketFileIds.add(bucket.getFileId());
-      }
+      if (result instanceof BucketIdSet byId)
+        for (final int bucketId : byId.idList())
+          bucketFileIds.add(bucketId);
+      else
+        for (final String bucketName : result) {
+          final com.arcadedb.engine.Bucket bucket = context.getDatabase().getSchema().getBucketByNameIfExists(bucketName);
+          if (bucket != null)
+            bucketFileIds.add(bucket.getFileId());
+        }
       if (!bucketFileIds.isEmpty()) {
         context.setVariable(CommandContext.PARTITION_PRUNED_BUCKET_FILE_IDS_VAR, bucketFileIds);
         context.setVariable(CommandContext.PARTITION_PRUNED_TYPE_NAME_VAR, docType.getName());
@@ -5414,10 +5432,16 @@ public class SelectExecutionPlanner {
     if (filterClusters == null)
       return true;
     final Schema schema = context.getDatabase().getSchema();
-    final Set<Integer> filtered = new HashSet<>(filterClusters.size());
-    for (final String bucketName : filterClusters)
-      if (bucketName != null && schema.existsBucket(bucketName))
-        filtered.add(schema.getBucketByName(bucketName).getFileId());
+    final Set<Integer> filtered;
+    if (filterClusters instanceof BucketIdSet byId)
+      // by id, as the set holds them (issue #12758)
+      filtered = new HashSet<>(byId.idList());
+    else {
+      filtered = new HashSet<>(filterClusters.size());
+      for (final String bucketName : filterClusters)
+        if (bucketName != null && schema.existsBucket(bucketName))
+          filtered.add(schema.getBucketByName(bucketName).getFileId());
+    }
     RIDFilter ridFilter = null;
     for (final Integer bucketId : type.getBucketIds(true)) {
       if (filtered.contains(bucketId))
@@ -5723,7 +5747,8 @@ public class SelectExecutionPlanner {
     final List<Integer> ids = clazz.getBucketIds(true);
     final List<Integer> filtered = new ArrayList<>();
     for (Integer id : ids) {
-      if (filterClusters.contains(db.getSchema().getBucketById(id).getName()))
+      // by id when the set holds them so (issue #12758)
+      if (filterClusters instanceof BucketIdSet byId ? byId.containsId(id) : filterClusters.contains(db.getSchema().getBucketById(id).getName()))
         filtered.add(id);
     }
 
@@ -5809,8 +5834,7 @@ public class SelectExecutionPlanner {
 
         List<Integer> filterClusterIds = null;
         if (filterClusters != null)
-          filterClusterIds = filterClusters.stream()
-              .map(name -> context.getDatabase().getSchema().getBucketByName(name).getFileId()).mapToInt(i -> i).boxed().toList();
+          filterClusterIds = BucketIdSet.idsOf(filterClusters, context.getDatabase().getSchema());
 
         // Check if the index has NULL_STRATEGY.INDEX - if so, NULLs are already in the index. The same goes when no record
         // can hold a null for the first indexed property: it is NOTNULL, or the WHERE clause filters nulls out (#8664)
@@ -6735,8 +6759,7 @@ public class SelectExecutionPlanner {
       subPlan.chain(new FetchFromIndexStep(desc.index, desc.keyCondition, desc.additionalRangeCondition, context));
       List<Integer> filterClusterIds = null;
       if (filterClusters != null)
-        filterClusterIds = filterClusters.stream().map(name -> context.getDatabase().getSchema().getBucketByName(name).getFileId())
-            .mapToInt(i -> i).boxed().toList();
+        filterClusterIds = BucketIdSet.idsOf(filterClusters, context.getDatabase().getSchema());
 
       subPlan.chain(new GetValueFromIndexEntryStep(context, filterClusterIds));
       if (desc.requiresMultipleIndexLookups()) {
@@ -8158,14 +8181,13 @@ public class SelectExecutionPlanner {
       } else {
         final String className = item.getIdentifier().getStringValue();
         final DocumentType typez = db.getSchema().getType(className);
-        final int[] bucketIds = typez.getBuckets(true).stream().mapToInt(com.arcadedb.engine.Bucket::getFileId).toArray();
-        for (final int bucketId : bucketIds) {
-          final String bucketName = db.getSchema().getBucketById(bucketId).getName();
-          if (bucketName != null) {
-            buckets.add(bucketName);
-          }
-        }
+        // BY ID, NOT BY NAME (issue #12758): ALTER TYPE ... NAME renames the buckets while the statement is planned, and a name
+        // read here no longer matched the one the steps read a moment later, which left the bucket out of the plan
+        return new BucketIdSet(db.getSchema(),
+            typez.getBuckets(true).stream().mapToInt(com.arcadedb.engine.Bucket::getFileId).toArray());
       }
+      // only a $variable target gets here (a type target returned above): it names no bucket, the RIDs it resolved to were added
+      // to the target instead
       return buckets;
     }
 

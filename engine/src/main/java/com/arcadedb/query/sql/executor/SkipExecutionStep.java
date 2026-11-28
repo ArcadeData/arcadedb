@@ -110,22 +110,22 @@ public class SkipExecutionStep extends AbstractExecutionStep {
     if (skipValue <= 0)
       return 0;
 
-    String typeName = null;
+    FilterByTypeStep typeFilter = null;
     ExecutionStepInternal step = prev;
     while (step != null) {
       final Class<?> stepClass = step.getClass();
       if (stepClass == ProjectionCalculationStep.class)
         step = ((ProjectionCalculationStep) step).getPrev();
-      else if (stepClass == FilterByTypeStep.class && typeName == null) {
-        typeName = ((FilterByTypeStep) step).getTypeName();
-        step = ((FilterByTypeStep) step).getPrev();
+      else if (stepClass == FilterByTypeStep.class && typeFilter == null) {
+        typeFilter = (FilterByTypeStep) step;
+        step = typeFilter.getPrev();
         // the filter judges the stored record, which the index step knows from its bucket: not a row a projection made of it
         if (step == null || step.getClass() != GetValueFromIndexEntryStep.class && step.getClass() != ParallelExecStep.class)
           return 0;
       } else if (stepClass == GetValueFromIndexEntryStep.class)
-        return ((GetValueFromIndexEntryStep) step).skipUnloaded(context, skipValue, typeName);
+        return ((GetValueFromIndexEntryStep) step).skipUnloaded(context, skipValue, typeFilter);
       else if (stepClass == ParallelExecStep.class)
-        return ((ParallelExecStep) step).skipUnloaded(context, skipValue, typeName);
+        return ((ParallelExecStep) step).skipUnloaded(context, skipValue, typeFilter);
       else
         return 0;
     }

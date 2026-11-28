@@ -22,19 +22,30 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
+import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.timeseries.TimeSeriesBucket;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.engine.timeseries.TimeSeriesShard;
+import com.arcadedb.event.BeforeRecordReadListener;
 import com.arcadedb.exception.AlreadyExistsException;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.query.facet.FacetBucket;
+import com.arcadedb.query.facet.FacetResults;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.executor.InternalExecutionPlan;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.SelectExecutionPlanner;
+import com.arcadedb.query.sql.parser.LocalResultSet;
+import com.arcadedb.query.sql.parser.SelectStatement;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -48,6 +59,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -1716,6 +1728,280 @@ class TypeRenameTest {
       assertThat(database.getSchema().existsType(type)).isTrue();
       assertThat(database.getSchema().getType(type).getBuckets(false)).extracting(Bucket::getName).containsExactly(ownBucket);
       assertThat(database.countType(type, true)).isEqualTo(records);
+    }
+  }
+
+  /**
+   * Regression for #12758: while {@code ALTER TYPE T NAME Tr} ran, a {@code SELECT FROM T WHERE id = ?} answered no rows for a row
+   * that exists, and an UPDATE of it changed none. The rename moves the buckets under their new names one at a time and publishes
+   * the new type name while the type still answers to the old one, and a plan built in between compared names read at different
+   * moments: the bucket names it collected with the ones the steps read a moment later (no bucket left to read), and the type
+   * name the statement used with the name the records' type had by then (no record of the type). A statement on a name the type
+   * answers to finds the row; one on a name it no longer answers to is refused, never answered with nothing.
+   * <p>
+   * The {@code @Timeout} is a hang detector only.
+   */
+  @Nested
+  class QueriesWhileTheTypeIsRenamed extends TestHelper {
+    private static final int ROWS    = 999; // A MULTIPLE OF READERS: EACH THREAD KEEPS TO ITS OWN ROWS
+    private static final int RENAMES = 100;
+    private static final int READERS = 3;
+
+    @Test
+    @Timeout(value = 5, unit = TimeUnit.MINUTES)
+    void aSelectServedByAUniqueIndexNeverAnswersNothing() throws Exception {
+      assertNoEmptyAnswerWhileRenaming("UNIQUE", false);
+    }
+
+    @Test
+    @Timeout(value = 5, unit = TimeUnit.MINUTES)
+    void aSelectServedByANotUniqueIndexNeverAnswersNothing() throws Exception {
+      assertNoEmptyAnswerWhileRenaming("NOTUNIQUE", false);
+    }
+
+    @Test
+    @Timeout(value = 5, unit = TimeUnit.MINUTES)
+    void aSelectServedByAHashIndexNeverAnswersNothing() throws Exception {
+      assertNoEmptyAnswerWhileRenaming("UNIQUE_HASH", false);
+    }
+
+    @Test
+    @Timeout(value = 5, unit = TimeUnit.MINUTES)
+    void aSelectServedByAScanNeverAnswersNothing() throws Exception {
+      assertNoEmptyAnswerWhileRenaming(null, false);
+    }
+
+    @Test
+    @Timeout(value = 5, unit = TimeUnit.MINUTES)
+    void anUpdateServedByAUniqueIndexNeverChangesNothing() throws Exception {
+      assertNoEmptyAnswerWhileRenaming("UNIQUE", true);
+    }
+
+    @Test
+    @Timeout(value = 5, unit = TimeUnit.MINUTES)
+    void anUpdateServedByAScanNeverChangesNothing() throws Exception {
+      assertNoEmptyAnswerWhileRenaming(null, true);
+    }
+
+    /** The rows the statement on the row {@code id} found (a SELECT) or changed (an UPDATE). */
+    private long rowsOf(final String typeName, final int id, final boolean update) {
+      if (update) {
+        database.begin();
+        try {
+          final long changed;
+          try (final ResultSet rs = database.command("sql", "UPDATE `" + typeName + "` SET hits = hits + 1 WHERE id = ?", id)) {
+            changed = rs.hasNext() ? ((Number) rs.next().getProperty("count")).longValue() : 0L;
+          }
+          database.commit();
+          return changed;
+        } finally {
+          if (database.isTransactionActive())
+            database.rollback();
+        }
+      }
+      try (final ResultSet rs = database.query("sql", "SELECT FROM `" + typeName + "` WHERE id = ?", id)) {
+        return rs.stream().count();
+      }
+    }
+
+    private void assertNoEmptyAnswerWhileRenaming(final String indexKind, final boolean update) throws Exception {
+      database.command("sql", "CREATE DOCUMENT TYPE T12758");
+      database.command("sql", "CREATE PROPERTY T12758.id INTEGER");
+      if (indexKind != null)
+        database.command("sql", "CREATE INDEX ON T12758 (id) " + indexKind);
+      database.transaction(() -> {
+        for (int i = 0; i < ROWS; i++)
+          database.newDocument("T12758").set("id", i).set("hits", 0).save();
+      });
+
+      final AtomicReference<String> currentName = new AtomicReference<>("T12758");
+      final AtomicBoolean stop = new AtomicBoolean();
+      final AtomicLong found = new AtomicLong();
+      final AtomicLong refused = new AtomicLong();
+      final AtomicLong empty = new AtomicLong();
+      final AtomicReference<String> firstEmpty = new AtomicReference<>();
+      final AtomicReference<Throwable> unexpected = new AtomicReference<>();
+
+      final List<Thread> readers = new ArrayList<>();
+      for (int r = 0; r < READERS; r++) {
+        // EACH THREAD ITS OWN ROWS: TWO UPDATES OF ONE ROW WOULD CONFLICT, WHICH IS NOT WHAT THIS TEST IS ABOUT
+        final int first = r;
+        final Thread reader = new Thread(() -> {
+          int id = first;
+          while (!stop.get()) {
+            id = (id + READERS) % ROWS;
+            final String typeName = currentName.get();
+            try {
+              final long rows = rowsOf(typeName, id, update);
+              if (rows == 1)
+                found.incrementAndGet();
+              else if (empty.incrementAndGet() == 1)
+                firstEmpty.set(rows + " rows for the row " + id + " of '" + typeName + "'");
+            } catch (final SchemaException e) {
+              // THE NAME WAS STALE: THE TYPE NO LONGER ANSWERS TO IT
+              refused.incrementAndGet();
+            } catch (final NeedRetryException e) {
+              // A WRITE THAT MET THE RENAME OF ITS FILES: RETRYABLE, NOT AN ANSWER
+              refused.incrementAndGet();
+            } catch (final Throwable t) {
+              unexpected.compareAndSet(null, t);
+            }
+          }
+        });
+        reader.start();
+        readers.add(reader);
+      }
+
+      try {
+        for (int i = 0; i < RENAMES; i++) {
+          final String from = currentName.get();
+          final String to = from.equals("T12758") ? "Tr12758" : "T12758";
+          database.command("sql", "ALTER TYPE `" + from + "` NAME `" + to + "`");
+          currentName.set(to);
+        }
+      } finally {
+        stop.set(true);
+        for (final Thread reader : readers)
+          reader.join();
+      }
+
+      assertThat(unexpected.get()).isNull();
+      assertThat(found.get()).isGreaterThan(0L);
+      assertThat(empty.get()).as("empty answers (found %d, refused %d), first: %s", found.get(), refused.get(), firstEmpty.get())
+          .isZero();
+
+      for (int i = 0; i < ROWS; i += 97)
+        assertThat(rowsOf(currentName.get(), i, false)).isEqualTo(1L);
+      if (update)
+        // EVERY UPDATE THAT ANSWERED ONE ROW CHANGED ONE, AND NO OTHER DID
+        try (final ResultSet rs = database.query("sql", "SELECT sum(hits) AS total FROM `" + currentName.get() + "`")) {
+          assertThat(((Number) rs.next().getProperty("total")).longValue()).isEqualTo(found.get());
+        }
+    }
+  }
+
+  /**
+   * Regression for #12758, without threads: a statement planned on {@code T} keeps reading after {@code ALTER TYPE T NAME Tr} has
+   * run in full, between two pages of its result. The type check after an index fetch compared the name the statement used with
+   * the name the records' type had by then, so every row after the rename was dropped. It now recognises the type it planned by
+   * identity, for the records of the type and for those of a subtype, whose lineage it walks by identity too.
+   */
+  @Nested
+  class AStatementThatKeepsReadingAcrossARename extends TestHelper {
+    // SEVERAL PAGES OF A LocalResultSet: THE RENAME RUNS AFTER THE FIRST PAGE WAS SERVED AND BEFORE THE NEXT ONE IS PLANNED
+    private static final int ROWS = 1000;
+
+    @Test
+    void theRowsOfTheTypeAfterTheRenameAreKept() {
+      assertEveryRowIsReadAcrossTheRename("T12758D", "T12758D");
+    }
+
+    @Test
+    void theRowsOfASubtypeAfterTheRenameOfTheTargetAreKept() {
+      database.command("sql", "CREATE DOCUMENT TYPE C12758D EXTENDS T12758D");
+      assertEveryRowIsReadAcrossTheRename("T12758D", "C12758D");
+    }
+
+    @Test
+    void theRowsOfATypeThatReachesTheTargetByTwoPathsAreKept() {
+      // A DIAMOND: THE TARGET IS AN ANCESTOR OF THE RECORDS' TYPE BY TWO PATHS, AND THE IDENTITY WALK READS IT ONCE
+      database.command("sql", "CREATE DOCUMENT TYPE L12758D EXTENDS T12758D");
+      database.command("sql", "CREATE DOCUMENT TYPE R12758D EXTENDS T12758D");
+      database.command("sql", "CREATE DOCUMENT TYPE J12758D EXTENDS L12758D, R12758D");
+      assertEveryRowIsReadAcrossTheRename("T12758D", "J12758D");
+    }
+
+    @Override
+    protected void beginTest() {
+      database.command("sql", "CREATE DOCUMENT TYPE T12758D");
+      database.command("sql", "CREATE PROPERTY T12758D.id INTEGER");
+      database.command("sql", "CREATE INDEX ON T12758D (id) NOTUNIQUE");
+    }
+
+    private void assertEveryRowIsReadAcrossTheRename(final String target, final String recordType) {
+      database.transaction(() -> {
+        for (int i = 0; i < ROWS; i++)
+          database.newDocument(recordType).set("id", i).save();
+      });
+
+      long rows = 0;
+      try (final ResultSet rs = database.query("sql", "SELECT FROM `" + target + "` WHERE id >= 0")) {
+        // NOT VACUOUS: THE ROWS COME FROM THE INDEX AND PASS THE TYPE CHECK THAT FOLLOWS IT
+        final String plan = rs.getExecutionPlan().get().prettyPrint(0, 2);
+        assertThat(plan).contains("FETCH FROM INDEX").contains("FILTER ITEMS BY TYPE");
+
+        assertThat(rs.hasNext()).isTrue();
+        rs.next();
+        ++rows;
+
+        database.command("sql", "ALTER TYPE `" + target + "` NAME `" + target + "r`");
+        assertThat(database.getSchema().existsType(target)).isFalse();
+
+        while (rs.hasNext()) {
+          rs.next();
+          ++rows;
+        }
+      }
+      assertThat(rows).isEqualTo(ROWS);
+    }
+  }
+
+  /**
+   * Guard for #12758, the FACETS step: planned on {@code T} and opened after {@code ALTER TYPE T NAME Tr} released the name, the step
+   * looks the target up by that name and finds no type, so it does not ask the type's read listeners and takes the matches from the
+   * full-text index, which reads no record. That is harmless only because the indexed function resolves the target by the same name
+   * and refuses the statement before a match is counted. This pins the outcome: the statement is refused, or its facets leave out the
+   * records a BEFORE READ listener of the type hides, never counts them. If the function ever keeps the planned type instead, this
+   * turns red, and the step must then keep it too.
+   */
+  @Nested
+  class AFacetsStatementPlannedBeforeARename extends TestHelper {
+    @Test
+    void theFacetsNeverCountARecordTheReadListenersOfTheRenamedTypeHide() {
+      database.command("sql", "CREATE DOCUMENT TYPE F12758");
+      database.command("sql", "CREATE PROPERTY F12758.t STRING");
+      database.command("sql", "CREATE INDEX ON F12758 (t) FULL_TEXT");
+      final Set<RID> hidden = new HashSet<>();
+      database.transaction(() -> {
+        for (int i = 0; i < 10; i++) {
+          final MutableDocument doc = database.newDocument("F12758").set("t", "word").set("b", i < 4 ? "hidden" : "shown");
+          doc.save();
+          if (i < 4)
+            hidden.add(doc.getIdentity());
+        }
+      });
+
+      final BeforeRecordReadListener hide = rid -> !hidden.contains(rid);
+      final DocumentType type = database.getSchema().getType("F12758");
+      type.getEvents().registerListener(hide);
+      try {
+        final SelectStatement statement = (SelectStatement) ((DatabaseInternal) database).getStatementCache()
+            .get("SELECT FROM F12758 WHERE search_fields(['t'], 'word') FACETS x: b TERMS TOP 10");
+        final BasicCommandContext context = new BasicCommandContext();
+        context.setDatabase(database);
+        final InternalExecutionPlan plan = new SelectExecutionPlanner(statement).createExecutionPlan(context, false);
+        // NOT VACUOUS: THE FULL-TEXT INDEX CAN ADD THE MATCHES OF THE FACETS WITHOUT READING A RECORD
+        assertThat(plan.prettyPrint(0, 2)).contains("FETCH FROM INDEXED FUNCTION");
+
+        database.command("sql", "ALTER TYPE F12758 NAME F12758r");
+        assertThat(database.getSchema().existsType("F12758")).isFalse();
+
+        final Map<Object, Long> counts = new LinkedHashMap<>();
+        try (final ResultSet rs = new LocalResultSet(plan)) {
+          while (rs.hasNext())
+            rs.next();
+          final FacetResults facets = rs.getFacets();
+          for (final FacetBucket bucket : facets.get("x").buckets())
+            counts.put(bucket.value(), bucket.count());
+        } catch (final SchemaException refused) {
+          // THE NAME THE STATEMENT USED NO LONGER RESOLVES: REFUSED, NOT ANSWERED
+          assertThat(refused.getMessage()).contains("F12758");
+          return;
+        }
+        assertThat(counts).containsExactly(Map.entry("shown", 6L));
+      } finally {
+        type.getEvents().unregisterListener(hide);
+      }
     }
   }
 }

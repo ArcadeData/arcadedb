@@ -333,7 +333,7 @@ public class OrderByStep extends AbstractExecutionStep implements RowCapAwareSte
       // A ROUND TAKES THE PARTIALS OF THE PREVIOUS ONES BACK BEFORE IT CREATES ANY, SO A SOURCE SERVED IN MANY ROUNDS STILL
       // ENDS WITH NO MORE PARTIALS THAN WORKERS
       final List<PartialTopK> partials = new ArrayList<>();
-      final String[] types = pipeline.types().toArray(new String[0]);
+      final FilterByTypeStep[] types = pipeline.types().toArray(new FilterByTypeStep[0]);
       int workers = 0;
       long units = 0;
       ParallelTypeScan scan = firstScan;
@@ -455,7 +455,7 @@ public class OrderByStep extends AbstractExecutionStep implements RowCapAwareSte
 
   /** One worker's top {@code maxResults}, on the worker's own copies of the expressions it evaluates. */
   private static final class PartialTopK {
-    private final String[]            types;
+    private final FilterByTypeStep[]  types;
     private final WhereClause[]       conditions;
     private final Projection          projection;
     private final OrderBy             orderBy;
@@ -468,7 +468,7 @@ public class OrderByStep extends AbstractExecutionStep implements RowCapAwareSte
     // GUARDED BY this: SET BY THE CALLER, WHICH RELEASES THE HEAP OF A WORKER A FAILURE CANCELLED WHILE IT MAY STILL RUN
     private       boolean             heapReleased;
 
-    PartialTopK(final String[] types, final WhereClause[] conditions, final Projection projection, final OrderBy orderBy,
+    PartialTopK(final FilterByTypeStep[] types, final WhereClause[] conditions, final Projection projection, final OrderBy orderBy,
         final CommandContext context, final int maxResults, final OperationHeapLimit heapLimit) {
       this.types = types;
       this.conditions = conditions;

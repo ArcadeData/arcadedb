@@ -312,7 +312,7 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
       exchange = null;
       exchangeGroupCount.set(0);
       if (exchangeable) {
-        final PartialAggregation target = new PartialAggregation(input.types().toArray(new String[0]), new WhereClause[0], null,
+        final PartialAggregation target = new PartialAggregation(input.types().toArray(new FilterByTypeStep[0]), new WhereClause[0], null,
             partitions, OperationHeapLimit.of(context, "groups", "GROUP BY"), groupOverhead);
         target.initExchange(projection, context);
         workerPartials.add(target);
@@ -497,7 +497,7 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
    * What a parallel aggregation reads: the source, the row filters between it and this step - the type check and the
    * conditions an index fetch leaves behind it (issue #8333) - and the projection computing the aggregates' arguments.
    */
-  private record ParallelInput(ParallelAggregationSource source, List<String> types, List<WhereClause> conditions,
+  private record ParallelInput(ParallelAggregationSource source, List<FilterByTypeStep> types, List<WhereClause> conditions,
                                Projection preProjection) {
     /** A new partial aggregation, on its own copies of every expression it evaluates. */
     PartialAggregation newPartial(final AggregateProjectionCalculationStep step, final int partitions,
@@ -509,7 +509,7 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
       // $current TO EVERY ROW ALREADY
       final AggregateRowEvaluator evaluator = new AggregateRowEvaluator(preProjection == null ? null : preProjection.copy(),
           step.projection.copy(), step.groupBy == null ? null : step.groupBy.copy(), false, workerConditions, workerContext);
-      return step.new PartialAggregation(types.toArray(new String[0]), workerConditions, evaluator, partitions, heapLimit,
+      return step.new PartialAggregation(types.toArray(new FilterByTypeStep[0]), workerConditions, evaluator, partitions, heapLimit,
           groupOverhead);
     }
   }
@@ -525,7 +525,7 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
     final ParallelAggregationSource source = pipeline.source();
     final List<WhereClause> conditions = pipeline.conditions();
     final Projection preProjection = pipeline.projection();
-    final List<String> types = pipeline.types();
+    final List<FilterByTypeStep> types = pipeline.types();
 
     for (final ProjectionItem proj : projection.getItems())
       if (proj.isAggregate(context) && !proj.getAggregationContext(context).canMerge())
@@ -583,7 +583,7 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
    * merged independently of the others.
    */
   private final class PartialAggregation {
-    private final String[]                     types;
+    private final FilterByTypeStep[]           types;
     private final WhereClause[]                conditions;
     // NULL FOR THE GROUPS THE WORKERS FLUSH THEIRS INTO, WHICH EVALUATE NO ROW
     private final AggregateRowEvaluator        evaluator;
@@ -609,7 +609,7 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
     private       ProjectionItem[][]           partitionAggregateItems;
 
     @SuppressWarnings("unchecked")
-    PartialAggregation(final String[] types, final WhereClause[] conditions, final AggregateRowEvaluator evaluator,
+    PartialAggregation(final FilterByTypeStep[] types, final WhereClause[] conditions, final AggregateRowEvaluator evaluator,
         final int partitionCount, final OperationHeapLimit heapLimit, final int groupOverhead) {
       this.types = types;
       this.conditions = conditions;

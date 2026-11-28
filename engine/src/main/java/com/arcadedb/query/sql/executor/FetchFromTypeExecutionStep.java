@@ -97,11 +97,10 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep implements
 
     final int[] typeBuckets = type.getBuckets(true).stream().mapToInt(x -> x.getFileId()).distinct().sorted().toArray();
     final List<Integer> filteredTypeBuckets = new ArrayList<>();
-    for (final int bucketId : typeBuckets) {
-      final String bucketName = context.getDatabase().getSchema().getBucketById(bucketId).getName();
-      if (clusters == null || clusters.contains(bucketName) || clusters.contains("*"))
+    for (final int bucketId : typeBuckets)
+      // by id when the planner holds the buckets so: a concurrent ALTER TYPE ... NAME renames them (issue #12758)
+      if (BucketIdSet.includes(clusters, context.getDatabase().getSchema().getBucketById(bucketId)))
         filteredTypeBuckets.add(bucketId);
-    }
     final int[] bucketIds = new int[filteredTypeBuckets.size() + 1];
     for (int i = 0; i < filteredTypeBuckets.size(); i++)
       bucketIds[i] = filteredTypeBuckets.get(i);

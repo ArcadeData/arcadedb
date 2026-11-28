@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.TimeoutException;
 
+import java.util.HashSet;
 import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -44,7 +45,11 @@ public class FilterByClustersStep extends AbstractExecutionStep {
 
   private void init(final Database db) {
     if (this.bucketIds == null) {
-      this.bucketIds = clusters.stream().filter(x -> x != null).map(x -> db.getSchema().getBucketByName(x).getFileId()).collect(Collectors.toSet());
+      if (clusters instanceof BucketIdSet byId)
+        // by id, as the planner holds them: a concurrent ALTER TYPE ... NAME renames the buckets (issue #12758)
+        this.bucketIds = new HashSet<>(byId.idList());
+      else
+        this.bucketIds = clusters.stream().filter(x -> x != null).map(x -> db.getSchema().getBucketByName(x).getFileId()).collect(Collectors.toSet());
     }
   }
 

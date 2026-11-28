@@ -38,7 +38,7 @@ import java.util.List;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-record ParallelRowPipeline(ParallelAggregationSource source, List<String> types, List<WhereClause> conditions,
+record ParallelRowPipeline(ParallelAggregationSource source, List<FilterByTypeStep> types, List<WhereClause> conditions,
                            Projection projection) {
 
   /**
@@ -53,11 +53,11 @@ record ParallelRowPipeline(ParallelAggregationSource source, List<String> types,
       step = ((ProjectionCalculationStep) step).prev;
     }
 
-    final List<String> types = new ArrayList<>();
+    final List<FilterByTypeStep> types = new ArrayList<>();
     final List<WhereClause> conditions = new ArrayList<>();
     while (step != null) {
       if (step.getClass() == FilterByTypeStep.class)
-        types.add(((FilterByTypeStep) step).getTypeName());
+        types.add((FilterByTypeStep) step);
       else if (step.getClass() == FilterStep.class)
         conditions.add(((FilterStep) step).getWhereClause());
       else
@@ -71,13 +71,15 @@ record ParallelRowPipeline(ParallelAggregationSource source, List<String> types,
   }
 
   /** Whether the row passes the type checks and the conditions, as their steps would decide. */
-  static boolean matches(final String[] types, final WhereClause[] conditions, final Result row, final CommandContext context) {
+  static boolean matches(final FilterByTypeStep[] types, final WhereClause[] conditions, final Result row,
+      final CommandContext context) {
     if (types.length > 0) {
       final DocumentType type = row.isElement() ? row.getElement().get().getType() : null;
       if (type == null)
         return false;
-      for (final String name : types)
-        if (!type.isSubTypeOf(name))
+      // the filters are read-only once planned, so the workers share them
+      for (final FilterByTypeStep filter : types)
+        if (!filter.accepts(type))
           return false;
     }
     for (final WhereClause condition : conditions)

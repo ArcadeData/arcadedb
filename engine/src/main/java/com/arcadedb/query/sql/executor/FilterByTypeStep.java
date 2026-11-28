@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.LocalDocumentType;
 
 import java.util.NoSuchElementException;
 
@@ -28,15 +29,26 @@ import java.util.NoSuchElementException;
  * Created by luigidellaquila on 01/03/17.
  */
 public class FilterByTypeStep extends AbstractExecutionStep {
-  private final Identifier identifier;
+  private final Identifier   identifier;
+  // The type the name resolved to when the statement was planned, or null when it resolved to none (issue #12758)
+  private final DocumentType type;
 
   //runtime
 
   ResultSet prevResult = null;
 
   public FilterByTypeStep(final Identifier identifier, final CommandContext context) {
+    this(identifier, context.getDatabase().getSchema().getTypeOrNull(identifier.getStringValue()), context);
+  }
+
+  /**
+   * @param type the type the planner resolved the name to, which the step then keeps without resolving the name again: a
+   *             concurrent rename can release the name in between (issue #12758). Null when the name resolved to none.
+   */
+  public FilterByTypeStep(final Identifier identifier, final DocumentType type, final CommandContext context) {
     super(context);
     this.identifier = identifier;
+    this.type = type;
   }
 
   @Override
@@ -73,7 +85,7 @@ public class FilterByTypeStep extends AbstractExecutionStep {
           nextItem = prevResult.next();
           final long begin = context.isProfiling() ? System.nanoTime() : 0;
           try {
-            if (isInstanceOf(nextItem, identifier.getStringValue()))
+            if (accepts(nextItem))
               break;
             nextItem = null;
           } finally {
@@ -119,17 +131,30 @@ public class FilterByTypeStep extends AbstractExecutionStep {
     };
   }
 
-  /** The type every row must be an instance of: a parallel aggregation checks it in its workers (issue #8333). */
-  String getTypeName() {
-    return identifier.getStringValue();
+  /** Whether the row is a record of the type or of a subtype of it, which is what this step keeps. */
+  boolean accepts(final Result row) {
+    return row.isElement() && accepts(row.getElement().get().getType());
   }
 
-  /** Whether the row is a record of the type or of a subtype of it, which is what this step keeps. */
-  static boolean isInstanceOf(final Result row, final String typeName) {
-    if (!row.isElement())
+  /**
+   * Whether a record of {@code recordType} is one this step keeps: a record of the type the statement named or of a subtype of it.
+   * The type is the one the name resolved to when the statement was planned, recognised by identity first (issue #12758):
+   * {@code ALTER TYPE T NAME Tr} publishes the new name while the type still answers to the old one, so a statement on {@code T}
+   * planned or still running in between read records whose type is called {@code Tr}, and a comparison of the names alone kept
+   * none of them. A subtype is recognised by identity too, walking the record type's super types: a name read there could be
+   * either of the two the renamed type answers to. The name is only a fallback that can add a record, never reject one: it covers
+   * a target that resolved to no type, and a record type the planned type is not an ancestor of by identity (a type dropped and
+   * created again under the name while a plan of the old one runs). Every step that decides for this one (a SKIP passing over
+   * index entries, a parallel worker, the facets) asks here, so that they keep the same records.
+   */
+  boolean accepts(final DocumentType recordType) {
+    if (recordType == null)
       return false;
-    final DocumentType type = row.getElement().get().getType();
-    return type != null && type.isSubTypeOf(typeName);
+    if (recordType == type)
+      return true;
+    if (type != null && recordType instanceof LocalDocumentType local && local.inheritsFrom(type))
+      return true;
+    return recordType.isSubTypeOf(type != null ? type.getName() : identifier.getStringValue());
   }
 
   @Override
@@ -154,6 +179,6 @@ public class FilterByTypeStep extends AbstractExecutionStep {
 
   @Override
   public ExecutionStep copy(final CommandContext context) {
-    return new FilterByTypeStep(this.identifier.copy(), context);
+    return new FilterByTypeStep(this.identifier.copy(), type, context);
   }
 }

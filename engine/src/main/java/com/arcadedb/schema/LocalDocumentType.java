@@ -3766,6 +3766,24 @@ public class LocalDocumentType implements DocumentType {
     return false;
   }
 
+  /**
+   * Whether this type is {@code type} or one of its sub types, by identity: no name is read, so a concurrent
+   * {@code ALTER TYPE ... NAME}, which publishes the new name while the type still answers to the old one, cannot make the answer
+   * depend on which of the two names a comparison read (issue #12758).
+   */
+  public boolean inheritsFrom(final DocumentType type) {
+    if (type == this)
+      return true;
+    if (superTypes.isEmpty())
+      return false;
+    // each type above this one once, as isSubTypeOf walks it: a recursion over superTypes visits a shared ancestor once per path
+    final LocalDocumentType[] lineage = getLineage();
+    for (int i = 1; i < lineage.length; i++)
+      if (lineage[i] == type)
+        return true;
+    return false;
+  }
+
   @Override
   public boolean isSuperTypeOf(final String type) {
     if (type == null)
