@@ -212,6 +212,7 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
       final var bucketIndexes = member.getIndexesOnBuckets();
       if (bucketIndexes == null || bucketIndexes.length == 0)
         throw new CommandSQLParsingException("Index '" + member.getName() + "' has no bucket indexes");
+      VectorUtils.requireBucketIndexes(member, context.getDatabase(), null);
       final List<LSMVectorIndex> memberIndexes = VectorUtils.collectSubIndexesOnce(bucketIndexes, LSMVectorIndex.class, null);
       if (memberIndexes.isEmpty())
         throw new CommandSQLParsingException("Index '" + member.getName() + "' is not a vector index");
@@ -235,6 +236,8 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
     if (bucketIndexes == null || bucketIndexes.length == 0) {
       throw new CommandSQLParsingException("Index '" + typeIndex.getName() + "' has no bucket indexes");
     }
+
+    VectorUtils.requireBucketIndexes(typeIndex, context.getDatabase(), allowedBucketIds == null ? null : allowedBucketIds::contains);
 
     // Filter bucket indexes if a specific type was requested, and visit each sub-index at most once. See
     // VectorUtils.collectSubIndexesOnce for why the same sub-index can be listed twice (issue #7057).
