@@ -234,6 +234,20 @@ public class ResultInternal implements Result {
   }
 
   /**
+   * True when the keys of {@link #propertiesOf(Result)} are the names of the record behind {@code row}, the projection's exclusions
+   * left out, and nothing else: a plain row over a record that holds no values of its own and has had none removed. A consumer that
+   * also lists the record's names itself (the Postgres column list) already has them as those keys and spares the walk over the
+   * record header and the set of names that listing costs for every row (issue #13012).
+   */
+  public static boolean isPlainRecordRow(final Result row) {
+    if (row.getClass() != ResultInternal.class)
+      return false;
+    final ResultInternal plain = (ResultInternal) row;
+    return plain.element != null && (plain.content == null || plain.content.isEmpty())
+        && (plain.tombstones == null || plain.tombstones.isEmpty());
+  }
+
+  /**
    * Whether {@link #propertiesOf} may read a record of {@code recordClass} through
    * {@link ImmutableDocument#toMapReportingDamage(String[])}, which reads the stored content directly, instead of through the
    * {@code getPropertyNames()} and {@code toMap(false)} a subclass may answer differently from that content: a remote record holds
@@ -262,7 +276,6 @@ public class ResultInternal implements Result {
       }
     }
   };
-
   private static boolean sameNamesInOrder(final Set<String> names, final Map<String, Object> read) {
     if (names.size() != read.size())
       return false;
