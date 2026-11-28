@@ -551,6 +551,16 @@ public class LocalSchema implements Schema {
    */
   private volatile    Thread                                 recordingThread               = null;
   /**
+   * The thread running the outermost {@link #recordFileChanges} frame, from its entry to its very end (issue #13696): unlike
+   * {@link #recordingThread} it is not cleared before the frame's own save, so it covers every step the frame takes under the
+   * database write lock. While it is set, only that thread publishes the bucket maps. A schema save made by another thread
+   * without the write lock (an index compaction swap, a vector index persisting its build state) used to rebuild them from a
+   * snapshot of the type graph the frame was changing, and publish that snapshot over the frame's own maps after the frame had
+   * detached a bucket. Set under this monitor, so a thread that checks it under the monitor and finds it {@code null} cannot
+   * see a frame start before it has published.
+   */
+  private volatile    Thread                                 bucketMapsWriter              = null;
+  /**
    * Whether a save was left to the outermost {@link #recordFileChanges} frame by a nested frame or by a transaction
    * that ended inside it (issue #8635). Read only when the frame FAILS: a successful one saves unconditionally. Read
    * and written by the frame's thread under the database write lock only.
@@ -2753,12 +2763,9 @@ public class LocalSchema implements Schema {
 
   @Override
   public Index[] getIndexes() {
-    final Collection<IndexInternal> visible = indexesDuringLoad();
-    final Index[] indexes = new Index[visible.size()];
-    int i = 0;
-    for (final Index index : visible)
-      indexes[i++] = index;
-    return indexes;
+    // toArray, not an array sized by size() and filled by a walk: the map is concurrent, and an index created between the two
+    // (a schema save of another thread runs without the write lock, issue #13696) overflowed it
+    return indexesDuringLoad().toArray(new Index[0]);
   }
 
   @Override
@@ -5585,6 +5592,8 @@ public class LocalSchema implements Schema {
       if (dirtyGeneration.get() > savedGeneration && (readable || !mustKeepPreviousGeneration()))
         saveConfiguration();
 
+      // NO WRITER CHECK (issue #13696): EVERY CALLER (load(), loadIncremental()) RUNS INSIDE A STAGED PUBLICATION, SO ON THIS
+      // THREAD THE REBUILD FILLS THE STAGED MAPS THE LOAD PUBLISHES WITH ITS GRAPH, NOT THE PUBLISHED ONES A FRAME COULD OWN
       rebuildBucketTypeMap();
       readStatisticsFile();
     }
@@ -7112,6 +7121,11 @@ public class LocalSchema implements Schema {
         prevGeneration[0] = dirtyGeneration.get();
         dirtyGeneration.updateAndGet(cur -> Math.max(cur, savedGeneration + 1));
         if (outermost) {
+          // UNDER THIS MONITOR, THE ORDER EVERY SAVE UNDER THE WRITE LOCK USES (#7457): A SAVE OF ANOTHER THREAD THAT IS
+          // REBUILDING THE BUCKET MAPS FINISHES PUBLISHING THEM BEFORE THIS FRAME CHANGES A TYPE (issue #13696)
+          synchronized (this) {
+            bucketMapsWriter = Thread.currentThread();
+          }
           recordingThread = Thread.currentThread();
           recordingSavePending = false;
         }
@@ -7162,21 +7176,28 @@ public class LocalSchema implements Schema {
             recordingThread = null;
             final boolean pending = recordingSavePending;
             recordingSavePending = false;
-            if (!executed[0]) {
-              // A change that failed part way may have attached or detached a bucket that a hook reported before the
-              // failure: the bucket maps are rebuilt from the types, as every save used to, rather than trusted, at once, so no
-              // lock-free reader resolves a bucket to a type through an entry the failed change left behind (issue #10247)
-              bucketTypeMapsStale = true;
-              try {
-                rebuildBucketTypeMap();
-              } catch (final RuntimeException e) {
-                // stays stale: the next lookup or save rebuilds it, and the exception to report is the change's own
-                LogManager.instance().log(this, Level.WARNING,
-                    "Cannot rebuild the bucket-to-type maps after a failed schema change on database '%s': %s", e,
-                    database.getName(), e.getMessage());
+            try {
+              if (!executed[0]) {
+                // A change that failed part way may have attached or detached a bucket that a hook reported before the
+                // failure: the bucket maps are rebuilt from the types, as every save used to, rather than trusted, at once, so no
+                // lock-free reader resolves a bucket to a type through an entry the failed change left behind (issue #10247)
+                bucketTypeMapsStale = true;
+                try {
+                  rebuildBucketTypeMap();
+                } catch (final RuntimeException e) {
+                  // stays stale: the next lookup or save rebuilds it, and the exception to report is the change's own
+                  LogManager.instance().log(this, Level.WARNING,
+                      "Cannot rebuild the bucket-to-type maps after a failed schema change on database '%s': %s", e,
+                      database.getName(), e.getMessage());
+                }
+                if (pending)
+                  keepDirty[0] = saveWhatAFailedFrameApplied(suspendIntermediateSaves);
               }
-              if (pending)
-                keepDirty[0] = saveWhatAFailedFrameApplied(suspendIntermediateSaves);
+            } finally {
+              // THE MAPS AGREE WITH THE TYPES AGAIN: THE FRAME'S SAVE OR THE REBUILD ABOVE BROUGHT THEM UP TO ITS CHANGE. IN A
+              // FINALLY OF ITS OWN, SO AN ERROR OUT OF THE REBUILD OR THE SAVE CANNOT LEAVE THE MAPS OWNED BY A FRAME THAT ENDED:
+              // A STALE MAP IS THEN REBUILT BY THE NEXT LOOKUP OR SAVE, AS ABOVE (issue #13696)
+              bucketMapsWriter = null;
             }
           }
           --recordingDepth;
@@ -7656,6 +7677,22 @@ public class LocalSchema implements Schema {
    * {@code CREATE TYPE} cost O(N) and N of them O(N^2).
    */
   private void refreshBucketTypeMap() {
+    if (bucketMapsWriter == Thread.currentThread() || isStagingPublication()) {
+      refreshBucketTypeMapAsWriter();
+      return;
+    }
+    synchronized (this) {
+      // ANOTHER THREAD'S FRAME IS CHANGING THE TYPES WITHOUT THIS THREAD HOLDING THE WRITE LOCK (A COMPACTION SWAP SAVING THE
+      // SCHEMA): THE FRAME BRINGS THE MAPS UP TO ITS CHANGE BEFORE IT ENDS, AND A SNAPSHOT TAKEN HERE COULD PUBLISH THEM AS THEY
+      // WERE BEFORE IT DETACHED A BUCKET (issue #13696)
+      if (bucketMapsWriter != null)
+        return;
+      refreshBucketTypeMapAsWriter();
+    }
+  }
+
+  /** {@link #refreshBucketTypeMap()} for the one thread that may publish the maps now. */
+  private void refreshBucketTypeMapAsWriter() {
     // A type being dropped tears its buckets down in an order no single hook follows: rebuilt at every step until it is gone
     if (bucketTypeMapsStale || typeBeingDropped != null || isStagingPublication()) {
       rebuildBucketTypeMap();
@@ -7722,7 +7759,7 @@ public class LocalSchema implements Schema {
     if (isStagingPublication())
       return stagedBucketOwners.get(bucketId);
     if (bucketTypeMapsStale)
-      rebuildBucketTypeMap();
+      return currentBucketTypeMaps()[0].get(bucketId);
     return published.bucketId2TypeMap().get(bucketId);
   }
 
@@ -7736,7 +7773,7 @@ public class LocalSchema implements Schema {
     if (isStagingPublication())
       return null;
     if (bucketTypeMapsStale)
-      rebuildBucketTypeMap();
+      return currentBucketTypeMaps()[1].get(bucketId);
     return published.bucketId2InvolvedTypeMap().get(bucketId);
   }
 
@@ -7784,7 +7821,28 @@ public class LocalSchema implements Schema {
     }
   }
 
-  private void rebuildBucketTypeMap() {
+  /**
+   * The bucket maps the types describe now, for a lookup that found the published ones stale: rebuilt and published by the
+   * thread that may publish them, only computed by any other while a frame of another thread is changing the types (issue
+   * #13696), since that frame publishes its own.
+   */
+  private Map<Integer, LocalDocumentType>[] currentBucketTypeMaps() {
+    if (bucketMapsWriter == Thread.currentThread())
+      return rebuildBucketTypeMap();
+    synchronized (this) {
+      if (bucketMapsWriter != null)
+        return computeBucketTypeMaps();
+      return rebuildBucketTypeMap();
+    }
+  }
+
+  /**
+   * Rebuilds the bucket maps from the types and publishes them. Called by the thread running the outermost frame, by a load,
+   * or by another thread under this monitor while no frame is open (issue #13696).
+   *
+   * @return the maps just built
+   */
+  private Map<Integer, LocalDocumentType>[] rebuildBucketTypeMap() {
     typesChanged();
     final Map<Integer, LocalDocumentType>[] maps = computeBucketTypeMaps();
 
@@ -7792,13 +7850,14 @@ public class LocalSchema implements Schema {
       // Derived from the staged graph, so they belong to it and are published with it (PR #8001 review).
       stagedBucketId2TypeMap = maps[0];
       stagedBucketId2InvolvedTypeMap = maps[1];
-      return;
+      return maps;
     }
 
     published = new SchemaState(published.types(), maps[0], maps[1]);
     bucketTypeMapsStale = false;
     ++bucketTypeMapRebuilds;
     requestColumnarReconcile();
+    return maps;
   }
 
   /** Full rebuilds of the published bucket maps so far: visible to the test of issue #10247, which counts them. */
