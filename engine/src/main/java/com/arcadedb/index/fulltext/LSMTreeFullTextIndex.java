@@ -130,22 +130,31 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    * Validates that the index is not unique and is defined on STRING properties.
    */
   public static class LSMTreeFullTextIndexFactoryHandler implements IndexFactoryHandler {
+    /**
+     * The checks of a full-text definition that need no data: not unique, STRING properties only (several are allowed, for a
+     * multi-property index), no property named as the query parser's reserved default field. Run by the index builder once the key
+     * types are known and before anything is built, so a definition the statement gets wrong reaches the caller as the
+     * {@link IllegalArgumentException} it is rather than as the failure of a build (issue #12809), and again by the factory.
+     *
+     * @param propertyNames the indexed properties, or null when the index has none (a manual index)
+     *
+     * @throws IllegalArgumentException when the definition is refused
+     */
+    public static void checkDefinition(final boolean unique, final Type[] keyTypes, final List<String> propertyNames) {
+      if (unique)
+        throw new IllegalArgumentException("Full text index cannot be unique");
+      for (final Type keyType : keyTypes)
+        if (keyType != Type.STRING)
+          throw new IllegalArgumentException("Full text index can only be defined on STRING properties, found: " + keyType);
+      // A property whose name collides with the query parser's reserved default-field sentinel could not be told apart from an
+      // unqualified term on a multi-property index: refused at creation rather than mis-scoring silently
+      checkReservedPropertyNames(propertyNames);
+    }
+
     @Override
     public IndexInternal create(final IndexBuilder builder) {
-      if (builder.isUnique())
-        throw new IllegalArgumentException("Full text index cannot be unique");
-
-      // Allow multiple STRING properties for multi-property indexes
-      for (final Type keyType : builder.getKeyTypes()) {
-        if (keyType != Type.STRING)
-          throw new IllegalArgumentException(
-              "Full text index can only be defined on STRING properties, found: " + keyType);
-      }
-
-      // Reject a property whose name collides with the query parser's reserved default-field sentinel: on a multi-property index
-      // such a field could not be distinguished from an unqualified term. Fail fast at creation rather than mis-scoring silently.
-      if (builder.getMetadata() != null)
-        checkReservedPropertyNames(builder.getMetadata().propertyNames);
+      checkDefinition(builder.isUnique(), builder.getKeyTypes(),
+          builder.getMetadata() != null ? builder.getMetadata().propertyNames : null);
 
       // Get metadata if available. New full-text indexes default to BM25 similarity (issue #4687): when the user did not supply a
       // FullTextIndexMetadata, synthesize one carrying the BM25 defaults so freshly created indexes rank with BM25 out of the box.

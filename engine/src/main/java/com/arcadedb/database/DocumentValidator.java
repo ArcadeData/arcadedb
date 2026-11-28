@@ -19,7 +19,6 @@
 package com.arcadedb.database;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.log.LogManager;
@@ -769,7 +768,7 @@ public class DocumentValidator {
       }
 
     if (!broken.isEmpty())
-      throw new CommandExecutionException("Cannot set " + setting + ": " + (broken.size() == 1 ? "a property" : broken.size()
+      throw new InvalidArgumentException("Cannot set " + setting + ": " + (broken.size() == 1 ? "a property" : broken.size()
           + " properties") + " would be left with a constraint no value can satisfy, and every write of it would fail. "
           + String.join("; ", broken) + ". Change or remove the constraint first (ALTER PROPERTY ... REGEXP null, MIN null, MAX null)");
   }

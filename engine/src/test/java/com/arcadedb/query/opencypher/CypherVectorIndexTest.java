@@ -21,6 +21,8 @@ package com.arcadedb.query.opencypher;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.ErrorCategory;
+import com.arcadedb.exception.ValidationException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.vector.LSMVectorIndex;
@@ -48,6 +50,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
  * Cypher vector indexes: vector type constraints, coordinate types and index sizing.
@@ -151,8 +154,7 @@ class CypherVectorIndexTest {
         database.newVertex("L").set("e", new float[] { 1F, 2F }).save();
       });
 
-      assertThatThrownBy(() -> command("CREATE CONSTRAINT t FOR (n:L) REQUIRE n.e IS :: VECTOR<FLOAT32>(3)")).hasMessageContaining(
-          "holds float[2]");
+      assertRefusedByTheStoredValues("CREATE CONSTRAINT t FOR (n:L) REQUIRE n.e IS :: VECTOR<FLOAT32>(3)", "holds float[2]");
       assertThat(database.getSchema().getType("L").getPropertyIfExists("e")).isNull();
       assertThat(names("SHOW CONSTRAINTS YIELD name")).isEmpty();
     }
@@ -164,8 +166,7 @@ class CypherVectorIndexTest {
       database.transaction(() -> database.newVertex("L").set("e", new float[] { 1F, 2F }).save());
 
       // the declaration was there before: the refusal keeps it, without the MIN and MAX the statement set
-      assertThatThrownBy(() -> command("CREATE CONSTRAINT t FOR (n:L) REQUIRE n.e IS :: VECTOR<FLOAT32>(3)")).hasMessageContaining(
-          "holds float[2]");
+      assertRefusedByTheStoredValues("CREATE CONSTRAINT t FOR (n:L) REQUIRE n.e IS :: VECTOR<FLOAT32>(3)", "holds float[2]");
       final Property p = property("L", "e");
       assertThat(p.getType()).isEqualTo(Type.ARRAY_OF_FLOATS);
       assertThat(p.getMin()).isNull();
@@ -178,9 +179,21 @@ class CypherVectorIndexTest {
       // a list written before any declaration stays a list: it answers false to IS :: VECTOR, as in Neo4j
       command("CREATE (:L {e: [1.0, 2.0, 3.0]})");
 
-      assertThatThrownBy(() -> command("CREATE CONSTRAINT t FOR (n:L) REQUIRE n.e IS :: VECTOR<FLOAT32>(3)")).hasMessageContaining(
-          "(LIST<ANY>)");
+      assertRefusedByTheStoredValues("CREATE CONSTRAINT t FOR (n:L) REQUIRE n.e IS :: VECTOR<FLOAT32>(3)", "(LIST<ANY>)");
       assertThat(database.getSchema().getType("L").getPropertyIfExists("e")).isNull();
+    }
+
+    /**
+     * A type constraint the stored values violate is refused as every other openCypher constraint violation is (issue #12809): a
+     * ValidationException of kind TYPE that says which record holds what, under the wrapper of the command.
+     */
+    private void assertRefusedByTheStoredValues(final String cypher, final String expectedMessage) {
+      final Throwable e = catchThrowable(() -> command(cypher));
+      assertThat(e).as(cypher).isNotNull();
+      assertThat(ErrorCategory.of(e)).as(cypher).isEqualTo(ErrorCategory.VALIDATION);
+      assertThat(ErrorCategory.classifiedCause(e)).as(cypher).isInstanceOf(ValidationException.class)
+          .hasMessageContaining(expectedMessage);
+      assertThat(((ValidationException) ErrorCategory.classifiedCause(e)).getKind()).as(cypher).isEqualTo(ValidationException.Kind.TYPE);
     }
 
     @Test

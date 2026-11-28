@@ -104,18 +104,21 @@ public final class ColumnarIndexFactoryHandler implements IndexFactoryHandler {
   }
 
   /**
-   * The checks of a COLUMNAR definition that need no data: not unique, exactly one property, no BY KEY or BY VALUE.
+   * The checks of a COLUMNAR definition that need no data: not unique, exactly one property, no BY KEY or BY VALUE. A definition the
+   * statement alone gets wrong, so it is refused as the caller's mistake, as the full-text and geospatial definitions are (issue
+   * #12809), and not as the failure of an index the server could not build.
    *
-   * @throws IndexException when the definition is refused
+   * @throws IllegalArgumentException when the definition is refused
    */
   public static void checkDefinition(final boolean unique, final List<String> propertyNames) {
     if (unique)
-      throw new IndexException("A COLUMNAR index cannot be unique");
+      throw new IllegalArgumentException("A COLUMNAR index cannot be unique");
     if (propertyNames.size() != 1)
-      throw new IndexException("A COLUMNAR index is defined on exactly one property (one index per property), got " + propertyNames);
+      throw new IllegalArgumentException(
+          "A COLUMNAR index is defined on exactly one property (one index per property), got " + propertyNames);
     final String indexProperty = propertyNames.getFirst();
     if (!indexProperty.equals(Index.basePropertyName(indexProperty)) && !indexProperty.endsWith(ColumnarIndex.BY_ITEM_SUFFIX))
-      throw new IndexException("A COLUMNAR index does not support BY KEY or BY VALUE, got '" + indexProperty + "'");
+      throw new IllegalArgumentException("A COLUMNAR index does not support BY KEY or BY VALUE, got '" + indexProperty + "'");
   }
 
   /**

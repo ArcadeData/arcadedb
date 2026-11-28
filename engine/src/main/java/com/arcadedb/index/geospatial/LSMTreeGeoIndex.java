@@ -120,14 +120,24 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
    * Factory handler for creating LSMTreeGeoIndex instances.
    */
   public static class GeoIndexFactoryHandler implements IndexFactoryHandler {
+    /**
+     * The checks of a geospatial definition that need no data: not unique, STRING properties only. Run by the index builder once
+     * the key types are known and before anything is built, so a definition the statement gets wrong reaches the caller as the
+     * {@link IllegalArgumentException} it is rather than as the failure of a build (issue #12809), and again by the factory.
+     *
+     * @throws IllegalArgumentException when the definition is refused
+     */
+    public static void checkDefinition(final boolean unique, final Type[] keyTypes) {
+      if (unique)
+        throw new IllegalArgumentException("Geospatial index cannot be unique");
+      for (final Type keyType : keyTypes)
+        if (keyType != Type.STRING)
+          throw new IllegalArgumentException("Geospatial index can only be defined on STRING properties, found: " + keyType);
+    }
+
     @Override
     public IndexInternal create(final IndexBuilder builder) {
-      if (builder.isUnique())
-        throw new IllegalArgumentException("Geospatial index cannot be unique");
-      for (final Type keyType : builder.getKeyTypes())
-        if (keyType != Type.STRING)
-          throw new IllegalArgumentException(
-              "Geospatial index can only be defined on STRING properties, found: " + keyType);
+      checkDefinition(builder.isUnique(), builder.getKeyTypes());
 
       int precision = GeoIndexMetadata.DEFAULT_PRECISION;
       GeoIndexMetadata.TOKENIZATION tokenization = GeoIndexMetadata.DEFAULT_TOKENIZATION;

@@ -26,6 +26,7 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.graph.GraphBatch;
@@ -202,7 +203,7 @@ class PropertyDefinitionTest {
     void theListedAttributesAreTheOnesCreateAccepts() {
       database.command("sql", "CREATE DOCUMENT TYPE T");
       assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY T.a STRING (nosuchattribute 1)")).isInstanceOf(
-          CommandExecutionException.class).hasMessageContaining("Invalid attribute definition");
+          CommandSQLParsingException.class).hasMessageContaining("Invalid attribute definition");
 
       // every listed attribute is accepted by CREATE with a value of its own kind
       int index = 0;

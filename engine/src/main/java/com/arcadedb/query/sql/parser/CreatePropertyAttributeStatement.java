@@ -21,6 +21,8 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.schema.Property;
 
@@ -62,8 +64,9 @@ public class CreatePropertyAttributeStatement extends SimpleNode {
   public Object setOnProperty(final Property internalProp, final CommandContext context) {
     final String attrName = settingName.getStringValue();
     final String attribute = attrName.toLowerCase(Locale.ENGLISH);
+    // A name no attribute has is a statement that cannot be run, refused as ALTER PROPERTY refuses a setting it does not support
     if (!ATTRIBUTES.contains(attribute))
-      throw new CommandExecutionException("Invalid attribute definition: '" + attrName + "'");
+      throw new CommandSQLParsingException("Invalid attribute definition: '" + attrName + "'");
 
     final Object attrValue;
     if (this.settingValue == null) {
@@ -88,16 +91,20 @@ public class CreatePropertyAttributeStatement extends SimpleNode {
       case "regexp" -> internalProp.setRegexp(PropertyAttributeValues.asText(attrValue));
       case "default" -> {
         if (this.settingValue == null)
-          throw new CommandExecutionException("Default value not set");
+          throw new CommandSQLParsingException("Default value not set");
         // kept as its text: the SQL null literal is how a default is taken back, and Property.fillsInAValue says it fills in nothing
         internalProp.setDefaultValue("" + attrValue);
       }
-      default -> throw new CommandExecutionException("Invalid attribute definition: '" + attrName + "'");
+      default -> throw new CommandSQLParsingException("Invalid attribute definition: '" + attrName + "'");
       }
-    } catch (final Exception e) {
-      // The cause's message is carried in the text and not just in the chain: this is what a client sees over HTTP,
-      // and for a rejected DEFAULT (issue #6134) it is the half that says what is wrong and how to write it instead.
-      // A cause with no message (an NPE, say) contributes nothing, so it is left off rather than rendered as ": null".
+    } catch (final RuntimeException e) {
+      // A refusal of the value - a flag that is not a boolean, a bound or a default the type cannot take (issue #6134) - names the
+      // attribute and says what is wrong and how to write it instead. It is passed on as it is, so its type decides how the caller is
+      // answered and its message is not repeated under a wrapper that says the same thing again (issue #12809). Only a fault of the
+      // server is wrapped, and its message is carried in the text and not just in the chain: the wrapper is what a client sees over
+      // HTTP. A cause with no message (an NPE, say) contributes nothing, so it is left off rather than rendered as ": null"
+      if (ErrorCategory.of(e) != ErrorCategory.SERVER)
+        throw e;
       throw new CommandExecutionException(
           "Cannot set attribute on property " + settingName.getStringValue() + " " + attrValue + (e.getMessage() == null ?
               "" :
