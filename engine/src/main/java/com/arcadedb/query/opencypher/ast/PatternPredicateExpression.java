@@ -34,6 +34,7 @@ import com.arcadedb.query.opencypher.traversal.VariableLengthPathTraverser;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.Schema;
 
 import java.util.ArrayList;
@@ -53,6 +54,9 @@ import java.util.Map;
  * - WHERE NOT (n)-[:KNOWS]->() - checks if n has no KNOWS relationships
  */
 public class PatternPredicateExpression implements BooleanExpression {
+  // Entries of an edge list walked between two checks of the statement's deadline and termination, one less than a power of two
+  private static final long GUARD_INTERVAL_MASK = 1023L;
+
   private final PathPattern pathPattern;
   private final boolean isNegated;
   private final String patternText;
@@ -329,6 +333,23 @@ public class PatternPredicateExpression implements BooleanExpression {
   }
 
   /**
+   * Asks the statement's deadline and termination once per 1,024 entries of an edge list walked inside one row. The guard is made
+   * only by a walk long enough to need it, so a short one allocates nothing.
+   *
+   * @param walked the entries walked so far, this one included
+   * @param guard  the guard an earlier call returned, or null
+   *
+   * @return the guard to hand to the next call
+   */
+  private static WorkGuard checkWalk(final long walked, final WorkGuard guard, final CommandContext context) {
+    if ((walked & GUARD_INTERVAL_MASK) != 0)
+      return guard;
+    final WorkGuard checked = guard != null ? guard : WorkGuard.forCommandDeadline(context);
+    checked.check();
+    return checked;
+  }
+
+  /**
    * Check if a relationship exists between two specific vertices.
    */
   private boolean checkRelationshipExists(
@@ -346,6 +367,8 @@ public class PatternPredicateExpression implements BooleanExpression {
     // beside the edge RID, so no edge record is loaded to compare its endpoint (issue #9203)
     final boolean segmentOnly = relPattern == null
         || (!relPattern.hasProperties() && relPattern.getPropertiesParameterName() == null && !relPattern.hasWhereExpression());
+    long walked = 0;
+    WorkGuard guard = null;
 
     if (isOutgoing && segmentOnly) {
       if (isConnectedTo(startVertex, endVertex, Vertex.DIRECTION.OUT, relationshipTypes))
@@ -359,6 +382,7 @@ public class PatternPredicateExpression implements BooleanExpression {
       }
 
       while (outEdges.hasNext()) {
+        guard = checkWalk(++walked, guard, context);
         final Edge edge = outEdges.next();
         try {
           if (edge.getIn().equals(endVertex) && matchesRelationship(edge, relPattern, row, context))
@@ -381,6 +405,7 @@ public class PatternPredicateExpression implements BooleanExpression {
             IncomingEdgeLookup.getEdgesConnectedTo(internal, Vertex.DIRECTION.IN, endVertex.getIdentity(), relationshipTypes) :
             endVertex.getEdges(Vertex.DIRECTION.OUT, relationshipTypes).iterator();
         while (outEdges.hasNext()) {
+          guard = checkWalk(++walked, guard, context);
           final Edge edge = outEdges.next();
           try {
             if (edge.getIn().equals(startVertex.getIdentity()) && matchesRelationship(edge, relPattern, row, context))
@@ -403,6 +428,7 @@ public class PatternPredicateExpression implements BooleanExpression {
       }
 
       while (inEdges.hasNext()) {
+        guard = checkWalk(++walked, guard, context);
         final Edge edge = inEdges.next();
         try {
           if (edge.getOut().equals(endVertex) && matchesRelationship(edge, relPattern, row, context))
@@ -430,6 +456,8 @@ public class PatternPredicateExpression implements BooleanExpression {
       final Result row,
       final CommandContext context
   ) {
+    long walked = 0;
+    WorkGuard guard = null;
     // Check outgoing edges
     if (isOutgoing) {
       final Iterator<Edge> outEdges;
@@ -440,6 +468,7 @@ public class PatternPredicateExpression implements BooleanExpression {
       }
 
       while (outEdges.hasNext()) {
+        guard = checkWalk(++walked, guard, context);
         final Edge edge = outEdges.next();
         try {
           if (matchesRelationship(edge, relPattern, row, context) && matchesNodePattern(edge.getInVertex(), endNodePattern, row, context))
@@ -457,6 +486,7 @@ public class PatternPredicateExpression implements BooleanExpression {
           relationshipTypes != null && relationshipTypes.length > 0 ? relationshipTypes : null);
 
       while (inEdges.hasNext()) {
+        guard = checkWalk(++walked, guard, context);
         final Edge edge = inEdges.next();
         try {
           if (matchesRelationship(edge, relPattern, row, context) && matchesNodePattern(edge.getOutVertex(), endNodePattern, row, context))

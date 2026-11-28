@@ -23,6 +23,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.VariableOverlayResult;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.List;
 
@@ -75,15 +76,18 @@ public class ListPredicateExpression implements Expression {
 
     // One row per evaluation, rebound per item: the outer columns are read through it, not copied (issue #12723)
     final VariableOverlayResult row = whereExpression != null ? new VariableOverlayResult(result, variable) : null;
+    // The walk of one list is inside one row, past every check between rows: the statement's deadline and its termination are asked
+    // here too. The check at the first element keeps a list nested in another one answerable as well, whatever its length
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
     switch (predicateType) {
     case ALL:
-      return evaluateAll(iterable, row, context);
+      return evaluateAll(iterable, row, context, guard);
     case ANY:
-      return evaluateAny(iterable, row, context);
+      return evaluateAny(iterable, row, context, guard);
     case NONE:
-      return evaluateNone(iterable, row, context);
+      return evaluateNone(iterable, row, context, guard);
     case SINGLE:
-      return evaluateSingle(iterable, row, context);
+      return evaluateSingle(iterable, row, context, guard);
     default:
       throw new IllegalStateException("Unknown predicate type: " + predicateType);
     }
@@ -93,9 +97,12 @@ public class ListPredicateExpression implements Expression {
    * Evaluates all() with three-valued logic.
    * Returns null if any condition is null and none is false.
    */
-  private Object evaluateAll(final Iterable<?> iterable, final VariableOverlayResult row, final CommandContext context) {
+  private Object evaluateAll(final Iterable<?> iterable, final VariableOverlayResult row, final CommandContext context,
+      final WorkGuard guard) {
     boolean hasNull = false;
+    int walked = 0;
     for (final Object item : iterable) {
+      guard.checkPeriodically(walked++);
       final Boolean test = testItem(item, row, context);
       if (test == null)
         hasNull = true;
@@ -109,9 +116,12 @@ public class ListPredicateExpression implements Expression {
    * Evaluates any() with three-valued logic.
    * Returns null if any condition is null and none is true.
    */
-  private Object evaluateAny(final Iterable<?> iterable, final VariableOverlayResult row, final CommandContext context) {
+  private Object evaluateAny(final Iterable<?> iterable, final VariableOverlayResult row, final CommandContext context,
+      final WorkGuard guard) {
     boolean hasNull = false;
+    int walked = 0;
     for (final Object item : iterable) {
+      guard.checkPeriodically(walked++);
       final Boolean test = testItem(item, row, context);
       if (test == null)
         hasNull = true;
@@ -125,9 +135,12 @@ public class ListPredicateExpression implements Expression {
    * Evaluates none() with three-valued logic.
    * Returns null if any condition is null and none is true.
    */
-  private Object evaluateNone(final Iterable<?> iterable, final VariableOverlayResult row, final CommandContext context) {
+  private Object evaluateNone(final Iterable<?> iterable, final VariableOverlayResult row, final CommandContext context,
+      final WorkGuard guard) {
     boolean hasNull = false;
+    int walked = 0;
     for (final Object item : iterable) {
+      guard.checkPeriodically(walked++);
       final Boolean test = testItem(item, row, context);
       if (test == null)
         hasNull = true;
@@ -141,10 +154,13 @@ public class ListPredicateExpression implements Expression {
    * Evaluates single() with three-valued logic.
    * Returns null if uncertain due to nulls.
    */
-  private Object evaluateSingle(final Iterable<?> iterable, final VariableOverlayResult row, final CommandContext context) {
+  private Object evaluateSingle(final Iterable<?> iterable, final VariableOverlayResult row, final CommandContext context,
+      final WorkGuard guard) {
     int trueCount = 0;
     boolean hasNull = false;
+    int walked = 0;
     for (final Object item : iterable) {
+      guard.checkPeriodically(walked++);
       final Boolean test = testItem(item, row, context);
       if (test == null)
         hasNull = true;
