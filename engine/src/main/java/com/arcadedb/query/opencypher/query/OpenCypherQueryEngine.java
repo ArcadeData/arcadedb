@@ -792,7 +792,9 @@ public class OpenCypherQueryEngine implements QueryEngine {
   /**
    * Executes a DDL statement (constraint creation/deletion) directly against the schema.
    */
-  private ResultSet executeDDL(final CypherDDLStatement ddl, final Map<String, Object> parameters) {
+  private ResultSet executeDDL(final CypherDDLStatement statement, final Map<String, Object> parameters) {
+    // CREATE INDEX $name ...: the name is the value of the parameter, as in Neo4j (the statement is shared, so it is copied)
+    final CypherDDLStatement ddl = statement.resolveName(parameters);
     final Schema schema = database.getSchema();
     final QueryStatistics stats = new QueryStatistics();
 

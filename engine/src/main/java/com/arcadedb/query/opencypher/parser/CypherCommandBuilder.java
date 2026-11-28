@@ -269,10 +269,25 @@ final class CypherCommandBuilder {
     throw new CommandParsingException("Password must be a string literal");
   }
 
+  /** The literal name of a {@code symbolicNameOrStringParameter}, or null when it is a parameter or absent. */
+  private static String literalName(final Cypher25Parser.SymbolicNameOrStringParameterContext ctx) {
+    return ctx != null && ctx.symbolicNameString() != null ? CypherASTBuilder.stripBackticks(ctx.symbolicNameString().getText()) : null;
+  }
+
+  /** The name of the parameter that names a schema command ({@code CREATE INDEX $name ...}), or null for a literal or no name. */
+  private static String nameParameterOf(final Cypher25Parser.SymbolicNameOrStringParameterContext ctx) {
+    return ctx != null && ctx.parameter() != null ? CypherASTBuilder.stripBackticks(ctx.parameter().parameterName().getText()) : null;
+  }
+
+  /** {@code ddl} named by the parameter of {@code nameCtx} when it is one. */
+  private static CypherDDLStatement named(final CypherDDLStatement ddl, final Cypher25Parser.SymbolicNameOrStringParameterContext nameCtx) {
+    final String parameter = nameParameterOf(nameCtx);
+    return parameter == null ? ddl : ddl.withNameParameter(parameter);
+  }
+
   private CypherDDLStatement handleCreateConstraint(final Cypher25Parser.CreateConstraintContext ctx) {
     // Extract optional constraint name
-    final String constraintName = ctx.symbolicNameOrStringParameter() != null
-        ? CypherASTBuilder.stripBackticks(ctx.symbolicNameOrStringParameter().getText()) : null;
+    final String constraintName = literalName(ctx.symbolicNameOrStringParameter());
 
     // IF NOT EXISTS
     final boolean ifNotExists = ctx.IF() != null && ctx.NOT() != null && ctx.EXISTS() != null;
@@ -309,15 +324,15 @@ final class CypherCommandBuilder {
     } else
       throw new CommandParsingException("Unsupported constraint type: " + constraintType.getText());
 
-    return new CypherDDLStatement(CypherDDLStatement.Kind.CREATE_CONSTRAINT, constraintKind,
-        constraintName, labelName, propertyNames, ifNotExists, false, forRelationship, typedName);
+    return named(new CypherDDLStatement(CypherDDLStatement.Kind.CREATE_CONSTRAINT, constraintKind,
+        constraintName, labelName, propertyNames, ifNotExists, false, forRelationship, typedName), ctx.symbolicNameOrStringParameter());
   }
 
   private CypherDDLStatement handleDropConstraint(final Cypher25Parser.DropConstraintContext ctx) {
-    final String constraintName = CypherASTBuilder.stripBackticks(ctx.symbolicNameOrStringParameter().getText());
+    final String constraintName = literalName(ctx.symbolicNameOrStringParameter());
     final boolean ifExists = ctx.IF() != null && ctx.EXISTS() != null;
-    return new CypherDDLStatement(CypherDDLStatement.Kind.DROP_CONSTRAINT, null,
-        constraintName, null, null, false, ifExists, false);
+    return named(new CypherDDLStatement(CypherDDLStatement.Kind.DROP_CONSTRAINT, null,
+        constraintName, null, null, false, ifExists, false), ctx.symbolicNameOrStringParameter());
   }
 
   private CypherDDLStatement handleCreateIndex(final Cypher25Parser.CreateIndexContext ctx) {
@@ -335,8 +350,7 @@ final class CypherCommandBuilder {
       throw new CommandParsingException("Only standard, RANGE, TEXT, VECTOR and FULLTEXT index types are supported");
 
     // Extract optional index name
-    final String indexName = indexCtx.symbolicNameOrStringParameter() != null
-        ? CypherASTBuilder.stripBackticks(indexCtx.symbolicNameOrStringParameter().getText()) : null;
+    final String indexName = literalName(indexCtx.symbolicNameOrStringParameter());
 
     // IF NOT EXISTS
     final boolean ifNotExists = indexCtx.IF() != null && indexCtx.NOT() != null && indexCtx.EXISTS() != null;
@@ -357,8 +371,8 @@ final class CypherCommandBuilder {
     // Extract property names from propertyList
     final List<String> propertyNames = extractIndexPropertyNames(indexCtx.propertyList());
 
-    return new CypherDDLStatement(CypherDDLStatement.Kind.CREATE_INDEX, null,
-        indexName, labelName, propertyNames, ifNotExists, false, forRelationship);
+    return named(new CypherDDLStatement(CypherDDLStatement.Kind.CREATE_INDEX, null,
+        indexName, labelName, propertyNames, ifNotExists, false, forRelationship), indexCtx.symbolicNameOrStringParameter());
   }
 
   /**
@@ -404,7 +418,7 @@ final class CypherCommandBuilder {
       final Cypher25Parser.SymbolicNameOrStringParameterContext nameCtx, final boolean ifNotExists,
       final Cypher25Parser.MultiLabelNodePatternContext nodePattern, final Cypher25Parser.MultiRelTypeRelPatternContext relPattern,
       final List<String> propertyNames, final Cypher25Parser.CommandOptionsContext optionsCtx) {
-    final String indexName = nameCtx != null ? CypherASTBuilder.stripBackticks(nameCtx.getText()) : null;
+    final String indexName = literalName(nameCtx);
 
     final boolean forRelationship = relPattern != null;
     final List<Cypher25Parser.SymbolicNameStringContext> labels = forRelationship ?
@@ -427,15 +441,15 @@ final class CypherCommandBuilder {
             mapOrParam.parameter().getText());
     }
 
-    return new CypherDDLStatement(CypherDDLStatement.Kind.CREATE_INDEX, null, indexName, labelNames, propertyNames, ifNotExists,
-        false, forRelationship, null, indexKind, options);
+    return named(new CypherDDLStatement(CypherDDLStatement.Kind.CREATE_INDEX, null, indexName, labelNames, propertyNames, ifNotExists,
+        false, forRelationship, null, indexKind, options), nameCtx);
   }
 
   private CypherDDLStatement handleDropIndex(final Cypher25Parser.DropIndexContext ctx) {
-    final String indexName = CypherASTBuilder.stripBackticks(ctx.symbolicNameOrStringParameter().getText());
+    final String indexName = literalName(ctx.symbolicNameOrStringParameter());
     final boolean ifExists = ctx.IF() != null && ctx.EXISTS() != null;
-    return new CypherDDLStatement(CypherDDLStatement.Kind.DROP_INDEX, null,
-        indexName, null, null, false, ifExists, false);
+    return named(new CypherDDLStatement(CypherDDLStatement.Kind.DROP_INDEX, null,
+        indexName, null, null, false, ifExists, false), ctx.symbolicNameOrStringParameter());
   }
 
   /**
