@@ -20,6 +20,7 @@ package com.arcadedb.server.ai;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -179,7 +180,13 @@ public class ToolDispatcher {
     return DatabaseUserContext.runAs(database, user, () -> {
       // Read-only: use query() (not command()). Writes will surface as the engine's
       // "not idempotent" exception, which the LLM is prompted to recover by returning
-      // the command as a fenced block for the user to review.
+      // the command as a fenced block for the user to review. The statement must also declare no operation
+      // type but a read, as the MCP query tool requires. An engine whose analysis evaluates the text (a
+      // scripting language) is left to query(), which refuses it.
+      final QueryEngine engine = database.getQueryEngine(language);
+      if (!engine.analysisEvaluatesQuery() && !engine.analyze(command).writesNothing())
+        return errorJson("Query '" + command + "' is not a read-only statement");
+
       try (ResultSet rs = database.query(language, command)) {
         final JSONArray records = new JSONArray();
         long approxBytes = 0;

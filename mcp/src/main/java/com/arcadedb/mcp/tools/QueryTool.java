@@ -90,10 +90,10 @@ public class QueryTool {
         server, user, databaseName, config, MCPToolUtils.RequiredAccess.READ);
     final Database database = access.database();
 
-    // Verify the query is actually read-only using semantic analysis
+    // Verify the query is actually read-only using semantic analysis: idempotent, and no operation type but a read
     final QueryEngine engine = MCPToolUtils.analyzableQueryEngine(database, language);
     final QueryEngine.AnalyzedQuery analyzed = engine.analyze(query);
-    if (!analyzed.isIdempotent())
+    if (!analyzed.writesNothing())
       throw new MCPRefusalException(
           "Query contains write operations. Use execute_command tool instead of query tool");
 
