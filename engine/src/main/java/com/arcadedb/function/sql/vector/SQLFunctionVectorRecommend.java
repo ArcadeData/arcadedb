@@ -248,12 +248,14 @@ public class SQLFunctionVectorRecommend extends SQLFunctionVectorAbstract {
    * that fail to look up (deleted between selection and this call) or are missing the property
    * are silently skipped. Returns {@code null} when every RID was dropped - the caller decides
    * whether that condition produces empty results (positives) or falls through (negatives).
+   * <p>
+   * The sum is kept in double and narrowed once, as {@code vector.avg} does (issue #12852): a float sum overflows to Infinity
+   * for a mean that fits a float. Package-private for the regression test.
    */
-  private float[] centroidFromRids(final BasicDatabase db, final List<RID> rids, final String propertyName,
-      final String role) {
+  float[] centroidFromRids(final BasicDatabase db, final List<RID> rids, final String propertyName, final String role) {
     if (rids.isEmpty())
       return null;
-    float[] sum = null;
+    double[] sum = null;
     int count = 0;
     int expectedDim = -1;
     for (final RID rid : rids) {
@@ -269,7 +271,7 @@ public class SQLFunctionVectorRecommend extends SQLFunctionVectorAbstract {
       final float[] v = toFloatArray(raw);
       if (expectedDim == -1) {
         expectedDim = v.length;
-        sum = new float[expectedDim];
+        sum = new double[expectedDim];
       } else if (v.length != expectedDim) {
         throw new CommandSQLParsingException(NAME + " " + role + " example " + rid
             + " has embedding dimension " + v.length + ", expected " + expectedDim);
@@ -282,7 +284,7 @@ public class SQLFunctionVectorRecommend extends SQLFunctionVectorAbstract {
       return null;
     final float[] mean = new float[expectedDim];
     for (int i = 0; i < expectedDim; i++)
-      mean[i] = sum[i] / count;
+      mean[i] = (float) (sum[i] / count);
     return mean;
   }
 

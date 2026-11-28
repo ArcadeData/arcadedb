@@ -22,6 +22,8 @@ import com.arcadedb.server.ha.raft.SecurityCatchUp.Attempt;
 import com.arcadedb.server.ha.raft.SecurityCatchUp.Outcome;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -291,6 +293,32 @@ class SecurityCatchUpTest {
       catchUp.settle(current, Outcome.ASKED);
       catchUp.settle(stale, Outcome.NOBODY_TO_ASK);
 
+      assertThat(catchUp.hasRequestedSinceStart()).as("an answered request stays spent").isTrue();
+    }
+  }
+
+  // Regression for #13447: a seed the leader could not commit does not spend the once-per-start request
+  /**
+   * The reported case: during a rolling restart the leader's capability gate refused the group and API-token entries
+   * because the next peer was still booting, the leader answered with the two documents it could not commit, and that
+   * answer spent the once-per-start request, so the node kept its stale groups and tokens. The answer is now retried
+   * like a failed dial, and when the retries are spent the latch is released for the next leader change.
+   */
+  @Test
+  void aSeedTheLeaderCouldNotCommitDoesNotSpendTheRequest() {
+    try (final SecurityCatchUp catchUp = new SecurityCatchUp()) {
+      final long token = catchUp.tryTakeRequest();
+
+      final Outcome refusedByTheGate = SecurityCatchUp.outcomeOfAnswer(List.of("groups", "API tokens"));
+
+      assertThat(refusedByTheGate).isEqualTo(Outcome.TRANSIENT_FAILURE);
+      assertThat(catchUp.settle(token, refusedByTheGate)).as("the caller backs off and asks again").isFalse();
+      assertThat(catchUp.hasRequestedSinceStart()).as("held across the retries, so no second trigger dials meanwhile")
+          .isTrue();
+
+      final Outcome committed = SecurityCatchUp.outcomeOfAnswer(List.of());
+      assertThat(committed).isEqualTo(Outcome.ASKED);
+      assertThat(catchUp.settle(token, committed)).as("every document committed: nothing left to retry").isTrue();
       assertThat(catchUp.hasRequestedSinceStart()).as("an answered request stays spent").isTrue();
     }
   }

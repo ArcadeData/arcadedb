@@ -262,18 +262,15 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
       final double tolerance, final WorkGuard guard) {
     final int n = graph.nodeCount;
     final GraphData.WeightedAdjacency adjacency = graph.weightedAdjacency(guard, direction, weightProperty, relTypes);
+    // A negative weight would hand a neighbour a negative score, and an infinite or NaN one all or none of it: no walk
+    requireFiniteNonNegativeWeights(adjacency, weightProperty, guard);
     final int[][] neighbors = adjacency.neighbors();
     final double[][] weights = adjacency.weights();
     final double[] totalWeight = new double[n];
     for (int i = 0; i < n; i++) {
       double total = 0.0;
-      for (final double w : weights[i]) {
-        // A negative weight would hand a neighbour a negative score, and an infinite or NaN one all or none of it: no walk
-        if (w < 0.0 || !Double.isFinite(w))
-          throw new IllegalArgumentException(
-              getName() + "(): the edge weights of '" + weightProperty + "' must be finite and non-negative, got " + w);
+      for (final double w : weights[i])
         total += w;
-      }
       totalWeight[i] = total;
     }
 

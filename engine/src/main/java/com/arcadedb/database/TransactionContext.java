@@ -167,6 +167,11 @@ public class TransactionContext implements Transaction {
   private static final int                           RECORDS_CACHE_CAPACITY = 1024;
   private static final int                           PAGES_CACHE_CAPACITY   = 64;
   private static final int                           DELETED_SET_CAPACITY   = 256;
+  // #13005: initial capacity of the per-file maps (fileStamps, bucketFirstWriteSequences, snapshotBucketCounts). They hold one
+  // entry per bucket or index file a transaction touched, a handful for almost every one, and grow on demand. The LongLongHashMap
+  // default (1024 slots, sized for its aggregation use) is two 8 KB arrays per map, allocated and filled by every writing
+  // transaction: 32 KB per autocommit write, more than the write itself.
+  private static final int                           SMALL_PER_FILE_MAP     = 16;
   // #10315: the two counters of a lightweight edge entry in lightEdgeEntryChanges
   private static final int                           REMOVED                = 0;
   private static final int                           APPENDED               = 1;
@@ -1217,6 +1222,11 @@ public class TransactionContext implements Transaction {
 
   int getNewRecordsCount() {
     return newRecords.size();
+  }
+
+  /** How many new records the context holds room for: what it keeps between transactions is bounded (issue #13479). */
+  int getNewRecordsCapacity() {
+    return newRecords.capacity();
   }
 
   int getInsertReservationCount() {
@@ -2429,7 +2439,7 @@ public class TransactionContext implements Transaction {
     if (!isRepeatableRead())
       return committedNow;
     if (snapshotBucketCounts == null)
-      snapshotBucketCounts = new LongLongHashMap();
+      snapshotBucketCounts = new LongLongHashMap(SMALL_PER_FILE_MAP);
     // Long.MIN_VALUE, NOT -1, FOR "NOT PINNED": A DRIFTED COUNTER CAN BE NEGATIVE, AND IT MUST BE PINNED LIKE ANY OTHER VALUE
     final long pinned = snapshotBucketCounts.get(bucketId, Long.MIN_VALUE);
     if (pinned != Long.MIN_VALUE)
@@ -3724,6 +3734,10 @@ public class TransactionContext implements Transaction {
    *                    whose replayed slots are the edge-list segments this transaction appended to
    */
   private boolean areReadsFromOwnImageCurrent(final MutablePage page, final boolean bySlotMerge) {
+    // #13572: every read of the page was made before anybody else committed to it, so each one read the committed page plus this
+    // transaction's own writes; what was committed since is a phantom READ_COMMITTED allows, and the merges may replay over it
+    if (!page.isStaleReadRecorded())
+      return true;
     final boolean wholePage = page.isWholePageRead();
     if (!wholePage && page.nextSlotRead(0) < 0 && (bySlotMerge || !hasAppendedChunkReadOn(page.getPageId())))
       return true;
@@ -3902,10 +3916,46 @@ public class TransactionContext implements Transaction {
       ++ownImageReads;
       if (edgeAppendDepth > 0)
         deferRead(mutable, slot);
-      else if (slot < 0)
-        mutable.markWholePageRead();
-      else
-        mutable.markSlotRead(slot);
+      else {
+        if (slot < 0)
+          mutable.markWholePageRead();
+        else
+          mutable.markSlotRead(slot);
+        noteReadStaleness(mutable);
+      }
+    }
+  }
+
+  /**
+   * Notes on {@code image} whether the read just recorded on it was made when the image was already stale (#13572): another
+   * transaction had committed to the page after this transaction's first write to it, which is what the image misses. A read made
+   * before that saw the committed page plus this transaction's own writes, a valid {@code READ_COMMITTED} read: a commit landing on
+   * the page after it is an ordinary phantom, and must not refuse the merge of the page, as it does not refuse the merge of a
+   * transaction that did not read. One page-version lookup per read until the page is found stale, and none after. An image this
+   * transaction did not take from a committed page (one it created, or one that is no longer the image it holds) is taken as stale.
+   */
+  private void noteReadStaleness(final MutablePage image) {
+    if (image.isStaleReadRecorded())
+      return;
+    if (modifiedPages == null || modifiedPages.get(image.getPageId()) != image || isCommittedPageNewer(image))
+      image.markStaleReadRecorded();
+  }
+
+  /** Whether a transaction committed to the page of {@code image} after the image was taken (#13572), as the commit checks it. */
+  private boolean isCommittedPageNewer(final MutablePage image) {
+    final PageId pageId = image.getPageId();
+    try {
+      int committed = database.getPageManager().getMostRecentVersionOfPage(pageId, image.getPhysicalSize());
+      // #6965: a version the replication log already assigned to the page is the most recent one, as for the commit's own check
+      if (database.getEmbedded() instanceof LocalDatabase localDatabase) {
+        final PageVersionReservations reservations = localDatabase.getPageVersionReservations();
+        if (reservations != null)
+          committed = Math.max(committed, reservations.reservedVersion(pageId));
+      }
+      return committed != image.getVersion();
+    } catch (final IOException e) {
+      // a page that cannot be read cannot vouch for the read
+      return true;
     }
   }
 
@@ -4018,10 +4068,13 @@ public class TransactionContext implements Transaction {
       final MutablePage page = deferredReadPages[i];
       final int slot = deferredReadSlots[i];
       deferredReadPages[i] = null;
-      if (slot < 0)
+      if (slot < 0) {
         page.markWholePageRead();
-      else if (!isChunkAppendedInWindow(page.getPageId(), slot))
+        noteReadStaleness(page);
+      } else if (!isChunkAppendedInWindow(page.getPageId(), slot)) {
         page.markSlotRead(slot);
+        noteReadStaleness(page);
+      }
     }
     deferredReads = 0;
     for (int i = 0; i < deferredChunkReads; ++i) {
@@ -4117,8 +4170,10 @@ public class TransactionContext implements Transaction {
     // the edge-list head merge asks whether the application read such a chunk
     final LocalBucket bucket = database.getSchema().getEmbedded().getBucketById(rid.getBucketId(), false);
     final MutablePage image = bucket != null ? ownPageImageOf(bucket, rid) : null;
-    if (image != null)
+    if (image != null) {
       image.markSlotRead((int) (rid.getPosition() % bucket.getMaxRecordsInPage()));
+      noteReadStaleness(image);
+    }
   }
 
   private boolean isTrackingReadsFromOwnImage() {
@@ -4270,7 +4325,8 @@ public class TransactionContext implements Transaction {
       // #11590: appends replayed onto a chunk somebody else appended to meanwhile, only when the application did not read the chunk
       // this transaction holds, which misses those entries
       if (!bucket.rebaseRecordOnPage(committed, slot, finalBody, baseBody, buffer.kindOf(slot))//
-          && (insertedHere || buffer.kindOf(slot) != SLOT_KIND_RECORD || ownPage.isWholePageRead() || ownPage.isSlotRead(slot)
+          && (insertedHere || buffer.kindOf(slot) != SLOT_KIND_RECORD
+          || ownPage.isStaleReadRecorded() && (ownPage.isWholePageRead() || ownPage.isSlotRead(slot))
           || !replayEdgeAppendsOnSlot(bucket, committed, slot, baseBody, finalBody)))
         throw new ConcurrentModificationException(
             "Slot rebase not possible on page " + pageId + " slot " + slot + " (concurrent change to the same record). Please retry the operation");
@@ -4382,7 +4438,7 @@ public class TransactionContext implements Transaction {
   /** Counts a change of {@code fileId} that is not a write into a page the transaction already holds (issue #11472). */
   private void stampFile(final int fileId) {
     if (fileStamps == null)
-      fileStamps = new LongLongHashMap();
+      fileStamps = new LongLongHashMap(SMALL_PER_FILE_MAP);
     fileStamps.increment(fileId);
   }
 
@@ -6941,7 +6997,7 @@ public class TransactionContext implements Transaction {
       return;
     lastNotedBucket = bucketId;
     if (bucketFirstWriteSequences == null)
-      bucketFirstWriteSequences = new LongLongHashMap();
+      bucketFirstWriteSequences = new LongLongHashMap(SMALL_PER_FILE_MAP);
     if (bucketFirstWriteSequences.get(bucketId, -1L) < 0L)
       bucketFirstWriteSequences.put(bucketId, database.getTransactionManager().getIndexRegistrationSequence());
   }

@@ -1328,6 +1328,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
               capabilityNotReady.toExceptionArgs(), ErrorLogKind.USER);
     }
 
+    // 400: the operation cannot run on this server at all - 'connect cluster', 'disconnect cluster' or 'shutdown server <name>'
+    // with HA not enabled (issue #12904). A permanent property of the deployment, so neither the 503 of a retry nor the 500 of a
+    // server fault, which is what the generic CommandExecutionException arm below, which it extends, answered. gRPC answers it
+    // FAILED_PRECONDITION. After the arm above, whose type extends this one. The label carries the fact for production mode,
+    // where 'detail' is concealed
+    final ServerControlPlane.OperationNotAvailableException notAvailableHere = firstOf(e, cause,
+        ServerControlPlane.OperationNotAvailableException.class);
+    if (notAvailableHere != null)
+      return new ErrorClassification(400, "Operation not available on this server", notAvailableHere, null, ErrorLogKind.USER);
+
     // 409 Conflict: a backup, restore or import of this database is already running, and the per-database slot
     // BackupCoordinator hands out refused this one. The request is well formed and authorized, and retrying once
     // the other operation finishes is the fix - so it is a conflict, not a 500. 'trigger backup' answered this in
@@ -1638,6 +1648,26 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     if (badArgument != null) {
       return new ErrorClassification(400, "Cannot execute command", badArgument, null, ErrorLogKind.USER);
     }
+
+    // 400: the statement ran out of the time its caller gave it (a TIMEOUT clause) or the operator gave the caller (the group
+    // readTimeout, arcadedb.command.timeout). Every other wire protocol answers it as its own timeout code
+    // (ErrorCategory.TIMEOUT); here it fell through to the generic 500, which monitoring counts as a server failure and a client
+    // cannot tell from one (issue #12923). The label and the exception field tell it from the other 400s.
+    //
+    // Not 408, the status that reads closest: a browser resends a request answered 408 on a reused HTTP/1.1 connection by
+    // itself, POST included, so from Studio the statement that just proved too expensive would run again, more than once. And
+    // not 504, which says the outcome is unknown (the arm above), while a timeout rolled its statement back.
+    //
+    // Decided by ErrorCategory and last among the caller's errors, as there: a chain that also carries a conflict or any other
+    // classified failure keeps that verdict (COMMIT RETRY giving up at the command deadline carries the conflict as its cause).
+    // Nor a block that committed part of its work before the deadline, which carries the TransactionException built for it
+    // under the timeout (TransactionContext.notReplayable, issue #13251): it keeps the 500 and its own message, so nothing
+    // reads it as a statement to send again with a larger limit. The chain is searched to any depth, since the engine wraps
+    // the timeout in a planner or commit failure, more than once on some paths.
+    final TimeoutException timeout = CauseChain.find(e, TimeoutException.class);
+    if (timeout != null && ErrorCategory.of(e) == ErrorCategory.TIMEOUT
+        && CauseChain.find(timeout.getCause(), TransactionException.class) == null)
+      return new ErrorClassification(400, "Timeout", timeout, null, ErrorLogKind.USER);
 
     // From here on nothing identified the failure as a client error, so the two generic wrappers answer for
     // whatever they carry. UNEXPECTED INTERNAL ERROR: log the FULL stack trace - passing the throwable is what

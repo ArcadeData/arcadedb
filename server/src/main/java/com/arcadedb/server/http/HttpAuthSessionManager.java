@@ -182,23 +182,62 @@ public class HttpAuthSessionManager extends RWLockContext {
 
   /**
    * Get an authenticated session by token.
-   * Returns null if the session doesn't exist or if it has expired (either by idle or absolute timeout).
+   * Returns null if the session doesn't exist or if it has expired (either by idle or absolute timeout). The limits
+   * are checked here, on every lookup, and not left to the periodic {@link #checkSessionsValidity()}: a session found
+   * past one of them is refused without being used, and dropped, so a lookup never extends a session that has already
+   * expired.
    *
    * @param token the authentication token
    * @return the session if found and valid, null otherwise
    */
   public HttpAuthSession getSessionByToken(final String token) {
+    final HttpAuthSession session = executeInReadLock(() -> sessions.get(token));
+    if (session == null)
+      return null;
+
+    if (isExpired(session)) {
+      // The write lock is taken only here, once per expired session: the entry is gone for the next lookup
+      removeIfExpired(session);
+      return null;
+    }
+
+    session.touch();
+    return session;
+  }
+
+  /**
+   * As {@link #getSessionByToken(String)}, for a caller that only asks: the session is neither used nor dropped, so the
+   * question does not extend it. Package-private, for {@link ClusterAuthSessionResolver#wouldDial(String)}.
+   */
+  HttpAuthSession peekSessionByToken(final String token) {
     return executeInReadLock(() -> {
       final HttpAuthSession session = sessions.get(token);
-      if (session != null) {
-        // Check if session is expired by absolute timeout (from creation)
-        if (absoluteTimeoutInMs > 0 && session.elapsedFromCreation() > absoluteTimeoutInMs) {
-          return null;
-        }
-        session.touch();
-      }
+      return session != null && !isExpired(session) ? session : null;
+    });
+  }
 
-      return session;
+  /**
+   * Whether the session is past the idle limit (measured from its last use) or the absolute limit (measured from its
+   * creation, when that one is enabled).
+   */
+  private boolean isExpired(final HttpAuthSession session) {
+    return session.elapsedFromLastUpdate() > sessionTimeoutInMs
+        || (absoluteTimeoutInMs > 0 && session.elapsedFromCreation() > absoluteTimeoutInMs);
+  }
+
+  /**
+   * Drops {@code session} when it is still the one held for its token and is still past a limit, both checked under the
+   * write lock: the entry may have been removed, or replaced by a fresh one of the same token, since it was read.
+   */
+  private void removeIfExpired(final HttpAuthSession session) {
+    executeInWriteLock(() -> {
+      if (sessions.get(session.token) == session && isExpired(session)) {
+        sessions.remove(session.token);
+        unindex(session);
+        LogManager.instance().log(this, Level.FINE, "Removed expired authentication session %s for user %s", session.token,
+            session.user.getName());
+      }
+      return null;
     });
   }
 

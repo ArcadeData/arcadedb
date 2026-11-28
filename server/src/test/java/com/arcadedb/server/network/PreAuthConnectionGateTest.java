@@ -25,6 +25,8 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.log.Logger;
 import org.junit.jupiter.api.Test;
 
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLSocket;
 import java.net.Socket;
 import java.util.ArrayList;
 import java.util.List;
@@ -34,6 +36,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Unit tests for the pre-authentication connection cap of issue #6412.
@@ -97,6 +100,19 @@ class PreAuthConnectionGateTest {
       assertThat(ticket.isReleased()).isTrue();
       assertThat(gate.getPending()).isZero();
       assertThat(gate.accept()).as("the permit is back").isNotNull();
+    }
+  }
+
+  @Test
+  void aTlsSocketIsNotTakenByTheGate() throws Exception {
+    // the gate takes the plain socket a TLS layer is added on, never the TLS socket itself
+    final PreAuthConnectionGate gate = new PreAuthConnectionGate("TEST", 1, 500);
+
+    try (final SSLSocket socket = (SSLSocket) SSLContext.getDefault().getSocketFactory().createSocket()) {
+      assertThatThrownBy(() -> gate.accept(socket)).isInstanceOf(IllegalArgumentException.class);
+
+      assertThat(gate.getPending()).as("no permit is held for a socket the gate refused").isZero();
+      assertThat(socket.isClosed()).as("the caller owns the socket it was refused").isFalse();
     }
   }
 

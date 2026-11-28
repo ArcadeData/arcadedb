@@ -111,10 +111,53 @@ class PostgresQuotedIdentifierRewriterTest {
     // issue #11392: double-quoted, ArcadeDB SQL read "@rid" as a string literal
     assertThat(PostgresQuotedIdentifierRewriter.rewrite("SELECT \"@rid\", \"name\" FROM V")).isEqualTo("SELECT @rid, `name` FROM V");
     assertThat(PostgresQuotedIdentifierRewriter.rewrite("SELECT \"@TYPE\", \"@this\" FROM V")).isEqualTo("SELECT @TYPE, @this FROM V");
-    // an @name the SQL lexer has no token for is left as written: bare, "@foo" would not parse and "@ridfoo" would lex as @rid
-    // aliased foo
-    for (final String other : new String[] { "\"@a b\"", "\"@foo\"", "\"@ridfoo\"" })
-      assertThat(PostgresQuotedIdentifierRewriter.rewrite("SELECT " + other + " FROM V")).isEqualTo("SELECT " + other + " FROM V");
+    // an @name the SQL lexer has no token for is an identifier like any other: bare, "@foo" would not parse and "@ridfoo" would lex
+    // as @rid aliased foo, so it is back-ticked
+    for (final String other : new String[] { "@a b", "@foo", "@ridfoo", "@", "@rid x" })
+      assertThat(PostgresQuotedIdentifierRewriter.rewrite("SELECT \"" + other + "\" FROM V")).isEqualTo("SELECT `" + other + "` FROM V");
+  }
+
+  /**
+   * The name between the double quotes is read with PostgreSQL's rules ({@code ""} is a quote, a backslash is an ordinary
+   * character) and comes out as ONE back-tick name, which the engine lexer reads back to the same name, whatever it holds.
+   */
+  @Test
+  void anAtNameIsOneTokenWhateverItHolds() {
+    for (final String name : new String[] { "@\\\" x", "@\\", "@\\\\\"", "@\\\" ; y", "@\\\" -- z", "@\\\" /* z", "@\\\" 'z", "@`\\`",
+        "@\\\"\" \\\"", "@a\\\"b\\\"c", "@\"", "@\"\"" }) {
+      final String sql = "SELECT \"" + name.replace("\"", "\"\"") + "\" AS c FROM V WHERE \"id\" = 1";
+      final String expected = "SELECT " + backTick(name) + " AS c FROM V WHERE `id` = 1";
+
+      final String rewritten = PostgresQuotedIdentifierRewriter.rewrite(sql);
+      assertThat(rewritten).as("name %s", name).isEqualTo(expected);
+      // the literal pass reads the output as the engine does: nothing left to change
+      assertThat(PostgresQuotedIdentifierRewriter.toEngineLiterals(rewritten, true)).as("name %s", name).isEqualTo(expected);
+      // and the statement is still one statement, before and after
+      assertThat(PostgresQuotedIdentifierRewriter.splitStatements(sql, true, true)).as("name %s", name).containsExactly(sql);
+      assertThat(PostgresQuotedIdentifierRewriter.splitStatements(rewritten, true, true)).as("name %s", name).containsExactly(rewritten);
+      // the engine lexer reads the back-tick token back to the name, and the rest of the statement is the text that followed it
+      assertThat(engineIdentifierAt(rewritten, "SELECT ".length())).as("name %s", name).isEqualTo(name);
+    }
+  }
+
+  /** The back-tick form the engine reads as {@code name}: a back-tick and a backslash are escaped by a backslash. */
+  private static String backTick(final String name) {
+    return "`" + name.replace("\\", "\\\\").replace("`", "\\`") + "`";
+  }
+
+  /** The name the engine lexer reads from the back-tick token opened at {@code start}, a backslash escaping the next character. */
+  private static String engineIdentifierAt(final String text, final int start) {
+    assertThat(text.charAt(start)).isEqualTo('`');
+    final StringBuilder name = new StringBuilder();
+    int i = start + 1;
+    while (text.charAt(i) != '`') {
+      if (text.charAt(i) == '\\')
+        i++;
+      name.append(text.charAt(i++));
+    }
+    // what follows the token is the text the statement went on with
+    assertThat(text.substring(i + 1)).startsWith(" AS c FROM V");
+    return name.toString();
   }
 
   @Test

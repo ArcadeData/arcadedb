@@ -54,6 +54,7 @@ import com.arcadedb.exception.ExternalResourceException;
 import com.arcadedb.exception.ImplicitTransactionRequiredException;
 import com.arcadedb.exception.InvalidPropertyTypeException;
 import com.arcadedb.exception.ObjectInUseException;
+import com.arcadedb.exception.ProcedureCallFailedException;
 import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryAdmissionException;
@@ -738,6 +739,8 @@ public class BoltNetworkExecutor extends Thread {
     rollbackExplicitTransaction();
 
     user = null;
+    // The GQL session parameters belong to the identity that set them: the next one starts with an empty session
+    session.reset();
     markUnauthenticated();
     sendSuccess(Map.of());
     state = State.AUTHENTICATION;
@@ -1198,6 +1201,10 @@ public class BoltNetworkExecutor extends Thread {
    * Handle PULL message - fetch records from result stream.
    */
   private void handlePull(final PullMessage message) throws IOException {
+    // The rows are produced as they are pulled: the user has to still be the one the server knows, with the database still granted
+    if (!authorizeOpenStreams())
+      return;
+
     final BoltQueryStream stream = resolveStream(message.getQid());
     if (stream == null)
       return;
@@ -1261,6 +1268,10 @@ public class BoltNetworkExecutor extends Thread {
    * failed the connection. The Java driver always sends {@code n = -1}, which is why its tests never saw it.
    */
   private void handleDiscard(final DiscardMessage discardMessage) throws IOException {
+    // The rows skipped are evaluated as they are skipped: checked as a PULL is
+    if (!authorizeOpenStreams())
+      return;
+
     final BoltQueryStream stream = resolveStream(discardMessage.getQid());
     if (stream == null)
       return;
@@ -1575,15 +1586,7 @@ public class BoltNetworkExecutor extends Thread {
         // one that has to be granted it. Past this check a user is always bound.
         if (!authorizeDatabase(database.getName()))
           return false;
-        // Update current user on the existing context to handle LOGOFF/LOGON re-authentication
-        // on the same connection without disrupting any open transactions.
-        final DatabaseContext.DatabaseContextTL ctx =
-            DatabaseContext.INSTANCE.getContextIfExists(((DatabaseInternal) database).getDatabasePath());
-        if (ctx != null) {
-          ctx.setCurrentUser(user.getDatabaseUser(database));
-          // Attach this connection's GQL session so SESSION statements and param merging can reach it.
-          ctx.setQuerySession(session);
-        }
+        bindContextUser();
         return true;
       }
     }
@@ -1673,6 +1676,9 @@ public class BoltNetworkExecutor extends Thread {
    * the HTTP, gRPC, PostgreSQL, Redis and MongoDB listeners do: the deny-all user bound to an ungranted database
    * only rejects the operations routed through the engine's ACL, while this listener answers database and schema
    * listings itself. Fails closed on a connection with no authenticated user.
+   * <p>
+   * A refusal releases what the connection holds open - its result streams and its explicit transaction - so none of
+   * it can be read from or committed afterwards, and the admission slots of the streams go back at once.
    */
   private boolean authorizeDatabase(final String databaseName) throws IOException {
     if (user != null) {
@@ -1681,8 +1687,8 @@ public class BoltNetworkExecutor extends Thread {
         // grant since then must not keep the access it had when it authenticated.
         user = server.getSecurity().revalidate(user);
       } catch (final ServerSecurityException e) {
-        // Released before the handle is dropped: an explicit transaction of the revoked user must not outlive it.
-        rollbackExplicitTransaction();
+        // Released before the handle is dropped: the streams and the explicit transaction of the revoked user must not outlive it.
+        releaseOpenWork("revalidation");
         user = null;
         database = null;
         sendFailure(BoltErrorCodes.AUTHENTICATION_ERROR, "The credentials of this connection are no longer valid");
@@ -1692,9 +1698,61 @@ public class BoltNetworkExecutor extends Thread {
     }
     if (user != null && user.canAccessToDatabase(databaseName))
       return true;
-    sendFailure(BoltErrorCodes.FORBIDDEN_ERROR, "Access to database '" + databaseName + "' is not allowed");
+    return refuseDatabase("Access to database '" + databaseName + "' is not allowed");
+  }
+
+  /**
+   * Answers a {@code Forbidden} failure for a connection that may not read the database it has bound, after releasing its
+   * streams and its explicit transaction (see {@link #authorizeDatabase}).
+   */
+  private boolean refuseDatabase(final String message) throws IOException {
+    releaseOpenWork("revalidation");
+    sendFailure(BoltErrorCodes.FORBIDDEN_ERROR, message);
     state = State.FAILED;
     return false;
+  }
+
+  /**
+   * Releases every result stream of this connection, then rolls back its explicit transaction: the streams first, as ROLLBACK
+   * does, since they read from the transaction. The rollback runs whatever the release of a stream raised.
+   */
+  private void releaseOpenWork(final String phase) {
+    try {
+      closeAllStreams(phase);
+    } finally {
+      rollbackExplicitTransaction();
+    }
+  }
+
+  /**
+   * The check a RUN makes through {@link #ensureDatabase}, made again before a PULL or a DISCARD reads the rows of an open
+   * stream: they are produced as they are pulled, long after the statement started, so the user bound to the connection
+   * has to still be the one the server knows and still be granted the database. Refused, the streams and the explicit
+   * transaction are released and the connection answers FAILURE. When it holds, the context of the database is rebound to the
+   * current principal, so the checks made per record see its current groups.
+   */
+  private boolean authorizeOpenStreams() throws IOException {
+    if (database == null)
+      return refuseDatabase("No database is selected for this connection");
+    if (!authorizeDatabase(database.getName()))
+      return false;
+    bindContextUser();
+    return true;
+  }
+
+  /**
+   * Binds the current user and the GQL session of this connection to the context of its open database. Updating the user on
+   * the existing context is what makes a LOGOFF/LOGON re-authentication on the same connection, or a change of the user's
+   * groups, reach the open transactions without disrupting them.
+   */
+  private void bindContextUser() {
+    final DatabaseContext.DatabaseContextTL ctx =
+        DatabaseContext.INSTANCE.getContextIfExists(((DatabaseInternal) database).getDatabasePath());
+    if (ctx != null) {
+      ctx.setCurrentUser(user.getDatabaseUser(database));
+      // Attach this connection's GQL session so SESSION statements and param merging can reach it.
+      ctx.setQuerySession(session);
+    }
   }
 
   /**
@@ -2151,6 +2209,8 @@ public class BoltNetworkExecutor extends Thread {
       // The transaction of the connection ends before the principal changes
       rollbackExplicitTransaction();
     user = null;
+    // Same for the GQL session parameters: an attempt to change identity, successful or not, starts from an empty session
+    session.reset();
 
     ServerSecurityUser authenticated = null;
     if (principal != null && credentials != null)
@@ -2295,8 +2355,24 @@ public class BoltNetworkExecutor extends Thread {
    */
   private void sendExecutionFailure(final String code, final String failureText, final Throwable error) throws IOException {
     // A concealing server sends no engine text, the refusal's own sentence included
-    final String text = ErrorConcealment.isConcealing(server) ? failureText : withUnavailableReason(failureText, error);
+    final String text = ErrorConcealment.isConcealing(server) ?
+        failureText :
+        procedureCallFailedText(code, withUnavailableReason(failureText, error), error);
     sendFailure(code, withLeaderRedirect(text, error));
+  }
+
+  /**
+   * {@code text}, or the text Neo4j with APOC puts on a failed call when {@code code} is ProcedureCallFailed, which clients decode
+   * (issue #13560; the message of the guard stays the engine's on every other protocol). Decided by the code
+   * {@link #classifyExecutionError} picked and not by the cause chain alone, so the title and the text cannot disagree: a chain
+   * that carries a fired guard under a failure classified as something else - a conflict to retry, a follower's refusal, a
+   * database that is not available - keeps the text of that failure, with its leader redirect or its reason.
+   */
+  static String procedureCallFailedText(final String code, final String text, final Throwable error) {
+    if (!BoltErrorCodes.PROCEDURE_CALL_FAILED_ERROR.equals(code))
+      return text;
+    final ProcedureCallFailedException failedCall = CauseChain.find(error, ProcedureCallFailedException.class);
+    return failedCall != null ? failedCall.getNeo4jMessage() : text;
   }
 
   /**
@@ -2399,6 +2475,11 @@ public class BoltNetworkExecutor extends Thread {
     // ConstraintValidationFailed, where the category alone says ArgumentError (issue #11974)
     if (category == ErrorCategory.VALIDATION && CauseChain.contains(error, ObjectInUseException.class))
       return BoltErrorCodes.CONSTRAINT_VIOLATION_ERROR;
+
+    // A guard of apoc.util.validate that fired: Neo4j's ProcedureCallFailed, where the category alone says ArgumentError
+    // (issue #13560). Its text is procedureCallFailedText's, which keys on this code
+    if (category == ErrorCategory.VALIDATION && CauseChain.contains(error, ProcedureCallFailedException.class))
+      return BoltErrorCodes.PROCEDURE_CALL_FAILED_ERROR;
 
     // A LOAD CSV URL that cannot be opened or read: Neo4j's ExternalResourceFailed (issue #11974)
     if (category == ErrorCategory.VALIDATION && CauseChain.contains(error, ExternalResourceException.class))

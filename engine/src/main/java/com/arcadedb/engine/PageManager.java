@@ -1243,10 +1243,10 @@ public class PageManager extends LockContext {
       final long spillVolumeUsableSpace) throws IOException {
     final List<PageSnapshot.SnapshotFile> files = new ArrayList<>();
     for (final ComponentFile file : database.getFileManager().getFiles()) {
-      // A null slot is a dropped file id and a not-yet-opened one is the reserved slot of a file id that has been
-      // allocated but whose file does not exist yet: neither has content at t0, so both are correctly absent. Any
-      // OTHER unusable file would silently shrink the archive while the backup still reported success, which is the
-      // worst failure mode a backup has - so it is named in the log rather than dropped quietly.
+      // A null slot is a dropped file id, or the reserved slot of a file id that has been allocated but whose file does
+      // not exist yet (FileManager.getFiles() lists both as null): neither has content at t0, so both are correctly
+      // absent. Any OTHER unusable file would silently shrink the archive while the backup still reported success,
+      // which is the worst failure mode a backup has - so it is named in the log rather than dropped quietly.
       if (file == null)
         continue;
       if (!(file instanceof PaginatedComponentFile paginated) || !paginated.isOpen() || paginated.getPageSize() <= 0) {

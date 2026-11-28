@@ -22,6 +22,7 @@ import com.arcadedb.Constants;
 import com.arcadedb.Profiler;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.BoundedHttpExchange;
+import com.arcadedb.query.RunningQuery;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
@@ -266,11 +267,12 @@ public class AiChatHandler extends AbstractServerHttpHandler {
         gatewayRequest.put("schema", new JSONObject()); // gateway still validates presence
         gatewayRequest.put("stream", true);
 
-        final ToolDispatcher dispatcher = new ToolDispatcher(server, user, database);
+        final ToolDispatcher dispatcher = new ToolDispatcher(server, user, database, AiRunningQuery.clientOf(exchange));
         return handleStreamingRequest(exchange, gatewayRequest, chat, messages, username, dispatcher);
       } else {
         // Review-first path: embed schema/serverInfo in prompt
-        final JSONObject schema = SchemaInfo.forUser(server, user, database);
+        final JSONObject schema = AiRunningQuery.run(server, user, AiRunningQuery.clientOf(exchange), database, false,
+            AiRunningQuery.PROTOCOL, "get_schema", () -> SchemaInfo.forUser(server, user, database));
         final JSONObject serverInfo = ServerInfo.toJSON(server, user::canAccessToDatabase, false);
         serverInfo.put("metrics", Profiler.INSTANCE.toJSON());
         gatewayRequest.put("schema", schema);
@@ -484,8 +486,10 @@ public class AiChatHandler extends AbstractServerHttpHandler {
         .put("history", portalHistory(history)).put("mode", "chat");
     // The compact schema summary goes with EVERY round (most questions need it; the model asks get_type for the rest). Built once per
     // answer here, reused across questions for a short while. A failure to build it must not stop the assistant from answering.
+    final RunningQuery.Client requester = AiRunningQuery.clientOf(exchange);
     try {
-      request.put("schemaDigest", AiSchemaDigest.forUser(server, user, database));
+      request.put("schemaDigest", AiRunningQuery.run(server, user, requester, database, false, AiRunningQuery.PROTOCOL, "schema summary",
+          () -> AiSchemaDigest.forUser(server, user, database)));
     } catch (final RuntimeException e) {
       LogManager.instance().log(this, Level.WARNING, "AI Assistant: could not build the schema summary of '%s': %s", database,
           e.getMessage());
@@ -494,8 +498,8 @@ public class AiChatHandler extends AbstractServerHttpHandler {
     // Auto: the tools run here, as the user. Review first: the model may read the schema and the server, but a query is
     // refused with the sentence that makes it hand the command back to the user to review and run (the portal's tools are
     // the same in both modes, so the difference is made here, where the tools run)
-    final ToolDispatcher dispatcher = streaming ? new ToolDispatcher(server, user, database)
-        : new ToolDispatcher(server, user, database) {
+    final ToolDispatcher dispatcher = streaming ? new ToolDispatcher(server, user, database, requester)
+        : new ToolDispatcher(server, user, database, requester) {
           @Override
           public String execute(final String toolName, final JSONObject args) {
             if (toolName.equals("query_database"))

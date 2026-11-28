@@ -393,6 +393,140 @@ class BenchMainTest {
     }
   }
 
+  @Test
+  void aWorkloadThatOwnsItsServersGetsNoServer() throws Exception {
+    final List<WorkloadContext> seen = new ArrayList<>();
+    final Workload owner = new Workload() {
+      @Override
+      public String name() {
+        return "owner";
+      }
+
+      @Override
+      public List<String> cases() {
+        return List.of("o1", "o2");
+      }
+
+      @Override
+      public boolean ownsServers() {
+        return true;
+      }
+
+      @Override
+      public JSONObject serverConfig() {
+        return seen.isEmpty() ? null : new JSONObject().put("nodes", 3).put("cpusets", "split");
+      }
+
+      @Override
+      public JSONObject imageInfo() {
+        return seen.isEmpty() ? null : new JSONObject().put("revision", "fedcba9876543210").put("imageDigest", "sha256:abc");
+      }
+
+      @Override
+      public void prepare(final WorkloadContext ctx, final String caseName) {
+        seen.add(ctx);
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) {
+        return new Measurement(List.of());
+      }
+    };
+    final int[] starts = { 0 };
+    final int code = BenchMain.run(new String[] { "run", "--workload", "owner", "--scale", "XS", "--image", "img:1", "--variant",
+        "jvm", "--reps", "1", "--warmup", "0", "--skip-idle-check", "--server-cpus", "0-11", "--client-cpus", "none",
+        "--mem-limit-gb", "16", "--heap", "6g", "--out", tmp.toString() }, List.of(owner), (image, cpuset, mem, heap, settings) -> {
+      starts[0]++;
+      return null;
+    }, new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8));
+    assertThat(code).isZero();
+    // the workload starts its own servers: the factory is never asked for one
+    assertThat(starts[0]).isZero();
+    assertThat(seen).hasSize(2);
+    assertThat(seen).allSatisfy(ctx -> {
+      assertThat(ctx.server()).isNull();
+      assertThat(ctx.spec()).isEqualTo(new WorkloadContext.ServerSpec("img:1", "0-11", 16, "6g"));
+    });
+    try (final Stream<Path> files = Files.list(tmp)) {
+      final RunResult result = RunResult.read(files.filter(p -> p.toString().endsWith(".json")).findFirst().orElseThrow());
+      assertThat(result.results()).extracting(CaseResult::status).containsExactly(CaseResult.Status.OK, CaseResult.Status.OK);
+      // the cluster the workload handed back stands where a single server's config would
+      assertThat(result.info().config().getInt("nodes")).isEqualTo(3);
+      assertThat(result.info().config().getString("cpusets")).isEqualTo("split");
+      assertThat(result.info().arcadedb().getString("revision")).isEqualTo("fedcba9876543210");
+      assertThat(result.info().runId()).contains("fedcba9876");
+    }
+  }
+
+  @Test
+  void anOwnerAfterASingleServerWorkloadKeepsItsServerConfig() throws Exception {
+    // a nightly runs every workload in one JVM: the single server of the first fills the run's config, and the cluster of the
+    // owner after it must still be recorded, under the owner's name
+    final Workload owner = new Workload() {
+      @Override
+      public String name() {
+        return "owner";
+      }
+
+      @Override
+      public List<String> cases() {
+        return List.of("o1");
+      }
+
+      @Override
+      public boolean ownsServers() {
+        return true;
+      }
+
+      @Override
+      public JSONObject serverConfig() {
+        return new JSONObject().put("nodes", 3).put("cpusets", "split");
+      }
+
+      @Override
+      public JSONObject imageInfo() {
+        return new JSONObject().put("revision", "fedcba9876543210");
+      }
+
+      @Override
+      public void prepare(final WorkloadContext ctx, final String caseName) {
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) {
+        return new Measurement(List.of());
+      }
+    };
+    final BenchMain.ServerFactory single = new BenchMain.ServerFactory() {
+      @Override
+      public ServerUnderTest start(final String image, final String cpuset, final int memLimitGb, final String heap,
+          final Map<String, String> settings) {
+        return null;
+      }
+
+      @Override
+      public JSONObject config(final ServerUnderTest server) {
+        return new JSONObject().put("memLimitGb", 16);
+      }
+
+      @Override
+      public JSONObject imageInfo(final ServerUnderTest server) {
+        return new JSONObject().put("revision", "0123456789abcdef");
+      }
+    };
+    assertThat(runAll(List.of(new Fake("alpha", List.of("a1")), owner), single, tmp)).isZero();
+    final RunResult result = onlyRunFile(tmp);
+    // the first server still stands as the run's config
+    assertThat(result.info().config().getInt("memLimitGb")).isEqualTo(16);
+    assertThat(result.info().config().has("nodes")).isFalse();
+    // and the owner's servers are under its name
+    final JSONObject owned = result.diagnostics().getJSONObject("owner");
+    assertThat(owned.getJSONObject("serverConfig").getInt("nodes")).isEqualTo(3);
+    assertThat(owned.getJSONObject("serverConfig").getString("cpusets")).isEqualTo("split");
+    assertThat(owned.getJSONObject("serverConfig").has("benchCommit")).isFalse();
+    assertThat(owned.getJSONObject("imageInfo").getString("revision")).isEqualTo("fedcba9876543210");
+  }
+
   /** A workload whose case list at S leaves out every case but the first. */
   private static Workload firstCaseOnlyAtS(final String name, final List<String> all) {
     return new Workload() {

@@ -567,6 +567,10 @@ final class CypherStepBuilder {
     // #12521). The names an UNWIND and a CALL subquery bind take the taint of the segment's own MATCH variables only when it
     // closes (issue #12323): see EagerBarriers.closeMatchSegment()
     final List<ClauseEntry> currentSegmentBindings = new ArrayList<>();
+    // True when a CALL subquery that reads the graph runs once per row of what precedes it and feeds the rows a write clause
+    // is about to see, in the open segment or behind a WITH that forwards rows one at a time (issue #13653): see
+    // EagerBarriers.subqueryReadsGraphPerRow()
+    boolean subqueryReadsPerRow = false;
 
     // Shape of everything read so far, weighed against each write clause's own shape to decide where an
     // eager read/write barrier has to go so the query never reads back what it just created (issue #7171).
@@ -715,6 +719,7 @@ final class CypherStepBuilder {
                 EagerBarriers.relationshipsWalkedAfter(nextWith, currentSegmentMatchClauses, relationshipsWalkedBefore);
             rowsMayRepeatBefore =
                 EagerBarriers.rowsMayRepeatAfter(nextWith, currentSegmentMatchClauses, currentSegmentBindings, rowsMayRepeatBefore);
+            subqueryReadsPerRow = EagerBarriers.subqueryReadsGraphPerRowAfter(nextWith, subqueryReadsPerRow);
             EagerBarriers.closeMatchSegment(currentSegmentMatchClauses, currentSegmentBindings, disconnectedTaintedVariables);
             EagerBarriers.propagateTaintThroughRenames(nextWith, disconnectedTaintedVariables);
             break;
@@ -735,6 +740,7 @@ final class CypherStepBuilder {
                 EagerBarriers.relationshipsWalkedAfter(nextWith, currentSegmentMatchClauses, relationshipsWalkedBefore);
             rowsMayRepeatBefore =
                 EagerBarriers.rowsMayRepeatAfter(nextWith, currentSegmentMatchClauses, currentSegmentBindings, rowsMayRepeatBefore);
+            subqueryReadsPerRow = EagerBarriers.subqueryReadsGraphPerRowAfter(nextWith, subqueryReadsPerRow);
             EagerBarriers.closeMatchSegment(currentSegmentMatchClauses, currentSegmentBindings, disconnectedTaintedVariables);
             EagerBarriers.propagateTaintThroughRenames(nextWith, disconnectedTaintedVariables);
             break;
@@ -761,6 +767,7 @@ final class CypherStepBuilder {
             EagerBarriers.relationshipsWalkedAfter(withClause, currentSegmentMatchClauses, relationshipsWalkedBefore);
         rowsMayRepeatBefore =
             EagerBarriers.rowsMayRepeatAfter(withClause, currentSegmentMatchClauses, currentSegmentBindings, rowsMayRepeatBefore);
+        subqueryReadsPerRow = EagerBarriers.subqueryReadsGraphPerRowAfter(withClause, subqueryReadsPerRow);
         EagerBarriers.closeMatchSegment(currentSegmentMatchClauses, currentSegmentBindings, disconnectedTaintedVariables);
         // A rename (WITH n AS m) doesn't change how rows flow either - propagate the taint onto the
         // new name too, or a later DELETE of m would find nothing tainted under that name.
@@ -854,7 +861,9 @@ final class CypherStepBuilder {
               || EagerBarriers.deleteMayTargetTaintedVariable(deleteClause, disconnectedTaintedVariables)
               || EagerBarriers.detachDeleteNeedsEagerRead(deleteClause, currentSegmentMatchClauses, relationshipsWalkedBefore)
               || EagerBarriers.deleteNeedsEagerReRead(deleteClause, currentSegmentMatchClauses, currentSegmentBindings,
-                  rowsMayRepeatBefore);
+                  rowsMayRepeatBefore)
+              // a subquery before it reads the graph again for the rows that follow (issue #13653)
+              || subqueryReadsPerRow;
           final DeleteStep deleteStep = new DeleteStep(deleteClause, context, eagerMaterialize);
           deleteStep.setPrevious(currentStep);
           currentStep = deleteStep;
@@ -909,7 +918,9 @@ final class CypherStepBuilder {
                 || (foreachClause.containsDetachDelete()
                     && EagerBarriers.relationshipsWalked(currentSegmentMatchClauses, relationshipsWalkedBefore))
                 // a relationship the body deletes can be read again by an expansion that starts after it (issue #12521)
-                || EagerBarriers.relationshipsMayBeReadAgain(currentSegmentMatchClauses, currentSegmentBindings, rowsMayRepeatBefore));
+                || EagerBarriers.relationshipsMayBeReadAgain(currentSegmentMatchClauses, currentSegmentBindings, rowsMayRepeatBefore)
+                // a subquery before it reads the graph again for the rows that follow (issue #13653)
+                || subqueryReadsPerRow);
         final boolean foreachEagerExecution =
             database.getConfiguration().getValueAsBoolean(GlobalConfiguration.OPENCYPHER_FOREACH_EAGER_READ)
                 && GraphReadAnalysis.graphReadFollows(clausesInOrder, entryIndex);
@@ -929,6 +940,8 @@ final class CypherStepBuilder {
       case SUBQUERY:
         final SubqueryClause subqueryClause = entry.getTypedClause();
         final CypherStatement subqueryBody = subqueryClause.getInnerStatement();
+        // Decided on the rows that reach the body, before an eager barrier placed below stands in front of them
+        final boolean subqueryRunsPerRow = currentStep != null && currentStep != singleRowSource;
         // The body runs once per row the enumeration behind it hands over, so a node it deletes is unlinked while that
         // enumeration is still walking it (issue #10512). The rows are read ahead of the first run on the same terms as for
         // a DELETE placed in the outer query, where DeleteStep.eagerMaterialize is decided. A DETACH DELETE in it also cuts the
@@ -936,7 +949,9 @@ final class CypherStepBuilder {
         // A relationship it deletes can be read again by an expansion that starts after it (issue #12521)
         if (currentStep != null && ((EagerBarriers.subqueryBodyDeletes(subqueryBody)
             && (EagerBarriers.matchClausesNeedEagerDelete(currentSegmentMatchClauses) || !disconnectedTaintedVariables.isEmpty()
-            || EagerBarriers.relationshipsMayBeReadAgain(currentSegmentMatchClauses, currentSegmentBindings, rowsMayRepeatBefore)))
+            || EagerBarriers.relationshipsMayBeReadAgain(currentSegmentMatchClauses, currentSegmentBindings, rowsMayRepeatBefore)
+            // a subquery before it reads the graph again for the rows that follow (issue #13653)
+            || subqueryReadsPerRow))
             || (EagerBarriers.subqueryBodyDetachDeletes(subqueryBody)
             && EagerBarriers.relationshipsWalked(currentSegmentMatchClauses, relationshipsWalkedBefore))
             || eagerness.needsBarrierForPropertyWrites(subqueryBody)
@@ -948,6 +963,8 @@ final class CypherStepBuilder {
         // Nothing in a statement that cannot write needs the body's reads finished before the next clause: its rows stream,
         // so a LIMIT after the CALL stops the body too (issue #11082)
         subqueryStep.setStreamBody(statement.isReadOnly());
+        if (EagerBarriers.subqueryReadsGraphPerRow(subqueryBody, subqueryRunsPerRow))
+          subqueryReadsPerRow = true;
         if (currentStep != null) {
           subqueryStep.setPrevious(currentStep);
         }
@@ -1495,9 +1512,13 @@ final class CypherStepBuilder {
                 matchVariables.add(targetVar);
               }
 
-              // Now add the ShortestPathStep to compute the path
+              // Now add the ShortestPathStep to compute the path; a WHERE conjunct on the path variable restricts the search
+              // (issue #13574)
+              final WhereClause pathWhere = matchClause.hasWhereClause() ? matchClause.getWhereClause() :
+                  statement.getWhereClause();
               final ShortestPathStep shortestStep = new ShortestPathStep(sourceVar, targetVar, pathVariable,
-                  shortestPathPattern, context);
+                  shortestPathPattern, FilterPushdown.extractShortestPathPredicate(pathWhere, pathVariable,
+                  legacyBoundVariables, matchVariables), context);
               if (currentStep != null) {
                 shortestStep.setPrevious(currentStep);
               }

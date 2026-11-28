@@ -49,6 +49,11 @@ public class NeqOperator extends SimpleNode implements BinaryCompareOperator {
   }
 
   @Override
+  public NeqOperator mirrored() {
+    return this;
+  }
+
+  @Override
   public boolean equals(final Object obj) {
     return obj != null && obj.getClass().equals(this.getClass());
   }

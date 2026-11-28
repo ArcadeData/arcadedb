@@ -163,6 +163,16 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     return arg.toString();
   }
 
+  /** A string option of a config map: null when absent or null; anything else than a string is refused, by name. */
+  protected String configString(final Map<String, Object> config, final String key) {
+    final Object value = config == null ? null : config.get(key);
+    if (value == null)
+      return null;
+    if (value instanceof String text)
+      return text;
+    throw new IllegalArgumentException(getName() + "(): " + key + " must be a string, got " + value.getClass().getSimpleName());
+  }
+
   /**
    * Parses a relationship-type filter (a name, a comma- or pipe-separated list, or a collection; null or blank means every
    * type) and checks every name against the schema. A name that is not an edge type is refused rather than answered with
@@ -1061,6 +1071,34 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
       throw new IllegalArgumentException(procedureName + "(): " + nodeCount + " nodes make " + totalEntries
           + " edge entries, more than the " + Integer.MAX_VALUE + " a Java array can hold");
     return (int) totalEntries;
+  }
+
+  /**
+   * Refuses the edge weights of an algorithm that distributes or sums them (rank shares, weighted degrees, cut weights)
+   * when one of them is negative, NaN or infinite. One such weight does not make a wrong answer for one node: it reaches
+   * every total it is summed into and from there every result, so {@code algo.pagerank} answered NaN for every node,
+   * {@code algo.louvain} a NaN modularity, and {@code algo.maxKCut} an infinite cut, or none at all, without an error
+   * (issue #12957). The weighted path finders skip such an edge instead (issue #9443), since leaving an edge out of a path
+   * is a meaningful answer; leaving it out of a distribution is not.
+   * <p>
+   * Called only for a caller-named weight property: the unit weights of an unweighted call are valid by construction.
+   * One pass over the arrays already built, nothing allocated.
+   *
+   * @param adjacency      the weighted adjacency the algorithm is about to run on
+   * @param weightProperty the edge property the weights were read from, for the exception message
+   * @param guard          checkpoint for the pass, which visits every edge entry of the graph
+   */
+  protected void requireFiniteNonNegativeWeights(final GraphData.WeightedAdjacency adjacency, final String weightProperty,
+      final WorkGuard guard) {
+    final double[][] weights = adjacency.weights();
+    for (int i = 0; i < weights.length; i++) {
+      guard.checkPeriodically(i);
+      for (final double w : weights[i])
+        // NaN fails both comparisons, so it is caught by the isFinite test; -0.0 is not below 0.0 and is accepted as 0
+        if (w < 0.0 || !Double.isFinite(w))
+          throw new IllegalArgumentException(
+              getName() + "(): the edge weights of '" + weightProperty + "' must be finite and non-negative, got " + w);
+    }
   }
 
   /**

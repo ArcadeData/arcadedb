@@ -27,7 +27,6 @@ import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
@@ -64,16 +63,14 @@ public class DateTimeTruncateFunction implements StatelessFunction {
       return null;
     final String unit = args[0].toString();
     final ZonedDateTime dt;
-    if (args[1] instanceof CypherDateTime)
-      dt = ((CypherDateTime) args[1]).getValue();
-    else if (args[1] instanceof CypherLocalDateTime)
-      dt = ((CypherLocalDateTime) args[1]).getValue().atZone(ZoneOffset.UTC);
-    else if (args[1] instanceof CypherDate)
-      dt = ((CypherDate) args[1]).getValue().atStartOfDay(ZoneOffset.UTC);
-    else if (args[1] instanceof LocalDateTime)
-      dt = ((LocalDateTime) args[1]).atZone(ZoneOffset.UTC);
-    else if (args[1] instanceof LocalDate)
-      dt = ((LocalDate) args[1]).atStartOfDay(ZoneOffset.UTC);
+    // A native temporal (a parameter a driver sent, a value read off a map or a list) is the Cypher temporal its literal is (issue #13569)
+    final Object temporal = TemporalUtil.fromCoreJavaType(args[1]);
+    if (temporal instanceof CypherDateTime)
+      dt = ((CypherDateTime) temporal).getValue();
+    else if (temporal instanceof CypherLocalDateTime)
+      dt = ((CypherLocalDateTime) temporal).getValue().atZone(ZoneOffset.UTC);
+    else if (temporal instanceof CypherDate)
+      dt = ((CypherDate) temporal).getValue().atStartOfDay(ZoneOffset.UTC);
     else
       // Not a recognized temporal value: determined entirely by the supplied argument, so it is a client error
       // (HTTP 400) rather than a CommandExecutionException (HTTP 500). See issue #6638.
