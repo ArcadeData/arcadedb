@@ -44,8 +44,11 @@ import com.arcadedb.query.sql.parser.MatchPathItem;
 import com.arcadedb.query.sql.parser.MatchStatement;
 import com.arcadedb.query.sql.parser.MultiMatchPathItem;
 import com.arcadedb.query.sql.parser.NestedProjection;
+import com.arcadedb.query.sql.parser.NotBlock;
+import com.arcadedb.query.sql.parser.OrBlock;
 import com.arcadedb.query.sql.parser.OrderBy;
 import com.arcadedb.query.sql.parser.OrderByItem;
+import com.arcadedb.query.sql.parser.ParenthesisBlock;
 import com.arcadedb.query.sql.parser.Pattern;
 import com.arcadedb.query.sql.parser.Projection;
 import com.arcadedb.query.sql.parser.ProjectionItem;
@@ -1222,9 +1225,27 @@ public class MatchExecutionPlanner {
     final FromClause from = new FromClause();
     from.setItem(fromItem);
 
+    // THE SELECT DOES NOT BIND $currentMatch, SO THE CONJUNCTS THAT READ IT ARE EVALUATED BY A STEP THAT DOES, AFTER THE FETCH
+    // (ISSUE #12949). THE OTHERS STAY IN THE SELECT, WHERE THEY CAN STILL BE SERVED BY AN INDEX
+    WhereClause selectFilter = null;
+    WhereClause currentMatchFilter = null;
+    if (filter != null) {
+      if (readsCurrentMatch(filter)) {
+        final List<BooleanExpression> conjuncts = new ArrayList<>();
+        collectConjuncts(filter.getBaseExpression(), conjuncts);
+        final List<BooleanExpression> unbound = new ArrayList<>(conjuncts.size());
+        final List<BooleanExpression> bound = new ArrayList<>(conjuncts.size());
+        for (final BooleanExpression conjunct : conjuncts)
+          (readsCurrentMatch(conjunct) ? bound : unbound).add(conjunct);
+        selectFilter = conjunctionOf(unbound);
+        currentMatchFilter = conjunctionOf(bound);
+      } else
+        selectFilter = filter.copy();
+    }
+
     final SelectStatement select = new SelectStatement();
     select.setTarget(from);
-    select.setWhereClause(filter == null ? null : filter.copy());
+    select.setWhereClause(selectFilter);
 
     final SelectExecutionPlanner selectPlanner = new SelectExecutionPlanner(select);
     if (withoutKeyIndexes)
@@ -1232,7 +1253,7 @@ public class MatchExecutionPlanner {
     final InternalExecutionPlan plan = selectPlanner.createExecutionPlan(context, !withoutKeyIndexes);
     final boolean checkType = rid != null && typeName != null;
     final boolean checkBucket = bucketName != null && (rid != null || typeName != null);
-    if (checkType || checkBucket) {
+    if (checkType || checkBucket || currentMatchFilter != null) {
       // SelectExecutionPlanner ALWAYS ANSWERS A SelectExecutionPlan. THE CHECKS MUST NEVER BE SKIPPED SILENTLY: A PLAN THEY CANNOT
       // BE CHAINED TO WOULD ANSWER RECORDS OF ANY TYPE OR BUCKET. THEY ARE CHAINED LAST, WHICH IS RIGHT ONLY BECAUSE THE SELECT ABOVE
       // IS A BARE FETCH + WHERE: GIVE IT A PROJECTION, AN ORDER BY OR A LIMIT AND THESE CHECKS MUST MOVE INTO ITS WHERE INSTEAD
@@ -1243,8 +1264,49 @@ public class MatchExecutionPlanner {
         selectPlan.chain(new FilterByTypeStep(new Identifier(typeName), context));
       if (checkBucket)
         selectPlan.chain(new FilterByClustersStep(Set.of(bucketName), context));
+      if (currentMatchFilter != null)
+        selectPlan.chain(new MatchRootFilterStep(currentMatchFilter, context));
     }
     return plan;
+  }
+
+  /** Whether {@code root} reads {@code $currentMatch}, the record a MATCH node is testing, anywhere (a nested statement included). */
+  private static boolean readsCurrentMatch(final Object root) {
+    return !SqlAstInspector.allNodesMatch(root, node -> !(node instanceof BaseExpression expression && expression.identifier != null
+        && ("$" + MatchRootFilterStep.CURRENT_MATCH_VARIABLE).equalsIgnoreCase(expression.identifier.toString())));
+  }
+
+  /**
+   * Adds the top-level conjuncts of {@code expression} to {@code conjuncts}: the operands of its ANDs, through the one-arm ORs,
+   * the parentheses and the non-negating NOT wrappers the parser puts around them. Anything else (a real OR, a NOT, a condition)
+   * is one conjunct.
+   */
+  private static void collectConjuncts(final BooleanExpression expression, final List<BooleanExpression> conjuncts) {
+    if (expression instanceof OrBlock or && or.getSubBlocks().size() == 1)
+      collectConjuncts(or.getSubBlocks().getFirst(), conjuncts);
+    else if (expression instanceof AndBlock and)
+      for (final BooleanExpression sub : and.getSubBlocks())
+        collectConjuncts(sub, conjuncts);
+    else if (expression instanceof NotBlock not && !not.isNegate())
+      collectConjuncts(not.getSub(), conjuncts);
+    else if (expression instanceof ParenthesisBlock parenthesis)
+      collectConjuncts(parenthesis.getSubElement(), conjuncts);
+    else
+      conjuncts.add(expression);
+  }
+
+  /** A where: that is the AND of copies of {@code conjuncts}, in the shape the parser builds, or null when there are none. */
+  private static WhereClause conjunctionOf(final List<BooleanExpression> conjuncts) {
+    if (conjuncts.isEmpty())
+      return null;
+    final AndBlock and = new AndBlock();
+    for (final BooleanExpression conjunct : conjuncts)
+      and.subBlocks.add(conjunct.copy());
+    final OrBlock or = new OrBlock();
+    or.subBlocks.add(and);
+    final WhereClause where = new WhereClause();
+    where.setBaseExpression(or);
+    return where;
   }
 
   private void buildPatterns(final CommandContext context) {
