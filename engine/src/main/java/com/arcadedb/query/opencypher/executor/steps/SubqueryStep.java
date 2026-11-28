@@ -25,7 +25,10 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.TransactionContext;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.HeapLimitExceededException;
+import com.arcadedb.exception.QueryHeapBudgetExceededException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
@@ -47,6 +50,7 @@ import com.arcadedb.query.opencypher.parser.ReturnScope;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -102,6 +106,12 @@ public class SubqueryStep extends AbstractExecutionStep {
   private CypherExecutionPlan innerPlan;
   // THE COLUMNS THE BODY RETURNS, BOUND TO NULL ON A ROW THE BODY ANSWERED NOTHING FOR: COMPUTED ON FIRST USE
   private String[] returnedColumns;
+  // THE ROWS HELD IN HEAP WHILE THE BODY RUNS, UNDER THE PER-OPERATION CAP AND THE HEAP BUDGET OF ALL THE QUERIES: THE OUTER ROWS OF
+  // AN IN TRANSACTIONS BATCH AND THE ROWS THE BODY ANSWERED FOR THEM, OR THE ROWS A BODY ANSWERED FOR ONE OUTER ROW. ON THE STEP:
+  // THE CLOSE() OF A QUERY REACHES THE STEPS, NOT THEIR RESULT SETS
+  private OperationHeapLimit collectedHeapLimit;
+  // THE ROWS OF AN IN TRANSACTIONS BATCH, MERGED AND WAITING TO BE SERVED
+  private OperationHeapLimit servedHeapLimit;
 
   public SubqueryStep(final SubqueryClause subqueryClause, final CommandContext context,
                        final DatabaseInternal database, final Map<String, Object> parameters,
@@ -202,10 +212,23 @@ public class SubqueryStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    if (subqueryClause.isInTransactions())
+    // What an earlier pull of this step still holds goes back before this one counts its own rows
+    releaseHeap();
+    collectedHeapLimit = OperationHeapLimit.of(context, "CALL subquery rows");
+
+    if (subqueryClause.isInTransactions()) {
+      servedHeapLimit = OperationHeapLimit.of(context, "CALL subquery batch");
       return syncPullInTransactions(context, nRecords);
+    }
 
     return syncPullNormal(context, nRecords);
+  }
+
+  private void releaseHeap() {
+    if (collectedHeapLimit != null)
+      collectedHeapLimit.release();
+    if (servedHeapLimit != null)
+      servedHeapLimit.release();
   }
 
   private ResultSet syncPullNormal(final CommandContext context, final int nRecords) {
@@ -225,7 +248,12 @@ public class SubqueryStep extends AbstractExecutionStep {
           return true;
         if (finished)
           return false;
-        fetchMore(nRecords);
+        try {
+          fetchMore(nRecords);
+        } catch (final RuntimeException | Error e) {
+          releaseHeap();
+          throw e;
+        }
         return bufferIndex < buffer.size();
       }
 
@@ -285,6 +313,8 @@ public class SubqueryStep extends AbstractExecutionStep {
           }
           closeStreamedBody();
           currentInnerResults = null;
+          // The rows the body answered for the last outer row are all merged: their heap goes back before the next body runs
+          collectedHeapLimit.release();
 
           // Need a new outer row
           if (!prevResults.hasNext()) {
@@ -315,7 +345,7 @@ public class SubqueryStep extends AbstractExecutionStep {
             }
 
             // Execute the inner query seeded with the outer row
-            final List<Result> innerResults = executeInnerQuery(currentOuterRow, context);
+            final List<Result> innerResults = executeInnerQuery(currentOuterRow, context, 0L);
             refreshOuterBindings(currentOuterRow, context);
 
             if (innerResults.isEmpty()) {
@@ -372,9 +402,20 @@ public class SubqueryStep extends AbstractExecutionStep {
         // A batch whose rows all produced no inner row leaves the buffer empty while input remains: run the next batch
         // instead of reporting the end, or every later batch is silently skipped (issue #10886)
         while (bufferIndex >= buffer.size()) {
-          if (finished)
+          if (finished) {
+            // Every row was served: the batch's heap goes back even if the consumer keeps the result set open, so the rows are
+            // dropped with it
+            buffer.clear();
+            bufferIndex = 0;
+            servedHeapLimit.release();
             return false;
-          fetchMore();
+          }
+          try {
+            fetchMore();
+          } catch (final RuntimeException | Error e) {
+            releaseHeap();
+            throw e;
+          }
         }
         return true;
       }
@@ -386,9 +427,31 @@ public class SubqueryStep extends AbstractExecutionStep {
         return liveRow(buffer.get(bufferIndex++), context);
       }
 
+      /**
+       * Keeps a row of a batch that did not commit to serve, counted against the element cap and the heap budget until the batch is
+       * served. The rows of a batch that committed are reserved before its commit instead, see {@link #reserveServed}.
+       */
+      private void serve(final Result row) {
+        buffer.add(row);
+        servedHeapLimit.add(buffer.size(), row);
+      }
+
+      /**
+       * Reserves the heap of the rows a batch is about to serve, before its transaction commits: a refusal is then a failure of the
+       * batch, undone with the rest of the statement, and not one raised after the writes of the batch are durable. The merged rows
+       * hold what the batch collected, so that is what is reserved for them.
+       */
+      private void reserveServed(final long rows, final long bytes) {
+        servedHeapLimit.check(rows);
+        servedHeapLimit.charge(bytes);
+        servedHeapLimit.settle();
+      }
+
       private void fetchMore() {
         buffer.clear();
         bufferIndex = 0;
+        // The rows of the batch just served and of the one before it go back to the budget before the next batch counts its own
+        releaseHeap();
 
         if (prevResults == null) {
           if (hasPrevious)
@@ -418,9 +481,14 @@ public class SubqueryStep extends AbstractExecutionStep {
         }
 
         // Collect a batch of outer rows
+        // The batch is held in heap until it has committed, and the batch size comes from the query: each row is counted as it is
+        // collected, so a size larger than the limits allow fails the query instead of filling the heap
         final List<Result> batch = new ArrayList<>();
-        while (batch.size() < batchSize && prevResults.hasNext())
-          batch.add(prevResults.next());
+        while (batch.size() < batchSize && prevResults.hasNext()) {
+          final Result outerRow = prevResults.next();
+          batch.add(outerRow);
+          collectedHeapLimit.add(batch.size(), outerRow);
+        }
 
         if (batch.isEmpty()) {
           finished = true;
@@ -430,13 +498,15 @@ public class SubqueryStep extends AbstractExecutionStep {
         if (broken) {
           // After ON ERROR BREAK the rows are passed on with what the subquery returns bound to null, and no transaction started
           for (final Result outerRow : batch)
-            buffer.add(rowOfUncommittedBatch(outerRow, statusVariable, status(false, false, null, null)));
+            serve(rowOfUncommittedBatch(outerRow, statusVariable, status(false, false, null, null)));
           if (!prevResults.hasNext())
             finished = true;
           return;
         }
 
         // Execute the batch in its own transaction
+        long innerRows = 0L;
+        long servedRows = 0L;
         final List<List<Result>> innerResultsPerRow = new ArrayList<>(batch.size());
         final String transactionId = String.valueOf(++batchNumber);
         committedWrites = commitStatementWrites(committedWrites);
@@ -456,12 +526,17 @@ public class SubqueryStep extends AbstractExecutionStep {
                 rowCount++;
 
               reloadCommittedRecords(outerRow, committedWrites);
-              innerResultsPerRow.add(executeInnerQuery(outerRow, context));
+              // The outer rows of the batch are held while their bodies answer, so they count with the rows already answered
+              final List<Result> innerResults = executeInnerQuery(outerRow, context, batch.size() + innerRows);
+              innerRows += innerResults.size();
+              servedRows += innerResults.isEmpty() ? (subqueryClause.isOptional() ? 1 : 0) : innerResults.size();
+              innerResultsPerRow.add(innerResults);
             } finally {
               if (context.isProfiling())
                 cost += System.nanoTime() - begin;
             }
           }
+          reserveServed(servedRows, collectedHeapLimit.getChargedBytes());
           if (innerMayWrite) {
             // What this batch wrote is a version ahead, once it commits, of the copies the outer rows not run yet hold
             final TransactionContext tx = database.getTransactionIfExists();
@@ -476,8 +551,9 @@ public class SubqueryStep extends AbstractExecutionStep {
           // and the record can no longer be taken back (issue #13221)
           DeferredExistenceChecks.checkBeforeCommit(database);
           commitBatch();
-        } catch (final TimeoutException e) {
-          // The statement's deadline ends it whatever ON ERROR says
+        } catch (final TimeoutException | HeapLimitExceededException | QueryHeapBudgetExceededException e) {
+          // The statement's deadline and the limits of the heap it may hold end it whatever ON ERROR says: it is not a failure of
+          // the batch's own work
           database.rollbackAllNested();
           DeferredExistenceChecks.rolledBack(database);
           throw e;
@@ -499,9 +575,11 @@ public class SubqueryStep extends AbstractExecutionStep {
             broken = true;
           final Map<String, Object> status = status(true, false, transactionId,
               e.getMessage() != null ? e.getMessage() : e.getClass().getName());
+          // The rows reserved for the batch's answers are not produced: the rows of the failed batch are counted instead
+          servedHeapLimit.release();
           for (final Result outerRow : batch) {
             refreshOuterBindings(outerRow, context);
-            buffer.add(rowOfUncommittedBatch(outerRow, statusVariable, status));
+            serve(rowOfUncommittedBatch(outerRow, statusVariable, status));
           }
           if (!prevResults.hasNext())
             finished = true;
@@ -538,6 +616,9 @@ public class SubqueryStep extends AbstractExecutionStep {
             }
           }
         }
+        // The outer rows and what the bodies answered for them are not read again: only the merged rows are held from here, and
+        // their heap was reserved before the commit
+        collectedHeapLimit.release();
 
         // If no more input, mark finished
         if (!prevResults.hasNext())
@@ -731,7 +812,7 @@ public class SubqueryStep extends AbstractExecutionStep {
    * The caller then refreshes the outer row's bindings with {@link #refreshOuterBindings}, in the transaction the outer
    * row belongs to.
    */
-  private List<Result> executeInnerQuery(final Result outerRow, final CommandContext context) {
+  private List<Result> executeInnerQuery(final Result outerRow, final CommandContext context, final long heldBefore) {
     final CypherStatement innerStatement = subqueryClause.getInnerStatement();
     final ResultSet resultSet = executeBody(outerRow, context, CypherExecutionPlan.SEEDED_BATCH_SIZE);
 
@@ -741,12 +822,20 @@ public class SubqueryStep extends AbstractExecutionStep {
       if (innerStatement.getReturnClause() == null) {
         while (resultSet.hasNext())
           resultSet.next();
-        return List.of(new ResultInternal());
+        // The row kept for the outer row is held like any answer of a body
+        final ResultInternal unitRow = new ResultInternal();
+        collectedHeapLimit.add(heldBefore + 1, unitRow);
+        return List.of(unitRow);
       }
 
+      // The rows are held until the caller has merged them, and the body can answer any number of them for one outer row: each is
+      // counted as it is collected, with the heldBefore rows the caller already holds for the other outer rows of its batch
       final List<Result> results = new ArrayList<>();
-      while (resultSet.hasNext())
-        results.add(resultSet.next());
+      while (resultSet.hasNext()) {
+        final Result row = resultSet.next();
+        results.add(row);
+        collectedHeapLimit.add(heldBefore + results.size(), row);
+      }
 
       return results;
     }
@@ -815,6 +904,7 @@ public class SubqueryStep extends AbstractExecutionStep {
   @Override
   public void close() {
     closeStreamedBody();
+    releaseHeap();
     super.close();
   }
 
