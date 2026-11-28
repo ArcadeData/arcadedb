@@ -1523,9 +1523,14 @@ expression
  * 5. &
  * 6. ^
  * 7. |
+ * The cast x::type binds tighter than all of them, as in PostgreSQL ('-x::int' is '-(x::int)'). It is two adjacent COLON tokens, not
+ * a token of its own, so the lexer reads every existing text as before (bucket::x is still one token, {a::x} still a map entry
+ * whose value is the parameter :x): no existing rule can be followed by two colons.
  */
 mathExpression
-    : (PLUS | MINUS) mathExpression                                    # unary
+    : mathExpression COLON COLON {_input.LT(-2).getStopIndex() + 1 == _input.LT(-1).getStartIndex()}? identifier
+      ({_input.LT(-1).getText().equalsIgnoreCase("DOUBLE") && _input.LT(1).getText().equalsIgnoreCase("PRECISION")}? identifier)? # castSuffix
+    | (PLUS | MINUS) mathExpression                                    # unary
     | mathExpression (STAR | SLASH | REM) mathExpression               # multiplicative
     | mathExpression (PLUS | MINUS) mathExpression                     # additive
     | mathExpression (LSHIFT | RSHIFT | RUNSIGNEDSHIFT) mathExpression # shift
@@ -1547,6 +1552,8 @@ baseExpression
     | ELLIPSIS_INTEGER_RANGE                                            # ellipsisIntegerRange
     | THIS                                                              # thisLiteral
     | identifier (DOT propertyName)* methodCall* arraySelector* modifier* # identifierChain
+    | {_input.LT(1).getText().equalsIgnoreCase("cast") && _input.LA(2) == LPAREN}?
+      identifier LPAREN expression AS identifier identifier? RPAREN     # castFunction
     | functionCall                                                      # functionCallExpr
     | inputParameter modifier*                                          # inputParam
     | LPAREN statement RPAREN modifier*                                 # parenthesizedStmt

@@ -833,6 +833,10 @@
       "allDeclaredFields": true
     },
     {
+      "type": "com.arcadedb.query.sql.parser.CastExpression",
+      "allDeclaredFields": true
+    },
+    {
       "type": "com.arcadedb.query.sql.parser.CheckDatabaseStatement",
       "allDeclaredFields": true
     },
