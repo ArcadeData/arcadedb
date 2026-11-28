@@ -18,13 +18,18 @@
  */
 package com.arcadedb.query.opencypher.executor;
 
+import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.ChainedPropertyAccessExpression;
+import com.arcadedb.query.opencypher.ast.CollectExpression;
+import com.arcadedb.query.opencypher.ast.CountExpression;
 import com.arcadedb.query.opencypher.ast.CypherReferencedVariables;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
+import com.arcadedb.query.opencypher.ast.ExistsExpression;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
 import com.arcadedb.query.opencypher.ast.ListIndexExpression;
 import com.arcadedb.query.opencypher.ast.LiteralExpression;
+import com.arcadedb.query.opencypher.ast.MapProjectionExpression;
 import com.arcadedb.query.opencypher.ast.ParameterExpression;
 import com.arcadedb.query.opencypher.ast.PathPattern;
 import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
@@ -37,7 +42,10 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.Collections;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * The values an index seek can be built from before any row exists: the value side of {@code n.key = <value>}, of an
@@ -104,10 +112,67 @@ public final class RowIndependentValues {
     if (expression instanceof LiteralExpression || expression instanceof ParameterExpression)
       return true;
 
-    final CypherReferencedVariables referenced = CypherReferencedVariables.of(expression);
-    if (!referenced.isComplete() || !referenced.getNames().isEmpty())
-      return false;
-    return isDeterministic(expression);
+    return !readsVariable(expression) && isDeterministic(expression);
+  }
+
+  /**
+   * Whether {@code expression} reads a variable other than one it binds itself: the iterator of a list comprehension, a quantifier
+   * or a {@code reduce()} over constants, {@code [x IN range(1, 3) | x * 10]}, reads only its own {@code x} (issue #11890). Scoped
+   * as the expression is: in {@code [x IN x | x]} the list is the outer {@code x}. A shape the walk does not model, and a subquery
+   * expression, count as reading one.
+   */
+  private static boolean readsVariable(final Expression expression) {
+    final ScopedReads reads = new ScopedReads(Set.of(), new boolean[1]);
+    CypherExpressionWalker.walk(expression, reads);
+    return reads.found()[0];
+  }
+
+  /** Flags, in {@code found}, a name read outside {@code bound}, the names the enclosing expression binds. */
+  private record ScopedReads(Set<String> bound, boolean[] found) implements CypherExpressionWalker.Visitor {
+    @Override
+    public void visit(final Expression node) {
+      switch (node) {
+      case VariableExpression variable -> read(variable.getVariableName());
+      case PropertyAccessExpression property -> read(property.getVariableName());
+      case MapProjectionExpression projection -> read(projection.getVariableName());
+      case ExistsExpression ignored -> found[0] = true;
+      case CountExpression ignored -> found[0] = true;
+      case CollectExpression ignored -> found[0] = true;
+      default -> {
+        if (!CypherReferencedVariables.classifies(node.getClass()))
+          found[0] = true;
+      }
+      }
+    }
+
+    @Override
+    public void visitPredicate(final BooleanExpression predicate) {
+      if (!CypherReferencedVariables.classifies(predicate.getClass()))
+        found[0] = true;
+    }
+
+    @Override
+    public void visitPattern(final PathPattern pattern) {
+      found[0] = true;
+    }
+
+    @Override
+    public CypherExpressionWalker.Visitor forNestedStatement(final CypherStatement statement) {
+      found[0] = true;
+      return null;
+    }
+
+    @Override
+    public CypherExpressionWalker.Visitor forLocalBindings(final String... variables) {
+      final Set<String> inner = new HashSet<>(bound);
+      inner.addAll(List.of(variables));
+      return new ScopedReads(inner, found);
+    }
+
+    private void read(final String name) {
+      if (name == null || !bound.contains(name))
+        found[0] = true;
+    }
   }
 
   /**
