@@ -332,6 +332,14 @@ public class SelectStatement extends Statement {
     if (facets != null && facets.refersToParent())
       return true;
 
+    // a LIMIT or SKIP computed from the parent row (LIMIT $parent.$current.n) correlates the subquery too: lifted into a global LET
+    // it would be planned and run once, before any row set $parent
+    if (skip != null && skip.expression != null && skip.expression.refersToParent())
+      return true;
+
+    if (limit != null && limit.expression != null && limit.expression.refersToParent())
+      return true;
+
     return letClause != null && letClause.refersToParent();
   }
 

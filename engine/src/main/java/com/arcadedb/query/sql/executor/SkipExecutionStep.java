@@ -151,4 +151,15 @@ public class SkipExecutionStep extends AbstractExecutionStep {
       result += " (" + skippedUnloaded + " rows passed over in the index, records not loaded)";
     return result;
   }
+
+  /** A SKIP computed by an expression is planned again on each run, for the reason {@link LimitExecutionStep#canBeCached()} gives. */
+  @Override
+  public boolean canBeCached() {
+    return skip.expression == null;
+  }
+
+  @Override
+  public ExecutionStep copy(final CommandContext context) {
+    return new SkipExecutionStep(skip.copy(), context);
+  }
 }

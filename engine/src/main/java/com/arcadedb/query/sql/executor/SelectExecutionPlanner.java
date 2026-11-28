@@ -512,10 +512,25 @@ public class SelectExecutionPlanner {
   }
 
   private void cachePlan(final SelectExecutionPlan plan, final CommandContext context, final boolean useCache, final long planningEpoch) {
-    if (useCache && !context.isProfiling() && statement.executionPlanCanBeCached() && !planDependsOnInputParameters && plan.canBeCached())
+    if (useCache && !context.isProfiling() && statement.executionPlanCanBeCached() && !planDependsOnInputParameters
+        && limitAndSkipAreFixedByTheText() && plan.canBeCached())
       // The planningEpoch re-check happens atomically inside put(), under the same lock as invalidate(), so a DDL
       // racing this call can never be missed the way two separately-locked calls could (#6671).
       context.getDatabase().getExecutionPlanCache().put(statement.getOriginalStatement(), plan, planningEpoch);
+  }
+
+  /**
+   * Whether the plan's LIMIT and SKIP are the same for every execution of the statement text, which is the plan cache's key. A LIMIT
+   * or SKIP read from a parameter or an expression is not: the plan sizes a sort or a scan on the value it saw, so another value
+   * needs another plan. A literal SKIP offset is left out too: a paged read gives every page a text of its own, and a plan used
+   * once only pushes the plans that are reused out of the cache.
+   */
+  private boolean limitAndSkipAreFixedByTheText() {
+    if (info.limit != null && info.limit.num == null)
+      return false;
+    if (info.skip == null)
+      return true;
+    return info.skip.num != null && info.skip.num.getValue().longValue() == 0L;
   }
 
   /**

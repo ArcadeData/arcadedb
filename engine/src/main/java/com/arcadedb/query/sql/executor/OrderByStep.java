@@ -554,4 +554,17 @@ public class OrderByStep extends AbstractExecutionStep implements RowCapAwareSte
     return result;
   }
 
+  @Override
+  public boolean canBeCached() {
+    return true;
+  }
+
+  @Override
+  public ExecutionStep copy(final CommandContext context) {
+    final OrderByStep copy = new OrderByStep(orderBy.copy(), maxResults, context, timeoutMillis);
+    copy.capSkip = capSkip;
+    copy.rowCap = rowCap;
+    return copy;
+  }
+
 }

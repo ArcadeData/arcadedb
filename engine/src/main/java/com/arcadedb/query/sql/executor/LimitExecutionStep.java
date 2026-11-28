@@ -121,4 +121,20 @@ public class LimitExecutionStep extends AbstractExecutionStep {
   public String prettyPrint(final int depth, final int indent) {
     return ExecutionStepInternal.getIndent(depth, indent) + "+ LIMIT (" + limit.toString() + ")";
   }
+
+  /**
+   * A LIMIT computed by an expression ({@code LIMIT $parent.$current.n}) can take another value on each run of the plan, while the
+   * planner sized the steps before this one (the buffer of a sort) on the value it saw: such a plan is planned again, never copied.
+   * A literal or an input parameter is the same for every copy (the statement cache keys a plan by its text, and refuses a
+   * parameter LIMIT on its own).
+   */
+  @Override
+  public boolean canBeCached() {
+    return limit.expression == null;
+  }
+
+  @Override
+  public ExecutionStep copy(final CommandContext context) {
+    return new LimitExecutionStep(limit.copy(), context);
+  }
 }
