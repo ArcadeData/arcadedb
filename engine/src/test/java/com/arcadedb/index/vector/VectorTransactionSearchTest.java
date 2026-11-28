@@ -1253,110 +1253,84 @@ class VectorTransactionSearchTest {
     }
 
     /**
-     * The branch no end-to-end case can reach: a compaction or a rebuild republishes {@code residentLocations}
-     * wholesale between the replay and the abort, and the offsets the journal captured then address a generation
-     * the index is no longer reading. Every other test in this class parks the rebuild permit precisely so nothing
-     * repairs the leak before it can be asserted on, which also means none of them ever swaps the instance.
-     * <p>
-     * Driven directly rather than through a transaction because the swap has to land INSIDE {@code commit()},
-     * between {@code indexChanges.commit()} and the rollback - a window no test thread can step into. The journal
-     * is built with the same package-private API the replay uses, so what runs here is the production
-     * {@code undoReplay} on a genuinely republished index.
-     * <p>
-     * The id is DELETED for real before the swap, which is what makes the assertion bite: the replacement is built
-     * from the committed pages and so does not carry the id at all, and lifting a tombstone is
-     * {@code addOrUpdate(..., deleted=false)} - it would make the id LIVE again in a generation that never had it,
-     * pointing at an offset for a record that no longer exists. Without the check that the current generation still
-     * holds the tombstone, this test fails.
+     * The publication of a replay that both retires and adds (issue #11962): what an update's replay journals, driven through
+     * the journal directly because the window between the replay and the commit's conclusion is inside one {@code commit()},
+     * where no test thread can step in. Nothing is visible before {@code publishIndexReplay()}, everything is after it, and a
+     * second conclusion of the same journal is refused.
      */
     @Test
-    void aRepublishedLocationIndexIsNeverHandedAnOffsetFromTheGenerationBeforeIt() throws Exception {
+    void aPublicationRetiresAndAddsWhatItsReplayHeldBack() throws Exception {
       withDatabase(db -> {
         final LSMVectorIndex index = vectorIndex(db);
         index.buildVectorGraphNow();
 
-        final RID doomed = ridOf(db, 1);
-        final VectorLocationIndex before = index.residentLocationsForTest();
-        final int tombstoned = before.getVectorIdsForRid(doomed)[0];
+        final RID target = ridOf(db, 1);
+        final VectorLocationIndex locations = index.residentLocationsForTest();
+        final int retired = locations.getVectorIdsForRid(target)[0];
+        final long offset = VectorLocationIndex.offsetOf(locations.getOffsetAndFlag(retired));
+        final int added = locations.getNextId();
+        locations.setNextId(added + 1);
 
-        // Exactly what a replay's remove() records, in the same order: read the location, then let the delete
-        // below tombstone it.
-        final VectorIndexReplayUndo undo = new VectorIndexReplayUndo(index, before);
-        undo.recordTombstoned(tombstoned, before.getOffsetAndFlag(tombstoned), doomed);
+        LSMVectorIndex.acquireAllRebuildPermitsForTest();
+        try {
+          // What the replay of an update journals: the committed vector retired, the new one added at its page entry
+          final VectorIndexReplayUndo undo = new VectorIndexReplayUndo(index);
+          undo.recordRetired(retired, target);
+          undo.recordAdded(added, target, offset,
+              VectorizationProvider.getInstance().getVectorTypeSupport().createFloatVector(embedding(1)));
 
-        db.transaction(() -> db.command("sql", "DELETE FROM Doc WHERE id = ?", 1));
+          assertThat(undo.retires(retired)).as("a second REMOVE of the same RID in this replay finds it retired").isTrue();
+          assertThat(locations.isLive(retired)).as("held back: the committed vector stays live until the commit concludes")
+              .isTrue();
+          assertThat(locations.isLive(added)).as("held back: the added vector has no location until the commit concludes")
+              .isFalse();
 
-        // The swap. A rebuild republishes the locations from the COMMITTED pages, which no longer hold this id.
-        index.buildVectorGraphNow();
-        final VectorLocationIndex after = index.residentLocationsForTest();
-        assertThat(after).as("precondition: the rebuild must have republished the location index")
-            .isNotSameAs(before);
-        assertThat(after.isLive(tombstoned))
-            .as("precondition: the replacement is built from the committed pages, which no longer carry the id")
-            .isFalse();
+          undo.publishIndexReplay();
 
-        undo.undoIndexReplay();
+          final VectorLocationIndex published = index.residentLocationsForTest();
+          assertThat(published.isLive(retired)).as("the retired vector is tombstoned").isFalse();
+          assertThat(published.isLive(added)).as("the added vector is published").isTrue();
+          assertThat(published.getRid(added)).isEqualTo(target);
+          assertThat(index.findNeighborsFromVector(embedding(1), 5, 64).stream().map(Pair::getFirst))
+              .as("the record is found through the vector the publication added").contains(target);
 
-        assertThat(index.residentLocationsForTest())
-            .as("the compensation must not swap the location index itself").isSameAs(after);
-        assertThat(after.isLive(tombstoned))
-            .as("lifting the tombstone against a REPLACEMENT would make an id live in a generation that never had "
-                + "it, pointing at an offset for a record that no longer exists")
-            .isFalse();
-
-        // The index is still usable afterwards, which is the point of declining rather than throwing.
-        assertThat(index.findNeighborsFromVector(embedding(2), 5, 64).stream().map(Pair::getFirst))
-            .as("the deleted record must not come back through the compensation").doesNotContain(doomed);
+          assertThatThrownBy(undo::publishIndexReplay).as("a journal is concluded once")
+              .isInstanceOf(IllegalStateException.class);
+        } finally {
+          LSMVectorIndex.releaseAllRebuildPermitsForTest();
+        }
       });
     }
 
     /**
-     * The mid-replay re-anchor: one transaction's replay is not one locked section, so a rebuild can republish the
-     * locations BETWEEN two of its operations and leave a single journal describing two generations. The journal's
-     * contract under that swap is what this pins, directly - the window itself is unreachable from a test thread,
-     * being inside one {@code commit()} between two internal lock acquisitions.
-     * <p>
-     * Nothing is dropped by the re-anchor: a full rebuild carries the replay's tombstones over (issue #11099), so whether
-     * one can be lifted is decided per id at undo time, against the generation then in force.
+     * A retired id is tombstoned only where it still names the record its REMOVE resolved it for (issue #11962): a rebuild
+     * that republished the locations between the replay and the publication can have given the id to another record, or
+     * dropped it, and the publication must not tombstone what the commit never retired.
      */
     @Test
-    void reAnchoringKeepsEveryRecordForTheUndoToDecideAgainstTheCurrentGeneration() throws Exception {
+    void aPublicationLeavesAnIdThatNoLongerNamesTheRetiredRecord() throws Exception {
       withDatabase(db -> {
         final LSMVectorIndex index = vectorIndex(db);
         index.buildVectorGraphNow();
 
-        final VectorLocationIndex before = index.residentLocationsForTest();
-        final int live = before.getActiveVectorIds().findFirst().orElseThrow();
-        final RID rid = before.getRid(live);
+        final RID retiredFor = ridOf(db, 1);
+        final RID other = ridOf(db, 2);
+        final VectorLocationIndex locations = index.residentLocationsForTest();
+        final int otherId = locations.getVectorIdsForRid(other)[0];
 
-        final VectorIndexReplayUndo undo = new VectorIndexReplayUndo(index, before);
-        undo.recordAllocated(4242);
-        undo.recordTombstoned(live, before.getOffsetAndFlag(live), rid);
-        before.markDeleted(live);
-        undo.mutationsCharged = 2;
-        undo.mutablePagesCreated = 1;
+        LSMVectorIndex.acquireAllRebuildPermitsForTest();
+        try {
+          final VectorIndexReplayUndo undo = new VectorIndexReplayUndo(index);
+          undo.recordRetired(otherId, retiredFor);
 
-        index.buildVectorGraphNow();
-        final VectorLocationIndex after = index.residentLocationsForTest();
-        assertThat(after).as("precondition: the rebuild must have republished the location index").isNotSameAs(before);
-        assertThat(after.isDeleted(live)).as("precondition: the rebuild carried the replay's tombstone over").isTrue();
+          undo.publishIndexReplay();
 
-        undo.rebaseTo(after);
-
-        assertThat(undo.locationsAtReplay).as("the journal must now speak for the generation in force").isSameAs(after);
-        assertThat(undo.tombstonedCount)
-            .as("a tombstone the new generation carried over must still be liftable, so the re-anchor keeps it").isEqualTo(1);
-        assertThat(undo.allocatedCount)
-            .as("an id minted by this replay is illegitimate in EVERY generation, so it must survive the re-anchor "
-                + "- dropping it is what would leave an uncommitted vector searchable")
-            .isEqualTo(1);
-        assertThat(undo.mutationsCharged).as("the counters are index-wide, not per generation").isEqualTo(2);
-        assertThat(undo.mutablePagesCreated).isEqualTo(1);
-
-        undo.undoIndexReplay();
-
-        assertThat(after.isLive(live)).as("the abort lifts the carried tombstone").isTrue();
-        assertThat(after.getRid(live)).isEqualTo(rid);
+          assertThat(index.residentLocationsForTest().isLive(otherId))
+              .as("the id names another record now: the publication leaves it live").isTrue();
+          assertThat(index.findNeighborsFromVector(embedding(2), 5, 64).stream().map(Pair::getFirst)).contains(other);
+        } finally {
+          LSMVectorIndex.releaseAllRebuildPermitsForTest();
+        }
       });
     }
 

@@ -988,23 +988,16 @@ public class VectorLocationIndex {
   }
 
   /**
-   * Drop the location of a vector id WITHOUT recording a tombstone, i.e. make the index forget the id ever existed
-   * (issue #7931).
+   * Drop the location of a vector id WITHOUT recording a tombstone, i.e. make the index forget the id ever existed.
    * <p>
-   * The single caller is the rollback compensation for an id a transaction allocated during its commit replay and
-   * then never committed: the page entry that id was written to is discarded with the transaction's pages, so a
-   * tombstone would be a tombstone for nothing - it would keep the id in {@link #getDeletedCount()} forever and
-   * charge the graph a dead node it never had. The id itself is burnt, never handed out again, which is what makes
-   * forgetting it safe.
+   * This is the reversal of an allocation whose page entry is discarded with it, where a tombstone would be a tombstone for
+   * nothing: it would keep the id in {@link #getDeletedCount()} forever and charge the graph a dead node it never had. A commit
+   * replay no longer needs it (issue #11962): it publishes the locations of its vectors only when its commit stands, so the
+   * rollback of one has no location to forget. It is kept as the one way to move the generation of
+   * {@link #getRemovalGeneration()} without a tombstone, which the tests of issue #13343 drive by hand.
    * <p>
    * Deliberately NOT a general-purpose eviction: issue #5559 removed eviction from this index precisely because a
-   * live id whose location is gone reads as deleted to a page-falling-back reader. This is only correct because
-   * the entry on the page goes away at the same time.
-   * <p>
-   * Safe to call for an id this generation of the index never held - a compaction or a rebuild can have
-   * republished it since the caller recorded the id - because {@link #removeLocation} returns on absence without
-   * touching anything. The compensation relies on that: it forgets an aborted allocation unconditionally, since
-   * an id minted by a replay that never committed can never be legitimate in ANY generation.
+   * live id whose location is gone reads as deleted to a page-falling-back reader.
    *
    * @param vectorId The vector ID to forget
    *

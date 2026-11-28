@@ -110,14 +110,19 @@ class VectorNeighborsInFlightInsertTest {
     });
   }
 
-  /** The record of an update in flight is there: its row is read, with the properties it has before the commit publishes. */
+  /**
+   * The record of an update in flight is there: its row is read, with the properties it has before the commit publishes. The
+   * replay holds the new vector back until the commit concludes (issue #11962), so the record is found by the vector it had
+   * committed, and by the new one once the commit has published.
+   */
   @Test
   @Timeout(value = 2, unit = TimeUnit.MINUTES)
   void aSearchDuringAnUpdateCommitAnswersTheRecordAsItWas() throws Exception {
     withIndex((db, index) -> {
       final float[] vector = vector();
+      final float[] committedVector = vector();
       final RID[] created = new RID[1];
-      db.transaction(() -> created[0] = db.newVertex("Chunk").set("external_id", "before").set("embedding", vector()).save().getIdentity());
+      db.transaction(() -> created[0] = db.newVertex("Chunk").set("external_id", "before").set("embedding", committedVector).save().getIdentity());
       final RID updated = created[0];
       duringCommitInFlight(db, () -> {
         final MutableDocument record = db.lookupByRID(updated, true).asVertex().modify();
@@ -125,12 +130,12 @@ class VectorNeighborsInFlightInsertTest {
       }, () -> {
         assertThat(index.isPutByCommitInFlight(updated)).isTrue();
 
-        final List<Result> during = rows(db, vector);
+        final List<Result> during = rows(db, committedVector);
         assertThat(during).hasSize(BASE + 1).allSatisfy(r -> assertThat(r.<String>getProperty("eid")).isNotNull());
         assertThat(during.getFirst().<RID>getProperty("r")).isEqualTo(updated);
         assertThat(during.getFirst().<String>getProperty("eid")).isEqualTo("before");
 
-        final List<ScoredRecordRow> rows = neighbours(db, vector);
+        final List<ScoredRecordRow> rows = neighbours(db, committedVector);
         assertThat(rows).hasSize(BASE + 1);
         assertThat(rows.getFirst().getRecord().getIdentity()).isEqualTo(updated);
         assertThat(isUnread(rows.getFirst())).as("the row of the commit in flight is read").isFalse();
