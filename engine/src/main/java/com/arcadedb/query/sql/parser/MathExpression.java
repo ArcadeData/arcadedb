@@ -1292,6 +1292,17 @@ public class MathExpression extends SimpleNode {
   }
 
   /**
+   * @see Expression#isIndexKeyResolvable(CommandContext) for what an index key is and what it is not.
+   */
+  public boolean isIndexKeyResolvable(final CommandContext context) {
+    for (final MathExpression exp : childExpressions) {
+      if (!exp.isIndexKeyResolvable(context))
+        return false;
+    }
+    return true;
+  }
+
+  /**
    * @see Expression#isLiteral()
    */
   public boolean isLiteral() {

@@ -407,6 +407,28 @@ public class BaseExpression extends MathExpression {
   }
 
   /**
+   * @see Expression#isIndexKeyResolvable(CommandContext) for what an index key is and what it is not.
+   */
+  @Override
+  public boolean isIndexKeyResolvable(final CommandContext context) {
+    // the modifier is part of the expression: `'Mr.'.append(surname)` is a literal only up to the dot, and
+    // evaluating the whole of it without a record silently resolves `surname` to null (issue #6179)
+    if (modifier != null && !modifier.isEarlyCalculated(context))
+      return false;
+
+    if (number != null || inputParam != null || string != null)
+      return true;
+
+    if (expression != null)
+      return expression.isIndexKeyResolvable(context);
+
+    if (isPostgresPositionalParameter(context))
+      return true;
+
+    return identifier != null && identifier.isIndexKeyResolvable(context);
+  }
+
+  /**
    * True when this expression is the {@code $N} that {@link #execute(Result, CommandContext)} reads from the input
    * parameters: the Postgres wire's positional parameter, which the SQL lexer tokenizes as an identifier rather than
    * as an input parameter.

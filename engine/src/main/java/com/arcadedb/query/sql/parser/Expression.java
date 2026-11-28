@@ -155,6 +155,44 @@ public class Expression extends SimpleNode {
   }
 
   /**
+   * Whether the expression can serve as an <b>index key</b>: its value is resolved when the fetch starts, so the
+   * fetch does not need the record it is about to read to answer it.
+   * <p>
+   * That is what {@link #isEarlyCalculated(CommandContext)} answers, plus the value read from the parent context
+   * inside a subquery ({@code $parent.$current.<property>}): the parent is the context of the statement that runs
+   * this one as a subquery, it is set before the subquery is planned and does not change during one execution of its
+   * plan, so such a key is resolved when the fetch starts, as an input parameter is (issue #12286).
+   * <p>
+   * The two questions are kept apart on purpose. A value read from the parent is a property of the outer record: it
+   * is not computable without a record, so a comparison that reads it compares it as a record property does, without
+   * converting the other side to its type (see {@link InCondition}). Only the index may serve it.
+   *
+   * @see #isEarlyCalculated(CommandContext)
+   */
+  public boolean isIndexKeyResolvable(final CommandContext context) {
+    if (isNull)
+      return true;
+    else if (rid != null)
+      return rid.legacy || (rid.expression != null && rid.expression.isIndexKeyResolvable(context));
+    else if (this.mathExpression != null)
+      return this.mathExpression.isIndexKeyResolvable(context);
+    else if (this.whereCondition != null)
+      return false;
+    else if (this.arrayConcatExpression != null)
+      return this.arrayConcatExpression.isEarlyCalculated(context);
+    else if (booleanValue != null)
+      return true;
+    else if (value instanceof Number)
+      return true;
+    else if (value instanceof String)
+      return true;
+    else if (value instanceof MathExpression expression)
+      return expression.isIndexKeyResolvable(context);
+
+    return false;
+  }
+
+  /**
    * Whether the expression is built out of literals alone - a number, a string, a boolean, {@code null}, a RID
    * literal, a collection of them, or arithmetic over them - so that its value is written in the statement itself
    * and cannot change between two executions of the same plan.

@@ -101,6 +101,20 @@ public class ArrayLiteralExpression extends MathExpression {
   }
 
   /**
+   * @see Expression#isIndexKeyResolvable(CommandContext) for what an index key is and what it is not.
+   */
+  @Override
+  public boolean isIndexKeyResolvable(final CommandContext context) {
+    // the items sit outside childExpressions, so the inherited walker would answer for an empty list
+    for (final Expression item : items) {
+      if (!item.isIndexKeyResolvable(context)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
    * {@code items} sit outside {@code childExpressions}; the inherited walker would miss them.
    *
    * @see Expression#isLiteral(boolean)

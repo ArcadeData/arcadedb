@@ -440,7 +440,7 @@ public class BinaryCondition extends BooleanExpression {
   public boolean isIndexAware(final IndexSearchInfo info) {
     if (left.isBaseIdentifier()) {
       if (info.getField().equals(left.getDefaultAlias().getStringValue())) {
-        if (right.isEarlyCalculated(info.getContext())) {
+        if (right.isIndexKeyResolvable(info.getContext())) {
           if (operator instanceof EqualsCompareOperator) {
             final Object vl = this.right.execute((Result) null, info.getContext());
             // an array but a byte[] (BINARY) is the list it holds, as "=" compares it (issue #10736)
@@ -471,7 +471,7 @@ public class BinaryCondition extends BooleanExpression {
     }
     // CI index optimization: match field.toLowerCase() = 'value' against a CI index on field
     if (info.isCaseInsensitive() && isFieldWithLowerCaseMethod(left, info.getField())) {
-      if (right.isEarlyCalculated(info.getContext())) {
+      if (right.isIndexKeyResolvable(info.getContext())) {
         if (operator instanceof EqualsCompareOperator)
           // a null value is skipped by the index step at execution, like the case sensitive one above (#9274)
           return true;

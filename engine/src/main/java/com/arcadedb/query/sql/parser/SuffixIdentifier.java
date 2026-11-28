@@ -433,6 +433,13 @@ public class SuffixIdentifier extends SimpleNode {
     return identifier != null && identifier.isEarlyCalculated(ctx);
   }
 
+  /**
+   * @see Expression#isIndexKeyResolvable(CommandContext) for what an index key is and what it is not.
+   */
+  public boolean isIndexKeyResolvable(final CommandContext ctx) {
+    return identifier != null && identifier.isIndexKeyResolvable(ctx);
+  }
+
   public void aggregate(final Object value, final CommandContext context) {
     throw new UnsupportedOperationException("this operation does not support plain aggregation: " + this);
   }
