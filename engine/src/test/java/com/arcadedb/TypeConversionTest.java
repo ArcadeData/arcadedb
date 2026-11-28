@@ -72,7 +72,8 @@ public class TypeConversionTest extends TestHelper {
     database.transaction(() -> {
       final MutableDocument doc = database.newDocument("ConversionTest");
 
-      final Date now = new Date();
+      // a whole-second instant (1 run in 1000 for new Date()) reads back as SECONDS precision, not the MILLIS asserted below
+      final Date now = new Date(System.currentTimeMillis() / 1000 * 1000 + 123);
       final Instant instant = new NanoClock().instant();
       final LocalDate localDate = LocalDate.now();
       final LocalDateTime localDateTime = LocalDateTime.now();
