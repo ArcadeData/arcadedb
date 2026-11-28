@@ -5491,6 +5491,31 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     return GrpcEncodingBudget.of(serverConfiguration());
   }
 
+  /**
+   * Adds the metadata of an element nested in a row, MAP-encoded: {@code @cat} ({@code v}, {@code e} or {@code d}, as on the
+   * top-level record) and, for an edge, {@code @out} / {@code @in} as links like {@code @rid}. Each entry counts against the soft
+   * limit of the projection as the other metadata entries do.
+   */
+  private void putNestedElementMetadata(final GrpcMap.Builder map, final Document doc, final ProjectionConfig pc) {
+    putNestedMetadata(map, pc, Property.CAT_PROPERTY,
+        GrpcValue.newBuilder().setStringValue(doc instanceof Vertex ? "v" : doc instanceof Edge ? "e" : "d").build());
+    if (doc instanceof Edge edge) {
+      putNestedMetadata(map, pc, Property.OUT_PROPERTY, linkOf(edge.getOut().getIdentity()));
+      putNestedMetadata(map, pc, Property.IN_PROPERTY, linkOf(edge.getIn().getIdentity()));
+    }
+  }
+
+  private static GrpcValue linkOf(final RID rid) {
+    return GrpcValue.newBuilder().setLinkValue(GrpcLink.newBuilder().setRid(rid.toString()).build()).setLogicalType("rid").build();
+  }
+
+  private static void putNestedMetadata(final GrpcMap.Builder map, final ProjectionConfig pc, final String key, final GrpcValue value) {
+    if (!pc.wouldExceed(GrpcTypeConverter.bytesOf(key) + value.getSerializedSize()))
+      map.putEntries(key, value);
+    else
+      pc.truncated = true;
+  }
+
   /** A value that is a message of its own (a facet value): it gets a budget of its own. */
   private GrpcValue toGrpcValue(final Object o) {
     return toGrpcValue(o, null, newEncodingBudget());
@@ -5604,6 +5629,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             pc.truncated = true;
           }
         }
+        // @cat and, for an edge, @out / @in: the category and endpoints the top-level record and the JSON encoding carry, without
+        // which a client cannot tell a nested node from a nested relationship nor connect the relationship to its nodes (#13545)
+        putNestedElementMetadata(mb, doc, pc);
 
         for (String k : doc.getPropertyNames()) {
           GrpcValue child = toGrpcValue(doc.get(k), pc, budget); // recurse with config
