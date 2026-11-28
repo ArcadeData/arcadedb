@@ -27,6 +27,7 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexCursorEntry;
+import com.arcadedb.index.lsm.LSMTreeIndexPostings;
 import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.index.fulltext.FullTextQueryParsers.RegexpClause;
 import com.arcadedb.index.fulltext.FullTextQueryParsers.WildcardClause;
@@ -878,16 +879,24 @@ public class FullTextQueryExecutor {
 
     // Raw postings lookup: we only need the matching RIDs here. The BM25 score is computed once, later, by scoreCandidatesBM25;
     // going through index.get() would run (and then discard) the full scoring pipeline for every term.
+    // The postings are read as primitive arrays (issue #13100): a cursor over them builds a result map and a set of the
+    // RIDs it has seen, and both grow as the postings are read - a term that matches a third of the corpus (the tenant of a
+    // scoped search) made the query build and rehash two maps of 33,000 entries, and an object per posting.
+    final LSMTreeIndexPostings postings = index.readPostings(searchKey);
+    final int[] postingBuckets = postings.bucketIds();
+    final long[] postingPositions = postings.positions();
+    final int postingCount = postings.size();
     long df = 0L;
-    try (final IndexCursor cursor = index.getPostings(searchKey)) {
-      while (cursor.hasNext()) {
-        tick();
-        final RID rid = cursor.next().getIdentity();
-        // Deletion markers carry a negative bucket id: they are not live documents and must not inflate the document frequency.
-        if (rid.getBucketId() >= 0)
-          ++df;
-        scoreMap.computeIfAbsent(rid, k -> new AtomicInteger(0)).incrementAndGet();
-      }
+    // The identities are bound to the database the index belongs to, as the cursor over the postings gave them: a result that reaches the
+    // caller loads its record from that database, not from whichever one is active on the calling thread
+    final DatabaseInternal database = index.getDatabase();
+    for (int i = 0; i < postingCount; ++i) {
+      tick();
+      // Deletion markers carry a negative bucket id: they are not live documents and must not inflate the document frequency.
+      if (postingBuckets[i] < 0)
+        continue;
+      ++df;
+      scoreMap.computeIfAbsent(database.newRID(postingBuckets[i], postingPositions[i]), k -> new AtomicInteger(0)).incrementAndGet();
     }
     recordDocumentFrequency(searchKey, df);
   }
