@@ -112,11 +112,12 @@ public class GremlinServerPlugin implements ServerPlugin {
     // Use ArcadeDB's custom GraphManager for dynamic database registration
     settings.graphManager = ArcadeGraphManager.class.getName();
 
-    // Disable Gremlin sessions: SessionOpProcessor runs on a per-session executor that the principal
-    // binding does not cover, so the engine's per-database/per-type ACLs cannot be enforced for it
-    // (GHSA-c287-v325-j5jx). ArcadeDB does not use sessions and the processor is deprecated in TinkerPop.
+    // SessionOpProcessor runs on a per-session executor, outside the Gremlin pool built below: the processor is not
+    // configured from the settings, and the one TinkerPop loads by itself is served to the server administrator only
+    // (SessionRestrictingOpProcessor), whichever channelizer is used
     if (settings.processors != null)
       settings.processors.removeIf(p -> p.className != null && p.className.toLowerCase(Locale.ENGLISH).contains("session"));
+    SessionRestrictingOpProcessor.install();
 
     // OVERWRITE AUTHENTICATION USING THE SERVER SECURITY
     settings.authentication = new Settings.AuthenticationSettings();
