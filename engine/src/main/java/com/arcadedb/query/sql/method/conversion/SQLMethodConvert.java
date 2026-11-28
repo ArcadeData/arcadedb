@@ -25,6 +25,8 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 import com.arcadedb.schema.Type;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.Arrays;
 import java.util.Locale;
 import java.util.logging.Level;
@@ -37,6 +39,11 @@ import java.util.logging.Level;
 public class SQLMethodConvert extends AbstractSQLMethod {
 
   public static final String NAME = "convert";
+
+  // THE FIRST DECIMALS OUT OF THE LONG RANGE: THE FRACTION IS DISCARDED, SO 9223372036854775807.5 IS Long.MAX_VALUE AND 2^63 IS THE
+  // FIRST VALUE BEYOND IT (THE RULE OF THE RANGE CHECK OF A LONG PROPERTY)
+  private static final BigDecimal BEYOND_LONG_MAX = BigDecimal.valueOf(Long.MAX_VALUE).add(BigDecimal.ONE);
+  private static final BigDecimal BEYOND_LONG_MIN = BigDecimal.valueOf(Long.MIN_VALUE).subtract(BigDecimal.ONE);
 
   public SQLMethodConvert() {
     super(NAME, 1, 1);
@@ -62,7 +69,7 @@ public class SQLMethodConvert extends AbstractSQLMethod {
     // thing and still fails loudly below: that is a query to fix, not a row that does not match.
     if (destType.contains(".")) {
       try {
-        return Type.convertOrNull(context.getDatabase(), value, Class.forName(destType));
+        return convertOrNull(context, value, Class.forName(destType));
       } catch (final ClassNotFoundException e) {
         LogManager.instance().log(this, Level.SEVERE, "Type for destination type was not found", e);
       }
@@ -78,9 +85,31 @@ public class SQLMethodConvert extends AbstractSQLMethod {
             "Unknown type '" + destType + "' in convert(): expected one of " + Arrays.toString(Type.values())
                 + " or a fully qualified Java class name", e);
       }
-      return Type.convertOrNull(context.getDatabase(), value, arcadeType.getDefaultJavaType());
+      return convertOrNull(context, value, arcadeType.getDefaultJavaType());
     }
 
     return null;
+  }
+
+  /**
+   * {@link Type#convertOrNull} with the range of a LONG target held: the plain conversion has no range check for LONG, which it
+   * keeps for the comparison callers that rely on it, so a BigInteger or BigDecimal beyond 64 bits would wrap to its low 64 bits
+   * and a Double or Float would saturate, where INTEGER, SHORT and BYTE answer null (issue #13029).
+   */
+  private static Object convertOrNull(final CommandContext context, final Object value, final Class<?> targetClass) {
+    if ((targetClass == Long.class || targetClass == Long.TYPE) && isBeyondLong(value))
+      return null;
+    return Type.convertOrNull(context.getDatabase(), value, targetClass);
+  }
+
+  private static boolean isBeyondLong(final Object value) {
+    return switch (value) {
+      case BigDecimal decimal -> decimal.compareTo(BEYOND_LONG_MAX) >= 0 || decimal.compareTo(BEYOND_LONG_MIN) <= 0;
+      case BigInteger integer -> integer.bitLength() > 63;
+      // 2^63 IS THE FIRST DOUBLE ABOVE THE RANGE, AND -2^63 IS EXACTLY Long.MIN_VALUE
+      case Double number -> number >= 0x1p63 || number < -0x1p63;
+      case Float number -> number >= 0x1p63f || number < -0x1p63f;
+      default -> false;
+    };
   }
 }
