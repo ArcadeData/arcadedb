@@ -732,6 +732,33 @@ public class ArcadeDbGrpcServiceExtendedTest extends BaseGrpcServerTest {
     assertThat(nested.get("extra").getInt32Value()).isEqualTo(7);
   }
 
+  /**
+   * The record attributes of a row are added after its own properties, each only when the row does not carry it already: a vertex
+   * and an edge row must still answer {@code @rid}, {@code @type}, {@code @cat} and, for the edge, both endpoints (issue #13011).
+   */
+  @Test
+  void aVertexRowAndAnEdgeRowCarryTheirRecordAttributes() {
+    command("CREATE VERTEX TYPE Issue13011V IF NOT EXISTS");
+    command("CREATE EDGE TYPE Issue13011E IF NOT EXISTS");
+    command("CREATE VERTEX Issue13011V SET name = 'a'");
+    command("CREATE VERTEX Issue13011V SET name = 'b'");
+    command("CREATE EDGE Issue13011E FROM (SELECT FROM Issue13011V WHERE name = 'a') TO (SELECT FROM Issue13011V WHERE name = 'b') SET w = 3");
+
+    final Map<String, GrpcValue> vertex = query("SELECT FROM Issue13011V WHERE name = 'a'").getResults(0).getRecords(0)
+        .getPropertiesMap();
+    assertThat(vertex.get("@cat").getStringValue()).isEqualTo("v");
+    assertThat(vertex.get("@type").getStringValue()).isEqualTo("Issue13011V");
+    assertThat(vertex.get("@rid").getLinkValue().getRid()).startsWith("#");
+    assertThat(vertex.get("name").getStringValue()).isEqualTo("a");
+
+    final Map<String, GrpcValue> edge = query("SELECT FROM Issue13011E").getResults(0).getRecords(0).getPropertiesMap();
+    assertThat(edge.get("@cat").getStringValue()).isEqualTo("e");
+    assertThat(edge.get("@type").getStringValue()).isEqualTo("Issue13011E");
+    assertThat(edge.get("@out").getLinkValue().getRid()).isEqualTo(vertex.get("@rid").getLinkValue().getRid());
+    assertThat(edge.get("@in").getLinkValue().getRid()).startsWith("#").isNotEqualTo(vertex.get("@rid").getLinkValue().getRid());
+    assertThat(edge.get("w").getInt32Value()).isEqualTo(3);
+  }
+
   private static void assertEveryColumn(final Map<String, GrpcValue> row, final int properties) {
     for (int i = 0; i < properties; i++)
       assertThat(row.get("p" + i)).as("column p%d", i).isNotNull()
