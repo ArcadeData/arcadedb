@@ -88,6 +88,14 @@ abstract class InPlaceRebuildStrategy {
   }
 
   /**
+   * Whether a bucket index of this kind can be created empty for a bucket its type index lacks and filled afterwards
+   * ({@link IndexInternal#setAwaitingFill}). A kind that cannot is dropped and created again when its type index is incomplete (issue #13350).
+   */
+  boolean repairsMissingBucketIndexes() {
+    return true;
+  }
+
+  /**
    * Builds the new content of {@code index} from the records of {@code bucket} and swaps it in. A crash at any point must leave the
    * index with its previous content or its new one.
    */
@@ -438,6 +446,11 @@ abstract class InPlaceRebuildStrategy {
     @Override
     String kindName() {
       return "LSM_VECTOR";
+    }
+
+    @Override
+    boolean repairsMissingBucketIndexes() {
+      return false;
     }
 
     @Override
