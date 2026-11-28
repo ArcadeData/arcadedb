@@ -159,6 +159,21 @@ final class CypherStepBuilder {
   }
 
   /**
+   * The predicates that selected the records a write at {@code clause} targets (issue #11818): those of the clauses before it, and,
+   * for the body of a {@code CALL { }}, those of the enclosing statement the body sees (issue #12593).
+   */
+  private SelectionPredicates selectionBefore(final List<ClauseEntry> clausesInOrder, final Object clause) {
+    final SelectionPredicates enclosing = plan.getEnclosingSelection();
+    return enclosing != null ? enclosing.nestedBefore(clausesInOrder, clause) : SelectionPredicates.before(clausesInOrder, clause);
+  }
+
+  /** {@link #selectionBefore}, plus the pattern of {@code merge}, for the actions of the MERGE (issue #12593). */
+  private SelectionPredicates selectionThrough(final List<ClauseEntry> clausesInOrder, final MergeClause merge) {
+    final SelectionPredicates enclosing = plan.getEnclosingSelection();
+    return enclosing != null ? enclosing.nestedThrough(clausesInOrder, merge) : SelectionPredicates.through(clausesInOrder, merge);
+  }
+
+  /**
    * Builds execution steps using the optimized physical plan.
    * Phase 4: Integrates physical operators with execution steps.
    * <p>
@@ -235,7 +250,7 @@ final class CypherStepBuilder {
             if (currentStep != null && (barrierFirst || eagerness.needsBarrier(setClause)))
               currentStep = EagerBarriers.withEagerBarrier(currentStep, context, eagerness);
             final SetStep setStep = new SetStep(setClause, context, functionFactory,
-                SelectionPredicates.before(clausesInOrder, setClause));
+                selectionBefore(clausesInOrder, setClause));
             setStep.setPrevious(currentStep);
             currentStep = setStep;
             eagerness.observeWriteClause();
@@ -269,7 +284,7 @@ final class CypherStepBuilder {
                 || eagerness.needsBarrierForPropertyWrites(removeClause)))
               currentStep = EagerBarriers.withEagerBarrier(currentStep, context, eagerness);
             final RemoveStep removeStep = new RemoveStep(removeClause, context, functionFactory,
-                SelectionPredicates.before(clausesInOrder, removeClause));
+                selectionBefore(clausesInOrder, removeClause));
             removeStep.setPrevious(currentStep);
             currentStep = removeStep;
             eagerness.observeWriteClause();
@@ -282,7 +297,7 @@ final class CypherStepBuilder {
           if (eagerness.needsBarrier(mergeClause, optimizerBoundVariables) || eagerness.needsBarrierAfterMerge(mergeClause)
               || eagerness.needsBarrierForPropertyWrites(mergeClause))
             currentStep = EagerBarriers.withEagerBarrier(currentStep, context, eagerness);
-          final MergeStep mergeStep = new MergeStep(mergeClause, context, functionFactory);
+          final MergeStep mergeStep = new MergeStep(mergeClause, context, functionFactory, selectionThrough(clausesInOrder, mergeClause));
           mergeStep.setPrevious(currentStep);
           currentStep = mergeStep;
           eagerness.observeWriteClause();
@@ -786,7 +801,7 @@ final class CypherStepBuilder {
         // A MERGE that starts the statement runs its lookup once: no later write can change what it finds (issue #10889)
         final boolean mergeRunsPerRow = currentStep != null && currentStep != singleRowSource;
         final MergeStep mergeStep =
-            new MergeStep(mergeClause, context, functionFactory);
+            new MergeStep(mergeClause, context, functionFactory, selectionThrough(clausesInOrder, mergeClause));
         if (currentStep != null) {
           mergeStep.setPrevious(currentStep);
         }
@@ -830,7 +845,7 @@ final class CypherStepBuilder {
             if (barrierFirst || eagerness.needsBarrier(setClause))
               currentStep = EagerBarriers.withEagerBarrier(currentStep, context, eagerness);
             final SetStep setStep =
-                new SetStep(setClause, context, functionFactory, SelectionPredicates.before(clausesInOrder, setClause));
+                new SetStep(setClause, context, functionFactory, selectionBefore(clausesInOrder, setClause));
             setStep.setPrevious(currentStep);
             currentStep = setStep;
           }
@@ -847,7 +862,7 @@ final class CypherStepBuilder {
               || eagerness.needsBarrierForPropertyWrites(removeClause))
             currentStep = EagerBarriers.withEagerBarrier(currentStep, context, eagerness);
           final RemoveStep removeStep =
-              new RemoveStep(removeClause, context, functionFactory, SelectionPredicates.before(clausesInOrder, removeClause));
+              new RemoveStep(removeClause, context, functionFactory, selectionBefore(clausesInOrder, removeClause));
           removeStep.setPrevious(currentStep);
           currentStep = removeStep;
           eagerness.observeWrite(removeClause);
@@ -928,7 +943,8 @@ final class CypherStepBuilder {
             || eagerness.needsBarrierAfterMerge(foreachClause) || eagerness.needsBarrierForPropertyWrites(foreachClause)))
           currentStep = EagerBarriers.withEagerBarrier(currentStep, context, eagerness);
         final ForeachStep foreachStep =
-            new ForeachStep(foreachClause, context, functionFactory, foreachEagerMaterialize, foreachEagerExecution);
+            new ForeachStep(foreachClause, context, functionFactory, foreachEagerMaterialize, foreachEagerExecution,
+                selectionBefore(clausesInOrder, foreachClause));
         if (currentStep != null) {
           foreachStep.setPrevious(currentStep);
         }
@@ -959,7 +975,8 @@ final class CypherStepBuilder {
             || eagerness.needsBarrierAfterMerge(subqueryBody)))
           currentStep = EagerBarriers.withEagerBarrier(currentStep, context, eagerness);
         final SubqueryStep subqueryStep =
-            new SubqueryStep(subqueryClause, context, database, parameters, expressionEvaluator);
+            new SubqueryStep(subqueryClause, context, database, parameters, expressionEvaluator,
+                selectionBefore(clausesInOrder, subqueryClause));
         // Nothing in a statement that cannot write needs the body's reads finished before the next clause: its rows stream,
         // so a LIMIT after the CALL stops the body too (issue #11082)
         subqueryStep.setStreamBody(statement.isReadOnly());

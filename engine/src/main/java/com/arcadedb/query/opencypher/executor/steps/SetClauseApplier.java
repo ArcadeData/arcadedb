@@ -25,6 +25,7 @@ import com.arcadedb.database.DocumentValidator;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.graph.Edge;
@@ -130,10 +131,12 @@ public final class SetClauseApplier {
 
   /**
    * A {@code MERGE} action ({@code ON CREATE SET} / {@code ON MATCH SET}): the record is already the one this
-   * transaction matched or created, and an unchanged property value is not re-written.
+   * transaction matched or created, and an unchanged property value is not re-written. A target reloaded with content a
+   * concurrent commit changed so that one of {@code selection} no longer holds is refused, as for a SET (issue #12593).
    */
-  public static SetClauseApplier forMergeAction(final CommandContext context, final ExpressionEvaluator evaluator) {
-    return new SetClauseApplier(context, evaluator, false, true, SelectionPredicates.NONE);
+  public static SetClauseApplier forMergeAction(final CommandContext context, final ExpressionEvaluator evaluator,
+      final SelectionPredicates selection) {
+    return new SetClauseApplier(context, evaluator, false, true, selection);
   }
 
   /**
@@ -519,6 +522,44 @@ public final class SetClauseApplier {
       return true;
     final Binary current = doc instanceof BaseRecord record ? record.getBuffer() : null;
     return current != readImage && !sameContent(readImage, current);
+  }
+
+  /**
+   * Takes {@code doc}, the write target a row binds, for update: {@code modify()} pins its page and reloads it when the page moved
+   * on, and every alias of the row that binds the record follows the copy. When the reload brought content a concurrent commit
+   * changed since the row read it (not the transaction's own copy), the predicates that selected the record are evaluated again on
+   * it, and the write is refused as a retryable conflict when one no longer holds (issues #11818, #12593). Shared by the writes
+   * that do not go through {@link #reloadDocument}: a REMOVE, and a label write of either clause.
+   *
+   * @return the copy to write, which the row binds now
+   */
+  static MutableDocument takeForUpdate(final Document doc, final Result row, final SelectionPredicates selection,
+      final CommandContext context) {
+    final Binary readImage = doc instanceof BaseRecord record ? record.getBuffer() : null;
+    final MutableDocument mutable = doc.modify();
+    if (mutable == doc)
+      return mutable;
+    RowAliases.propagateUpdate(row, doc, mutable);
+    final RID rid = doc.getIdentity();
+    if (rid != null && context.getDatabase().getTransaction().getRecordFromCache(rid) != mutable && holdsOtherContent(doc, readImage))
+      selection.requireStillSelected(rid, row, context);
+    return mutable;
+  }
+
+  /**
+   * {@link #takeForUpdate} for the vertex a label write rewrites ({@link LabelReplacements#replace}), which reloads it itself when
+   * no predicate selected it. A vertex a concurrent transaction deleted is left to the rewrite, which refuses it as a retryable
+   * conflict.
+   */
+  static Vertex takeForLabelWrite(final Vertex vertex, final Result row, final SelectionPredicates selection,
+      final CommandContext context) {
+    if (selection == SelectionPredicates.NONE)
+      return vertex;
+    try {
+      return (Vertex) takeForUpdate(vertex, row, selection, context);
+    } catch (final RecordNotFoundException e) {
+      return vertex;
+    }
   }
 
   private static boolean sameContent(final Binary a, final Binary b) {
@@ -982,6 +1023,10 @@ public final class SetClauseApplier {
     // If the type hasn't changed, nothing to do (all labels already present)
     if (vertex.getTypeName().equals(newTypeName))
       return;
+
+    // The rewrite copies the latest committed content (#8538): what the predicates that selected the vertex read is checked on it
+    // first, as a property write checks it (issue #12593)
+    vertex = takeForLabelWrite(vertex, result, selection, context);
 
     // Rewrite the vertex under the composite type: the record moves, and the replacement is recorded so this row and
     // every later one follow it. The move copies what the clause wrote to the vertex so far (issue #12824).

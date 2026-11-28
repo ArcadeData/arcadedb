@@ -45,17 +45,25 @@ public class ConvertToUpdatableResultStep extends AbstractExecutionStep {
       + "or a TIMESERIES sample). Select the records themselves (SELECT FROM <type> WHERE ...), or their @rid, as the source";
   ResultSet prevResult = null;
   // #11818: the WHERE the source selected the records with (null when it has none), and whether the statement is an UPSERT
-  private final WhereClause whereClause;
-  private final boolean     upsert;
+  private final WhereClause             whereClause;
+  private final boolean                 upsert;
+  // #12593: the predicates of a SELECT source whose rows can be made again from the record they name, or null
+  private final SubquerySourceSelection sourceSelection;
 
   public ConvertToUpdatableResultStep(final CommandContext context) {
-    this(context, null, false);
+    this(context, null, false, null);
   }
 
   public ConvertToUpdatableResultStep(final CommandContext context, final WhereClause whereClause, final boolean upsert) {
+    this(context, whereClause, upsert, null);
+  }
+
+  public ConvertToUpdatableResultStep(final CommandContext context, final WhereClause whereClause, final boolean upsert,
+      final SubquerySourceSelection sourceSelection) {
     super(context);
     this.whereClause = whereClause;
     this.upsert = upsert;
+    this.sourceSelection = sourceSelection;
   }
 
   @Override
@@ -97,7 +105,7 @@ public class ConvertToUpdatableResultStep extends AbstractExecutionStep {
             if (nextItem.isElement()) {
               final Record element = nextItem.getElement().get();
               if (element != null) {
-                nextItem = forUpdate((Document) element.getRecord(), context);
+                nextItem = forUpdate((Document) element.getRecord(), context, false);
                 // #11818: a concurrent commit changed the record so that it no longer matches the WHERE
                 if (nextItem == null)
                   continue;
@@ -111,8 +119,9 @@ public class ConvertToUpdatableResultStep extends AbstractExecutionStep {
               final Record record = identifiable.getRecord();
               if (record instanceof Document doc) {
                 // The WHERE selected the projected row, which holds the @rid and not the record: the record is loaded only now, so
-                // there is no earlier read of it to evaluate the WHERE against again
-                nextItem = forUpdate(doc, context);
+                // nothing tells whether a concurrent commit changed it since the projection read it. When the row can be made again
+                // from the record, the predicates are evaluated again on it (#12593); otherwise the row stands as it was read
+                nextItem = forUpdate(doc, context, true);
                 if (nextItem == null)
                   continue;
                 break;
@@ -186,25 +195,46 @@ public class ConvertToUpdatableResultStep extends AbstractExecutionStep {
    * Updating it anyway built on the concurrent commit, and two "UPDATE ... SET claimed = :me WHERE claimed IS NULL" both
    * claimed the record. An UPSERT that loses its record this way is refused with a retryable conflict instead: skipping it
    * would neither update nor insert, and its retry inserts or updates against the new state.
+   * <p>
+   * #12593: when the source is a SELECT, its own WHERE selected the record too, and the statement's WHERE read the row the SELECT
+   * made of the record: both are evaluated again ({@link SubquerySourceSelection}). A row that carries the {@code @rid} of the
+   * record and not the record is evaluated again on every record it names, since nothing tells what the projection read.
+   *
+   * @param projectedRow whether the row carried the record's {@code @rid} and the record was loaded only now
    *
    * @return the record to update, or null when it no longer matches the WHERE
    */
-  private UpdatableResult forUpdate(final Document document, final CommandContext context) {
+  private UpdatableResult forUpdate(final Document document, final CommandContext context, final boolean projectedRow) {
     final Binary readImage = document instanceof BaseRecord record ? record.getBuffer() : null;
     final MutableDocument mutable = document.modify();
     mutable.clearBasedOnStaleRead();
     final UpdatableResult result = new UpdatableResult(mutable);
-    if (whereClause == null || mutable == document || !reloadedWithOtherContent(document, readImage))
+    // The transaction's own copy is what it wrote, not a concurrent commit
+    if (mutable == document)
       return result;
-
-    // $current is restored: a record that is skipped, or refused, is not the row the statement is at
-    final Object oldCurrent = context.getVariable("current");
-    context.setVariable("current", result);
-    try {
-      if (whereClause.matchesFilters(result, context))
+    if (projectedRow) {
+      // The statement's WHERE read the projection's columns, which the record alone cannot answer: only a source that can make
+      // the row again is evaluated again
+      if (sourceSelection == null || sourceSelection.selects(mutable, context))
         return result;
-    } finally {
-      context.setVariable("current", oldCurrent);
+    } else {
+      if ((whereClause == null && sourceSelection == null) || !reloadedWithOtherContent(document, readImage))
+        return result;
+
+      if (sourceSelection != null) {
+        if (sourceSelection.selects(mutable, context))
+          return result;
+      } else {
+        // $current is restored: a record that is skipped, or refused, is not the row the statement is at
+        final Object oldCurrent = context.getVariable("current");
+        context.setVariable("current", result);
+        try {
+          if (whereClause.matchesFilters(result, context))
+            return result;
+        } finally {
+          context.setVariable("current", oldCurrent);
+        }
+      }
     }
     if (upsert)
       throw new ConcurrentModificationException("Record " + document.getIdentity()

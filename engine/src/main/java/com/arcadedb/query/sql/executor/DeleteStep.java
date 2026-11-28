@@ -47,6 +47,8 @@ public class DeleteStep extends AbstractExecutionStep {
   private final boolean    vertexOnly;
   // Whether two rows of the source can name one record, so that a record an earlier row deleted must be skipped (issue #12256)
   private final boolean    sourceMayRepeatARecord;
+  // The predicates of a SELECT source whose rows can be made again from the record they name (issue #12593), or null
+  private final SubquerySourceSelection sourceSelection;
   // The records this statement deleted (issue #12256), allocated by the first row that needs it, and never when the source cannot
   // repeat a record. A field, not a local of syncPull: the step is pulled once per batch, and two rows naming one record can fall
   // in different batches. The plan is built per execution, so the step lives as long as the statement. Its cost is one primitive
@@ -75,11 +77,21 @@ public class DeleteStep extends AbstractExecutionStep {
    */
   public DeleteStep(final CommandContext context, final Projection returning, final boolean returnsRecords, final boolean vertexOnly,
       final boolean sourceMayRepeatARecord) {
+    this(context, returning, returnsRecords, vertexOnly, sourceMayRepeatARecord, null);
+  }
+
+  /**
+   * @param sourceSelection the predicates of a SELECT source whose rows can be made again from the record they name, evaluated again
+   *                        on the record a row that carries its {@code @rid} names (issue #12593), or null
+   */
+  public DeleteStep(final CommandContext context, final Projection returning, final boolean returnsRecords, final boolean vertexOnly,
+      final boolean sourceMayRepeatARecord, final SubquerySourceSelection sourceSelection) {
     super(context);
     this.returning = returning;
     this.returnsRecords = returnsRecords;
     this.vertexOnly = vertexOnly;
     this.sourceMayRepeatARecord = sourceMayRepeatARecord;
+    this.sourceSelection = sourceSelection;
   }
 
   /** Whether this step skips a record an earlier row of the statement already deleted. */
@@ -119,6 +131,11 @@ public class DeleteStep extends AbstractExecutionStep {
             if (deletedByAnEarlierRow(identifiable))
               return null;
             if (identifiable.getRecord() instanceof Record record) {
+              // The WHERE read the projection's columns, and the record is loaded only now: a concurrent commit since the projection
+              // read it may have left a record the statement no longer selects, which is then not deleted, as UPDATE skips it
+              // (issue #12593). A delete never builds on what it read, so an element row needs no such check (issue #12472)
+              if (sourceSelection != null && record instanceof Document document && !sourceSelection.selects(document, context))
+                return null;
               checkIsVertex(record);
               final Result answer = beforeImage(context, result);
               return database.deleteRecordReportingVeto(record) ? answer : null;

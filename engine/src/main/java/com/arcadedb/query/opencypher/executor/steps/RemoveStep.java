@@ -18,11 +18,8 @@
  */
 package com.arcadedb.query.opencypher.executor.steps;
 
-import com.arcadedb.database.BaseRecord;
-import com.arcadedb.database.Binary;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
-import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TypeMismatchException;
@@ -37,7 +34,6 @@ import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.executor.HeldCollectionRefresher;
 import com.arcadedb.query.opencypher.executor.LabelReplacements;
-import com.arcadedb.query.opencypher.executor.RowAliases;
 import com.arcadedb.query.opencypher.executor.SelectionPredicates;
 import com.arcadedb.query.opencypher.executor.WrittenCopy;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
@@ -317,25 +313,16 @@ public class RemoveStep extends AbstractExecutionStep {
 
     final Document doc = (Document) obj;
 
-    // Make document mutable. REMOVE writes no value computed from what the MATCH read, so a commit landing in between
-    // leaves nothing to lose: the stale-read refusal (#8610) does not apply
-    final Binary readImage = doc instanceof BaseRecord record ? record.getBuffer() : null;
-    final MutableDocument mutableDoc = doc.modify();
+    // Make document mutable, in every alias of the row that binds the same node, so all of them observe the removal - one
+    // binding per node per row is what Cypher promises, and it is what SET has always delivered (issue #6328).
+    // #11818: what the predicates that selected the record read may have changed since the read, though: "WHERE r.owner = $me
+    // REMOVE r.owner" would release a lease another transaction took over. Checked on the reloaded record, before the removal
+    final MutableDocument mutableDoc = SetClauseApplier.takeForUpdate(doc, result, selection, context);
+    // REMOVE writes no value computed from what the MATCH read, so a commit landing in between leaves nothing to lose: the
+    // stale-read refusal (#8610) does not apply
     mutableDoc.clearBasedOnStaleRead();
-
-    // Update the result with the modified document
     if (variable != null)
       ((ResultInternal) result).setProperty(variable, mutableDoc);
-    // ...and with it every other alias of the same node, so all of them observe the removal - one binding per node
-    // per row is what Cypher promises, and it is what SET has always delivered (issue #6328).
-    RowAliases.propagateUpdate(result, doc, mutableDoc);
-
-    // #11818: what the predicates that selected the record read may have changed, though: "WHERE r.owner = $me REMOVE r.owner"
-    // would release a lease another transaction took over since the read. Checked on the reloaded record, before the removal
-    final RID rid = doc.getIdentity();
-    if (mutableDoc != doc && rid != null && context.getDatabase().getTransaction().getRecordFromCache(rid) != mutableDoc
-        && SetClauseApplier.holdsOtherContent(doc, readImage))
-      selection.requireStillSelected(rid, result, context);
 
     // Removing a property that isn't there is a no-op for Neo4j-compatible statistics: only count it when the property
     // existed before the removal. Asked of the copy being written, not of the record the row read: a target captured twice
@@ -449,6 +436,10 @@ public class RemoveStep extends AbstractExecutionStep {
     // being reported as a removal.
     if (vertex.getTypeName().equals(newTypeName))
       return;
+
+    // The rewrite copies the latest committed content (#8538): what the predicates that selected the vertex read is checked on it
+    // first, as a property removal checks it (issue #12593)
+    vertex = SetClauseApplier.takeForLabelWrite(vertex, result, selection, context);
 
     // Rewrite the vertex under the reduced type. The record moves, so the replacement is recorded and every
     // alias of this node in the row - and in every later row - follows it.

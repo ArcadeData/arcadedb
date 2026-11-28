@@ -38,6 +38,7 @@ import com.arcadedb.query.opencypher.executor.DeletedReferences;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.executor.LabelReplacements;
 import com.arcadedb.query.opencypher.executor.RowAliases;
+import com.arcadedb.query.opencypher.executor.SelectionPredicates;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -121,6 +122,8 @@ public class ForeachStep extends AbstractExecutionStep {
    * be a fix - a smaller chunk only moves the boundary the reader sees the writes at.
    */
   private final boolean eagerExecution;
+  // The predicates in force where the body starts (issue #12593)
+  private final SelectionPredicates bodySelection;
 
   // THE ROWS MATERIALIZED, UNDER THE PER-OPERATION CAP AND THE HEAP BUDGET OF ALL THE QUERIES (ISSUES #8585, #8591). ON
   // THE STEP: THE CLOSE() OF A QUERY REACHES THE STEPS, NOT THEIR RESULT SETS
@@ -130,18 +133,25 @@ public class ForeachStep extends AbstractExecutionStep {
 
   public ForeachStep(final ForeachClause foreachClause, final CommandContext context,
                      final CypherFunctionFactory functionFactory) {
-    this(foreachClause, context, functionFactory, false, false);
+    this(foreachClause, context, functionFactory, false, false, SelectionPredicates.NONE);
   }
 
+  /**
+   * @param enclosing the predicates in force at the FOREACH, which selected the records its body writes: the body's SET, REMOVE
+   *                  and MERGE evaluate them again on a target reloaded with changed content, as the same write outside a FOREACH
+   *                  does (issue #12593)
+   */
   public ForeachStep(final ForeachClause foreachClause, final CommandContext context,
                      final CypherFunctionFactory functionFactory, final boolean eagerMaterialize,
-                     final boolean eagerExecution) {
+                     final boolean eagerExecution, final SelectionPredicates enclosing) {
     super(context);
     this.foreachClause = foreachClause;
     this.functionFactory = functionFactory;
     this.evaluator = new ExpressionEvaluator(functionFactory);
     this.eagerMaterialize = eagerMaterialize;
     this.eagerExecution = eagerExecution;
+    // The body binds the loop variable over any outer variable of that name, so a predicate reading the outer one is out of scope
+    this.bodySelection = enclosing.inBody(null, foreachClause.getVariable());
   }
 
   @Override
@@ -528,13 +538,14 @@ public class ForeachStep extends AbstractExecutionStep {
    * FOREACH). Returns {@code null} for unsupported clause types.
    */
   private AbstractExecutionStep createStepForClause(final ClauseEntry clauseEntry, final CommandContext context) {
+    final List<ClauseEntry> bodyClauses = foreachClause.getInnerClauses();
     switch (clauseEntry.getType()) {
       case CREATE:
         final CreateClause createClause = clauseEntry.getTypedClause();
         return new CreateStep(createClause, context, functionFactory);
       case SET:
         final SetClause setClause = clauseEntry.getTypedClause();
-        return new SetStep(setClause, context, functionFactory);
+        return new SetStep(setClause, context, functionFactory, bodySelection.nestedBefore(bodyClauses, setClause));
       case DELETE:
         // Non-eager DeleteStep is safe here: "tail" (the chain's source, above) feeds exactly one row
         // per FOREACH iteration - a literal iterationRow, never a MATCH's row stream - so there is no
@@ -544,16 +555,17 @@ public class ForeachStep extends AbstractExecutionStep {
         return new DeleteStep(deleteClause, context);
       case MERGE:
         final MergeClause mergeClause = clauseEntry.getTypedClause();
-        return new MergeStep(mergeClause, context, functionFactory);
+        return new MergeStep(mergeClause, context, functionFactory, bodySelection.nestedThrough(bodyClauses, mergeClause));
       case REMOVE:
         final RemoveClause removeClause = clauseEntry.getTypedClause();
-        return new RemoveStep(removeClause, context, functionFactory);
+        return new RemoveStep(removeClause, context, functionFactory, bodySelection.nestedBefore(bodyClauses, removeClause));
       case FOREACH:
         // eagerExecution is deliberately left off for a nested FOREACH rather than forgotten: the
         // chain built here is drained to exhaustion by executeInnerClauses() once per outer iteration,
         // so the nRecords cap never splits a nested body across two pulls in the first place.
         final ForeachClause nestedForeach = clauseEntry.getTypedClause();
-        return new ForeachStep(nestedForeach, context, functionFactory);
+        return new ForeachStep(nestedForeach, context, functionFactory, false, false,
+            bodySelection.nestedBefore(bodyClauses, nestedForeach));
       default:
         return null;
     }
