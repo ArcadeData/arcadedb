@@ -18,7 +18,9 @@
  */
 package com.arcadedb.index.vector;
 
+import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.VectorApiSupport;
+import io.github.jbellis.jvector.vector.ArrayVectorFloat;
 import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 import io.github.jbellis.jvector.vector.VectorUtilSupport;
 import io.github.jbellis.jvector.vector.types.VectorFloat;
@@ -28,6 +30,7 @@ import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
 import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicReferenceArray;
+import java.util.logging.Level;
 
 /**
  * The full-precision vectors every search of an index scores, held on the heap by vector id in flat storage and scored
@@ -60,11 +63,13 @@ import java.util.concurrent.atomic.AtomicReferenceArray;
  * half-written vector is never returned, it is reported as a miss. The version, not the id, is what tells two writes apart
  * (issue #10968).
  * <p>
- * <b>Scores.</b> {@link #similarity(VectorSimilarityFunction, VectorFloat, VectorFloat, int, int)} is the one place a
- * search computes a similarity against stored components, both for a vector found here and for one just read from its page,
- * so every candidate of a walk is scored by the same kernel. With the Panama and native providers that kernel is the
- * algorithm {@link VectorSimilarityFunction#compare} runs; the two can still differ in the last bit while the JIT has
- * compiled one and not yet the other, as two calls of {@code compare} itself can.
+ * <b>Scores.</b> {@link #similarity(VectorSimilarityFunction, Query, VectorFloat, int, int)} is the one place a
+ * search computes a similarity against components that are not resident, so a vector found here and one just read from its
+ * page are scored by the same kernel. A cosine is the dot product over the norms: the norm of the query is worked out once
+ * for the search ({@link Query}) and that of a stored vector once, when it is cached, so a resident vector costs one pass
+ * for the dot product (issue #13274). With the Panama provider that is the algorithm {@link VectorSimilarityFunction#compare}
+ * runs, in another summation order; the two can differ in the last bit, as two calls of {@code compare} itself can while the
+ * JIT has compiled one and not yet the other.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -75,14 +80,32 @@ final class FlatVectorCache {
    * capacity floor provides for (8,192 slots of 1536 dimensions would be 50 MB).
    */
   static final int MAX_CHUNK_FLOATS = 1 << 20;
-  /** Largest capacity, in vectors. */
-  static final int MAX_CAPACITY     = 1 << 30;
+  /** Largest capacity, in vectors: a slot is two longs of {@link #slots}, whose length must fit an int. */
+  static final int MAX_CAPACITY     = 1 << 29;
 
   private static final VarHandle         STAMPS = MethodHandles.arrayElementVarHandle(long[].class);
   /** Version 0, id -1: the stamp of a slot that holds nothing. */
   private static final long              EMPTY  = 0xFFFFFFFFL;
   private static final VectorTypeSupport VTS    = VectorApiSupport.jvectorProvider().getVectorTypeSupport();
   private static final VectorUtilSupport UTIL   = VectorApiSupport.jvectorProvider().getVectorUtilSupport();
+  /**
+   * True when a cosine is scored by {@link SimdCosineKernels} from the squared norms the cache keeps, false when it is scored by
+   * jvector's own kernel: a JVM without the Vector API, a native image, or a provider whose vectors are not {@code float[]}
+   * (the native one), none of which the kernels can read.
+   */
+  private static final boolean            SIMD_COSINE = simdCosine();
+
+  private static boolean simdCosine() {
+    if (!VectorApiSupport.isVectorApiCompiled() || !(VTS.createFloatVector(1) instanceof ArrayVectorFloat))
+      return false;
+    try {
+      return SimdCosineKernels.selfTest();
+    } catch (final LinkageError | RuntimeException e) {
+      LogManager.instance().log(FlatVectorCache.class, Level.INFO,
+          "Cosine search kernels disabled, scoring through jvector's own (reason: %s). Add '--add-modules jdk.incubator.vector' to the JVM flags", e.toString());
+      return false;
+    }
+  }
 
   /** Longs per counter stripe: one 64-byte cache line, as in {@link VectorCache}. */
   private static final int STRIPE_LONGS = 8;
@@ -95,8 +118,11 @@ final class FlatVectorCache {
 
   private final int                                 dimensions;
   private final int                                 capacity;
-  // version << 32 | id. Version even: the slot is stable. Odd: a writer owns it
-  private final long[]                              stamps;
+  // Two longs per slot, at 2 * slot and 2 * slot + 1, so a lookup that reads the stamp finds the norm in the same cache line.
+  // The first is the stamp, version << 32 | id; version even: the slot is stable, odd: a writer owns it. The second is the
+  // squared norm of the slot's vector as the bits of a float, kept only when SIMD_COSINE: written by the writer that owns the
+  // slot, before it publishes the stamp, and read between two reads of the stamp, like the components
+  private final long[]                              slots;
   private final int                                 chunkShift;
   private final int                                 chunkMask;
   private final AtomicReferenceArray<VectorFloat<?>> chunks;
@@ -116,8 +142,9 @@ final class FlatVectorCache {
       throw new IllegalArgumentException("dimensions must be positive, got " + dimensions);
     this.dimensions = dimensions;
     this.capacity = Math.min(MAX_CAPACITY, Math.max(1, requestedCapacity));
-    this.stamps = new long[capacity];
-    Arrays.fill(stamps, EMPTY);
+    this.slots = new long[2 * capacity];
+    for (int slot = 0; slot < capacity; slot++)
+      slots[slot << 1] = EMPTY;
 
     // Slots per chunk: the largest power of two whose components fit a chunk, never more than the capacity needs. One slot
     // when a single vector is wider than a chunk: its chunk is then exactly one vector. The last chunk is cut to the slots
@@ -129,9 +156,9 @@ final class FlatVectorCache {
     this.chunks = new AtomicReferenceArray<>((capacity + slotsPerChunk - 1) / slotsPerChunk);
   }
 
-  /** @return the heap one cached vector costs: its components and its stamp. */
+  /** @return the heap one cached vector costs: its components, its stamp and its squared norm. */
   static long bytesPerVector(final int dimensions) {
-    return (long) dimensions * Float.BYTES + Long.BYTES;
+    return (long) dimensions * Float.BYTES + 2L * Long.BYTES;
   }
 
   int capacity() {
@@ -146,19 +173,27 @@ final class FlatVectorCache {
    * @return the similarity {@code function} gives {@code query} and the cached vector of {@code vectorId}, or {@code NaN}
    * when the vector is not resident
    */
-  float similarity(final int vectorId, final VectorFloat<?> query, final VectorSimilarityFunction function) {
+  float similarity(final int vectorId, final Query query, final VectorSimilarityFunction function) {
     if (vectorId >= 0) {
       final int slot = slotOf(vectorId);
-      final long stamp = (long) STAMPS.getAcquire(stamps, slot);
+      final int at = slot << 1;
+      final long stamp = (long) STAMPS.getAcquire(slots, at);
       if ((int) stamp == vectorId && (stamp & (1L << 32)) == 0) {
         // Plain read: the writer that published this stamp took the chunk from the array before its release, and the
         // acquire above orders this read after that release, so the chunk is visible
         final VectorFloat<?> chunk = chunks.getPlain(slot >>> chunkShift);
         if (chunk != null) {
-          final float score = similarity(function, query, chunk, (slot & chunkMask) * dimensions, dimensions);
-          // The components must have been read before the stamp is read again: a writer that started in between moved it
+          final int offset = (slot & chunkMask) * dimensions;
+          final float score;
+          if (SIMD_COSINE && function == VectorSimilarityFunction.COSINE && query.array != null
+              && chunk instanceof final ArrayVectorFloat resident)
+            score = residentCosine(query, resident, offset, Float.intBitsToFloat((int) (long) STAMPS.getOpaque(slots, at + 1)));
+          else
+            score = jvectorSimilarity(function, query.vector, chunk, offset, dimensions);
+          // The components and the norm must have been read before the stamp is read again: a writer that started in
+          // between moved it
           VarHandle.acquireFence();
-          if ((long) STAMPS.getOpaque(stamps, slot) == stamp) {
+          if ((long) STAMPS.getOpaque(slots, at) == stamp) {
             count(HITS);
             return score;
           }
@@ -169,6 +204,13 @@ final class FlatVectorCache {
     return Float.NaN;
   }
 
+  /** The cosine of a resident vector from its kept squared norm; a vector whose squared norm overflows is jvector's to score, as in {@link Query#of}. */
+  private float residentCosine(final Query query, final ArrayVectorFloat resident, final int offset, final float dataSquaredNorm) {
+    if (Float.isInfinite(dataSquaredNorm))
+      return jvectorSimilarity(VectorSimilarityFunction.COSINE, query.vector, resident, offset, dimensions);
+    return cosine(query, SimdCosineKernels.dot(query.array, resident.get(), offset, dimensions), dataSquaredNorm);
+  }
+
   /**
    * @return a copy of the cached vector of {@code vectorId}, or {@code null} when it is not resident. For the callers that
    * need the vector itself rather than a score; a search scores through {@link #similarity(int, VectorFloat, VectorSimilarityFunction)}.
@@ -176,14 +218,14 @@ final class FlatVectorCache {
   VectorFloat<?> get(final int vectorId) {
     if (vectorId >= 0) {
       final int slot = slotOf(vectorId);
-      final long stamp = (long) STAMPS.getAcquire(stamps, slot);
+      final long stamp = (long) STAMPS.getAcquire(slots, slot << 1);
       if ((int) stamp == vectorId && (stamp & (1L << 32)) == 0) {
         final VectorFloat<?> chunk = chunks.getPlain(slot >>> chunkShift);
         if (chunk != null) {
           final VectorFloat<?> copy = VTS.createFloatVector(dimensions);
           copy.copyFrom(chunk, (slot & chunkMask) * dimensions, 0, dimensions);
           VarHandle.acquireFence();
-          if ((long) STAMPS.getOpaque(stamps, slot) == stamp) {
+          if ((long) STAMPS.getOpaque(slots, slot << 1) == stamp) {
             count(HITS);
             return copy;
           }
@@ -204,16 +246,22 @@ final class FlatVectorCache {
     if (vectorId < 0 || vector == null || vector.length() != dimensions)
       return;
     final int slot = slotOf(vectorId);
-    final long stamp = (long) STAMPS.getVolatile(stamps, slot);
+    final int at = slot << 1;
+    final long stamp = (long) STAMPS.getVolatile(slots, at);
     final long version = stamp >>> 32;
     if ((version & 1) != 0 || (int) stamp == vectorId)
       return;
     final VectorFloat<?> chunk = chunkFor(slot);
     final long id = vectorId & 0xFFFFFFFFL;
-    if (!STAMPS.compareAndSet(stamps, slot, stamp, ((version + 1) << 32) | id))
+    if (!STAMPS.compareAndSet(slots, at, stamp, ((version + 1) << 32) | id))
       return;
-    chunk.copyFrom(vector, 0, (slot & chunkMask) * dimensions, dimensions);
-    STAMPS.setRelease(stamps, slot, ((version + 2) << 32) | id);
+    final int offset = (slot & chunkMask) * dimensions;
+    chunk.copyFrom(vector, 0, offset, dimensions);
+    if (SIMD_COSINE && chunk instanceof final ArrayVectorFloat stored)
+      // Of the copy, not of the argument: the number a reader pairs with these components is the one they have
+      STAMPS.setOpaque(slots, at + 1,
+          (long) Float.floatToRawIntBits(SimdCosineKernels.squaredNorm(stored.get(), offset, dimensions)));
+    STAMPS.setRelease(slots, at, ((version + 2) << 32) | id);
   }
 
   /**
@@ -224,9 +272,9 @@ final class FlatVectorCache {
   void remove(final int vectorId) {
     if (vectorId < 0)
       return;
-    final int slot = slotOf(vectorId);
+    final int at = slotOf(vectorId) << 1;
     while (true) {
-      final long stamp = (long) STAMPS.getVolatile(stamps, slot);
+      final long stamp = (long) STAMPS.getVolatile(slots, at);
       final long version = stamp >>> 32;
       if ((version & 1) != 0) {
         Thread.onSpinWait();
@@ -235,7 +283,7 @@ final class FlatVectorCache {
       if ((int) stamp != vectorId)
         return;
       // One version step past the write that held it, with no id: a reader that read the old stamp sees it move
-      if (STAMPS.compareAndSet(stamps, slot, stamp, ((version + 2) << 32) | 0xFFFFFFFFL))
+      if (STAMPS.compareAndSet(slots, at, stamp, ((version + 2) << 32) | 0xFFFFFFFFL))
         return;
     }
   }
@@ -250,15 +298,16 @@ final class FlatVectorCache {
    * every stamp, which would make this O(1), is not worth one more comparison on every probe of every search.
    */
   void clear() {
-    for (int slot = 0; slot < stamps.length; slot++) {
+    for (int slot = 0; slot < capacity; slot++) {
+      final int at = slot << 1;
       while (true) {
-        final long stamp = (long) STAMPS.getVolatile(stamps, slot);
+        final long stamp = (long) STAMPS.getVolatile(slots, at);
         final long version = stamp >>> 32;
         if ((version & 1) != 0) {
           Thread.onSpinWait();
           continue;
         }
-        if (STAMPS.compareAndSet(stamps, slot, stamp, ((version + 2) << 32) | 0xFFFFFFFFL))
+        if (STAMPS.compareAndSet(slots, at, stamp, ((version + 2) << 32) | 0xFFFFFFFFL))
           break;
       }
     }
@@ -267,8 +316,8 @@ final class FlatVectorCache {
   /** @return the vectors resident. O(capacity): for diagnostics and tests only. */
   int size() {
     int count = 0;
-    for (int slot = 0; slot < stamps.length; slot++)
-      if ((int) (long) STAMPS.getOpaque(stamps, slot) != -1)
+    for (int slot = 0; slot < capacity; slot++)
+      if ((int) (long) STAMPS.getOpaque(slots, slot << 1) != -1)
         ++count;
     return count;
   }
@@ -301,18 +350,70 @@ final class FlatVectorCache {
 
   /**
    * The similarity {@code function} gives {@code query} and the {@code dimensions} components of {@code data} from
-   * {@code offset}: the formulas of {@link VectorSimilarityFunction#compare} over jvector's offset kernels, called on the
-   * provider's {@link VectorUtilSupport} directly. The {@code VectorUtil} facade would add an assertion that the result is
-   * finite, which a score taken over a slot a writer is rewriting may not be - and that score is thrown away by the stamp
-   * check anyway.
+   * {@code offset}, for a vector that was just read from its page: the formulas of {@link VectorSimilarityFunction#compare}.
+   * A cosine is scored with the Vector API kernels of {@link SimdCosineKernels} when the cache does, so a vector scores the
+   * same here as it does once it is resident; any other score, and a cosine where they are off, goes to jvector's offset
+   * kernels, called on the provider's {@link VectorUtilSupport} directly. The {@code VectorUtil} facade would add an assertion
+   * that the result is finite, which a score taken over a slot a writer is rewriting may not be - and that score is thrown
+   * away by the stamp check anyway.
    */
-  static float similarity(final VectorSimilarityFunction function, final VectorFloat<?> query, final VectorFloat<?> data,
+  static float similarity(final VectorSimilarityFunction function, final Query query, final VectorFloat<?> data,
       final int offset, final int dimensions) {
+    if (SIMD_COSINE && function == VectorSimilarityFunction.COSINE && query.array != null
+        && data instanceof final ArrayVectorFloat array) {
+      final long sums = SimdCosineKernels.dotAndSquaredNorm(query.array, array.get(), offset, dimensions);
+      final float dataSquaredNorm = Float.intBitsToFloat((int) sums);
+      // An overflowing norm is jvector's to score, as in Query.of
+      if (!Float.isInfinite(dataSquaredNorm))
+        return cosine(query, Float.intBitsToFloat((int) (sums >>> 32)), dataSquaredNorm);
+    }
+    return jvectorSimilarity(function, query.vector, data, offset, dimensions);
+  }
+
+  /** The formulas of {@link VectorSimilarityFunction#compare} over jvector's offset kernels. */
+  private static float jvectorSimilarity(final VectorSimilarityFunction function, final VectorFloat<?> query,
+      final VectorFloat<?> data, final int offset, final int dimensions) {
     return switch (function) {
       case EUCLIDEAN -> 1 / (1 + UTIL.squareDistance(query, 0, data, offset, dimensions));
       case DOT_PRODUCT -> (1 + UTIL.dotProduct(query, 0, data, offset, dimensions)) / 2;
       case COSINE -> (1 + UTIL.cosine(query, 0, data, offset, dimensions)) / 2;
     };
+  }
+
+  /** jvector's cosine of the sums, {@code dot / sqrt(|query|^2 * |data|^2)}, in the same arithmetic, then scaled as {@code compare} does. */
+  private static float cosine(final Query query, final float dot, final float dataSquaredNorm) {
+    return (1 + (float) (dot / Math.sqrt((double) (query.squaredNorm * dataSquaredNorm)))) / 2;
+  }
+
+  /**
+   * A query vector and what every score against it shares, worked out once for the search that scores thousands of vectors
+   * with it: the float[] the kernels read and its squared norm, instead of the norm of the query once per candidate.
+   */
+  static final class Query {
+    final VectorFloat<?> vector;
+    /** The components when the cosine kernels can score the query, else null. */
+    final float[]        array;
+    final float          squaredNorm;
+
+    private Query(final VectorFloat<?> vector, final float[] array, final float squaredNorm) {
+      this.vector = vector;
+      this.array = array;
+      this.squaredNorm = squaredNorm;
+    }
+
+    /**
+     * A query whose squared norm overflows is left to jvector's kernel, which the kernels' four accumulators cannot match there:
+     * jvector's one accumulator per lane may cancel terms that four of them each overflow on (+inf and -inf add up to NaN,
+     * where jvector's score is a finite one), so a score must not be taken from the sums of a vector that overflows.
+     */
+    static Query of(final VectorFloat<?> vector) {
+      if (SIMD_COSINE && vector instanceof final ArrayVectorFloat array) {
+        final float squaredNorm = SimdCosineKernels.squaredNorm(array.get(), 0, array.length());
+        if (!Float.isInfinite(squaredNorm))
+          return new Query(vector, array.get(), squaredNorm);
+      }
+      return new Query(vector, null, Float.NaN);
+    }
   }
 
   /**

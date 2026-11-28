@@ -8744,12 +8744,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
   ScoreFunction.ExactScoreFunction liveOnlyScoreFunction(final VectorFloat<?> queryVector,
       final RandomAccessVectorValues vectors) {
     final VectorSimilarityFunction function = metadata.similarityFunction;
-    if (vectors instanceof final ArcadePageVectorValues pageValues)
-      // Scored where the vector lies, without materializing it (issue #11003)
+    if (vectors instanceof final ArcadePageVectorValues pageValues) {
+      // Scored where the vector lies, without materializing it (issue #11003), against a query whose norm is worked out once
+      final FlatVectorCache.Query query = FlatVectorCache.Query.of(queryVector);
       return node -> {
-        final float similarity = pageValues.similarity(node, queryVector, function);
+        final float similarity = pageValues.similarity(node, query, function);
         return Float.isNaN(similarity) ? UNREADABLE_NODE_SCORE : similarity;
       };
+    }
     return node -> {
       final VectorFloat<?> vector = vectors.getVector(node);
       if (vector == null)
@@ -8774,6 +8776,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
   /** The scorer of every search but a BINARY one: the configured similarity against the vectors {@code vectors} reads. */
   private CandidateScorer exactScorer(final VectorFloat<?> queryVector, final RandomAccessVectorValues vectors) {
     final ArcadePageVectorValues pageValues = vectors instanceof final ArcadePageVectorValues p ? p : null;
+    final FlatVectorCache.Query query = pageValues != null ? FlatVectorCache.Query.of(queryVector) : null;
     return new CandidateScorer() {
       @Override
       public float ordinal(final int ordinal) {
@@ -8781,7 +8784,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // removed or has the wrong type comes back as the placeholder, not as a vector. Scoring it would pair a real
         // RID with a meaningless distance, and under COSINE with a distance of minus infinity, i.e. first place.
         if (pageValues != null)
-          return pageValues.similarity(ordinal, queryVector, metadata.similarityFunction);
+          return pageValues.similarity(ordinal, query, metadata.similarityFunction);
         final VectorFloat<?> vector = vectors != null ? vectors.getVector(ordinal) : null;
         if (vector == null)
           return Float.NaN;
