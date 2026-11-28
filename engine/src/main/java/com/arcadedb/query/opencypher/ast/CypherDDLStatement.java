@@ -18,7 +18,10 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
+import com.arcadedb.exception.CommandExecutionException;
+
 import java.util.List;
+import java.util.Map;
 
 /**
  * AST node for Cypher DDL statements (constraints and indexes).
@@ -55,6 +58,7 @@ public class CypherDDLStatement implements CypherStatement {
   private final IndexKind indexKind;
   private final Expression options;
   private final List<String> labelNames;
+  private final String nameParameter;
 
   public CypherDDLStatement(final Kind kind, final ConstraintKind constraintKind, final String constraintName,
       final String labelName, final List<String> propertyNames, final boolean ifNotExists, final boolean ifExists,
@@ -88,7 +92,16 @@ public class CypherDDLStatement implements CypherStatement {
   public CypherDDLStatement(final Kind kind, final ConstraintKind constraintKind, final String constraintName,
       final List<String> labelNames, final List<String> propertyNames, final boolean ifNotExists, final boolean ifExists,
       final boolean forRelationship, final CypherTypeName typedName, final IndexKind indexKind, final Expression options) {
+    this(kind, constraintKind, constraintName, null, labelNames, propertyNames, ifNotExists, ifExists, forRelationship, typedName,
+        indexKind, options);
+  }
+
+  private CypherDDLStatement(final Kind kind, final ConstraintKind constraintKind, final String constraintName,
+      final String nameParameter, final List<String> labelNames, final List<String> propertyNames, final boolean ifNotExists,
+      final boolean ifExists, final boolean forRelationship, final CypherTypeName typedName, final IndexKind indexKind,
+      final Expression options) {
     final String labelName = labelNames == null ? null : labelNames.getFirst();
+    this.nameParameter = nameParameter;
     this.labelNames = labelNames;
     this.kind = kind;
     this.constraintKind = constraintKind;
@@ -101,6 +114,40 @@ public class CypherDDLStatement implements CypherStatement {
     this.typedName = typedName;
     this.indexKind = indexKind != null ? indexKind : IndexKind.RANGE;
     this.options = options;
+  }
+
+  /**
+   * The same statement named by the parameter {@code parameterName} (Neo4j's {@code CREATE INDEX $name ...},
+   * {@code DROP INDEX $name}, {@code CREATE CONSTRAINT $name ...}, {@code DROP CONSTRAINT $name}), whose value is read when the
+   * statement runs: {@link #resolveName} gives the statement to execute. The statement is shared by every execution of the same
+   * text, so it stays immutable.
+   */
+  public CypherDDLStatement withNameParameter(final String parameterName) {
+    return new CypherDDLStatement(kind, constraintKind, null, parameterName, labelNames, propertyNames, ifNotExists, ifExists,
+        forRelationship, typedName, indexKind, options);
+  }
+
+  /** The name parameter ({@code $name} without the dollar sign) of the statement, or null when it is named by a literal or not at all. */
+  public String getNameParameter() {
+    return nameParameter;
+  }
+
+  /**
+   * The statement to execute with {@code parameters}: this one, or, when it is named by a parameter, a copy named by the
+   * parameter's value. Neo4j types the name as a string: a null value is Neo.ClientError.Statement.TypeError {@code Expected
+   * String, but got: NO_VALUE}, any other kind of value {@code Expected String, but got: Long}.
+   *
+   * @throws CommandExecutionException if the parameter does not hold a string
+   */
+  public CypherDDLStatement resolveName(final Map<String, Object> parameters) {
+    if (nameParameter == null)
+      return this;
+    final Object value = parameters == null ? null : parameters.get(nameParameter);
+    if (!(value instanceof String name))
+      throw new CommandExecutionException("Expected String, but got: " + (value == null ? "NO_VALUE" : value.getClass().getSimpleName())
+          + " (the name of the schema command is the parameter $" + nameParameter + ")");
+    return new CypherDDLStatement(kind, constraintKind, name, null, labelNames, propertyNames, ifNotExists, ifExists, forRelationship,
+        typedName, indexKind, options);
   }
 
   public Kind getKind() {
