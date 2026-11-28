@@ -312,9 +312,13 @@ public class BasicCommandContext implements CommandContext {
   @Override
   public long getCommandTimeout() {
     if (commandTimeout == UNRESOLVED) {
-      if (parent != null)
-        commandTimeout = parent.getCommandTimeout();
-      else
+      if (parent != null) {
+        final long inherited = parent.getCommandTimeout();
+        // The contexts above know no database, so they could not read the setting: this one can
+        commandTimeout = inherited <= 0 && readsBudgetFromItsOwnDatabase() ?
+            CommandTimeoutOverride.effectiveTimeout(database, forwardedTimeout) :
+            inherited;
+      } else
         // The budget a peer forwarded this request with takes the place of this node's own setting, so the node that
         // forwarded it and this one enforce the same number (issue #8313).
         commandTimeout = CommandTimeoutOverride.effectiveTimeout(getDatabase(), forwardedTimeout);
@@ -327,7 +331,17 @@ public class BasicCommandContext implements CommandContext {
     if (commandDeadline == UNRESOLVED) {
       if (parent != null) {
         commandDeadlinePartial = parent.isCommandDeadlinePartial();
-        commandDeadline = parent.getCommandDeadline();
+        final long inherited = parent.getCommandDeadline();
+        if (inherited == Long.MAX_VALUE && readsBudgetFromItsOwnDatabase()) {
+          // The contexts above know no database, so nothing they hold is a bound: this context starts the clock
+          final long timeout = getCommandTimeout();
+          if (timeout > 0) {
+            commandDeadlineDescription = GlobalConfiguration.COMMAND_TIMEOUT.getKey() + " of " + timeout + "ms";
+            commandDeadline = System.currentTimeMillis() + timeout;
+          } else
+            commandDeadline = Long.MAX_VALUE;
+        } else
+          commandDeadline = inherited;
       } else {
         final long timeout = getCommandTimeout();
         // The clock is read here and never again: everything downstream compares against this one instant, so
@@ -336,6 +350,16 @@ public class BasicCommandContext implements CommandContext {
       }
     }
     return commandDeadline;
+  }
+
+  /**
+   * Whether this context knows a database that the contexts above it do not: a statement run under a root context that was
+   * never given one. Such a root resolves every setting against no database, which reads as "no bound" for the command
+   * timeout, so a context in that position resolves the budgets itself instead of inheriting them. A context that has a
+   * database above it inherits as always, so the command still has one clock, started at its root.
+   */
+  private boolean readsBudgetFromItsOwnDatabase() {
+    return database != null && parent != null && parent.getDatabase() == null;
   }
 
   @Override
@@ -371,7 +395,7 @@ public class BasicCommandContext implements CommandContext {
   @Override
   public long getRegexDeadline() {
     if (regexDeadline == UNRESOLVED) {
-      if (parent != null)
+      if (parent != null && !readsBudgetFromItsOwnDatabase())
         regexDeadline = parent.getRegexDeadline();
       else
         // Same lazy check-then-set on a volatile as the two resolvers above, and tolerated for the same reason.
@@ -538,11 +562,19 @@ public class BasicCommandContext implements CommandContext {
     return parent != null ? parent.getRunningQuery() : null;
   }
 
+  /**
+   * A bare row (no record, no value, no property) does not count: it is the row a SELECT without a target runs its projection on,
+   * so {@code SELECT expand(vector.neighbors(..., { filter: (SELECT ...) }))} would otherwise scan its filter on one thread
+   * though there is nothing a worker could read concurrently (issue #12537). A real row further up the chain still counts.
+   */
   @Override
   public boolean isUnderEnclosingRow() {
     for (CommandContext ancestor = parent; ancestor != null; ancestor = ancestor.getParent())
-      if (ancestor instanceof BasicCommandContext basic && basic.variables != null && basic.variables.get("current") != null)
-        return true;
+      if (ancestor instanceof BasicCommandContext basic && basic.variables != null) {
+        final Object current = basic.variables.get("current");
+        if (current != null && !(current instanceof ResultInternal row && row.isBare()))
+          return true;
+      }
     return false;
   }
 

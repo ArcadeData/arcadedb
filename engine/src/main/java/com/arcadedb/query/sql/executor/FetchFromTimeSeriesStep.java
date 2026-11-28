@@ -43,7 +43,7 @@ import java.util.List;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
+public class FetchFromTimeSeriesStep extends AbstractExecutionStep implements RowCapAwareStep {
 
   private static final long MILLIS_PER_DAY = 86_400_000L;
 
@@ -74,6 +74,11 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
    * boxed and held before {@code LimitExecutionStep} dropped them.
    */
   private final int                 limit;
+  // ISSUE #12016: THE SKIP THE CALLER'S ROW CAP IS COUNTED AFTER, SET BY THE PLANNER WHEN THE STATEMENT HAS NO LIMIT OF ITS OWN AND THE
+  // PLAN PROVED THAT NOTHING AFTER THE FETCH CAN DROP A ROW (-1: THE CAP DOES NOT BOUND THE SCAN), AND THE CAP ITSELF (0: NONE). THE
+  // SCAN STOPS AT SKIP + CAP, AS IT STOPS AT SKIP + LIMIT: A SCAN WITH NO BOUND READS THE WHOLE SERIES
+  private       int                 capSkip = -1;
+  private       int                 rowCap;
   /**
    * Issue #10324: the columns of a projection made only of plain column references, by output name and by column name, when the
    * planner proved nothing between this step and the projection reads another column. The row is then built here as the
@@ -122,6 +127,24 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
     this.limit = limit;
   }
 
+  /** The scan stops at the rows the caller reads: {@code skip} plus the cap, when the caller sets one. Not for a scan that pushes a field filter. */
+  void boundByRowCap(final int skip) {
+    if (fieldFilter == null)
+      this.capSkip = skip;
+  }
+
+  @Override
+  public void applyRowCap(final int rowCap) {
+    this.rowCap = rowCap;
+  }
+
+  /** The rows the scan stops at: the bound the planner gave it, else SKIP + the cap of the caller (issue #12016); 0 for no bound. */
+  private int scanLimit() {
+    if (limit > 0)
+      return limit;
+    return Math.max(RowCapAwareStep.bound(capSkip, rowCap), 0);
+  }
+
   /**
    * Builds each row as the projection {@code SELECT <columns[0]> AS <aliases[0]>, ...} makes it (issue #10324). Only for a
    * projection of plain column references, and only when nothing the plan runs between this step and the projection reads a column
@@ -147,10 +170,11 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
           // The bound belongs to the FETCH in both directions (issues #5414, #7663). iterateQuery is the genuinely
           // unbounded ascending read: it streams the sealed layer one block per shard (issue #9420), so a SELECT with
           // no LIMIT holds a block per shard and the mutable buckets, not the series.
+          final int scanLimit = scanLimit();
           resultIterator = descending
-              ? engine.queryDescending(fromTs, toTs, null, tagFilter, limit, null).iterator()
-              : limit > 0
-                  ? engine.queryAscending(fromTs, toTs, null, tagFilter, limit, null).iterator()
+              ? engine.queryDescending(fromTs, toTs, null, tagFilter, scanLimit, null).iterator()
+              : scanLimit > 0
+                  ? engine.queryAscending(fromTs, toTs, null, tagFilter, scanLimit, null).iterator()
                   : engine.iterateQuery(fromTs, toTs, null, tagFilter, fieldFilter, null);
           fetched = true;
         } catch (final CommandExecutionException e) {
@@ -158,7 +182,9 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
         } catch (final IOException e) {
           throw new CommandExecutionException("Error querying TimeSeries engine", e);
         }
-      }
+      } else
+        // A cursor kept open between two pulls asks for the grant again: the first pull asked it when the cursor was opened
+        tsType.checkAccess(SecurityDatabaseUser.ACCESS.READ_RECORD);
 
       // The engine row is { timestamp, non-TIMESTAMP columns in schema order... } whatever position the
       // TIMESTAMP column occupies in the declaration - TimeSeriesBucket.readRow writes position 0 from the
@@ -311,8 +337,8 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
       sb.append(" FIELDS ").append(fieldFilter.describe());
     // Shown for either direction: the ascending cap is as much a plan decision as the descending one, and a plan
     // that hides it reads as if no push-down happened (issue #7663).
-    if (limit > 0)
-      sb.append(" TOP ").append(limit);
+    if (scanLimit() > 0)
+      sb.append(" TOP ").append(scanLimit());
     if (projectedAliases != null) {
       sb.append(" PROJECTED ");
       for (int i = 0; i < projectedAliases.length; i++) {
@@ -346,6 +372,8 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
     final FetchFromTimeSeriesStep copy = new FetchFromTimeSeriesStep(tsType, fromTs, toTs, tagFilter, fieldFilter, descending, limit,
         context);
     copy.setProjection(projectedAliases, projectedColumns);
+    copy.capSkip = capSkip;
+    copy.rowCap = rowCap;
     return copy;
   }
 }

@@ -27,6 +27,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.query.ResultRowCapScope;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalExecutionPlan;
@@ -187,7 +188,7 @@ public class SelectStatement extends Statement {
 
   @Override
   public boolean executionPlanCanBeCached() {
-    if (originalStatementAsString == null && originalStatement == null)
+    if (isExcludedFromPlanCache() || (originalStatementAsString == null && originalStatement == null))
       return false;
 
     if (this.target != null && !this.target.isCacheable())
@@ -204,6 +205,8 @@ public class SelectStatement extends Statement {
 
   @Override
   public ResultSet execute(final Database db, final Object[] args, final CommandContext parentContext, final boolean usePlanCache) {
+    // The first thing, before anything this statement runs can start another one that would take it (issue #12016)
+    final int rowCap = ResultRowCapScope.take();
     final BasicCommandContext context = new BasicCommandContext();
     if (parentContext != null)
       context.setParentWithoutOverridingChild(parentContext);
@@ -220,12 +223,15 @@ public class SelectStatement extends Statement {
     context.setInputParameters(params);
 
     final SelectStatement statement = withProfilingConstraints((DatabaseInternal) db, context.getInputParameters());
-    return statement.openResultSet(context, statement == this ? this::createExecutionPlan : statement::createExecutionPlanNoCache);
+    return statement.openResultSet(context, statement == this ? this::createExecutionPlan : statement::createExecutionPlanNoCache,
+        rowCap);
   }
 
   @Override
   public ResultSet execute(final Database db, final Map<String, Object> params, final CommandContext parentContext,
       final boolean usePlanCache) {
+    // The first thing, before anything this statement runs can start another one that would take it (issue #12016)
+    final int rowCap = ResultRowCapScope.take();
     final BasicCommandContext context = new BasicCommandContext();
     if (parentContext != null)
       context.setParentWithoutOverridingChild(parentContext);
@@ -238,7 +244,7 @@ public class SelectStatement extends Statement {
 
     final SelectStatement statement = withProfilingConstraints((DatabaseInternal) db, context.getInputParameters());
     return statement.openResultSet(context,
-        usePlanCache && statement == this ? this::createExecutionPlan : statement::createExecutionPlanNoCache);
+        usePlanCache && statement == this ? this::createExecutionPlan : statement::createExecutionPlanNoCache, rowCap);
   }
 
   /**
@@ -246,14 +252,15 @@ public class SelectStatement extends Statement {
    * {@link #openResultSetPlanningAgainOnStaleIndex}. A FULL_TEXT, geospatial or vector index stays plannable on the last attempt,
    * since a scan would answer its predicates differently.
    */
-  private ResultSet openResultSet(final CommandContext context, final Function<CommandContext, InternalExecutionPlan> firstPlanner) {
+  private ResultSet openResultSet(final CommandContext context, final Function<CommandContext, InternalExecutionPlan> firstPlanner,
+      final int rowCap) {
     return openResultSetPlanningAgainOnStaleIndex(attempt -> {
       if (attempt == 1)
         return firstPlanner.apply(context);
       if (attempt < STALE_INDEX_PLAN_MAX_ATTEMPTS)
         return createExecutionPlanNoCache(context);
       return new SelectExecutionPlanner(this).withoutKeyIndexes().createExecutionPlan(context, false);
-    });
+    }, rowCap);
   }
 
   public InternalExecutionPlan createExecutionPlan(final CommandContext context) {
@@ -294,6 +301,8 @@ public class SelectStatement extends Statement {
     result.facets = facets == null ? null : facets.copy();
     // A COPY IS THE SAME TREE: CARRY THE MEMO SO THE PLANNER'S PER-EXECUTION COPIES DO NOT RE-WALK IT (#8400)
     result.resultCacheable = resultCacheable;
+    // the copy holds the same literals (issue #12605)
+    result.excludedFromPlanCache = excludedFromPlanCache;
     return result;
   }
 
@@ -323,6 +332,14 @@ public class SelectStatement extends Statement {
     if (facets != null && facets.refersToParent())
       return true;
 
+    // a LIMIT or SKIP computed from the parent row (LIMIT $parent.$current.n) correlates the subquery too: lifted into a global LET
+    // it would be planned and run once, before any row set $parent
+    if (skip != null && skip.expression != null && skip.expression.refersToParent())
+      return true;
+
+    if (limit != null && limit.expression != null && limit.expression.refersToParent())
+      return true;
+
     return letClause != null && letClause.refersToParent();
   }
 
@@ -341,6 +358,9 @@ public class SelectStatement extends Statement {
 
   @Override
   public boolean executingPlanCanBeCached() {
+    if (isExcludedFromPlanCache())
+      return false;
+
     if (originalStatement == null)
       setOriginalStatement(this);
 

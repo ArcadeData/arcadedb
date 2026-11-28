@@ -1298,7 +1298,9 @@ class TypeTest extends TestHelper {
     assertThat(result[0]).isInstanceOf(BigDecimal.class);
 
     result = Type.castComparableNumber((short) 1, (byte) 2);
-    assertThat(result[0]).isInstanceOf(Byte.class);
+    // the byte widens to the short, as the short widens to the wider types above (issue #12681)
+    assertThat(result[0]).isInstanceOf(Short.class);
+    assertThat(result[1]).isInstanceOf(Short.class);
 
     // issue #7669: Short had no right-hand BigInteger arm
     result = Type.castComparableNumber((short) 1, new BigInteger("2"));
@@ -1593,6 +1595,37 @@ class TypeTest extends TestHelper {
     result = Type.castComparableNumber(1L, 2L);
     assertThat(result[0]).isEqualTo(1L);
     assertThat(result[1]).isEqualTo(2L);
+  }
+
+  /**
+   * castComparableNumberIsIdentity() lets a fold skip the cast (#13009), so it must answer true only for a pair the cast hands
+   * back untouched: the very same instances, not equal ones.
+   */
+  @Test
+  void castComparableNumberIsIdentityOnlyWhenTheCastChangesNothing() {
+    final Number[][] sameClassPairs = { { (byte) 1, (byte) 2 }, { (short) 1, (short) 2 }, { 1, 2 }, { 1L, 2L }, { 1.5f, 2.5f },
+        { 1.5d, 2.5d }, { new BigInteger("12345678901234567890"), new BigInteger("2") }, { Float.NaN, Float.POSITIVE_INFINITY },
+        { Double.NEGATIVE_INFINITY, Double.NaN } };
+    for (final Number[] pair : sameClassPairs) {
+      assertThat(Type.castComparableNumberIsIdentity(pair[0], pair[1])).as("%s pair", pair[0].getClass().getSimpleName()).isTrue();
+      final Number[] cast = Type.castComparableNumber(pair[0], pair[1]);
+      assertThat(cast[0]).as("%s pair, left", pair[0].getClass().getSimpleName()).isSameAs(pair[0]);
+      assertThat(cast[1]).as("%s pair, right", pair[0].getClass().getSimpleName()).isSameAs(pair[1]);
+    }
+
+    // A PAIR OF DECIMALS IS STRIPPED OF ITS TRAILING ZEROS: NOT AN IDENTITY
+    final BigDecimal left = new BigDecimal("1.50");
+    final BigDecimal right = new BigDecimal("2.0");
+    assertThat(Type.castComparableNumberIsIdentity(left, right)).isFalse();
+    final Number[] cast = Type.castComparableNumber(left, right);
+    assertThat(cast[0]).isNotSameAs(left).isEqualTo(new BigDecimal("1.5"));
+    assertThat(cast[1]).isNotSameAs(right).isEqualTo(new BigDecimal("2"));
+
+    // MIXED CLASSES ARE CAST
+    assertThat(Type.castComparableNumberIsIdentity(1, 2L)).isFalse();
+    assertThat(Type.castComparableNumberIsIdentity(1.5f, 2.5d)).isFalse();
+    assertThat(Type.castComparableNumberIsIdentity(1, new BigDecimal("2"))).isFalse();
+    assertThat(Type.castComparableNumberIsIdentity(new BigInteger("2"), 2L)).isFalse();
   }
 
   // ───── asString (deprecated) ─────

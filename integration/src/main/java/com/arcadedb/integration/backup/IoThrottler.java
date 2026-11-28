@@ -32,6 +32,10 @@ import java.util.concurrent.locks.LockSupport;
  * <p>
  * Not thread safe by design: the backup reads its source files from a single thread and only the compression is
  * parallel, so the limiter is touched by that one reader.
+ * <p>
+ * The reader goes through {@link #throttle(long)} once per chunk it reads, which makes it the one place every archive writer
+ * passes: an optional check is run there, with or without a rate cap, and between the slices of a park, so a backup that was
+ * asked to stop ends at its next chunk and never sleeps through its whole deadline.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -39,16 +43,29 @@ public class IoThrottler {
   private static final long ONE_SECOND_NANOS = 1_000_000_000L;
   /** Byte count at which the baseline is moved forward, keeping {@code totalBytes * ONE_SECOND_NANOS} inside a long. */
   private static final long REBASE_BYTES     = 1L << 30;
+  /** Longest a park lasts without running the check, when there is one: how late a request to stop is seen by a throttled read. */
+  private static final long CHECK_SLICE_NANOS = 100_000_000L;
 
-  private final long bytesPerSecond;
-  private       long startNanos = -1;
-  private       long totalBytes = 0L;
+  private final long     bytesPerSecond;
+  private final Runnable abortCheck;
+  private       long     startNanos = -1;
+  private       long     totalBytes = 0L;
 
   /**
    * @param maxMBPerSecond maximum read rate in MB/s. Values &lt;= 0 disable throttling entirely.
    */
   public IoThrottler(final int maxMBPerSecond) {
+    this(maxMBPerSecond, null);
+  }
+
+  /**
+   * @param maxMBPerSecond maximum read rate in MB/s. Values &lt;= 0 disable throttling entirely.
+   * @param abortCheck     run on every {@link #throttle(long)} and between the slices of a park, or {@code null} for none. It
+   *                       ends the backup by throwing.
+   */
+  public IoThrottler(final int maxMBPerSecond, final Runnable abortCheck) {
     this.bytesPerSecond = maxMBPerSecond > 0 ? maxMBPerSecond * 1024L * 1024L : 0L;
+    this.abortCheck = abortCheck;
   }
 
   public boolean isEnabled() {
@@ -59,6 +76,9 @@ public class IoThrottler {
    * Accounts for {@code bytes} just read and parks the calling thread for as long as it takes to stay under the cap.
    */
   public void throttle(final long bytes) {
+    if (abortCheck != null)
+      abortCheck.run();
+
     if (bytesPerSecond <= 0)
       return;
 
@@ -92,13 +112,20 @@ public class IoThrottler {
    * <p>
    * An interrupt breaks the loop instead of being spun through: the flag stays set for the caller (the backup's reader
    * thread) to act on, which is the opposite of what ignoring it and parking again would do.
+   * <p>
+   * With a check, the park is cut into slices of {@link #CHECK_SLICE_NANOS} and the check runs after each one.
    */
-  private static void parkUntil(final long deadlineNanos) {
+  private void parkUntil(final long deadlineNanos) {
     while (!Thread.currentThread().isInterrupted()) {
       final long remaining = deadlineNanos - System.nanoTime();
       if (remaining <= 0)
         return;
-      LockSupport.parkNanos(remaining);
+      if (abortCheck == null)
+        LockSupport.parkNanos(remaining);
+      else {
+        LockSupport.parkNanos(Math.min(remaining, CHECK_SLICE_NANOS));
+        abortCheck.run();
+      }
     }
   }
 }

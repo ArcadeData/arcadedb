@@ -37,6 +37,7 @@ import com.arcadedb.database.Record;
 import com.arcadedb.database.RecordCallback;
 import com.arcadedb.database.RecordEvents;
 import com.arcadedb.database.RecordFactory;
+import com.arcadedb.database.RefusedBeforePublishingException;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.database.async.AsyncQuiesce;
 import com.arcadedb.database.async.DatabaseAsyncExecutor;
@@ -44,6 +45,7 @@ import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.database.async.OkCallback;
 import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.LocalBucket;
@@ -72,6 +74,7 @@ import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.exception.TransactionOutcomeUnknownException;
 import com.arcadedb.exception.ImplicitTransactionRequiredException;
+import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.exception.ObjectInUseException;
 import com.arcadedb.exception.UnknownFunctionException;
 import com.arcadedb.exception.ValidationException;
@@ -103,6 +106,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.ExecutionPlanCache;
 import com.arcadedb.query.sql.parser.StatementCache;
+import com.arcadedb.remote.RemoteExceptionRebuilder;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityManager;
@@ -410,6 +414,16 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
      * to every node (issue #9558). A definite {@link #refusal} still is.
      */
     private boolean                    indeterminate;
+    /**
+     * Whether an entry of this session has committed (issue #13437): an instalment, or a chunk of one that was split. Until it
+     * has, nothing of the session's commits reached another node, and the resync a definite refusal starts discards them here.
+     */
+    private boolean                    delivered;
+    /**
+     * The commit counts of the session's thread when the session opened (issue #13437), which tell a block that committed only
+     * inside the session from one that published something before it: see {@link RefusedBeforePublishingException}.
+     */
+    private RefusedBeforePublishingException.Watermark watermark;
   }
 
   /**
@@ -421,14 +435,18 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * while a non-retryable {@link TimeoutException} stays distinct instead of being mistaken for a
    * retryable one. It also lets callers catch the specific type directly.
    * <p>
-   * Only {@link ArcadeDBException} subtypes with a single {@code (String)} constructor belong here:
-   * non-{@code ArcadeDBException} types (e.g. {@code SecurityException}) would not be caught by the
-   * {@code catch (ArcadeDBException)} on the forwarding path and would be re-wrapped anyway, and
-   * types that need structured arguments (e.g. {@link DuplicatedKeyException}) are reconstructed
-   * explicitly in {@link #reconstructLeaderException}. New entries are safe to add as one line each;
-   * extending this map is preferred over reflectively instantiating an arbitrary class name from the
-   * response. {@link Map#ofEntries} is used (rather than {@link Map#of}) because the latter caps at
-   * ten pairs.
+   * Only types with a single {@code (String)} constructor belong here: types that need structured
+   * arguments (e.g. {@link DuplicatedKeyException}) are reconstructed explicitly in
+   * {@link #reconstructLeaderException}. New entries are safe to add as one line each; extending this
+   * map is preferred over reflectively instantiating an arbitrary class name from the response.
+   * {@link Map#ofEntries} is used (rather than {@link Map#of}) because the latter caps at ten pairs.
+   * <p>
+   * A class of a 4xx answer that is not here is read from the remote client's table
+   * ({@code RemoteExceptionRebuilder}, issue #12931), so only a type that must be rebuilt as itself
+   * on a 5xx or a 503 needs a line here. That table also holds types that are not an
+   * {@link ArcadeDBException} ({@code IllegalArgumentException}, {@code SecurityException},
+   * {@code NoSuchElementException}): the forwarding path rethrows the refusal it rebuilt as it is,
+   * whatever its type, so they reach the client as the leader raised them instead of being wrapped.
    * <p>
    * ArcadeDB's {@code ConcurrentModificationException} is referenced by its fully qualified name, and
    * {@link java.util.ConcurrentModificationException} is intentionally NOT imported, so that a bare
@@ -437,6 +455,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    */
   private static final Map<String, Function<String, RuntimeException>> LEADER_EXCEPTION_FACTORIES = Map.ofEntries(
       Map.entry(NeedRetryException.class.getName(), NeedRetryException::new),
+      // #13437: the leader's session refused before anything of it was published. It describes the leader's own thread, so it is
+      // rebuilt as the plain retryable refusal it extends
+      Map.entry(RefusedBeforePublishingException.class.getName(), NeedRetryException::new),
       Map.entry(com.arcadedb.exception.ConcurrentModificationException.class.getName(), com.arcadedb.exception.ConcurrentModificationException::new),
       Map.entry(LockTimeoutException.class.getName(), LockTimeoutException::new),
       // #8479: the refusals the leader answers a forwarded commit with BEFORE its entry reaches the Raft log, so the
@@ -482,6 +503,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       Map.entry(ExternalResourceException.class.getName(), ExternalResourceException::new),
       // #12161: a statement refused for the transaction the caller holds, the caller's to resolve
       Map.entry(ImplicitTransactionRequiredException.class.getName(), ImplicitTransactionRequiredException::new),
+      // #12436: a value the statement carries that the leader refuses (a bare word, a bound that cannot be read, a bucket a type owns),
+      // the caller's mistake: without an entry a forwarded DDL answered the follower's client 500 where the leader answers 400
+      Map.entry(InvalidArgumentException.class.getName(), InvalidArgumentException::new),
       Map.entry(SchemaException.class.getName(), SchemaException::new));
 
   /**
@@ -751,12 +775,20 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // replaced read the copy the cluster is discarding, and its page deltas are computed against those pages. It is
     // rolled back here rather than left open, the same end a conflict at commit gives it, so the retry the refusal
     // asks for starts from a clean slate.
+    //
+    // Not for the empty transaction that closes a write this node forwarded to the leader (issue #12889): it has no page delta to
+    // compute against a discarded copy, and by the time it commits the leader has applied the write, so refusing it answers "retry"
+    // for what is already done. The HTTP handler's transaction around the forward is exactly that, and the 503 the refusal turned it
+    // into is replayed by the client (the retry loop is stopped by #12635, the answer is not). Asked only once a refusal is about to
+    // be raised, so a healthy commit pays nothing for it.
     try {
       refuseClientWhileDirectoryIsReplaced();
     } catch (final NeedRetryException e) {
-      if (proxied.isTransactionActive())
-        proxied.rollback();
-      throw e;
+      if (!commitsOnlyAWriteForwardedToTheLeader()) {
+        if (proxied.isTransactionActive())
+          proxied.rollback();
+        throw e;
+      }
     }
 
     proxied.incrementStatsWriteTx();
@@ -779,6 +811,26 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       commitCountedAtTheRecordingSessionGate(leader);
     else
       commitPastRecordingSessionGate(leader);
+  }
+
+  /**
+   * Whether the transaction this thread would commit is the empty one that closes a write this node forwarded to the leader (issue
+   * #12889): the leader answered it ({@link TransactionContext#getWritesCommittedByAnotherNode()}, set on every transaction of the
+   * thread by {@link #forwardCommandToLeaderViaRaft}) and the transaction has changed nothing
+   * ({@link TransactionContext#hasChangedNothing()}), so its commit is a read-only one that publishes and replicates nothing.
+   * <p>
+   * Both parts matter. An empty transaction that forwarded nothing is a client transaction that began before the replacement, and the
+   * gates keep refusing it. One that forwarded a write and wrote on its own account as well has pages computed against the copy being
+   * discarded, or an entry the closed state machine cannot apply, and is refused too.
+   * <p>
+   * The count lives as long as the thread's transaction context, which an HTTP request drops at its end; on a thread that keeps its
+   * context (a wire-protocol connection) it also covers a later empty transaction, which has nothing to compute against the discarded
+   * copy either.
+   */
+  private boolean commitsOnlyAWriteForwardedToTheLeader() {
+    final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(proxied.getDatabasePath());
+    final TransactionContext tx = context != null ? context.getLastTransaction() : null;
+    return tx != null && tx.isActive() && tx.getWritesCommittedByAnotherNode() > 0 && tx.hasChangedNothing();
   }
 
   /**
@@ -925,13 +977,16 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
     // Issue #9411: a closed local state machine applies nothing, so an entry committed now could neither be published by
     // it nor by this thread without racing the replacement a restart builds (#8785): the commit would block for the
-    // whole quorum timeout and be released unpublished. Refuse it before anything is prepared, retryably.
+    // whole quorum timeout and be released unpublished. Refuse it before anything is prepared, retryably. The empty transaction that
+    // closes a write this node forwarded to the leader publishes no entry, so it is not refused (see commit()).
     try {
       refuseCommitWhileStateMachineIsClosed();
     } catch (final NeedRetryException e) {
-      if (proxied.isTransactionActive())
-        proxied.rollback();
-      throw e;
+      if (!commitsOnlyAWriteForwardedToTheLeader()) {
+        if (proxied.isTransactionActive())
+          proxied.rollback();
+        throw e;
+      }
     }
 
     // --- PHASE 1 (read lock): capture WAL bytes and delta ---
@@ -945,6 +1000,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         final TransactionContext.TransactionPhase1 phase1 = tx.commit1stPhase(leader);
 
         if (phase1 != null) {
+          // The gates of commit() let the empty transaction that closes a forwarded write through, because it publishes nothing. A
+          // before-commit callback runs in the phase above, after they were asked: if it wrote, this commit does publish an entry, and
+          // the gates are asked again. Refused like any commit they refuse, before anything is registered or replicated
+          if (tx.getWritesCommittedByAnotherNode() > 0) {
+            refuseClientWhileDirectoryIsReplaced();
+            refuseCommitWhileStateMachineIsClosed();
+          }
           final byte[] walData = phase1.result.toByteArray();
           final Map<Integer, Integer> bucketDeltas = new HashMap<>(tx.getBucketRecordDelta());
           // Read before the commit concludes: the accumulator is released with the transaction
@@ -2789,6 +2851,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   }
 
   @Override
+  public Dictionary getDictionary() {
+    return proxied.getDictionary();
+  }
+
+  @Override
   public RecordEvents getEvents() {
     return proxied.getEvents();
   }
@@ -3167,6 +3234,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     schemaBucketDeltaBuffer.get().clear();
     isSchemaCommitThread.set(Boolean.TRUE);
     schemaInstalments.set(instalmentState);
+    instalmentState.watermark = RefusedBeforePublishingException.Watermark.ofCurrentThread(proxied.getDatabasePath());
 
     // Exclusive on the cluster for the whole session (issue #7438). The session publishes its pages locally before its
     // SCHEMA_ENTRY is appended, and the write lock keeps out this leader's own writers but not a replica's: an entry
@@ -3284,8 +3352,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         // once the session is wound down (issue #9555 for a refusal, #9558 for an entry too large to split or a broker
         // that is gone). A ReplicationDispatchedTimeoutException is left alone there: that entry may still commit.
         final RaftHAServer raft = requireRaftServer();
-        RaftHAServer.requireTransactionBroker(raft).replicateSchema(getName(), serializedSchema, addFiles, removeFiles,
-            walEntries, bucketDeltas, Collections.emptyList(), Collections.emptyList(), schemaDelta, renameFiles);
+        try {
+          RaftHAServer.requireTransactionBroker(raft).replicateSchema(getName(), serializedSchema, addFiles, removeFiles,
+              walEntries, bucketDeltas, Collections.emptyList(), Collections.emptyList(), schemaDelta, renameFiles,
+              () -> instalmentState.delivered = true);
+        } catch (final RuntimeException e) {
+          throw refusedBeforePublishing(instalmentState, e);
+        }
         // Set HERE, not after the logging below: the change is published the moment that call returns, and a
         // diagnostic that threw would otherwise send the finally block into retireAbandonedInstalments to report a
         // divergence that does not exist. Harmless for on-disk state - the compensation only ever targets files
@@ -3552,6 +3625,24 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   // @VisibleForTesting
   static boolean isDeterministicPublishFailure(final Throwable failure) {
     return causeChainContains(failure, ReplicatedEntryTooLargeException.class);
+  }
+
+  /**
+   * The failure to raise for {@code failure}, an entry of the session that the broker did not commit (issue #13437). A definite
+   * refusal that arrives before any entry of the session committed is raised as a {@link RefusedBeforePublishingException}: the
+   * commits the session made here reached no other node, the quarantine that follows discards them, and a retry loop around the
+   * block may then let the caller replay it on the next leader instead of reporting it as partially committed. Anything else is
+   * raised as it is: an entry that committed earlier (an instalment, or a chunk of a split one) left pages on the followers, and an
+   * indeterminate failure, of this entry or of an earlier one, may still commit.
+   * <p>
+   * A {@code NeedRetryException} from the broker is definite: see {@link SchemaInstalmentState#refusal}.
+   */
+  // @VisibleForTesting
+  static RuntimeException refusedBeforePublishing(final SchemaInstalmentState state, final RuntimeException failure) {
+    if (state.delivered || state.indeterminate || state.watermark == null || failure instanceof RefusedBeforePublishingException
+        || !(failure instanceof NeedRetryException refusal) || isIndeterminatePublishFailure(failure))
+      return failure;
+    return new RefusedBeforePublishingException(refusal, state.watermark);
   }
 
   /** Records an instalment's failure on its session, see {@link SchemaInstalmentState#refusal} (issues #9555, #9558). */
@@ -3997,14 +4088,17 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // waiting out. Measured around the send alone - the bookkeeping above and the buffer drain below are local.
     final long startedAtNanos = System.nanoTime();
     try {
-      broker.replicateSchemaInstalment(getName(), newFiles, walEntries, bucketDeltas);
+      broker.replicateSchemaInstalment(getName(), newFiles, walEntries, bucketDeltas, () -> state.delivered = true);
     } catch (final RuntimeException e) {
       // RuntimeException is all the broker raises - its submit path declares no checked exception - and an Error is no
       // replication outcome to record: it unwinds the session, whose own failure the finally block then classifies.
       // The pages this instalment carried are already committed here (issue #9555): see SchemaInstalmentState.refusal.
       // Any failure but an indeterminate one, since issue #9558: an instalment too large to split is just as unpublished.
-      recordInstalmentFailure(state, e);
-      throw e;
+      // Decided before the failure is recorded, which marks an indeterminate one as possibly delivered, and recorded as raised,
+      // so a callback that swallows it still ends the session with the same refusal (issue #13437)
+      final RuntimeException raised = refusedBeforePublishing(state, e);
+      recordInstalmentFailure(state, raised);
+      throw raised;
     } finally {
       // In a finally so a failed instalment is counted too: an instalment that timed out against a slow quorum
       // member held the write lock for the whole timeout, which is exactly the event an operator is looking for.
@@ -5728,6 +5822,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   private ResultSet forwardCommandToLeaderViaRaft(final String language, final String query,
       final Map<String, Object> mapArgs, final Object[] positionalArgs, final boolean mayWrite) {
     final AtomicLong leaderBookmark = new AtomicLong(-1L);
+    // So the request knows a write of it went out and, when it ends, whether the leader answered it (issue #12889): the leader's
+    // answer to one write stands for the request only while no other write of it failed
+    if (mayWrite)
+      ForwardedRequestIdContext.writeForwardStarted();
     try {
       final ResultSet result = forwardCommandToLeaderViaRaft(language, query, mapArgs, positionalArgs, true, mayWrite, leaderBookmark);
       // Whatever this node's role is now: one elected since the forward has not necessarily applied the old leader's entry yet
@@ -5738,6 +5836,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     } finally {
       // Also when the forward failed after the leader answered: the bookmark is only ever set from a 200
       recordRequestWrite(leaderBookmark.get());
+      if (mayWrite)
+        ForwardedRequestIdContext.writeForwardEnded();
     }
   }
 
@@ -6065,6 +6165,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // token only, the one form in which the leader honours the id
     final RunningQuery runningQuery = clientRequest ? RunningQuery.current() : null;
     RunningQuery.Registration terminationRelay = null;
+    // The leader's refusal this method rethrows as it is, so the catch-all below does not wrap it (see there)
+    RuntimeException leaderRefusal = null;
     if (runningQuery != null && ordinalTrusted && !postsToItself) {
       builder.header(LeaderForwardContext.FORWARDED_QUERY_HEADER, runningQuery.getId());
       if (runningQuery.getTag() != null)
@@ -6094,6 +6196,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         // Stopped on the leader because it was terminated here: the termination, whatever shape the answer took
         if (runningQuery != null)
           runningQuery.checkNotTerminated("the command forwarded to the leader");
+        leaderRefusal = refusal;
         throw refusal;
       }
 
@@ -6105,6 +6208,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         final DatabaseContext.DatabaseContextTL threadContext = DatabaseContext.INSTANCE.getContextIfExists(proxied.getDatabasePath());
         if (threadContext != null)
           threadContext.reportWriteCommittedByAnotherNode();
+        // Kept for the handler: should anything on this node fail from here on, the client is given this answer, not a refusal
+        // it would retry (the database of an HA resync closed under the request, for one)
+        ForwardedRequestIdContext.publishCommittedWriteAnswer(response.body());
       }
 
       if (commitIndexOut != null)
@@ -6176,6 +6282,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
           "The connection to the leader at " + leaderUrl + " was lost before it answered (" + e
               + "); the write may have been applied there - check before retrying it", e);
     } catch (final Exception e) {
+      // A client error the leader answered, rebuilt as the JDK type it raised (an IllegalArgumentException for a value that
+      // does not convert, say): not an ArcadeDBException, so the first arm let it by, and wrapping it here would answer the
+      // client the wrapper's message instead of the leader's (issue #12931)
+      if (e == leaderRefusal)
+        throw leaderRefusal;
       throw new TransactionException("Error forwarding command to leader at " + leaderUrl, e);
     } finally {
       if (terminationRelay != null) {
@@ -6322,6 +6433,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   /**
    * Parses the JSON response from the leader's /api/v1/command endpoint into a {@link ResultSet}.
    * Expected format: {@code {"result": [{...}, {...}, ...]}}, plus {@code "facets": {...}} for a {@code SELECT ... FACETS} query.
+   * <p>
+   * Every row is a plain projection of the JSON map, whatever it was on the leader (a record, a projection), and carries
+   * {@link ResultInternal#FORWARDED_ROW_METADATA}: the only way left to tell the record a row stood for (its {@code @type} column)
+   * from a local projection with a column of that name, which the gRPC service needs (issues #4688, #12519).
    */
   static ResultSet parseResultSetFromJson(final String json) {
     final JSONObject responseJson = new JSONObject(json);
@@ -6332,10 +6447,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       if (resultObj instanceof JSONArray resultArray) {
         for (int i = 0; i < resultArray.length(); i++) {
           final Object item = resultArray.get(i);
-          if (item instanceof JSONObject jsonObj)
-            resultSet.add(new ResultInternal(jsonObj.toMap()));
-          else
-            resultSet.add(new ResultInternal(Map.of("value", item)));
+          final ResultInternal row = item instanceof JSONObject jsonObj ?
+              new ResultInternal(jsonObj.toMap()) :
+              new ResultInternal(Map.of("value", item));
+          row.setMetadata(ResultInternal.FORWARDED_ROW_METADATA, Boolean.TRUE);
+          resultSet.add(row);
         }
       }
     }
@@ -6466,6 +6582,32 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     if (factory != null)
       return factory.apply(detail != null ? detail : message);
 
+    // A refusal of the client's own statement (issue #12931): a name that is taken (409), a value that does not convert or
+    // divides by zero (400), a record or a function that does not exist (404/400). The leader answered it with its status and
+    // class, and without an entry above this node answered its client 500 "Error on transaction commit" for it, where the
+    // leader would have said what the client did wrong. The remote client owns the complete table of such types, so it is
+    // read here rather than grown one class per issue.
+    //
+    // Only a 4xx: a retryable type rebuilt from a 503 is replayed by this node's own retry loop, which is safe only for the
+    // refusals the table above lists as raised before the entry reached the log
+    if (httpStatus >= 400 && httpStatus < 500) {
+      final RuntimeException clientError = rebuildClientError(exceptionClass, exceptionArgs, detail != null ? detail : message);
+      // The same rule held by construction: the leader answers a retryable refusal 503, so one that arrives under a 4xx (another
+      // build, something between the two nodes) is not made retryable here either
+      if (clientError != null && !(clientError instanceof NeedRetryException))
+        return clientError;
+    }
+
     return new TransactionException(message);
+  }
+
+  /**
+   * The client error the leader answered with, rebuilt as the class it named, or {@code null} when it names none this node
+   * can rebuild. Read from the remote client's own table, the types whose answer carries more than a message first (the kind
+   * of the object that holds a taken name, the RID of a missing record or edge endpoint), so the two cannot drift apart.
+   */
+  private static RuntimeException rebuildClientError(final String exceptionClass, final String exceptionArgs, final String text) {
+    final RuntimeException withArguments = RemoteExceptionRebuilder.rebuildWithArguments(exceptionClass, exceptionArgs, text);
+    return withArguments != null ? withArguments : RemoteExceptionRebuilder.rebuild(exceptionClass, text);
   }
 }

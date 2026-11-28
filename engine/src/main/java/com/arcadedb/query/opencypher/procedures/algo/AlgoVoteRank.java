@@ -24,7 +24,6 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.WorkGuard;
-import com.arcadedb.utility.NumberUtils;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -82,7 +81,7 @@ public class AlgoVoteRank extends AbstractAlgoProcedure {
     validateArgs(args);
 
     final String[] relTypes = extractRelTypes(argOrDefault(args, 0, null), context);
-    final int topK          = NumberUtils.saturateToInt(optionalNumberArg(args, 1, "topK", Integer.MAX_VALUE));
+    final int topK          = extractCount(optionalNumberArg(args, 1, "topK", Integer.MAX_VALUE), "topK");
 
     final Database db = context.getDatabase();
     final WorkGuard guard = newWorkGuard(context);

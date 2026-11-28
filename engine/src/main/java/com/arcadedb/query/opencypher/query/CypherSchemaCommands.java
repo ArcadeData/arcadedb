@@ -153,7 +153,7 @@ public final class CypherSchemaCommands {
       final boolean allColumns) {
     final List<Constraint> constraints = new ArrayList<>();
     for (final DocumentType type : readableTypes(database))
-      collectConstraints(type, constraints);
+      collectConstraints(database, type, constraints);
 
     constraints.sort(Comparator.comparing(Constraint::name));
 
@@ -173,7 +173,7 @@ public final class CypherSchemaCommands {
   }
 
   /** What one type enforces: its recorded constraints first, then what the schema enforces that none of them claims. */
-  private static void collectConstraints(final DocumentType type, final List<Constraint> constraints) {
+  private static void collectConstraints(final DatabaseInternal database, final DocumentType type, final List<Constraint> constraints) {
     final boolean edge = type instanceof EdgeType;
     final String entityType = edge ? "RELATIONSHIP" : "NODE";
     final String label = type.getName();
@@ -200,7 +200,7 @@ public final class CypherSchemaCommands {
       if (kind == ConstraintKind.UNIQUE && index == null)
         continue;
 
-      final String propertyType = kind == ConstraintKind.TYPED ? typedPropertyType(type, entry) : null;
+      final String propertyType = kind == ConstraintKind.TYPED ? typedPropertyType(database, type, entry) : null;
       final String neoType = constraintType(kind, edge);
       constraints.add(new Constraint(entry.name(), neoType, entityType, label, entry.properties(),
           index != null ? index.getName() : null, propertyType,
@@ -225,7 +225,7 @@ public final class CypherSchemaCommands {
       }
       if (!claimedTypes.contains(propertyName)) {
         final String name = CypherConstraintRegistry.generatedName(label, properties, TYPE_SUFFIX);
-        final String propertyType = cypherTypeOf(property.getType(), property.getOfType());
+        final String propertyType = cypherTypeOf(property.getType(), SecurityHelper.readableOfType(database, property));
         constraints.add(new Constraint(name, constraintType(ConstraintKind.TYPED, edge), entityType, label, properties, null,
             propertyType, createStatement(name, edge, label, properties, "IS :: " + propertyType)));
       }
@@ -233,11 +233,12 @@ public final class CypherSchemaCommands {
   }
 
   /** The Cypher type the constraint was written with, or, for an entry recorded without it, the one its property declares. */
-  private static String typedPropertyType(final DocumentType type, final CypherConstraintRegistry.Entry entry) {
+  private static String typedPropertyType(final DatabaseInternal database, final DocumentType type,
+      final CypherConstraintRegistry.Entry entry) {
     if (entry.propertyType() != null)
       return entry.propertyType();
     final Property property = entry.properties().isEmpty() ? null : type.getPropertyIfExists(entry.properties().getFirst());
-    return property != null ? cypherTypeOf(property.getType(), property.getOfType()) : null;
+    return property != null ? cypherTypeOf(property.getType(), SecurityHelper.readableOfType(database, property)) : null;
   }
 
   private static String constraintType(final ConstraintKind kind, final boolean edge) {

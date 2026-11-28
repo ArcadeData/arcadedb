@@ -18,10 +18,10 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.RangeIndex;
 import com.arcadedb.query.sql.parser.*;
@@ -106,7 +106,14 @@ public class TraverseExecutionPlanner {
     if (target == null) {
       handleNoTarget(result, context);
     } else if (target.getIdentifier() != null) {
-      handleClassAsTarget(result, this.target, context);
+      final Identifier identifier = target.getIdentifier();
+      // A context variable ($x, $parent.$current, $parent.$current.children) is resolved when the traversal runs, as
+      // SELECT does for a variable it cannot resolve while planning (issue #12084): a script LET is set after the
+      // whole script is planned. A back-tick quoted `$x` stays a type name.
+      if (!identifier.isQuoted() && identifier.getStringValue().startsWith("$"))
+        result.chain(new FetchFromVariableStep(identifier.getStringValue(), target.getModifier(), context));
+      else
+        handleClassAsTarget(result, this.target, context);
     } else if (target.getBucket() != null) {
       handleClustersAsTarget(result, List.of(target.getBucket()), context);
     } else if (target.getBucketList() != null) {
@@ -120,12 +127,13 @@ public class TraverseExecutionPlanner {
       handleInputParamAsTarget(result, target.getInputParam(), context);
     } else if (target.getIndex() != null) {
       handleIndexAsTarget(result, target.getIndex(), context);
-    } else if (target.getRids() != null && !target.getRids().isEmpty()) {
+    } else if (target.getRids() != null) {
+      // #12733: the literal empty list (FROM []) is an empty target, FetchFromRidsStep answers no rows for it
       handleRidsAsTarget(result, target.getRids(), context);
     } else if (target.getResultSet() != null) {
       result.chain(new FetchFromResultsetStep(target.getResultSet(), context));
     } else {
-      throw new UnsupportedOperationException("Target '" + target + "'");
+      throw new CommandSemanticException("Unsupported target '" + target + "'");
     }
   }
 
@@ -182,7 +190,7 @@ public class TraverseExecutionPlanner {
       }
       handleRidsAsTarget(result, rids, context);
     } else
-      throw new CommandExecutionException("Invalid target: " + paramValue);
+      throw SelectExecutionPlanner.invalidParameterTarget(inputParam, paramValue);
   }
 
   private void handleNoTarget(final SelectExecutionPlan result, final CommandContext context) {
@@ -252,28 +260,23 @@ public class TraverseExecutionPlanner {
   }
 
   private void handleClustersAsTarget(final SelectExecutionPlan plan, final List<Bucket> clusters, final CommandContext context) {
-    final Database db = context.getDatabase();
     if (clusters.size() == 1) {
-      final Bucket bucket = clusters.getFirst();
-      Integer bucketId = bucket.getBucketNumber();
-      if (bucketId == null)
-        bucketId = db.getSchema().getBucketByName(bucket.getBucketName()).getFileId();
-
-      final FetchFromClusterExecutionStep step = new FetchFromClusterExecutionStep(bucketId, context);
+      final FetchFromClusterExecutionStep step = new FetchFromClusterExecutionStep(bucketIdOf(clusters.getFirst(), context), context);
       plan.chain(step);
     } else {
       final int[] bucketIds = new int[clusters.size()];
-      for (int i = 0; i < clusters.size(); i++) {
-        final Bucket bucket = clusters.get(i);
-        Integer bucketId = bucket.getBucketNumber();
-        if (bucketId == null)
-          bucketId = db.getSchema().getBucketByName(bucket.getBucketName()).getFileId();
-
-        bucketIds[i] = bucketId;
-      }
+      for (int i = 0; i < clusters.size(); i++)
+        bucketIds[i] = bucketIdOf(clusters.get(i), context);
       final FetchFromClustersExecutionStep step = new FetchFromClustersExecutionStep(bucketIds, context, null);
       plan.chain(step);
     }
+  }
+
+  /** The id of the bucket a target names, by number, by name or by input parameter (FROM bucket::name, FROM bucket:?) (#12480). */
+  private static int bucketIdOf(final Bucket bucket, final CommandContext context) {
+    if (bucket.getBucketNumber() != null)
+      return bucket.getBucketNumber();
+    return context.getDatabase().getSchema().getBucketByName(bucket.resolveName(context.getInputParameters())).getFileId();
   }
 
   private void handleSubqueryAsTarget(final SelectExecutionPlan plan, final Statement subQuery, final CommandContext context) {

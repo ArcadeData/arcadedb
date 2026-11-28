@@ -25,6 +25,8 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.graph.LightEdgeRID;
+import com.arcadedb.graph.VirtualElement;
+import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
@@ -56,8 +58,13 @@ public class IdFunction implements StatelessFunction {
     checkArity(args);
     if (args[0] == null)
       return null;
-    if (args[0] instanceof Identifiable identifiable) {
-      final RID identity = identifiable.getIdentity();
+    // A virtual node or relationship (create.vNode, meta.graph) is not stored: its id is its own negative number, as APOC's
+    if (args[0] instanceof VirtualElement virtual)
+      return virtual.getVirtualId();
+    // A node or relationship the statement deleted keeps the id it had, as in Neo4j (issue #13582)
+    final RID identity = args[0] instanceof Identifiable identifiable ? identifiable.getIdentity()
+        : args[0] instanceof DeletedEntityMarker deleted ? deleted.getIdentity() : null;
+    if (identity != null) {
       // A lightweight edge has no record, hence no position to pack: its RID is the type marker #bucket:-1 that every
       // lightweight edge of the type shares. Nothing could resolve an id() built from it back to the edge, so there is
       // no id to give (issue #9573); elementId() and the edge itself still identify it.

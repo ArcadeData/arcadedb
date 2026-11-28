@@ -36,10 +36,19 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 /**
  * Created by luigidellaquila on 11/07/16.
  */
-public class OrderByStep extends AbstractExecutionStep {
+public class OrderByStep extends AbstractExecutionStep implements RowCapAwareStep {
+  /** A {@link Keyed} holder: its header and its two references, without the key array. */
+  private static final long KEYED_BYTES = HeapEstimator.OBJECT_BYTES + 2L * HeapEstimator.REFERENCE_BYTES;
+  /** A {@link Kept} holder: its header, its two references and its two longs, without the key array. */
+  private static final long KEPT_BYTES  = HeapEstimator.OBJECT_BYTES + 4L * HeapEstimator.REFERENCE_BYTES;
+
   private final OrderBy            orderBy;
   private       Integer            maxResults;
   private final long               timeoutMillis;
+  // ISSUE #12016: THE SKIP THE CALLER'S ROW CAP IS COUNTED AFTER, SET BY THE PLANNER WHEN THE STATEMENT HAS NO LIMIT OF ITS OWN AND
+  // NOTHING DOWNSTREAM CAN DROP A ROW (-1: THE CAP DOES NOT BOUND THIS SORT), AND THE CAP ITSELF, HANDED OVER WITH THE PLAN (0: NONE)
+  private       int                capSkip = -1;
+  private       int                rowCap;
   // THE ROWS BUFFERED, UNDER THE PER-OPERATION CAP AND THE HEAP BUDGET OF ALL THE QUERIES (ISSUES #8585, #8591)
   private       OperationHeapLimit limit;
 
@@ -63,6 +72,24 @@ public class OrderByStep extends AbstractExecutionStep {
       this.maxResults = null;
     }
     this.timeoutMillis = timeoutMillis;
+  }
+
+  /** The sort keeps the rows the caller reads at most, instead of all of them: {@code skip} plus the cap, when the caller sets one. */
+  void boundByRowCap(final int skip) {
+    this.capSkip = skip;
+  }
+
+  @Override
+  public void applyRowCap(final int rowCap) {
+    this.rowCap = rowCap;
+  }
+
+  /** The rows the sort keeps at most: SKIP + LIMIT, else SKIP + the cap of the caller (issue #12016); null when it keeps every row. */
+  private Integer keptRows() {
+    if (maxResults != null)
+      return maxResults;
+    final int bound = RowCapAwareStep.bound(capSkip, rowCap);
+    return bound < 0 ? null : bound;
   }
 
   @Override
@@ -125,14 +152,22 @@ public class OrderByStep extends AbstractExecutionStep {
   }
 
   private void init(final ExecutionStepInternal p, final CommandContext context) {
-    if (maxResults != null) {
-      initTopK(p, context);
+    final Integer kept = keptRows();
+    if (kept != null) {
+      initTopK(p, context, kept);
       return;
     }
     final long timeoutBegin = System.currentTimeMillis();
     // The whole input is consumed before the first row is returned: see AggregateProjectionCalculationStep (issue #9680)
     final WorkGuard guard = WorkGuard.forCommandDeadline(context);
     int consumed = 0;
+    // Each row's keys are extracted once, as the row is read, and the sort compares them (issue #12860): extracted inside the
+    // comparator, a property of a whole record was located and deserialized from its binary about 2 * log2(n) times per row.
+    // The keys are charged with their row while the sort holds them
+    final List<OrderByItem> items = orderBy.getItems();
+    final boolean charging = limit.isCharging();
+    final List<Keyed> keyed = new ArrayList<>();
+    long keyBytes = 0L;
     do {
       final ResultSet lastBatch = p.syncPull(context, DEFAULT_FETCH_RECORDS_PER_PULL);
       if (!lastBatch.hasNext())
@@ -149,8 +184,14 @@ public class OrderByStep extends AbstractExecutionStep {
         final Result item = lastBatch.next();
         final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
-          cachedResult.add(item);
-          limit.add(cachedResult.size(), item);
+          final Object key = orderBy.extractKeys(item, context);
+          keyed.add(new Keyed(item, key));
+          limit.add(keyed.size(), item);
+          if (charging) {
+            final long bytes = keyBytes(items, item, key, KEYED_BYTES);
+            limit.charge(bytes);
+            keyBytes += bytes;
+          }
         } finally {
           if( context.isProfiling() ) {
             cost += System.nanoTime() - begin;
@@ -162,7 +203,13 @@ public class OrderByStep extends AbstractExecutionStep {
     } while (true);
     final long begin = context.isProfiling() ? System.nanoTime() : 0;
     try {
-      cachedResult.sort((a, b) -> orderBy.compare(a, b, context));
+      // List.sort is stable: equal keys keep their arrival order
+      final Comparator<Object> byKey = orderBy.keyComparator(context);
+      keyed.sort((a, b) -> byKey.compare(a.key, b.key));
+      cachedResult = new ArrayList<>(keyed.size());
+      for (int i = 0; i < keyed.size(); i++)
+        cachedResult.add(keyed.get(i).row);
+      limit.release(keyBytes);
     } finally {
       if( context.isProfiling() ) {
         cost += System.nanoTime() - begin;
@@ -177,7 +224,7 @@ public class OrderByStep extends AbstractExecutionStep {
    * Sorting the whole buffer every {@code maxResults} rows, and estimating the heap of every row kept each time, cost
    * several times the scan itself once SKIP made the bound large.
    */
-  private void initTopK(final ExecutionStepInternal p, final CommandContext context) {
+  private void initTopK(final ExecutionStepInternal p, final CommandContext context, final int maxResults) {
     parallelWorkers = 0;
     if (maxResults == 0)
       // nothing can be kept: no need to pull the input
@@ -186,13 +233,18 @@ public class OrderByStep extends AbstractExecutionStep {
     // The whole input is consumed before the first row is returned: see AggregateProjectionCalculationStep (issue #9680)
     final WorkGuard guard = WorkGuard.forCommandDeadline(context);
     int consumed = 0;
-    if (topKInParallel(context, timeoutBegin))
+    if (topKInParallel(context, timeoutBegin, maxResults))
       return;
     // The heap lets rows go one at a time: each row it keeps is estimated, so a row that leaves gives back what it held
     limit.estimateEachElement();
-    final Comparator<Kept> byKeyThenArrival = byKeyThenArrival(orderBy, context);
+    // Each row's keys are extracted once, also for the rows the heap rejects: the keys decide the rejection (issue #12860)
+    final List<OrderByItem> items = orderBy.getItems();
+    final boolean charging = limit.isCharging();
+    final Comparator<Object> byKey = orderBy.keyComparator(context);
+    final Comparator<Kept> byKeyThenArrival = byKeyThenArrival(byKey);
     final PriorityQueue<Kept> heap = new PriorityQueue<>(Math.min(maxResults, 1024) + 1, byKeyThenArrival.reversed());
     long arrival = 0;
+    long keyBytes = 0L;
     do {
       final ResultSet lastBatch = p.syncPull(context, DEFAULT_FETCH_RECORDS_PER_PULL);
       if (!lastBatch.hasNext())
@@ -209,13 +261,19 @@ public class OrderByStep extends AbstractExecutionStep {
         final Result item = lastBatch.next();
         final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
+          final Object key = orderBy.extractKeys(item, context);
           if (heap.size() < maxResults) {
-            heap.add(new Kept(item, arrival++));
+            final Kept entry = new Kept(item, key, arrival++, charging ? keyBytes(items, item, key, KEPT_BYTES) : 0L);
+            heap.add(entry);
             limit.add(heap.size(), item);
-          } else if (orderBy.compare(item, heap.peek().row, context) < 0) {
+            limit.charge(entry.keyBytes);
+            keyBytes += entry.keyBytes;
+          } else if (byKey.compare(key, heap.peek().key) < 0) {
             final Kept evicted = heap.poll();
-            heap.add(new Kept(item, arrival++));
-            limit.replace(evicted.row, item);
+            final Kept entry = new Kept(item, key, arrival++, charging ? keyBytes(items, item, key, KEPT_BYTES) : 0L);
+            heap.add(entry);
+            limit.replace(evicted.row, item, entry.keyBytes - evicted.keyBytes);
+            keyBytes += entry.keyBytes - evicted.keyBytes;
           } else
             arrival++;
         } finally {
@@ -234,6 +292,8 @@ public class OrderByStep extends AbstractExecutionStep {
       cachedResult = new ArrayList<>(kept.size());
       for (final Kept k : kept)
         cachedResult.add(k.row);
+      // the keys are gone with their holders: only the rows stay charged
+      limit.release(keyBytes);
     } finally {
       if (context.isProfiling())
         cost += System.nanoTime() - begin;
@@ -251,7 +311,7 @@ public class OrderByStep extends AbstractExecutionStep {
    * is not a parallel scan, a sort key is not a plain property, or an expression is not one the engine can evaluate on
    * several threads
    */
-  private boolean topKInParallel(final CommandContext context, final long timeoutBegin) {
+  private boolean topKInParallel(final CommandContext context, final long timeoutBegin, final int maxResults) {
     final ParallelRowPipeline pipeline = parallelPipeline();
     if (pipeline == null)
       return false;
@@ -304,15 +364,16 @@ public class OrderByStep extends AbstractExecutionStep {
       final List<Kept> kept = new ArrayList<>();
       for (final PartialTopK partial : partials)
         kept.addAll(partial.heap);
-      kept.sort(byKeyThenArrival(orderBy, context));
+      // the keys of the rows came from the workers' copies of the ORDER BY, which compare as this one does
+      kept.sort(byKeyThenArrival(orderBy.keyComparator(context)));
       final int size = Math.min(maxResults, kept.size());
       cachedResult = new ArrayList<>(size);
       for (int i = 0; i < size; i++)
         cachedResult.add(kept.get(i).row);
 
-      // THE WORKERS CHARGED THEIR OWN ROWS WHILE THEY SCANNED; THIS STEP HOLDS THE ONES IT KEEPS FROM HERE ON. THE WORKERS'
-      // CHARGES ARE TAKEN OVER WITHOUT GIVING THEM BACK TO THE BUDGET IN BETWEEN, WHERE ANOTHER QUERY COULD TAKE THEM WHILE THE
-      // ROWS ARE STILL HELD, THEN ADJUSTED TO THE ROWS KEPT, EACH ESTIMATED FOR ITSELF
+      // THE WORKERS CHARGED THEIR OWN ROWS AND KEYS WHILE THEY SCANNED; THIS STEP HOLDS THE ROWS IT KEEPS FROM HERE ON. THE
+      // WORKERS' CHARGES ARE TAKEN OVER WITHOUT GIVING THEM BACK TO THE BUDGET IN BETWEEN, WHERE ANOTHER QUERY COULD TAKE THEM
+      // WHILE THE ROWS ARE STILL HELD, THEN ADJUSTED TO THE ROWS KEPT, EACH ESTIMATED FOR ITSELF, WITHOUT THE KEYS
       for (final PartialTopK partial : partials)
         partial.handOverHeap(limit);
       limit.rechargeAll(cachedResult);
@@ -344,15 +405,52 @@ public class OrderByStep extends AbstractExecutionStep {
   }
 
   /** Orders kept rows by the sort key, then by where the sequential scan met them. */
-  private static Comparator<Kept> byKeyThenArrival(final OrderBy orderBy, final CommandContext context) {
+  private static Comparator<Kept> byKeyThenArrival(final Comparator<Object> byKey) {
     return (a, b) -> {
-      final int c = orderBy.compare(a.row, b.row, context);
+      final int c = byKey.compare(a.key, b.key);
       return c != 0 ? c : Long.compare(a.arrival, b.arrival);
     };
   }
 
-  /** A row kept by a top-K heap, with its position in the sequential scan: the tie-break that keeps the sort stable (#8802). */
-  private record Kept(Result row, long arrival) {
+  /**
+   * The heap the sort key of {@code row} holds beside the row: the holder ({@code holderBytes}), the array of several keys,
+   * and every key value the row does not hold itself. The column of a projected row IS the row's value, and so is a column in
+   * the content of a row that keeps its record ({@code SELECT *, expr AS k}): both are counted with the row. The property of
+   * a record is deserialized from its binary, and an expression or a modifier computes a value of its own.
+   */
+  static long keyBytes(final List<OrderByItem> items, final Result row, final Object key, final long holderBytes) {
+    if (items.size() == 1)
+      return key == null || holdsKey(row, items.getFirst()) ? holderBytes : holderBytes + HeapEstimator.estimate(key);
+
+    final Object[] keys = (Object[]) key;
+    long bytes = holderBytes + HeapEstimator.OBJECT_BYTES + (long) keys.length * HeapEstimator.REFERENCE_BYTES;
+    for (int i = 0; i < keys.length; i++)
+      if (keys[i] != null && !holdsKey(row, items.get(i)))
+        bytes += HeapEstimator.estimate(keys[i]);
+    return bytes;
+  }
+
+  /**
+   * Whether the key of {@code item} is a value {@code row} holds in its own content, which the row's estimate already counts.
+   * A row that keeps its record also answers a column from the record, deserialized from its binary: that is not held.
+   */
+  private static boolean holdsKey(final Result row, final OrderByItem item) {
+    if (!item.isColumnKey())
+      return false;
+    if (!row.isElement())
+      return true;
+    return row instanceof ResultInternal internal && item.getName() != null && internal.hasContentColumn(item.getName());
+  }
+
+  /** A row of the full sort with its sort key, extracted once when the row was read (issue #12860). */
+  private record Keyed(Result row, Object key) {
+  }
+
+  /**
+   * A row kept by a top-K heap with its sort key, extracted once when the row was read (issue #12860), the heap the key holds
+   * beside the row, and its position in the sequential scan: the tie-break that keeps the sort stable (#8802).
+   */
+  private record Kept(Result row, Object key, long arrival, long keyBytes) {
   }
 
   /** One worker's top {@code maxResults}, on the worker's own copies of the expressions it evaluates. */
@@ -361,6 +459,8 @@ public class OrderByStep extends AbstractExecutionStep {
     private final WhereClause[]       conditions;
     private final Projection          projection;
     private final OrderBy             orderBy;
+    private final Comparator<Object>  byKey;
+    private final boolean             charging;
     private final int                 maxResults;
     private final OperationHeapLimit  heapLimit;
     private final PriorityQueue<Kept> heap;
@@ -377,7 +477,9 @@ public class OrderByStep extends AbstractExecutionStep {
       this.context = context;
       this.maxResults = maxResults;
       this.heapLimit = heapLimit;
-      this.heap = new PriorityQueue<>(Math.min(maxResults, 1024) + 1, byKeyThenArrival(orderBy, context).reversed());
+      this.charging = heapLimit.isCharging();
+      this.byKey = orderBy.keyComparator(context);
+      this.heap = new PriorityQueue<>(Math.min(maxResults, 1024) + 1, byKeyThenArrival(byKey).reversed());
     }
 
     /**
@@ -390,19 +492,24 @@ public class OrderByStep extends AbstractExecutionStep {
       if (!ParallelRowPipeline.matches(types, conditions, row, context))
         return;
       final Result next = projection != null ? projection.calculateSingle(context, row) : row;
+      final Object key = orderBy.extractKeys(next, context);
       if (heap.size() < maxResults) {
-        heap.add(new Kept(next, position));
+        final Kept entry = new Kept(next, key, position, charging ? keyBytes(orderBy.getItems(), next, key, KEPT_BYTES) : 0L);
+        heap.add(entry);
         // THE MONITOR IS UNCONTENDED BUT FOR A CANCELLED WORKER, AND TAKEN ONLY FOR A ROW THAT ENTERS THE HEAP
         synchronized (this) {
-          if (!heapReleased)
+          if (!heapReleased) {
             heapLimit.add(heap.size(), next);
+            heapLimit.charge(entry.keyBytes);
+          }
         }
-      } else if (orderBy.compare(next, heap.peek().row, context) < 0) {
+      } else if (byKey.compare(key, heap.peek().key) < 0) {
         final Kept evicted = heap.poll();
-        heap.add(new Kept(next, position));
+        final Kept entry = new Kept(next, key, position, charging ? keyBytes(orderBy.getItems(), next, key, KEPT_BYTES) : 0L);
+        heap.add(entry);
         synchronized (this) {
           if (!heapReleased)
-            heapLimit.replace(evicted.row, next);
+            heapLimit.replace(evicted.row, next, entry.keyBytes - evicted.keyBytes);
         }
       }
     }
@@ -440,8 +547,9 @@ public class OrderByStep extends AbstractExecutionStep {
     if( context.isProfiling() ) {
       result += " (" + getCostFormatted() + ")";
     }
-    result += maxResults != null ?
-        "\n  (buffer size: " + maxResults + (parallelWorkers > 0 ? ", parallel: " + parallelWorkers + " workers" : "") + ")" :
+    final Integer kept = keptRows();
+    result += kept != null ?
+        "\n  (buffer size: " + kept + (parallelWorkers > 0 ? ", parallel: " + parallelWorkers + " workers" : "") + ")" :
         "";
     return result;
   }
@@ -453,7 +561,10 @@ public class OrderByStep extends AbstractExecutionStep {
 
   @Override
   public ExecutionStep copy(final CommandContext context) {
-    return new OrderByStep(orderBy.copy(), maxResults, context, timeoutMillis);
+    final OrderByStep copy = new OrderByStep(orderBy.copy(), maxResults, context, timeoutMillis);
+    copy.capSkip = capSkip;
+    copy.rowCap = rowCap;
+    return copy;
   }
 
 }

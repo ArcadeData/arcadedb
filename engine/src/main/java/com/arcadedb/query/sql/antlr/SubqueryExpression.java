@@ -24,7 +24,10 @@ import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.BaseExpression;
+import com.arcadedb.query.sql.parser.BaseIdentifier;
+import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.query.sql.parser.SelectStatement;
+import com.arcadedb.query.sql.parser.SubQueryCollector;
 
 import java.util.Map;
 
@@ -34,6 +37,9 @@ import java.util.Map;
  */
 public class SubqueryExpression extends BaseExpression {
   private final SelectStatement statement;
+  // THE LET VARIABLE THE PLANNER MOVED THE STATEMENT INTO (ISSUE #13179), NULL WHILE IT RUNS IN PLACE. KEPT APART FROM
+  // THE INHERITED IDENTIFIER SO THE NODE STILL RENDERS, NAMES ITS PROJECTION COLUMN AND PLANS AS THE SUBQUERY IT IS
+  private       BaseIdentifier  liftedValue;
 
   public SubqueryExpression(final SelectStatement statement) {
     this.statement = statement;
@@ -45,7 +51,9 @@ public class SubqueryExpression extends BaseExpression {
 
   @Override
   public Object execute(final Identifiable currentRecord, final CommandContext context) {
-    Object result = executeSubquery(context);
+    Object result = liftedValue != null ?
+        liftedValue.execute(currentRecord != null ? currentRecord.getRecord() : null, context) :
+        executeSubquery(context);
 
     // Apply modifier if present (e.g., (SELECT ...).name or (SELECT ...)[0])
     if (modifier != null)
@@ -56,13 +64,48 @@ public class SubqueryExpression extends BaseExpression {
 
   @Override
   public Object execute(final Result currentRecord, final CommandContext context) {
-    Object result = executeSubquery(context);
+    Object result = liftedValue != null ? liftedValue.execute(currentRecord, context) : executeSubquery(context);
 
     // Apply modifier if present (e.g., (SELECT ...).name or (SELECT ...)[0])
     if (modifier != null)
       result = modifier.execute(currentRecord, result, context);
 
     return result;
+  }
+
+  /**
+   * Hands the statement to the planner, which computes it in a LET: once per execution, or once per row when it refers to
+   * {@code $parent}, exactly as the {@code IN (SELECT ...)} form is lifted. Left in place, an uncorrelated subquery read by
+   * {@code =}, {@code <}, {@code CONTAINS}, a projection... ran again for every row evaluated (issue #13179). The node cannot
+   * replace itself in its parent, so it keeps the statement and reads the LET variable instead, applying its modifier to it as
+   * it applies it to the rows it would have produced: both are the materialized list of the subquery's results.
+   */
+  @Override
+  public void extractSubQueries(final SubQueryCollector collector) {
+    if (liftedValue == null)
+      liftedValue = new BaseIdentifier(collector.addStatement(statement));
+  }
+
+  /**
+   * A subquery inside the expression of a LET is left in place: the planner adds the LET of a {@code $parent} subquery after
+   * every per-record LET, so the expression would read it before it is computed, and the LET of an uncorrelated one before the
+   * LETs its statement may read.
+   */
+  @Override
+  public void extractSubQueries(final Identifier letAlias, final SubQueryCollector collector) {
+    // NOTHING TO LIFT
+  }
+
+  /**
+   * The statement is part of this operand, so a {@code $parent} read anywhere in it ties the operand to the row it is
+   * evaluated for, as the {@code IN (SELECT ...)} form ({@code ParenthesisExpression}) already answers. The inherited answer
+   * only looked at the modifier, so a lifted sub-query whose only outer-row read sits in a sub-query of its own projection
+   * ({@code (SELECT (SELECT $parent.$parent.$current.id AS v FROM M)[0].v AS m FROM M)}) was planned as a global LET, and
+   * every row got the first row's value (issue #12714).
+   */
+  @Override
+  public boolean refersToParent() {
+    return statement.refersToParent() || super.refersToParent();
   }
 
   private Object executeSubquery(final CommandContext context) {
@@ -107,10 +150,17 @@ public class SubqueryExpression extends BaseExpression {
   }
 
   @Override
+  protected Object[] getIdentityElements() {
+    return new Object[] { statement, liftedValue, modifier };
+  }
+
+  @Override
   public SubqueryExpression copy() {
     final SubqueryExpression copy = new SubqueryExpression(statement);
     if (modifier != null)
       copy.setModifier(modifier.copy());
+    if (liftedValue != null)
+      copy.liftedValue = liftedValue.copy();
     return copy;
   }
 }

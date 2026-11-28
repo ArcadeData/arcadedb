@@ -1,0 +1,62 @@
+#
+# Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+# SPDX-License-Identifier: Apache-2.0
+#
+# Checks the credentials a release needs, days before it, without publishing or changing anything: the GPG key and
+# passphrase sign as RELEASE_GPG_FINGERPRINT and do not expire soon, the key is on the keyservers Maven Central reads,
+# the Central Portal token is accepted and the version is not published yet, the Docker Hub token can push to
+# arcadedata/arcadedb, and the release tag does not exist yet. See .github/scripts/check-release-credentials.sh.
+#
+# mvn-release.yml runs the same check in its `credentials` job, so a release with a broken credential stops before
+# building; this workflow lets a maintainer find out early enough to fix it calmly.
+
+name: Release readiness
+run-name: release readiness ${{ inputs.releaseversion }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      releaseversion:
+        description: "Version you are about to release (checked: not on Maven Central, no tag yet)"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  credentials:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - name: Check release credentials
+        run: .github/scripts/check-release-credentials.sh "${RELEASE_VERSION}"
+        env:
+          RELEASE_VERSION: ${{ inputs.releaseversion }}
+          GPG_PRIVATE_KEY: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+          RELEASE_GPG_FINGERPRINT: ${{ vars.RELEASE_GPG_FINGERPRINT }}
+          CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+          DOCKER_REPOSITORY: ${{ vars.DOCKER_NAMESPACE || 'arcadedata' }}/arcadedb
+          GITHUB_TOKEN: ${{ github.token }}

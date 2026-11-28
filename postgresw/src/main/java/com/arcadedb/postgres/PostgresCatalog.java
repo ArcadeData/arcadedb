@@ -33,6 +33,7 @@ import com.arcadedb.schema.MaterializedView;
 import com.arcadedb.schema.MaterializedViewStatus;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.TypeHierarchy;
 import com.arcadedb.security.SecurityHelper;
 
 import java.util.ArrayList;
@@ -55,7 +56,6 @@ import java.util.logging.Level;
 import static com.arcadedb.postgres.PostgresCatalogRowSets.aggregateOf;
 import static com.arcadedb.postgres.PostgresCatalogRowSets.combine;
 import static com.arcadedb.postgres.PostgresCatalogRowSets.compareValues;
-import static com.arcadedb.postgres.PostgresCatalogRowSets.distinctKey;
 import static com.arcadedb.postgres.PostgresCatalogSyntax.MAX_NESTING;
 import static com.arcadedb.postgres.PostgresCatalogSyntax.containsSetOperation;
 import static com.arcadedb.postgres.PostgresCatalogSyntax.isName;
@@ -159,12 +159,17 @@ public class PostgresCatalog {
   private record Column(String name, PostgresType type, boolean notNull, Object defaultValue) {
   }
   /**
-   * How much work one statement may do, in rows read plus sub-select tokens re-read. Nesting depth alone does not
+   * How much work one statement may do, in rows read, values projected and sub-select tokens re-read. Nesting depth alone does not
    * bound it: a correlated sub-select runs once per row of the query around it, so {@code EXISTS} nested 32 deep
    * over three rows is 3^32 evaluations. psql's {@code \d} on a table of a hundred columns spends a few thousand
    * units; past the budget the statement is refused with {@link WorkLimitExceeded}.
    */
   private static final long WORK_BUDGET = 5_000_000L;
+  /**
+   * The most columns the projection of a statement may have, once every {@code *} is listed: the most PostgreSQL's own select list
+   * may have. No client reads more, and every column is an item, a key and a value for each row.
+   */
+  private static final int  MAX_PROJECTION_COLUMNS = 1664;
   /**
    * The OID of the bootstrap superuser in a stock PostgreSQL, used for every "owner" column - here and in
    * {@link PostgresTypeCatalog}'s {@code typowner}, so the two surfaces cannot drift apart on who owns what.
@@ -702,13 +707,24 @@ public class PostgresCatalog {
     return marker < 0 ? column : column.substring(0, marker);
   }
 
-  private static String uniqueColumnKey(final String name, final Set<String> used) {
-    if (used.add(name))
-      return name;
-    for (int n = 2; ; n++) {
-      final String key = name + '\0' + n;
-      if (used.add(key))
-        return key;
+  /**
+   * The keys a projection carries its columns under, see {@link #announcedName}. A name that is used again is keyed after the
+   * number of its copies so far, so finding the key of a copy costs the same whether it is the second or the thousandth.
+   */
+  private static final class ColumnKeys {
+    private final Set<String>          used   = new HashSet<>();
+    private final Map<String, Integer> copies = new HashMap<>();
+
+    String unique(final String name) {
+      if (used.add(name))
+        return name;
+      for (int n = copies.getOrDefault(name, 2); ; n++) {
+        final String key = name + '\0' + n;
+        if (used.add(key)) {
+          copies.put(name, n + 1);
+          return key;
+        }
+      }
     }
   }
 
@@ -1301,7 +1317,7 @@ public class PostgresCatalog {
       }
     }
 
-    final Projection projection = parseProjection(statement.projection, from, columnsByRelation);
+    final Projection projection = parseProjection(statement.projection, from, columnsByRelation, context);
     if (projection == null || readsMergedColumns(statement, from))
       return DECLINED;
 
@@ -1691,13 +1707,16 @@ public class PostgresCatalog {
       if (answer.columns.size() != keys.size())
         return DECLINED;
       filtersExactly |= answer.filtersExactly;
+      // a row of an arm is copied, combined, and built again as a row of the answer: each pass is work of the statement
+      context.charge(answer.rows.size());
       final List<List<Object>> values = new ArrayList<>(answer.rows.size());
       for (final Map<String, Object> row : answer.rows)
         values.add(new ArrayList<>(row.values()));
       arms.add(values);
     }
 
-    final List<List<Object>> combined = combine(operation.operators, operation.all, arms);
+    final List<List<Object>> combined = combine(operation.operators, operation.all, arms, context::charge);
+    context.charge(combined.size());
 
     List<Map<String, Object>> rows = new ArrayList<>(combined.size());
     for (final List<Object> values : combined) {
@@ -1708,13 +1727,29 @@ public class PostgresCatalog {
     }
 
     if (operation.orderBy != null)
-      rows = sort(operation.orderBy, rows);
+      rows = sort(context, operation.orderBy, rows, null);
     if (rows == null)
       return DECLINED;
     if (operation.limit != null && rows.size() > operation.limit)
       rows = new ArrayList<>(rows.subList(0, operation.limit));
 
     return new Answer(unionColumns(keys, answers, rows), rows, filtersExactly);
+  }
+
+  /**
+   * The comparisons of sorting {@code rows} rows by {@code keys} keys: about {@code rows * log2(rows)} of them, each reading as many
+   * keys as tie, so every key in the worst case. What the work budget is charged for a sort, before it is done.
+   */
+  private static int sortCost(final int rows, final int keys) {
+    if (rows < 2 || keys < 1)
+      return 0;
+    final long perKey = (long) rows * (Integer.SIZE - Integer.numberOfLeadingZeros(rows));
+    return perKey > Integer.MAX_VALUE / keys ? Integer.MAX_VALUE : (int) (perKey * keys);
+  }
+
+  /** {@code units} of work as the {@code int} the work budget is charged in: more than any budget when it does not fit. */
+  private static int unitsOf(final long units) {
+    return (int) Math.min(units, Integer.MAX_VALUE);
   }
 
   private static Family mostSpecific(final Family current, final Family candidate) {
@@ -1912,6 +1947,11 @@ public class PostgresCatalog {
     private final Map<Family, List<Row>> rowsByFamily = new EnumMap<>(Family.class);
     private int                          nesting;
     private long                         work;
+    /**
+     * The character reads the text patterns of the statement may make in all: one for every expression of it, and for every
+     * sub-select parsed again for a row of the query around it (see {@link PostgresCatalogExpression.StatementPatterns}).
+     */
+    private final PostgresCatalogExpression.StatementPatterns patterns = new PostgresCatalogExpression.StatementPatterns();
 
     private List<PostgresCatalogIndexes.Info>         indexes;
     private Set<String>                               indexedTypes;
@@ -2058,6 +2098,10 @@ public class PostgresCatalog {
       work += units;
       if (work > WORK_BUDGET)
         throw new PostgresCatalogExpression.BudgetExceeded();
+    }
+
+    PostgresCatalogExpression.StatementPatterns patterns() {
+      return patterns;
     }
 
     Database database() {
@@ -2978,15 +3022,8 @@ public class PostgresCatalog {
 
   /** The declaration of {@code name} that {@link #collectProperties} keeps for {@code type}, or null if it has none. */
   private static Property nearestProperty(final DocumentType type, final String name) {
-    final Property own = type.getPropertyIfExists(name);
-    if (own != null)
-      return own;
-    for (final DocumentType superType : type.getSuperTypes()) {
-      final Property inherited = nearestProperty(superType, name);
-      if (inherited != null)
-        return inherited;
-    }
-    return null;
+    // the type's own declaration, then its super types in order, depth first, each type once
+    return type.getPolymorphicPropertyIfExists(name);
   }
 
   /**
@@ -3012,8 +3049,10 @@ public class PostgresCatalog {
   private static void collectProperties(final DocumentType type, final Map<String, Property> byName) {
     for (final Property property : type.getProperties())
       byName.putIfAbsent(property.getName(), property);
-    for (final DocumentType superType : type.getSuperTypes())
-      collectProperties(superType, byName);
+    // each super type once, whatever the number of paths that lead up to it
+    for (final DocumentType superType : TypeHierarchy.allSuperTypes(type))
+      for (final Property property : superType.getProperties())
+        byName.putIfAbsent(property.getName(), property);
   }
 
   /**
@@ -3075,7 +3114,7 @@ public class PostgresCatalog {
   private static Answer project(final Statement statement, final List<FromEntry> from, final List<Row> rows,
       final Context context, final Map<String, Collection<String>> columnsByRelation,
       final boolean toleratesUnreadableFilter, final RowResolver outer) {
-    final Projection projection = parseProjection(statement.projection, from, columnsByRelation);
+    final Projection projection = parseProjection(statement.projection, from, columnsByRelation, context);
     if (projection == null)
       return DECLINED;
 
@@ -3143,6 +3182,12 @@ public class PostgresCatalog {
   private static Answer finish(final Statement statement, final Projection projection, final List<Joined> surviving,
       final List<FromEntry> from, final Context context, final Map<String, Collection<String>> columnsByRelation,
       final boolean toleratesUnreadableFilter, final RowResolver outer, final boolean neverHasRows) {
+    // Every value of the answer is computed, kept and read again by the passes that follow (DISTINCT, ORDER BY, the announced
+    // types): the rows times the columns of the projection, charged before any of it is done. An aggregate reads every row of its
+    // group for each column that holds one, which comes to the same product. A statement with no row still projects one, to see
+    // that its projection can be computed.
+    context.charge(unitsOf((long) Math.max(1, surviving.size()) * projection.items.size()));
+
     // Window functions are the one thing that cannot be computed a row at a time: row_number() is defined by
     // the other rows of its partition. They are computed here, over the rows that survived the filter.
     final Map<PostgresCatalogExpression.WindowCall, Object[]> windows = computeWindows(projection.items, surviving,
@@ -3175,6 +3220,9 @@ public class PostgresCatalog {
               return DECLINED;
             projections = Math.max(projections, rows);
           }
+          // the row is projected again for every element after the first
+          if (projections > 1)
+            context.charge(unitsOf((long) (projections - 1) * projection.items.size()));
         }
 
         for (int position = 0; position < projections; position++) {
@@ -3199,16 +3247,18 @@ public class PostgresCatalog {
     List<Map<String, Object>> result = answered;
 
     if (statement.distinct) {
+      // every value of every row is read to tell the rows apart
+      context.charge(unitsOf((long) result.size() * projection.items.size()));
       final List<Map<String, Object>> distinct = new ArrayList<>(result.size());
-      final Set<List<Object>> seen = new HashSet<>();
+      final Set<PostgresCatalogRowKey> seen = new HashSet<>();
       for (final Map<String, Object> row : result)
-        if (seen.add(distinctKey(new ArrayList<>(row.values()))))
+        if (seen.add(PostgresCatalogRowKey.of(row.values())))
           distinct.add(row);
       result = distinct;
     }
 
     if (statement.orderBy != null)
-      result = sort(statement.orderBy, result, projection);
+      result = sort(context, statement.orderBy, result, projection);
     if (result == null)
       return DECLINED;
 
@@ -3274,14 +3324,16 @@ public class PostgresCatalog {
   private static List<Map<String, Object>> aggregate(final Statement statement, final Projection projection,
       final List<Joined> surviving, final List<FromEntry> from, final Context context,
       final Map<String, Collection<String>> columnsByRelation, final RowResolver outer) {
-    final Map<List<Object>, List<Joined>> groups = new LinkedHashMap<>();
+    final Map<PostgresCatalogRowKey, List<Joined>> groups = new LinkedHashMap<>();
 
     if (statement.groupBy == null)
-      groups.put(List.of(), surviving);
+      groups.put(PostgresCatalogRowKey.of(List.of()), surviving);
     else {
       final List<PostgresCatalogExpression> keys = groupKeys(statement.groupBy, projection);
       if (keys == null)
         return null;
+      // every row has the keys of its group evaluated
+      context.charge(unitsOf((long) surviving.size() * keys.size()));
       for (final Joined joined : surviving) {
         final RowResolver resolver = new RowResolver(joined.row(), joined.nulled(), from, context, outer);
         final List<Object> key = new ArrayList<>(keys.size());
@@ -3291,7 +3343,7 @@ public class PostgresCatalog {
             return null;
           key.add(value);
         }
-        groups.computeIfAbsent(distinctKey(key), k -> new ArrayList<>()).add(joined);
+        groups.computeIfAbsent(PostgresCatalogRowKey.of(key), k -> new ArrayList<>()).add(joined);
       }
     }
 
@@ -3370,9 +3422,11 @@ public class PostgresCatalog {
 
       if (!"row_number".equals(call.name))
         return null;
+      // every row is numbered, and has the keys of its partition and of its order evaluated
+      context.charge(unitsOf((long) rows.size() * (1 + call.partitionBy.size() + call.orderBy.size())));
 
       final Object[] values = new Object[rows.size()];
-      final Map<List<Object>, List<Integer>> partitions = new LinkedHashMap<>();
+      final Map<PostgresCatalogRowKey, List<Integer>> partitions = new LinkedHashMap<>();
 
       for (int i = 0; i < rows.size(); i++) {
         final RowResolver resolver = new RowResolver(rows.get(i).row(), rows.get(i).nulled(), from, context, outer);
@@ -3383,11 +3437,12 @@ public class PostgresCatalog {
             return null;
           key.add(value);
         }
-        partitions.computeIfAbsent(key, k -> new ArrayList<>()).add(i);
+        partitions.computeIfAbsent(PostgresCatalogRowKey.of(key), k -> new ArrayList<>()).add(i);
       }
 
       for (final List<Integer> partition : partitions.values()) {
         if (!call.orderBy.isEmpty()) {
+          context.charge(sortCost(partition.size(), call.orderBy.size()));
           final Map<Integer, List<Object>> keys = new LinkedHashMap<>();
           for (final Integer index : partition) {
             final RowResolver resolver = new RowResolver(rows.get(index).row(), rows.get(index).nulled(), from, context,
@@ -3508,30 +3563,32 @@ public class PostgresCatalog {
   /**
    * Sorts the projected rows. ORDER BY items may name a projected alias, an ordinal position or a source
    * column; an item that resolves to none of those leaves the rows in the order the catalog built them,
-   * which is by name, rather than declining a query whose data is perfectly answerable.
+   * which is by name, rather than declining a query whose data is perfectly answerable. An item may also be written as a
+   * qualified column ({@code i.indisprimary DESC}) when {@code projection} carries that column, which is how psql orders the indexes
+   * of {@code \d} (issue #10473), and may name a column the projection carries under another name: {@code SELECT nspname AS
+   * schema_name ... ORDER BY nspname}, DbVisualizer's schema list, was answered unsorted (found with issue #10745).
+   * <p>
+   * The work is charged to the statement before it is done: finding the column of each item, then the comparisons of the sort for
+   * each key. An item that names a column an earlier item named is no key, as it never breaks a tie the earlier one left.
+   *
+   * @param projection the projection of the statement, null for the rows of a set operation
    *
    * @return the sorted rows, or null when an item names two output columns alike - ambiguous, so declined
    */
-  private static List<Map<String, Object>> sort(final List<PostgresCatalogToken> orderBy,
-      final List<Map<String, Object>> projected) {
-    return sort(orderBy, projected, null);
-  }
-
-  /**
-   * {@link #sort(List, List)} that also reads an item written as a qualified column ({@code i.indisprimary DESC}) when the
-   * projection carries that column, which is how psql orders the indexes of {@code \d} (issue #10473), and one naming a column the
-   * projection carries under another name: {@code SELECT nspname AS schema_name ... ORDER BY nspname}, DbVisualizer's schema list,
-   * was answered unsorted (found with issue #10745).
-   */
-  private static List<Map<String, Object>> sort(final List<PostgresCatalogToken> orderBy,
+  private static List<Map<String, Object>> sort(final Context context, final List<PostgresCatalogToken> orderBy,
       final List<Map<String, Object>> projected, final Projection projection) {
     final List<List<PostgresCatalogToken>> items = splitTopLevel(orderBy);
     if (items == null || items.isEmpty())
       return projected;
 
-    final List<Integer> keys = new ArrayList<>(items.size());
-    final List<Boolean> descending = new ArrayList<>(items.size());
     final List<String> aliases = new ArrayList<>(projected.isEmpty() ? List.of() : projected.get(0).keySet());
+    // each item is looked up among the output columns
+    context.charge(unitsOf((long) items.size() * Math.max(1, aliases.size())));
+
+    final int[] keys = new int[items.size()];
+    final boolean[] descending = new boolean[items.size()];
+    final boolean[] named = new boolean[aliases.size()];
+    int keyCount = 0;
 
     for (final List<PostgresCatalogToken> item : items) {
       if (item.isEmpty())
@@ -3550,51 +3607,55 @@ public class PostgresCatalog {
       }
 
       int index = -1;
-      if (key.size() == 3 && key.get(1).isSymbol(".") && projection != null) {
+      if (key.size() == 3 && key.get(1).isSymbol(".") && projection != null)
         index = projectedColumn(projection, key.get(0).text.toLowerCase(Locale.ENGLISH), key.get(2).text.toLowerCase(Locale.ENGLISH));
-        if (index < 0)
-          return projected;
-        keys.add(index);
-        descending.add(desc);
-        continue;
-      }
-      if (key.size() != 1)
+      else if (key.size() != 1)
         return projected;
-
-      final PostgresCatalogToken token = key.get(0);
-      if (token.type == PostgresCatalogToken.Type.NUMBER) {
-        try {
-          index = Integer.parseInt(token.text) - 1;
-        } catch (final NumberFormatException e) {
-          return projected;
-        }
-      } else {
-        for (int i = 0; i < aliases.size(); i++)
-          if (announcedName(aliases.get(i)).equalsIgnoreCase(token.text)) {
-            if (index >= 0)
-              // Two output columns go by this name: PostgreSQL refuses an ambiguous ORDER BY rather than pick one.
-              return null;
-            index = i;
+      else {
+        final PostgresCatalogToken token = key.get(0);
+        if (token.type == PostgresCatalogToken.Type.NUMBER) {
+          try {
+            index = Integer.parseInt(token.text) - 1;
+          } catch (final NumberFormatException e) {
+            return projected;
           }
-        // no output column has the name: PostgreSQL then reads it as a column of the input, which the projection may carry aliased
-        if (index < 0 && projection != null)
-          index = projectedColumn(projection, null, token.text);
+        } else {
+          for (int i = 0; i < aliases.size(); i++)
+            if (announcedName(aliases.get(i)).equalsIgnoreCase(token.text)) {
+              if (index >= 0)
+                // Two output columns go by this name: PostgreSQL refuses an ambiguous ORDER BY rather than pick one.
+                return null;
+              index = i;
+            }
+          // no output column has the name: PostgreSQL then reads it as a column of the input, which the projection may carry aliased
+          if (index < 0 && projection != null)
+            index = projectedColumn(projection, null, token.text);
+        }
       }
 
       if (index < 0 || index >= aliases.size())
         return projected;
 
-      keys.add(index);
-      descending.add(desc);
+      // a column named again ties exactly where the first time it was named did: it is no key
+      if (!named[index]) {
+        named[index] = true;
+        keys[keyCount] = index;
+        descending[keyCount++] = desc;
+      }
     }
+
+    context.charge(sortCost(projected.size(), keyCount));
+
+    final String[] columns = new String[keyCount];
+    for (int i = 0; i < keyCount; i++)
+      columns[i] = aliases.get(keys[i]);
 
     final List<Map<String, Object>> sorted = new ArrayList<>(projected);
     sorted.sort((left, right) -> {
-      for (int i = 0; i < keys.size(); i++) {
-        final String alias = aliases.get(keys.get(i));
-        final int comparison = compareValues(left.get(alias), right.get(alias));
+      for (int i = 0; i < columns.length; i++) {
+        final int comparison = compareValues(left.get(columns[i]), right.get(columns[i]));
         if (comparison != 0)
-          return descending.get(i) ? -comparison : comparison;
+          return descending[i] ? -comparison : comparison;
       }
       return 0;
     });
@@ -3639,15 +3700,23 @@ public class PostgresCatalog {
     }
   }
 
+  /**
+   * Reads the select list of a statement. A {@code *} lists the columns of every FROM entry and an {@code alias.*} those of one, as
+   * often as it is written: the columns it is about to list are charged to the work budget, and a list that would pass
+   * {@link #MAX_PROJECTION_COLUMNS} is refused with {@link PostgresCatalogExpression.BudgetExceeded}, before any of it is built.
+   */
   private static Projection parseProjection(final List<PostgresCatalogToken> tokens, final List<FromEntry> from,
-      final Map<String, Collection<String>> columnsByRelation) {
+      final Map<String, Collection<String>> columnsByRelation, final Context context) {
     final List<List<PostgresCatalogToken>> items = splitTopLevel(tokens);
     if (items == null || items.isEmpty())
       return null;
+    // every item is a column at least
+    if (items.size() > MAX_PROJECTION_COLUMNS)
+      throw new PostgresCatalogExpression.BudgetExceeded();
 
     final List<ProjectionItem> projection = new ArrayList<>(items.size());
     final List<PostgresCatalogExpression.ExpandArray> expansions = new ArrayList<>();
-    final Set<String> keys = new HashSet<>();
+    final ColumnKeys keys = new ColumnKeys();
     boolean aggregated = false;
 
     for (final List<PostgresCatalogToken> item : items) {
@@ -3656,10 +3725,15 @@ public class PostgresCatalog {
 
       // "*" and "alias.*" expand to the columns of the relations they name.
       if (item.size() == 1 && item.get(0).isSymbol("*")) {
+        int columns = 0;
+        for (final FromEntry entry : from)
+          columns += columnsByRelation.getOrDefault(entry.relation, List.of()).size();
+        admitColumns(columns, projection.size(), context);
+
         for (final FromEntry entry : from)
           for (final String column : columnsByRelation.getOrDefault(entry.relation, List.of()))
             projection.add(new ProjectionItem(new PostgresCatalogExpression.ColumnReference(entry.alias, column),
-                uniqueColumnKey(announcedName(column), keys)));
+                keys.unique(announcedName(column))));
         continue;
       }
       if (item.size() == 3 && item.get(1).isSymbol(".") && item.get(2).isSymbol("*")) {
@@ -3667,9 +3741,11 @@ public class PostgresCatalog {
         final FromEntry entry = entryFor(from, qualifier);
         if (entry == null)
           return null;
+        admitColumns(columnsByRelation.getOrDefault(entry.relation, List.of()).size(), projection.size(), context);
+
         for (final String column : columnsByRelation.getOrDefault(entry.relation, List.of()))
           projection.add(new ProjectionItem(new PostgresCatalogExpression.ColumnReference(qualifier, column),
-              uniqueColumnKey(announcedName(column), keys)));
+              keys.unique(announcedName(column))));
         continue;
       }
 
@@ -3704,10 +3780,25 @@ public class PostgresCatalog {
       if (alias == null)
         alias = defaultAlias(expression);
 
-      projection.add(new ProjectionItem(expression, uniqueColumnKey(alias, keys)));
+      projection.add(new ProjectionItem(expression, keys.unique(alias)));
     }
 
+    // the items after a star are columns too
+    if (projection.size() > MAX_PROJECTION_COLUMNS)
+      throw new PostgresCatalogExpression.BudgetExceeded();
     return new Projection(projection, aggregated, expansions);
+  }
+
+  /**
+   * Charges the work budget with the {@code columns} a {@code *} is about to list, after the {@code listed} ones before it.
+   *
+   * @throws PostgresCatalogExpression.BudgetExceeded when they would take the projection past {@link #MAX_PROJECTION_COLUMNS}, or
+   *                                                  the statement past its budget
+   */
+  private static void admitColumns(final int columns, final int listed, final Context context) {
+    if (columns > MAX_PROJECTION_COLUMNS - listed)
+      throw new PostgresCatalogExpression.BudgetExceeded();
+    context.charge(columns);
   }
 
   private static String defaultAlias(final PostgresCatalogExpression expression) {
@@ -3738,11 +3829,17 @@ public class PostgresCatalog {
   private static int entryIndex(final List<FromEntry> from, final String qualifier) {
     for (int i = 0; i < from.size(); i++) {
       final FromEntry entry = from.get(i);
-      if (qualifier.equals(entry.alias) || qualifier.equals(entry.relation) || entry.relation.endsWith("." + qualifier)
+      if (qualifier.equals(entry.alias) || qualifier.equals(entry.relation) || endsWithQualified(entry.relation, qualifier)
           || (entry.alias == null && entry.relation.equals(qualifier)))
         return i;
     }
     return -1;
+  }
+
+  /** Whether {@code relation} is a name in a schema, {@code <schema>.<name>}, of {@code name}: read for every column of every row, so it builds nothing. */
+  private static boolean endsWithQualified(final String relation, final String name) {
+    final int dot = relation.length() - name.length() - 1;
+    return dot >= 0 && relation.charAt(dot) == '.' && relation.endsWith(name);
   }
 
 
@@ -3797,6 +3894,11 @@ public class PostgresCatalog {
     @Override
     public int expansion() {
       return expansion;
+    }
+
+    @Override
+    public PostgresCatalogExpression.StatementPatterns statementPatterns() {
+      return context.patterns();
     }
 
     @Override
@@ -3865,7 +3967,7 @@ public class PostgresCatalog {
         return PostgresCatalogExpression.UNKNOWN;
 
       final List<Object> values = new ArrayList<>(group.size());
-      final Set<List<Object>> seen = call.distinct ? new HashSet<>() : null;
+      final Set<PostgresCatalogRowKey> seen = call.distinct ? new HashSet<>() : null;
       final List<Object> separators = "string_agg".equals(call.name) ? new ArrayList<>(group.size()) : null;
       for (final Joined joined : group) {
         if (call.argument == null) {
@@ -3880,7 +3982,7 @@ public class PostgresCatalog {
         // Aggregates skip NULLs; array_agg is the one that collects them.
         if (value == null && !"array_agg".equals(call.name))
           continue;
-        if (seen != null && !seen.add(distinctKey(Collections.singletonList(value))))
+        if (seen != null && !seen.add(PostgresCatalogRowKey.ofValue(value)))
           continue;
         values.add(value);
         if (separators != null) {

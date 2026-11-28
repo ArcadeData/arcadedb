@@ -344,11 +344,17 @@ class PartitionPruningPlannerTest extends TestHelper {
     final ResultSet rs = database.query("sql",
         "SELECT FROM " + TYPE_NAME + " WHERE tenant_id = 'acme' OR payload = 'p-globex'");
     final ExecutionPlan plan = rs.getExecutionPlan().orElseThrow();
-    final FilterByClustersStep filter = findClusterFilter(plan);
-    assertThat(filter).isNotNull();
-    assertThat(filter.getClusters())
-        .as("OR with an unprunable branch must fall back to full fan-out")
-        .hasSize(BUCKETS);
+    // The branch no partition coordinate binds needs the whole type read, so the OR is one scan of every bucket with the whole
+    // WHERE (no per-branch union, and so no cluster filter)
+    assertThat(findClusterFilter(plan)).as("one scan of the type, no per-branch union to filter by bucket").isNull();
+    final FetchFromTypeWithFilterStep fetch = findFetcher(plan);
+    assertThat(fetch).as("the type is scanned, not read through an index search").isNotNull();
+    final Set<Integer> scannedBuckets = new HashSet<>();
+    for (final ExecutionStep step : fetch.getSubSteps())
+      scannedBuckets.add(((ScanWithFilterStep) step).getBucketId());
+    final Set<Integer> typeBuckets = new HashSet<>(database.getSchema().getType(TYPE_NAME).getBucketIds(true));
+    assertThat(typeBuckets).hasSize(BUCKETS);
+    assertThat(scannedBuckets).as("OR with an unprunable branch must fall back to full fan-out").isEqualTo(typeBuckets);
 
     final Set<String> tenants = new HashSet<>();
     while (rs.hasNext())

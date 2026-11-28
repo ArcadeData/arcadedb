@@ -72,7 +72,7 @@ public class CypherTrimFunction implements StatelessFunction {
         return null;
       if (trimChar.isEmpty())
         return source.strip();
-      return TrimFunction.stripLeading(TrimFunction.stripTrailing(source, trimChar), trimChar);
+      return TrimFunction.strip(source, trimChar, true, true);
     }
 
     if (args.length == 3) {
@@ -85,7 +85,8 @@ public class CypherTrimFunction implements StatelessFunction {
       final String mode = args[0] != null ? args[0].toString() : null;
       final String source = CypherFunctionHelper.requireStringArgument(args[2], getName());
       final String trimChar = CypherFunctionHelper.requireStringArgument(args[1], getName());
-      if (source == null || trimChar == null)
+      // a null mode is a null answer, as a null operand is: it was a NullPointerException on the switch (issue #12744)
+      if (source == null || trimChar == null || mode == null)
         return null;
       if (trimChar.isEmpty()) {
         return switch (mode) {
@@ -98,7 +99,7 @@ public class CypherTrimFunction implements StatelessFunction {
       return switch (mode) {
         case "LEADING" -> TrimFunction.stripLeading(source, trimChar);
         case "TRAILING" -> TrimFunction.stripTrailing(source, trimChar);
-        default -> TrimFunction.stripLeading(TrimFunction.stripTrailing(source, trimChar), trimChar);
+        default -> TrimFunction.strip(source, trimChar, true, true);
       };
     }
 

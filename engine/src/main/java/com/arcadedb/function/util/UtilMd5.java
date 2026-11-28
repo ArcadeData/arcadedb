@@ -21,7 +21,7 @@ package com.arcadedb.function.util;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
- * util.md5(value) - Compute MD5 hash.
+ * util.md5(values) - Compute the MD5 hash of the concatenated string forms of the values (see {@link #computeHash}).
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -43,7 +43,7 @@ public class UtilMd5 extends AbstractUtilFunction {
 
   @Override
   public String getDescription() {
-    return "Compute MD5 hash of the given value";
+    return "Compute MD5 hash of the concatenated string forms of the given values";
   }
 
   @Override

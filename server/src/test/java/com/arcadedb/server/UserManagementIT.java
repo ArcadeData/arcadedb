@@ -301,6 +301,98 @@ class UserManagementIT extends BaseGraphServerTest {
     });
   }
 
+  /**
+   * Root is the only principal that administers the server, so dropping it leaves a server nobody can administer: with root the
+   * only user, every later request answered 401 until the users file was edited by hand (issue #12813). The
+   * {@code DELETE /server/users} route always refused it; the {@code drop user} server command did not.
+   */
+  @Test
+  void dropRootUserThroughServerCommandIsRefused() throws Exception {
+    testEachServer(serverIndex -> {
+      final HttpURLConnection connection = serverCommand(serverIndex, "drop user root");
+      try {
+        assertThat(connection.getResponseCode()).isEqualTo(400);
+        assertThat(readError(connection)).contains("Cannot delete the root user");
+      } finally {
+        connection.disconnect();
+      }
+
+      assertRootStillAdministers(serverIndex);
+    });
+  }
+
+  @Test
+  void dropRootUserThroughDeleteRouteIsRefused() throws Exception {
+    testEachServer(serverIndex -> {
+      final HttpURLConnection connection = (HttpURLConnection) new URL(
+          "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/server/users?name=root").openConnection();
+      connection.setRequestMethod("DELETE");
+      connection.setRequestProperty("Authorization", basicAuth());
+      connection.connect();
+      try {
+        assertThat(connection.getResponseCode()).isEqualTo(400);
+        assertThat(readError(connection)).contains("Cannot delete the root user");
+      } finally {
+        connection.disconnect();
+      }
+
+      assertRootStillAdministers(serverIndex);
+    });
+  }
+
+  /**
+   * The refusal is of root alone: every other user is still dropped by the server command.
+   */
+  @Test
+  void dropUserThroughServerCommandStillDropsAnotherUser() throws Exception {
+    testEachServer(serverIndex -> {
+      createUser(serverIndex, "droppeduser", "password1234",
+          new JSONObject().put(getDatabaseName(), new JSONArray(new String[] { "admin" })));
+      try {
+        final HttpURLConnection connection = serverCommand(serverIndex, "drop user droppeduser");
+        try {
+          assertThat(connection.getResponseCode()).isEqualTo(200);
+        } finally {
+          connection.disconnect();
+        }
+        assertThat(getServer(serverIndex).getSecurity().existsUser("droppeduser")).isFalse();
+      } finally {
+        if (getServer(serverIndex).getSecurity().existsUser("droppeduser"))
+          getServer(serverIndex).getSecurity().dropUser("droppeduser");
+      }
+    });
+  }
+
+  private HttpURLConnection serverCommand(final int serverIndex, final String command) throws Exception {
+    final HttpURLConnection connection = (HttpURLConnection) new URL(
+        "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/server").openConnection();
+    connection.setRequestMethod("POST");
+    connection.setRequestProperty("Authorization", basicAuth());
+    connection.setDoOutput(true);
+    connection.setRequestProperty("Content-Type", "application/json");
+    connection.getOutputStream().write(new JSONObject().put("command", command).toString().getBytes());
+    connection.connect();
+    return connection;
+  }
+
+  /**
+   * Root is still a user, still authenticates and is still answered as the server administrator.
+   */
+  private void assertRootStillAdministers(final int serverIndex) throws Exception {
+    assertThat(getServer(serverIndex).getSecurity().existsUser("root")).isTrue();
+
+    final HttpURLConnection connection = (HttpURLConnection) new URL(
+        "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/server/users").openConnection();
+    connection.setRequestMethod("GET");
+    connection.setRequestProperty("Authorization", basicAuth());
+    connection.connect();
+    try {
+      assertThat(connection.getResponseCode()).isEqualTo(200);
+    } finally {
+      connection.disconnect();
+    }
+  }
+
   private void createUser(final int serverIndex, final String name, final String password,
       final JSONObject databases) throws Exception {
     // Delete user first if it already exists (cleanup from previous test runs)

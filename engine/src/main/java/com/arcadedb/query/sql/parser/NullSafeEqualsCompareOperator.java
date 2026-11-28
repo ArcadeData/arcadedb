@@ -32,6 +32,12 @@ public class NullSafeEqualsCompareOperator extends SimpleNode implements BinaryC
 
   @Override
   public boolean execute(final DatabaseInternal database, final Object iLeft, final Object iRight) {
+    return execute(database, iLeft, iRight, null);
+  }
+
+  @Override
+  public boolean execute(final DatabaseInternal database, final Object iLeft, final Object iRight,
+      final ConstantOperandConversion rightConversion) {
     if (iLeft == null && iRight == null)
       return true;
 
@@ -41,14 +47,32 @@ public class NullSafeEqualsCompareOperator extends SimpleNode implements BinaryC
       Iterator<?> valueIterator = MultiValue.getMultiValueIterator(iLeft);
       while (valueIterator.hasNext()) {
         Object val = valueIterator.next();
-        if ((val == null && iRight == null) || QueryOperatorEquals.equals(val, iRight)) {
+        if ((val == null && iRight == null) || QueryOperatorEquals.equals(val, iRight, rightConversion)) {
           return true;
         }
       }
       return false;
     }
 
-    return QueryOperatorEquals.equals(iLeft, iRight);
+    return QueryOperatorEquals.equals(iLeft, iRight, rightConversion);
+  }
+
+  /**
+   * Itself: two scalars are equal whichever side each stands on, so {@code '2024-06-01 12:00:00' <=> dt} reads the string as the
+   * date-time, as {@code dt <=> '2024-06-01 12:00:00'} does (issue #12921). Only for two scalars, see {@link #isMirrorableWith}.
+   */
+  @Override
+  public NullSafeEqualsCompareOperator mirrored() {
+    return this;
+  }
+
+  /**
+   * A multi-value operand is read by the side it stands on: on the left it is a list any item of which may match, on the right it
+   * is one value. Turning such a comparison round would change which of the two it is, so only two scalars are mirrored.
+   */
+  @Override
+  public boolean isMirrorableWith(final Object left, final Object right) {
+    return !MultiValue.isMultiValue(left) && !MultiValue.isMultiValue(right);
   }
 
   @Override

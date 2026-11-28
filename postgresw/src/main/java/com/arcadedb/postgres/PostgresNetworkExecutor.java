@@ -84,6 +84,7 @@ import com.arcadedb.query.sql.parser.WhereClause;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
+import com.arcadedb.schema.TypeHierarchy;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.server.ArcadeDBServer;
@@ -97,6 +98,7 @@ import io.micrometer.core.instrument.Metrics;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.StringUtils;
 
+import java.io.DataInputStream;
 import java.io.EOFException;
 import java.io.IOException;
 import java.math.BigDecimal;
@@ -178,6 +180,13 @@ public class PostgresNetworkExecutor extends Thread {
   private static final AtomicLong                                     REFUSED_SINCE_WARNING     = new AtomicLong();
   /** Bind-message parameter length denoting a NULL value (wire value -1, read unsigned). */
   private static final long                                           NULL_PARAM_LENGTH = 0xFFFFFFFFL;
+  /**
+   * A Bind parameter value longer than this is read in pieces of this size, so what is held while it arrives is what has been
+   * received and not the length the message declared for it.
+   */
+  private static final int                                            BIND_VALUE_READ_STEP = 64 * 1024;
+  /** What a Bind message holds after its two names at the least: the three int16 counts of format codes, values and result formats. */
+  private static final int                                            BIND_MIN_FIELDS_LENGTH = 6;
   private static final Object[]                                       NO_PARAMETERS     = new Object[0];
   /** PostgreSQL itself caps a statement at 65535 parameters. */
   static final int                                                    MAX_STATEMENT_PARAMETERS = 65535;
@@ -187,8 +196,11 @@ public class PostgresNetworkExecutor extends Thread {
   /** Shared between every path that refuses a statement inside an aborted transaction block (SQLSTATE 25P02). */
   private static final String                                         ABORTED_TRANSACTION_MESSAGE       =
       "current transaction is aborted, commands ignored until end of transaction block";
-  /** Case-insensitive {@code TO} separator for the {@code SET <param> TO <value>} syntax. */
-  private static final Pattern                                        SET_TO_SEPARATOR  = Pattern.compile("(?i)\\s+TO\\s+");
+  /**
+   * Case-insensitive {@code TO} separator for the {@code SET <param> TO <value>} syntax. A separator starts at the first blank of
+   * a run, so a long run of blanks that is not followed by {@code TO} is read once and not once per blank it holds.
+   */
+  private static final Pattern                                        SET_TO_SEPARATOR  = Pattern.compile("(?i)(?<!\\s)\\s++TO\\s++");
   /** Case-insensitive {@code SESSION}/{@code LOCAL} scope modifier leading a {@code SET} command (issue #6701). */
   private static final Pattern                                        SET_SCOPE_MODIFIER = Pattern.compile("(?i)^(SESSION|LOCAL)\\s+");
   private static final Pattern                                        SET_TIME_ZONE      = Pattern.compile("(?i)^TIME\\s+ZONE\\s+");
@@ -202,7 +214,6 @@ public class PostgresNetworkExecutor extends Thread {
    */
   private static final Pattern                                        SET_KEYWORD_FORM   = Pattern.compile(
       "(?is)^(?:(SESSION|LOCAL)\\s+)?(SESSION\\s+AUTHORIZATION|ROLE|NAMES|SCHEMA|SESSION\\s+CHARACTERISTICS\\s+AS\\s+TRANSACTION|TRANSACTION|CONSTRAINTS)\\s+(?!=|TO\\s)(.+)$");
-  private static final Pattern                                        SET_CONSTRAINTS_MODE = Pattern.compile("(?is)^(.+?)\\s+(DEFERRED|IMMEDIATE)$");
   private static final Pattern                                        TRANSACTION_MODE_SEPARATOR = Pattern.compile("[\\s,]+");
 
   private final ArcadeDBServer              server;
@@ -214,6 +225,8 @@ public class PostgresNetworkExecutor extends Thread {
   private boolean                           tlsActive;
   private boolean                           gssEncRequestAnswered;
   private final byte[]                      buffer                = new byte[BUFFER_LENGTH];
+  // The bytes the last readString() took off the wire, its terminator included, for the messages that account for their own length
+  private int                               lastStringBytes;
   private final Map<String, PostgresPortal> portals               = new HashMap<>();
   // Prepared statements registered by PARSE, keyed by statement name (issue #6660 / CodeRabbit on #6658).
   // Read-only after PARSE creates the entry - bindCommand() clones from here via PostgresPortal.bindFrom()
@@ -285,6 +298,12 @@ public class PostgresNetworkExecutor extends Thread {
    * {@code errorInTransaction} survives.
    */
   private boolean  skipUntilSync              = false;
+  /**
+   * The Syncs received on this connection: each closes one exchange of extended-protocol messages. Tells a statement a client
+   * parsed and bound in the same exchange from one it prepared on its own (issue #11838), see
+   * {@link PostgresPortal#preparedWhileRunning}.
+   */
+  private long     syncs                      = 0;
   /**
    * True while a simple-query message holding several statements is being run (issue #11483): its statements form one
    * implicit transaction block, as in PostgreSQL.
@@ -523,8 +542,8 @@ public class PostgresNetworkExecutor extends Thread {
                 return;
 
               switch (type) {
-              case 'P' -> parseCommand();
-              case 'B' -> bindCommand();
+              case 'P' -> parseCommand(length);
+              case 'B' -> bindCommand(length);
               case 'E' -> executeCommand();
               case 'Q' -> queryCommand();
               case 'S' -> syncCommand();
@@ -587,6 +606,7 @@ public class PostgresNetworkExecutor extends Thread {
     if (DEBUG)
       LogManager.instance().log(this, Level.INFO, "PSQL: sync (thread=%s)", Thread.currentThread().threadId());
 
+    ++syncs;
     if (skipUntilSync || errorInTransaction) {
       // DISCARDED PREVIOUS MESSAGES TILL THIS POINT. The block the discarded messages belonged to goes with
       // them: PostgreSQL rolls back the WHOLE run of extended-protocol messages this Sync terminates when any
@@ -839,12 +859,16 @@ public class PostgresNetworkExecutor extends Thread {
    * A client that describes a NAMED statement through a portal may keep that description for the statement and apply
    * it to every later Bind/Execute without describing again, which is what pgjdbc does from its prepareThreshold-th
    * execution on (issue #9009). The layout just announced is therefore recorded as the statement's own, so the later
-   * portals serialize their rows under it instead of under the columns of whichever rows they return.
+   * portals serialize their rows under it instead of under the columns of whichever rows they return. Only such a client's
+   * description promises a layout every record fits, and only it is recorded ({@link #mayKeepDescribedLayout}). The portal of a
+   * statement prepared on its own was typed from its own rows (v as an int4, say), which is no promise for the next portal's
+   * rows: recorded, it would hold a later 5000000000, bool or list to that int4 and a later Describe('S') would announce it
+   * (issue #11838). Such a statement's later portals are described again, each from its own rows.
    */
   private static void rememberDescribedLayout(final PostgresPortal portal) {
     final PostgresPortal statement = portal.statement;
-    if (statement == null || !statement.namedStatement || statement.columnsDescribed || portal.catalogQuery
-        || portal.columns == null || portal.columns.isEmpty())
+    if (!mayKeepDescribedLayout(portal) || statement.columnsDescribed || portal.catalogQuery || portal.columns == null
+        || portal.columns.isEmpty())
       return;
     // a copy: the portal keeps adjusting its own map, the statement's layout is a promise that must not move
     statement.columns = new LinkedHashMap<>(portal.columns);
@@ -966,24 +990,64 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   /**
+   * True when the client may keep the description of this portal for every later portal of its statement, executed with no
+   * Describe of its own: pgjdbc from its prepareThreshold-th execution, Npgsql's auto-prepare. Both prepare a statement in the
+   * exchange that first runs it, Parse, Bind, Describe('P') and Execute before one Sync, and so does node-postgres for a named
+   * query, which describes every portal but cannot be told apart from them. A row type promised to them for an undeclared
+   * property must hold for the rows of every later execution, whatever its parameters, which only text does (issue #9009): a
+   * schemaless property can hold an int4 in one record and an int8, a float8, a bool or a list in the next, and a 0A000 there,
+   * which only pgjdbc outside a transaction block answers by preparing again, failed every other client (issue #11838).
+   * <p>
+   * A statement prepared on its own, Parse (and maybe Describe('S')) then Sync, is described portal by portal from the rows, as
+   * the unnamed statement is: its client - libpq's PQexecPrepared, psycopg, pgx's ExecPrepared - describes each portal it runs,
+   * and the clients that keep one description for it (pgx's statement cache, Npgsql's Prepare(), asyncpg, tokio-postgres) keep
+   * the answer to that Describe('S'), which names the columns from the schema, undeclared properties as text, and which every
+   * later portal is held to ({@link PostgresPortal#columnsDescribed}).
+   * <p>
+   * <b>What a wrong guess costs.</b> The wire does not say what a client does with a description, so the split can be wrong in
+   * two directions:
+   * <ul>
+   * <li>A client that describes every portal is taken for one that keeps the first answer: node-postgres's named query, libpq in
+   * pipeline mode (psycopg's pipeline can put Parse and the first Bind before one Sync), a preparing exchange whose Bind an
+   * earlier error had the server skip (the flag is set before the skip, so it counts), a Bind sent before the Sync of its Parse
+   * for any other reason. The cost is the #9009 layout: an undeclared property read as text where a native type was possible.
+   * Text carries every value, so this never fails and never misreads a value, and it is what main answered for every named
+   * statement.</li>
+   * <li>A client that keeps one portal's description is taken for one that describes every portal: it would have to Parse
+   * and Sync on its own, describe a portal, then run later portals with no Describe of their own and decode them with that
+   * first answer. No driver known to do so: libpq always describes the portal it runs, and the drivers that keep a description
+   * either take it from Describe('S') (pinned to the schema, above) or prepare in the exchange that runs the statement (pgjdbc,
+   * Npgsql). Such a client would get each later portal under its own rows' types and could fail to decode one whose types
+   * changed: that direction is not covered, and no layout chosen at the first Describe('P') could cover it without giving up
+   * native types for libpq, since the two send the same messages until the later Execute.</li>
+   * </ul>
+   * The flag is settled by the first Bind of the exchange that parsed the statement, before that Bind's portal can be
+   * described, and a later exchange never changes it: every portal of one statement is classified the same way.
+   */
+  private static boolean mayKeepDescribedLayout(final PostgresPortal portal) {
+    return portal.statement != null && portal.statement.namedStatement && portal.statement.preparedWhileRunning;
+  }
+
+  /**
    * Resolves the columns a materialized portal must be announced under, from the rows it actually produced.
    * A catalog answer keeps its own columns, which are fixed by the catalog table being emulated rather than
    * by whichever rows happened to match; a query that came back empty falls back to the schema, so a client
    * probing a shape with {@code WHERE 1=0} or {@code LIMIT 0} still gets a typed result set.
    *
-   * @param announced true when these columns are about to be sent to the client in a RowDescription (Describe 'P'),
-   *                  which a client may keep for the statement: only then are the undeclared properties of a named
-   *                  statement held to the layout every record fits (issue #9009). Execute announces nothing, so
-   *                  it types the columns from the rows themselves.
+   * @param announced true when these columns are about to be sent to the client in a RowDescription (Describe 'P'). The
+   *                  undeclared properties are then held to the layout every record fits (issue #9009) when the client may
+   *                  keep that description for the statement's later portals: see {@link #mayKeepDescribedLayout}.
+   *                  Otherwise, and on an Execute, which announces nothing, the columns are typed from the rows themselves,
+   *                  as the unnamed statement's are (issue #11838).
    */
   private void resolvePortalColumns(final PostgresPortal portal, final boolean announced) {
     final List<Result> rows = portal.fullResultSet != null ? portal.fullResultSet : Collections.emptyList();
+    final boolean stableLayout = announced && mayKeepDescribedLayout(portal);
     if (!portal.catalogQuery || portal.columns == null)
-      portal.columns = getColumns(rows, resolveQueryTargetType(portal), resolveAliasToSourceProperty(portal),
-          announced && portal.statement != null && portal.statement.namedStatement);
+      portal.columns = getColumns(rows, resolveQueryTargetType(portal), resolveAliasToSourceProperty(portal), stableLayout);
     if (!portal.catalogQuery)
       applyDeclaredColumns(portal.sqlStatement, rows, portal.columns);
-    if (announced && portal.statement != null && portal.statement.namedStatement && !portal.catalogQuery)
+    if (stableLayout && !portal.catalogQuery)
       stabilizeProjectedUndeclaredColumns(portal.sqlStatement, resolveQueryTargetType(portal), portal.columns);
     if (portal.columns.isEmpty() && rows.isEmpty()) {
       final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(portal.query, portal.language,
@@ -1306,7 +1370,8 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   private CommandContext createCommandContext() {
-    CommandContext commandContext = new BasicCommandContext();
+    final BasicCommandContext commandContext = new BasicCommandContext();
+    commandContext.setDatabase(database);
     commandContext.setConfiguration(server.getConfiguration());
     return commandContext;
   }
@@ -1396,6 +1461,9 @@ public class PostgresNetworkExecutor extends Thread {
    * around a read in it costs nothing that matters.
    */
   private void beginSimpleQueryBlock() {
+    // A simple query interleaved into a pipeline's implicit block joins it, writes of the pipeline included (issue #13222)
+    if (database.isTransactionActive())
+      endImplicitOnceItHoldsEarlierWrites();
     if (!simpleQueryBlockContinues)
       return;
     if (!database.isTransactionActive())
@@ -2546,14 +2614,19 @@ public class PostgresNetworkExecutor extends Thread {
    * {@code HashSet}, whose iteration order would make an exported column order vary from run to run.
    */
   private static void collectDeclaredColumns(final DocumentType docType, final Map<String, PostgresType> columns) {
+    collectOwnDeclaredColumns(docType, columns);
+    // each super type once, whatever the number of paths that lead up to it
+    for (final DocumentType superType : TypeHierarchy.allSuperTypes(docType))
+      collectOwnDeclaredColumns(superType, columns);
+  }
+
+  private static void collectOwnDeclaredColumns(final DocumentType docType, final Map<String, PostgresType> columns) {
     for (final String propName : docType.getPropertyNames()) {
       final Property prop = docType.getProperty(propName);
       columns.putIfAbsent(propName, prop != null && prop.getType() != null
           ? PostgresType.getTypeFromArcade(prop.getType(), prop.getOfType())
           : PostgresType.VARCHAR);
     }
-    for (final DocumentType superType : docType.getSuperTypes())
-      collectDeclaredColumns(superType, columns);
   }
 
   /**
@@ -3448,16 +3521,37 @@ public class PostgresNetworkExecutor extends Thread {
     out.clear();
   }
 
-  private void bindCommand() {
+  /**
+   * @param messageBodyLength the bytes the message declared after its length field: every size and count inside it has to fit in
+   *                          what is left of them, so nothing is sized from a number the message cannot back
+   */
+  private void bindCommand(final long messageBodyLength) {
     // Track read progress so a mid-message exception can drain the remaining Bind bytes
     // and keep the channel aligned for the next message.
     int totalParamValues = 0;
     int paramsConsumed = 0;
     boolean resultFormatSectionRead = false;
+    // The bytes of the message not read yet
+    long bytesLeft = messageBodyLength;
     try {
       // BIND
-      final String portalName = readString();
-      final String sourcePreparedStatement = readString();
+      final String portalName = readString(bytesLeft);
+      if (portalName == null) {
+        refuseMessageAndClose("bind message has a portal name that is too long or not terminated within the message");
+        return;
+      }
+      bytesLeft -= lastStringBytes;
+      final String sourcePreparedStatement = readString(bytesLeft);
+      if (sourcePreparedStatement == null) {
+        refuseMessageAndClose("bind message has a statement name that is too long or not terminated within the message");
+        return;
+      }
+      bytesLeft -= lastStringBytes;
+      if (bytesLeft < BIND_MIN_FIELDS_LENGTH) {
+        // The names left no room for the three counts that follow them
+        refuseMessageAndClose("bind message is shorter than its contents");
+        return;
+      }
 
       // THE DESTINATION PORTAL IS INVALIDATED BEFORE ANYTHING THAT CAN FAIL (issue #8071), the Bind-side twin of
       // parseCommand()'s rule for prepared statements (issue #7906). The registration further down runs only on
@@ -3490,6 +3584,9 @@ public class PostgresNetworkExecutor extends Thread {
       // If the prepared statement is missing/closed, use a consume-only throwaway portal to drain parameters
       // off the wire and avoid channel framing corruption, without resurrecting any previously bound portal.
       final PostgresPortal preparedStatement = preparedStatements.get(sourcePreparedStatement);
+      if (preparedStatement != null && preparedStatement.parsedAtSync == syncs)
+        // run by the exchange that parsed it, even when an earlier failure has that exchange skip this Bind (issue #11838)
+        preparedStatement.preparedWhileRunning = true;
       final PostgresPortal portal = preparedStatement != null ? PostgresPortal.bindFrom(preparedStatement) : new PostgresPortal("", "sql");
 
       if (DEBUG)
@@ -3498,18 +3595,31 @@ public class PostgresNetworkExecutor extends Thread {
                 Thread.currentThread().threadId());
 
       final int paramFormatCount = channel.readUnsignedShort();
+      bytesLeft -= 2;
       if (DEBUG)
         LogManager.instance().log(this, Level.INFO, "PSQL: bind paramFormatCount=%d (thread=%s)",
             paramFormatCount, Thread.currentThread().threadId());
+      // What has to follow the format codes: the parameter count and the result format count
+      if (paramFormatCount * 2L + 4 > bytesLeft) {
+        refuseMessageAndClose("bind message declares " + paramFormatCount + " parameter formats, more than its length holds");
+        return;
+      }
       if (paramFormatCount > 0) {
         portal.parameterFormats = new ArrayList<>(paramFormatCount);
         for (int i = 0; i < paramFormatCount; i++) {
           final int formatCode = channel.readUnsignedShort();
           portal.parameterFormats.add(formatCode);
         }
+        bytesLeft -= paramFormatCount * 2L;
       }
 
       final int paramValuesCount = channel.readUnsignedShort();
+      bytesLeft -= 2;
+      // A value takes at least its 4-byte length, and the result format count follows the values
+      if (paramValuesCount * 4L + 2 > bytesLeft) {
+        refuseMessageAndClose("bind message declares " + paramValuesCount + " parameters, more than its length holds");
+        return;
+      }
       totalParamValues = paramValuesCount;
       if (DEBUG)
         LogManager.instance().log(this, Level.INFO, "PSQL: bind paramValuesCount=%d (thread=%s)",
@@ -3533,6 +3643,7 @@ public class PostgresNetworkExecutor extends Thread {
           if (DEBUG)
             LogManager.instance().log(this, Level.INFO, "PSQL: bind reading param %d size (thread=%s)", i, Thread.currentThread().threadId());
           final long paramSize = channel.readUnsignedInt();
+          bytesLeft -= 4;
           if (DEBUG)
             LogManager.instance().log(this, Level.INFO, "PSQL: bind param %d size=%d (thread=%s)", i, paramSize, Thread.currentThread().threadId());
 
@@ -3551,14 +3662,18 @@ public class PostgresNetworkExecutor extends Thread {
             // either reintroduce an unbounded read or block the connection thread indefinitely if the
             // declared bytes never arrive. Tell the client why, then close the connection outright
             // rather than gamble on realigning the stream.
-            setExtendedProtocolError();
-            writeError(ERROR_SEVERITY.FATAL, "Postgres bind parameter too large: " + paramSize + " bytes (max "
-                + server.getConfiguration().getValueAsInteger(GlobalConfiguration.POSTGRES_MAX_PARAM_SIZE) + ")", "08P01");
-            shutdown = true;
+            refuseMessageAndClose("Postgres bind parameter too large: " + paramSize + " bytes (max "
+                + server.getConfiguration().getValueAsInteger(GlobalConfiguration.POSTGRES_MAX_PARAM_SIZE) + ")");
             return;
           }
-          final byte[] paramValue = new byte[(int) paramSize];
-          channel.readBytes(paramValue);
+          // The value, the lengths of the values after it and the result format count all have to fit in what is left
+          if (paramSize + 4L * (paramValuesCount - i - 1) + 2 > bytesLeft) {
+            refuseMessageAndClose("bind parameter " + (i + 1) + " declares " + paramSize + " bytes, but the message has " + bytesLeft
+                + " left");
+            return;
+          }
+          bytesLeft -= paramSize;
+          final byte[] paramValue = readBindValue((int) paramSize);
           // The length prefix and value bytes for this parameter are now fully consumed off the wire,
           // regardless of whether deserialize() below succeeds. Advance paramsConsumed here (rather than
           // after a successful deserialize()) so the catch block's drain/recovery loop always restarts at
@@ -3600,7 +3715,14 @@ public class PostgresNetworkExecutor extends Thread {
 
       if (DEBUG)
         LogManager.instance().log(this, Level.INFO, "PSQL: bind reading resultFormatCount (thread=%s)", Thread.currentThread().threadId());
-      final int resultFormatCount = channel.readShort();
+      final int resultFormatCount = channel.readUnsignedShort();
+      bytesLeft -= 2;
+      // The result format codes are the last field: they take what is left of the message, no less and no more
+      if (resultFormatCount * 2L != bytesLeft) {
+        refuseMessageAndClose("bind message declares " + resultFormatCount + " result formats, but the message has " + bytesLeft
+            + " bytes left for them");
+        return;
+      }
       if (resultFormatCount > 0) {
         portal.resultFormats = new ArrayList<>(resultFormatCount);
         for (int i = 0; i < resultFormatCount; i++) {
@@ -3673,22 +3795,39 @@ public class PostgresNetworkExecutor extends Thread {
       boolean drainedCleanly = true;
       try {
         for (int i = paramsConsumed; i < totalParamValues; i++) {
+          if (bytesLeft < 4) {
+            // The message ends before the length of this value
+            drainedCleanly = false;
+            break;
+          }
           final long sz = channel.readUnsignedInt();
+          bytesLeft -= 4;
           if (sz == NULL_PARAM_LENGTH)
             continue;
-          if (sz > server.getConfiguration().getValueAsInteger(GlobalConfiguration.POSTGRES_MAX_PARAM_SIZE)) {
+          if (sz > server.getConfiguration().getValueAsInteger(GlobalConfiguration.POSTGRES_MAX_PARAM_SIZE) || sz > bytesLeft) {
             // Same reasoning as the main loop's guard: draining a declared-but-undelivered amount of
             // data risks an unbounded/blocking read, so give up on resyncing rather than attempt it.
             drainedCleanly = false;
             break;
           }
+          bytesLeft -= sz;
+          // Skipped as it arrives: nothing is sized from the declared length
           if (sz > 0)
-            channel.readBytes(new byte[(int) sz]);
+            channel.getDataInput().skipNBytes(sz);
         }
         if (drainedCleanly && !resultFormatSectionRead) {
-          final int resultFormatCount = channel.readShort();
-          for (int i = 0; i < resultFormatCount; i++)
-            channel.readUnsignedShort();
+          if (bytesLeft < 2)
+            // The message ends before the result format count
+            drainedCleanly = false;
+          else {
+            final int resultFormatCount = channel.readUnsignedShort();
+            bytesLeft -= 2;
+            if (resultFormatCount * 2L != bytesLeft)
+              // The codes are the last field and take what is left of the message: waiting for more would wait on the next message
+              drainedCleanly = false;
+            else
+              channel.getDataInput().skipNBytes(resultFormatCount * 2L);
+          }
         }
       } catch (final Exception ignored) {
         // If even the drain fails the channel is unrecoverable; the error response below
@@ -3702,10 +3841,62 @@ public class PostgresNetworkExecutor extends Thread {
     }
   }
 
-  private void parseCommand() {
+  /**
+   * Reads a Bind parameter value of {@code size} bytes. Up to {@link #BIND_VALUE_READ_STEP} it is read straight into its array;
+   * beyond that it is taken in pieces of that size and put together once it has all arrived, so a client that declares a long
+   * value and stops sending holds the bytes it sent and not the length it declared.
+   */
+  private byte[] readBindValue(final int size) throws IOException {
+    final DataInputStream input = channel.getDataInput();
+    if (size <= BIND_VALUE_READ_STEP) {
+      final byte[] value = new byte[size];
+      input.readFully(value);
+      return value;
+    }
+
+    final List<byte[]> pieces = new ArrayList<>();
+    for (int remaining = size; remaining > 0; ) {
+      final byte[] piece = new byte[Math.min(remaining, BIND_VALUE_READ_STEP)];
+      input.readFully(piece);
+      pieces.add(piece);
+      remaining -= piece.length;
+    }
+
+    final byte[] value = new byte[size];
+    int offset = 0;
+    for (final byte[] piece : pieces) {
+      System.arraycopy(piece, 0, value, offset, piece.length);
+      offset += piece.length;
+    }
+    return value;
+  }
+
+  /**
+   * Answers a message whose own sizes do not fit its length with a FATAL protocol error and ends the connection: what follows in
+   * the stream cannot be told apart from the rest of the message, so there is no point to resume reading from.
+   */
+  private void refuseMessageAndClose(final String message) {
+    setExtendedProtocolError();
+    writeError(ERROR_SEVERITY.FATAL, message, "08P01");
+    shutdown = true;
+  }
+
+  private void parseCommand(final long messageBodyLength) {
     try {
       // PARSE
-      final String portalName = readString();
+      final String portalName = readString(messageBodyLength);
+      if (portalName == null) {
+        refuseMessageAndClose("parse message has a statement name that is too long or not terminated within the message");
+        return;
+      }
+      long bytesLeft = messageBodyLength - lastStringBytes;
+
+      final String statementTextAsSent = readString(bytesLeft);
+      if (statementTextAsSent == null) {
+        refuseMessageAndClose("parse message has a statement text that is too long or not terminated within the message");
+        return;
+      }
+      bytesLeft -= lastStringBytes;
 
       // Normalized HERE, once, for every branch below and for everything that reads portal.query later (issue
       // #8245): PostgresTransactionStatement.parse() matches whole tokens up to the end of the text, and
@@ -3715,10 +3906,22 @@ public class PostgresNetworkExecutor extends Thread {
       // Execute while the protocol's own block state - explicitTransactionStarted, errorInTransaction, the
       // ReadyForQuery status byte - never moved, so a statement pipelined after a failure inside the block still
       // ran and was committed. The same normalization queryCommand() applies to its own text.
-      final String statementText = normalizeStatementText(readString());
+      final String statementText = normalizeStatementText(statementTextAsSent);
+      if (bytesLeft < 2) {
+        // The strings left no room for the count of parameter types
+        refuseMessageAndClose("parse message is shorter than its contents");
+        return;
+      }
       // The whole message is read before anything about the statement can be refused (its language marker below): a
       // refusal answered with the declared parameter types still unread would leave them to be read as the next message
       final int paramCount = channel.readUnsignedShort();
+      bytesLeft -= 2;
+      // The declared types are the last field: each takes 4 bytes, and they take what is left of the message, no less and no more
+      if (paramCount * 4L != bytesLeft) {
+        refuseMessageAndClose("parse message declares " + paramCount + " parameter types, but the message has " + bytesLeft
+            + " bytes left for them");
+        return;
+      }
       final long[] declaredTypes = new long[paramCount];
       for (int i = 0; i < paramCount; i++)
         declaredTypes[i] = channel.readUnsignedInt();
@@ -4021,6 +4224,7 @@ public class PostgresNetworkExecutor extends Thread {
       }
 
       portal.namedStatement = !portalName.isEmpty();
+      portal.parsedAtSync = syncs;
       preparedStatements.put(portalName, portal);
 
       // ParseComplete
@@ -4192,18 +4396,43 @@ public class PostgresNetworkExecutor extends Thread {
       }
       case "SESSION CHARACTERISTICS AS TRANSACTION" -> transactionModes(query, rest, "default_transaction_isolation");
       case "CONSTRAINTS" -> {
-        final Matcher mode = SET_CONSTRAINTS_MODE.matcher(rest);
-        if (!mode.matches())
+        final String named = constraintsBeforeMode(rest);
+        if (named == null)
           throw syntaxError(query);
-        final String constraints = mode.group(1).trim();
-        if (!"ALL".equalsIgnoreCase(constraints))
+        final String constraints = named.trim();
+        if (!"ALL".equalsIgnoreCase(constraints)) {
           // THIS SERVER HAS NO NAMED CONSTRAINTS FOR A SET CONSTRAINTS TO NAME, SO THE FIRST NAME IS UNDEFINED
+          final int comma = constraints.indexOf(',');
           throw new PostgresSessionSettings.SettingException(
-              "constraint \"" + constraints.split("\\s*,\\s*")[0] + "\" does not exist", "42704"); // undefined_object
+              "constraint \"" + (comma < 0 ? constraints : constraints.substring(0, comma).trim()) + "\" does not exist",
+              "42704"); // undefined_object
+        }
         yield PostgresSessionSettings.Assignment.NO_OP;
       }
       default -> null;
     };
+  }
+
+  /**
+   * What {@code rest} names before the {@code DEFERRED} or {@code IMMEDIATE} that ends it and the blanks in front of that, or null
+   * when it is not {@code <names> <blank> DEFERRED | IMMEDIATE}. Read from its end, so that a long run of blanks inside the names
+   * is passed once and not once per blank it holds.
+   */
+  private static String constraintsBeforeMode(final String rest) {
+    final int length = rest.length();
+    final int mode;
+    if (rest.regionMatches(true, length - 8, "DEFERRED", 0, 8))
+      mode = length - 8;
+    else if (rest.regionMatches(true, length - 9, "IMMEDIATE", 0, 9))
+      mode = length - 9;
+    else
+      return null;
+
+    int end = mode;
+    while (end > 0 && PostgresStatementText.isBlank(rest.charAt(end - 1)))
+      end--;
+    // a blank in front of the keyword, and something in front of the blanks
+    return end == mode || end == 0 ? null : rest.substring(0, end);
   }
 
   /**
@@ -5003,14 +5232,32 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   private String readString() throws IOException {
+    return readString(Long.MAX_VALUE);
+  }
+
+  /**
+   * Reads a null-terminated string out of at most {@code limit} bytes, the ones a message has left.
+   *
+   * @return the string, or null when it does not fit: those bytes end before its terminator, or it is longer than the read buffer.
+   * Nothing is read past the {@code limit}, and what is left of the message is not read at all
+   */
+  private String readString(final long limit) throws IOException {
     int len = 0;
     for (; len < buffer.length; len++) {
+      if (len >= limit)
+        return null;
       final int b = readNextByte();
-      if (b == 0)
+      if (b == 0) {
+        lastStringBytes = len + 1;
         return new String(buffer, 0, len, DatabaseFactory.getDefaultCharset());
+      }
 
       buffer[len] = (byte) b;
     }
+
+    if (limit != Long.MAX_VALUE)
+      // A string of a message of known length that fills the buffer: the rest of it is not read to find where it ends
+      return null;
 
     len = readUntilTerminator(len);
 
@@ -5412,7 +5659,24 @@ public class PostgresNetworkExecutor extends Thread {
       // Opened by this server, not by a client BEGIN: an implicit transaction, where CALL { ... } IN TRANSACTIONS runs
       // (issue #11588). A BEGIN that joins it later declares it the client's, which ends that
       ((DatabaseInternal) database).getTransaction().setImplicit(true);
-    }
+    } else
+      endImplicitOnceItHoldsEarlierWrites();
+  }
+
+  /**
+   * Stops treating the implicit block a statement is about to join as that statement's own transaction once an earlier
+   * statement of the block wrote into it (issue #13222). {@code CALL { ... } IN TRANSACTIONS} commits what its statement wrote
+   * before its first batch (#13172), and in a block shared by several statements that commit took the earlier statements'
+   * writes with it: a later failure in the same pipeline, which PostgreSQL rolls the whole block back for, could no longer
+   * undo them. Such a block is no longer implicit, so the statement is refused before anything runs, as inside a client's
+   * transaction (#11588). A block nothing has written into yet stays implicit: a lone CALL, or one following statements that
+   * wrote nothing - a read, an UPDATE matching no row, an earlier CALL whose batches committed on their own - keeps running.
+   * The block's own commit at Sync, or at the end of a simple query, is unchanged. Released with the transaction.
+   */
+  private void endImplicitOnceItHoldsEarlierWrites() {
+    final TransactionContext tx = ((DatabaseInternal) database).getTransaction();
+    if (tx.isImplicit() && !tx.hasChangedNothing())
+      tx.setImplicit(false);
   }
 
   /**

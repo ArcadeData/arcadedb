@@ -122,14 +122,17 @@ public final class StatementSavepoint implements PageUndoLog.GrainBudget {
   // before the statement) from the later ones
   private RidHashSet queuedInStatement;
   // The cached records the statement obtained clean: the ones that are dirty when it fails were changed by it and are reloaded
-  private final List<Record> obtained = new ArrayList<>();
+  private List<Record> obtained = new ArrayList<>();
   // The records an earlier statement queued for an update and this one read: the object IS the only copy of that update, so what the
   // record held before the statement is kept, to be installed back in place if the statement fails
   private       RidHashSet   snapshotted;
-  private final List<Record> pendingRecords   = new ArrayList<>();
-  private final List<Binary> pendingSnapshots = new ArrayList<>();
-  private       boolean[]    pendingDirty     = new boolean[8];
-  private       boolean[]    pendingAssigned  = new boolean[8];
+  private List<Record> pendingRecords   = new ArrayList<>();
+  private List<Binary> pendingSnapshots = new ArrayList<>();
+  // The buffer each document held when its snapshot was taken (null for a segment): the image it was read with, given back as is
+  // (issue #12747) even if the statement replaced it
+  private List<Binary> pendingBuffers   = new ArrayList<>();
+  private boolean[]    pendingDirty     = new boolean[8];
+  private boolean[]    pendingAssigned  = new boolean[8];
 
   private PageUndoLog[] logs = new PageUndoLog[8];
   private int           logCount;
@@ -346,9 +349,11 @@ public final class StatementSavepoint implements PageUndoLog.GrainBudget {
       }
       if (segment) {
         pendingSnapshots.add(((MutableEdgeSegment) record).snapshotContent());
+        pendingBuffers.add(null);
       } else {
         final MutableDocument document = (MutableDocument) record;
         pendingSnapshots.add(database.getSerializer().serializeForRead(database, document).getNotReusable());
+        pendingBuffers.add(document.getBuffer());
         pendingDirty[index] = document.isDirty();
         pendingAssigned[index] = document.arePropertiesAssigned();
       }
@@ -546,7 +551,8 @@ public final class StatementSavepoint implements PageUndoLog.GrainBudget {
       if (record instanceof MutableEdgeSegment segment)
         segment.restoreContent(pendingSnapshots.get(i));
       else
-        ((MutableDocument) record).restoreContent(pendingSnapshots.get(i), pendingDirty[i], pendingAssigned[i]);
+        ((MutableDocument) record).restoreQueuedContent(pendingSnapshots.get(i), pendingBuffers.get(i), pendingDirty[i],
+            pendingAssigned[i]);
     }
 
     // A record the statement changed in place, or read clean and left dirty, holds content that never reached a page
@@ -606,8 +612,21 @@ public final class StatementSavepoint implements PageUndoLog.GrainBudget {
     snapshotted = null;
     scannedBuckets = null;
     readQueuedRecord = false;
-    obtained.clear();
-    pendingRecords.clear();
-    pendingSnapshots.clear();
+    // The lists keep their backing arrays on clear(): one that held a bulk statement's records is dropped instead (issue #13479)
+    if (obtained.size() > MAX_RETAINED_JOURNAL)
+      obtained = new ArrayList<>();
+    else
+      obtained.clear();
+    if (pendingRecords.size() > MAX_RETAINED_JOURNAL) {
+      pendingRecords = new ArrayList<>();
+      pendingSnapshots = new ArrayList<>();
+      pendingBuffers = new ArrayList<>();
+      pendingDirty = new boolean[8];
+      pendingAssigned = new boolean[8];
+    } else {
+      pendingRecords.clear();
+      pendingSnapshots.clear();
+      pendingBuffers.clear();
+    }
   }
 }

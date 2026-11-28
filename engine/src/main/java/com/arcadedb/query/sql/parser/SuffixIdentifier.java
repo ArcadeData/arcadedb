@@ -57,6 +57,18 @@ public class SuffixIdentifier extends SimpleNode {
    */
   private static final Object ABSENT = new Object();
 
+  /**
+   * Key of the {@link CommandContext#getCachedValue(String) cached value} a caller sets to have a record attribute evaluated
+   * with no record refused instead of answered null. Any value refuses the read of the attribute from a record, the one that
+   * failed before issue #12795: the evaluation of a property default value sets it to keep failing (issue #6134). The value
+   * {@link #IN_EVERY_READ} also refuses the read from a row, which has always been null with no row: a planner sets it to
+   * learn whether an expression reads a record attribute at all.
+   */
+  public static final String RECORD_ATTRIBUTE_NEEDS_RECORD = "SuffixIdentifier.recordAttributeNeedsRecord";
+
+  /** See {@link #RECORD_ATTRIBUTE_NEEDS_RECORD}. */
+  public static final Object IN_EVERY_READ = new Object();
+
   public SuffixIdentifier() {
   }
 
@@ -175,6 +187,16 @@ public class SuffixIdentifier extends SimpleNode {
       // Return null instead of the variable name for uninitialized variables (issue #1939)
       return null;
     }
+    // No record, no attribute: null, as a property of no record is. The planner evaluates the arguments of an indexable function
+    // before any record is read, and `@type` dereferenced the missing record there (issue #12795)
+    if (recordAttribute != null && currentRecord == null) {
+      // The one caller that must not read "no record" as null: the default value of a property, which is evaluated with no record
+      // for every record created, so the null would be stored on each of them without a word (issue #6134)
+      if (context != null && context.getCachedValue(RECORD_ATTRIBUTE_NEEDS_RECORD) != null)
+        throw new CommandExecutionException(
+            "The record attribute '" + recordAttribute.name + "' cannot be resolved because there is no current record");
+      return null;
+    }
     if (recordAttribute != null) {
       if (RID_PROPERTY.equalsIgnoreCase(recordAttribute.name))
         return currentRecord.getIdentity();
@@ -242,6 +264,11 @@ public class SuffixIdentifier extends SimpleNode {
     if (currentRecord != null && recordAttribute != null) {
       return recordAttribute.evaluate(currentRecord, context);
     }
+
+    // No row has always been null here. Only a caller that asks about every read is refused
+    if (recordAttribute != null && context != null && context.getCachedValue(RECORD_ATTRIBUTE_NEEDS_RECORD) == IN_EVERY_READ)
+      throw new CommandExecutionException(
+          "The record attribute '" + recordAttribute.name + "' cannot be resolved because there is no current record");
 
     return null;
   }

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.RecordNotFoundException;
@@ -37,6 +38,8 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.VariableOverlayResult;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayList;
 import java.util.Iterator;
@@ -60,6 +63,9 @@ public class PatternComprehensionExpression implements Expression {
   // The comprehension's size as a one-hop degree, when no element can change it: no filter, and a projection that is a
   // variable or a literal, so evaluating it per match can neither fail nor be skipped (issue #11891)
   private final OneHopPattern sizeAsDegree;
+  // The index seek of an uncorrelated start whose property the predicates pin to values of the outer row, null when nothing
+  // pins one (issue #13622)
+  private final PatternStartSeek startSeek;
 
   public PatternComprehensionExpression(final String pathVariable, final PathPattern pathPattern,
       final Expression whereExpression, final Expression mapExpression, final String text) {
@@ -72,6 +78,7 @@ public class PatternComprehensionExpression implements Expression {
         && (mapExpression instanceof VariableExpression || mapExpression instanceof LiteralExpression) ?
         OneHopPattern.of(pathPattern) :
         OneHopPattern.UNSUPPORTED;
+    this.startSeek = PatternStartSeek.of(pathPattern, pathVariable, whereExpression);
   }
 
   /**
@@ -88,11 +95,30 @@ public class PatternComprehensionExpression implements Expression {
    * The list the comprehension evaluates to, built under the per-operation element cap and the query heap budget, as the
    * list of a SQL subquery and of a Cypher {@code COLLECT { ... }} are (issue #10160): a pattern over a supernode or an
    * uncorrelated start enumerates as many matches as the graph holds.
+   * <p>
+   * It also carries the command's deadline into the walk: a comprehension is evaluated inside one row, so the walk never
+   * returns to a step boundary where the timeout or a termination could be noticed, and an uncorrelated start walked the
+   * whole graph past {@code arcadedb.command.timeout} (issue #13622).
    */
-  private record Collected(List<Object> values, OperationHeapLimit limit) {
+  private static final class Collected {
+    private final List<Object>       values = new ArrayList<>();
+    private final OperationHeapLimit limit;
+    private final WorkGuard          guard;
+    private       int                steps;
+
+    private Collected(final OperationHeapLimit limit, final WorkGuard guard) {
+      this.limit = limit;
+      this.guard = guard;
+    }
+
     void add(final Object value) {
       values.add(value);
       limit.add(values.size(), value);
+    }
+
+    /** One unit of work of the walk: a candidate start vertex or an edge expanded. */
+    void step() {
+      guard.checkPeriodically(steps++);
     }
   }
 
@@ -101,7 +127,7 @@ public class PatternComprehensionExpression implements Expression {
     // AN EXPRESSION'S LIST IS ITS VALUE: THE BYTES ARE HELD WHILE IT IS BUILT AND GIVEN BACK WHEN IT IS RETURNED, AS
     // OperationHeapLimit.materializeForExpression() DOES FOR A SUBQUERY
     final OperationHeapLimit limit = OperationHeapLimit.of(context, "pattern comprehension");
-    final Collected resultList = new Collected(new ArrayList<>(), limit);
+    final Collected resultList = new Collected(limit, WorkGuard.forCommandDeadline(context));
     final List<Object> pathElements = new ArrayList<>();
     // Relationship uniqueness spans the whole pattern, every hop and every relationship a variable-length hop walks. A
     // single fixed-length hop cannot repeat a relationship, so the common [(a)-->(b) | b] tracks nothing. A pattern with a
@@ -114,7 +140,7 @@ public class PatternComprehensionExpression implements Expression {
     } finally {
       limit.release();
     }
-    return resultList.values();
+    return resultList.values;
   }
 
   /**
@@ -137,16 +163,11 @@ public class PatternComprehensionExpression implements Expression {
         if (!Boolean.TRUE.equals(BooleanCoercionExpression.toPredicate(filterValue)))
           return;
       }
-      // Bind path variable if present (e.g., [p = (n)-->() | p])
-      Result evalResult = currentResult;
-      if (pathVariable != null && !pathVariable.isEmpty()) {
-        final ResultInternal pathResult = new ResultInternal();
-        for (final String prop : currentResult.getPropertyNames())
-          pathResult.setProperty(prop, currentResult.getProperty(prop));
-        // a TraversalPath, the value every other pattern binds, so the path functions read it (issue #9913)
-        pathResult.setProperty(pathVariable, TraversalPath.ofWalk(pathElements));
-        evalResult = pathResult;
-      }
+      // Bind path variable if present (e.g., [p = (n)-->() | p]), over the row rather than on a copy of it (issue #12723)
+      final Result evalResult = pathVariable != null && !pathVariable.isEmpty() ?
+          // a TraversalPath, the value every other pattern binds, so the path functions read it (issue #9913)
+          new VariableOverlayResult(currentResult, pathVariable).bind(TraversalPath.ofWalk(pathElements)) :
+          currentResult;
       resultList.add(OpenCypherQueryEngine.getExpressionEvaluator().evaluate(mapExpression, evalResult, context));
       return;
     }
@@ -207,7 +228,7 @@ public class PatternComprehensionExpression implements Expression {
       if (minHops == 0
           && matchesEndPattern(startVertex, endNodePattern, baseResult, currentResult,
               inlineWhereRow(endNodePattern, currentResult), relPattern, List.of(), context)) {
-        final ResultInternal hopResult = buildHopResult(currentResult, endNodePattern, startVertex, relPattern, List.of());
+        final Result hopResult = buildHopResult(currentResult, endNodePattern, startVertex, relPattern, List.of());
         traversePattern(baseResult, context, hopIndex + 1, hopResult, resultList, pathElements, usedEdges, startVertex);
       }
 
@@ -237,26 +258,48 @@ public class PatternComprehensionExpression implements Expression {
     // alternative naming a type nobody created emptied the whole comprehension (issue #6352). The candidate types
     // come from the rule the pattern anchor uses in MatchNodeStep, so a comprehension and the MATCH spelling of
     // the same pattern cannot drift apart again.
-    final Iterator<Record> candidates = Labels.iterateMatchingVertices(context.getDatabase(),
-        startNodePattern.getLabels(), startNodePattern.isLabelDisjunction());
+    // When the predicates pin a property of the start node to values of the outer row and an index answers it, only the
+    // vertices it selects are walked, as the MATCH spelling seeks them (issue #13622). Every predicate is still checked on them
+    final PatternStartSeek.Seek seek = startSeek != null ? startSeek.candidates(currentResult, context) : null;
+    try {
+      final Iterator<? extends Identifiable> candidates = seek != null ?
+          seek.records() :
+          Labels.iterateMatchingVertices(context.getDatabase(), startNodePattern.getLabels(), startNodePattern.isLabelDisjunction());
+      walkCandidates(baseResult, context, currentResult, resultList, pathElements, usedEdges, startNodePattern, candidates);
+    } finally {
+      if (seek != null)
+        seek.close();
+    }
+  }
 
+  private void walkCandidates(final Result baseResult, final CommandContext context, final Result currentResult,
+      final Collected resultList, final List<Object> pathElements, final EdgeIdentityMultiset usedEdges,
+      final NodePattern startNodePattern, final Iterator<? extends Identifiable> candidates) {
     // Row reused across every candidate vertex, for the same reason as the edge expansions below:
     // only the node variable changes per candidate, so the enclosing bindings are copied once.
     final ResultInternal whereEvalRow = inlineWhereRow(startNodePattern, currentResult);
+    // The row each candidate is matched on, rebound per candidate (issue #12723)
+    final String startVariable = startNodePattern.getVariable() != null && !startNodePattern.getVariable().isEmpty() ?
+        startNodePattern.getVariable() :
+        null;
+    final VariableOverlayResult candidateResult = new VariableOverlayResult(currentResult, startVariable);
 
     while (candidates.hasNext()) {
-      final Record record = candidates.next();
+      resultList.step();
+      final Record record;
+      try {
+        final Identifiable identifiable = candidates.next();
+        record = identifiable instanceof Record r ? r : identifiable.getRecord();
+      } catch (final RecordNotFoundException e) {
+        // An index entry whose record a concurrent commit deleted: not a candidate any more
+        continue;
+      }
       if (!(record instanceof Vertex candidate))
         continue;
       if (!matchesStartPattern(candidate, startNodePattern, currentResult, whereEvalRow, context))
         continue;
 
-      final ResultInternal candidateResult = new ResultInternal();
-      if (currentResult != null)
-        for (final String prop : currentResult.getPropertyNames())
-          candidateResult.setProperty(prop, currentResult.getProperty(prop));
-      if (startNodePattern.getVariable() != null && !startNodePattern.getVariable().isEmpty())
-        candidateResult.setProperty(startNodePattern.getVariable(), candidate);
+      candidateResult.bind(candidate);
 
       // Re-enter traversal with this candidate as the known start vertex. Passing it directly
       // (rather than re-resolving) also handles an anonymous uncorrelated start node, which has
@@ -314,6 +357,7 @@ public class PatternComprehensionExpression implements Expression {
     final ResultInternal nodeWhereEvalRow = inlineWhereRow(endNodePattern, currentResult);
 
     while (edges.hasNext()) {
+      resultList.step();
       final Edge edge = edges.next();
       // Inline relationship property filter, e.g. [p = (a)-[:VE*1..4 {w:1}]->(c) | ...] (issue #5139).
       // Every relationship in the path must satisfy the map, so skip non-matching edges before recursing.
@@ -352,7 +396,7 @@ public class PatternComprehensionExpression implements Expression {
         final List<Edge> relationships = relPattern.getVariable() != null ? new ArrayList<>(walkedEdges) : null;
         if (matchesEndPattern(nextVertex, endNodePattern, baseResult, currentResult, nodeWhereEvalRow, relPattern,
             relationships, context)) {
-          final ResultInternal hopResult = buildHopResult(currentResult, endNodePattern, nextVertex, relPattern,
+          final Result hopResult = buildHopResult(currentResult, endNodePattern, nextVertex, relPattern,
               relationships);
           traversePattern(baseResult, context, hopIndex + 1, hopResult, resultList, pathElements, usedEdges, nextVertex);
         }
@@ -410,7 +454,7 @@ public class PatternComprehensionExpression implements Expression {
         pathElements.add(vertices.get(i + 1));
       }
 
-    final ResultInternal hopResult = buildHopResult(currentResult, endNodePattern, endVertex, relPattern, null);
+    final Result hopResult = buildHopResult(currentResult, endNodePattern, endVertex, relPattern, null);
     traversePattern(baseResult, context, hopIndex + 1, hopResult, resultList, pathElements, usedEdges, endVertex);
 
     if (trackPath)
@@ -518,17 +562,12 @@ public class PatternComprehensionExpression implements Expression {
     return copy;
   }
 
-  private ResultInternal buildHopResult(final Result currentResult, final NodePattern endNodePattern, final Vertex targetVertex,
-      final RelationshipPattern relPattern, final Object relationship) {
-    final ResultInternal hopResult = new ResultInternal();
-    if (currentResult != null)
-      for (final String prop : currentResult.getPropertyNames())
-        hopResult.setProperty(prop, currentResult.getProperty(prop));
-    if (endNodePattern.getVariable() != null)
-      hopResult.setProperty(endNodePattern.getVariable(), targetVertex);
-    if (relPattern.getVariable() != null && relationship != null)
-      hopResult.setProperty(relPattern.getVariable(), relationship);
-    return hopResult;
+  private static VariableOverlayResult buildHopResult(final Result currentResult, final NodePattern endNodePattern,
+      final Vertex targetVertex, final RelationshipPattern relPattern, final Object relationship) {
+    // The relationship variable is bound second, as the copy this replaces set it last (issue #12723); a null relationship
+    // leaves the row's own binding in place
+    return new VariableOverlayResult(currentResult, endNodePattern.getVariable(), relationship != null ? relPattern.getVariable() : null)
+        .bind(targetVertex, relationship);
   }
 
   private void traverseEdges(final Result baseResult, final CommandContext context,
@@ -545,8 +584,13 @@ public class PatternComprehensionExpression implements Expression {
     final ResultInternal whereEvalRow = relPattern.hasWhereExpression() ? copyBindings(currentResult) : null;
     // Same reuse for the end node's inline WHERE: only the node variable changes per candidate.
     final ResultInternal nodeWhereEvalRow = inlineWhereRow(endNodePattern, currentResult);
+    // The row each match continues on: the end node and relationship variables over the bindings so far, rebound per edge
+    // instead of a copy of every binding per edge (issue #12723)
+    final VariableOverlayResult hopResult = new VariableOverlayResult(currentResult, endNodePattern.getVariable(),
+        relPattern.getVariable());
 
     while (edges.hasNext()) {
+      resultList.step();
       final Edge edge = edges.next();
       // Relationship uniqueness: an edge an earlier hop of the pattern walked cannot be walked again
       if (usedEdges != null && usedEdges.contains(edge.getIdentity()))
@@ -570,20 +614,7 @@ public class PatternComprehensionExpression implements Expression {
           context))
         continue;
 
-      // Build result with matched variables
-      final ResultInternal hopResult = new ResultInternal();
-      // Copy base result properties
-      if (currentResult != null)
-        for (final String prop : currentResult.getPropertyNames())
-          hopResult.setProperty(prop, currentResult.getProperty(prop));
-
-      // Bind the target node variable
-      if (endNodePattern.getVariable() != null)
-        hopResult.setProperty(endNodePattern.getVariable(), targetVertex);
-
-      // Bind the relationship variable
-      if (relPattern.getVariable() != null)
-        hopResult.setProperty(relPattern.getVariable(), edge);
+      hopResult.bind(targetVertex, edge);
 
       // Add edge and target to path elements for path variable
       if (pathVariable != null) {

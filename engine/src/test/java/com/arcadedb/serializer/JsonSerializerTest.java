@@ -442,8 +442,8 @@ class JsonSerializerTest extends TestHelper {
       final JSONObject json = jsonSerializer.serializeResult(database, new ResultInternal(document));
 
       assertThat(document.propertyReads()).as("reads by name, each a walk over the record header").isZero();
-      assertThat(document.headerWalks()).as("passes over the record header: one for the name list, one for all the values")
-          .isEqualTo(2);
+      assertThat(document.headerWalks()).as("one pass over the record header: the values of an undamaged record are its names too (issue #12979)")
+          .isEqualTo(1);
       for (int i = 0; i < properties; i++)
         assertThat(json.getString("p" + i)).isEqualTo("value-" + i);
       assertThat(json.getInt("n")).isEqualTo(7);

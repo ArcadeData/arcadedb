@@ -162,18 +162,23 @@ public class SparseVector {
    * Calculate magnitude (L2 norm).
    */
   public float magnitude() {
+    return (float) Math.sqrt(sumOfSquares());
+  }
+
+  private double sumOfSquares() {
     double sumSquares = 0.0;
     for (final float value : values.values())
       sumSquares += (double) value * value;
-    return (float) Math.sqrt(sumSquares);
+    return sumSquares;
   }
 
   /**
    * Normalize to unit length.
    */
   public SparseVector normalize() {
-    final float mag = magnitude();
-    if (mag == 0.0f)
+    // The magnitude stays in double (issue #12853): narrowed to a float, a magnitude beyond Float.MAX_VALUE turned every value into 0
+    final double mag = Math.sqrt(sumOfSquares());
+    if (mag == 0.0)
       return new SparseVector(dimensions); // Return zero vector
 
     final int[] indices = new int[values.size()];
@@ -181,7 +186,7 @@ public class SparseVector {
     int idx = 0;
     for (final Map.Entry<Integer, Float> entry : values.entrySet()) {
       indices[idx] = entry.getKey();
-      normalized[idx] = entry.getValue() / mag;
+      normalized[idx] = (float) (entry.getValue() / mag);
       idx++;
     }
 

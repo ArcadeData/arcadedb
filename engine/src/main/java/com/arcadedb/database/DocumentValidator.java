@@ -20,6 +20,7 @@ package com.arcadedb.database;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.parser.Identifier;
@@ -38,9 +39,11 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Date;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 import java.util.regex.Pattern;
@@ -129,6 +132,99 @@ public class DocumentValidator {
     return depth != null && depth[0] > 0;
   }
 
+  // Threads with a readonly deferral open (issue #12722), so the write path pays one volatile read for it, and only for a READONLY property
+  private static final AtomicInteger              READONLY_DEFERRING_THREADS = new AtomicInteger();
+  // The innermost scope the thread has open, each one naming the scope that encloses it. No initial value: a thread that never opens a
+  // scope allocates nothing
+  private static final ThreadLocal<ReadonlyScope> READONLY_DEFERRALS         = new ThreadLocal<>();
+
+  /**
+   * The scope returned by {@link #deferReadonlyChecks(MutableDocument, Set)}. Closing it ends the scope once, on the thread that opened
+   * it, exactly as {@link LinkTargetTypeDeferral} does: a second close is ignored, a close from another thread throws
+   * {@link IllegalStateException} and leaves the scope open.
+   */
+  public interface ReadonlyDeferral extends AutoCloseable {
+    @Override
+    void close();
+  }
+
+  private static final class ReadonlyScope implements ReadonlyDeferral {
+    private final Thread          owner = Thread.currentThread();
+    private final MutableDocument document;
+    private final Set<String>     properties;
+    // Plain, as closed is: only the owner thread reads and writes them, close() refuses any other thread before touching them
+    private       ReadonlyScope   enclosing;
+    private       boolean         closed;
+
+    private ReadonlyScope(final MutableDocument document, final Set<String> properties, final ReadonlyScope enclosing) {
+      this.document = document;
+      this.properties = properties;
+      this.enclosing = enclosing;
+    }
+
+    @Override
+    public void close() {
+      if (closed)
+        return;
+      if (Thread.currentThread() != owner)
+        throw new IllegalStateException("A readonly deferral has to be closed on the thread that opened it ('" + owner.getName()
+            + "'), not on '" + Thread.currentThread().getName() + "'");
+      closed = true;
+
+      final ReadonlyScope innermost = READONLY_DEFERRALS.get();
+      if (innermost == this) {
+        if (enclosing != null)
+          READONLY_DEFERRALS.set(enclosing);
+        else {
+          READONLY_DEFERRALS.remove();
+          READONLY_DEFERRING_THREADS.decrementAndGet();
+        }
+        return;
+      }
+      // Closed before a scope opened inside it: taken out of the chain, the inner ones stay open
+      for (ReadonlyScope scope = innermost; scope != null; scope = scope.enclosing)
+        if (scope.enclosing == this) {
+          scope.enclosing = enclosing;
+          return;
+        }
+    }
+  }
+
+  /**
+   * Suspends, on the calling thread until the returned scope is closed, the refusal to alter the named {@code READONLY} properties of
+   * one record that already exists. For a restore that creates a record in two writes: it holds a link to a record the file reaches
+   * later, which only the second write can name, and that write is part of creating the record, not an alteration of it (issue #12722).
+   * <p>
+   * Nothing else is relaxed. The record's other READONLY properties are refused as always, and so is every other record the thread
+   * writes while the scope is open, one written by a listener or a trigger of that write included: the scope is for this very
+   * {@code document} instance, not for a copy of the record loaded again. MANDATORY, NOTNULL, MIN, MAX, REGEXP and the rest are
+   * checked as always. Scopes nest.
+   * <p>
+   * The scope belongs to the thread that opened it: close it on that thread, in the same try-with-resources.
+   *
+   * @param document   the instance whose write is the second half of its creation
+   * @param properties the names of the READONLY properties that write completes. Not copied: do not change it while the scope is open
+   */
+  public static ReadonlyDeferral deferReadonlyChecks(final MutableDocument document, final Set<String> properties) {
+    Objects.requireNonNull(document, "document");
+    Objects.requireNonNull(properties, "properties");
+    final ReadonlyScope enclosing = READONLY_DEFERRALS.get();
+    final ReadonlyScope scope = new ReadonlyScope(document, properties, enclosing);
+    READONLY_DEFERRALS.set(scope);
+    if (enclosing == null)
+      READONLY_DEFERRING_THREADS.incrementAndGet();
+    return scope;
+  }
+
+  private static boolean readonlyCheckDeferred(final MutableDocument document, final Property p) {
+    if (READONLY_DEFERRING_THREADS.get() == 0)
+      return false;
+    for (ReadonlyScope scope = READONLY_DEFERRALS.get(); scope != null; scope = scope.enclosing)
+      if (scope.document == document && scope.properties.contains(p.getName()))
+        return true;
+    return false;
+  }
+
   public static void validate(final MutableDocument document) throws ValidationException {
     document.checkForLazyLoadingProperties();
     // One shared deadline for every REGEXP-constrained property on this document (issue #5886 follow-up): each
@@ -208,6 +304,27 @@ public class DocumentValidator {
   }
 
   /**
+   * Refuses a null written to a NOTNULL property by a write path that never stores the null it is given: openCypher removes
+   * the property on {@code SET n += {p: null}} and leaves it out on {@code CREATE (n {p: null})}, so the presence-based rule
+   * of {@link #unmetExistenceConstraint} would never see the null, and the write SQL refuses would be accepted (issue
+   * #13227). The caller asks before it writes anything, so a refused statement leaves nothing behind. A removal
+   * ({@code REMOVE n.p}) is not a null write and is not checked here.
+   *
+   * @param type         the type of the record written, null when unknown (nothing is checked then)
+   * @param propertyName the property the null is written to
+   * @param record       the record written, only for the message: null for a record not created yet
+   */
+  public static void requireNullAllowed(final DocumentType type, final String propertyName, final Document record)
+      throws ValidationException {
+    if (type == null || propertyName == null)
+      return;
+    final Property p = type.getPolymorphicPropertyIfExists(propertyName);
+    if (p != null && p.isNotNull())
+      throwValidationException(type, p, ValidationException.Kind.NOT_NULL,
+          record != null ? "cannot be null, record: " + record : "cannot be null");
+  }
+
+  /**
    * The same rule for constraint flags the property does not carry yet: lets a caller that is about to add MANDATORY or
    * NOTNULL ask whether a stored record would violate it (#8943) without changing the schema first.
    */
@@ -242,7 +359,7 @@ public class DocumentValidator {
       try {
         pattern = regexp != null ? Pattern.compile(regexp) : null;
       } catch (final PatternSyntaxException e) {
-        throw new CommandExecutionException("Invalid regular expression '" + regexp + "': " + e.getMessage(), e);
+        throw new InvalidArgumentException("Invalid regular expression '" + regexp + "': " + e.getMessage(), e);
       }
       // read once per scan, not per record
       return new StoredValueConstraints(checkType, min, max, regexp, pattern,
@@ -259,8 +376,8 @@ public class DocumentValidator {
      */
     public boolean canBeViolatedOn(final Property p) {
       final Type type = p.getType();
-      return checkType && (isScalarType(type) || type == Type.STRING || (type == Type.LIST || type == Type.MAP) && p.getOfType() != null)
-          || min != null || max != null || regexp != null;
+      return checkType && (isScalarType(type) || type == Type.STRING || isShapeCheckedType(type)) || min != null || max != null
+          || regexp != null;
     }
   }
 
@@ -271,8 +388,9 @@ public class DocumentValidator {
    * a legal INTEGER, while {@code 'abc'} or {@code true} is not.
    * <p>
    * Existence (MANDATORY / NOTNULL) is not part of this: it has its own rule, {@link #unmetExistenceConstraint}.
-   * Structural checks of collections and embedded documents are not part of it either - the write path converts those
-   * rather than refusing them, so a stored shape that predates the declaration is not necessarily wrong.
+   * A LIST, MAP, EMBEDDED or LINK declaration (with or without {@code OF}) holds the stored value to exactly the check the save path
+   * applies to it, without converting it first: the save of a record that only touches another property hands the stored value
+   * to that check as it is, so a shape it refuses would make every later write of the record fail (issue #12932).
    */
   public static void validateStoredValue(final Document document, final Property p, final StoredValueConstraints constraints) {
     final Object stored = document.get(p.getName());
@@ -321,21 +439,20 @@ public class DocumentValidator {
       value = converted;
     }
 
-    if (constraints.checkType() && (type == Type.LIST || type == Type.MAP) && p.getOfType() != null) {
-      // the elements are read the way the write path reads them (a LIST OF LONG holds the Integer 5 as a Long), then held
-      // to the declared element type
-      final Database database = document.getDatabase();
-      Object coerced;
+    if (isShapeCheckedType(type)) {
+      // THE CHECK THE SAVE PATH RUNS ON THE VALUE AS STORED, SO THE TWO CANNOT DISAGREE ABOUT WHAT A RECORD MAY KEEP (#12932)
       try {
-        coerced = Type.convert(database, stored, type.getJavaImplementation(database), p);
-      } catch (final RuntimeException e) {
-        coerced = null;
+        validateEmbeddedValues(document, p, type, stored);
+      } catch (final ValidationException e) {
+        if (constraints.checkType())
+          throwValidationException(document.getType(), p, ValidationException.Kind.TYPE,
+              "is declared as " + type + (p.getOfType() != null ? " OF " + p.getOfType() : "")
+                  + " but a stored value cannot be read as such: " + printableValue(stored));
+        // Only MIN, MAX or REGEXP is being added (ALTER PROPERTY): skip the record, as an unreadable scalar is skipped above. The
+        // bounds of a LIST or a MAP are a number of items, which a value of another shape does not have, and the save path refuses
+        // this record for its shape whatever bound or pattern is declared, so neither can decide whether the record still saves
+        return;
       }
-      if (coerced == null)
-        throwValidationException(document.getType(), p, ValidationException.Kind.TYPE, "is declared as " + type + " but a stored value cannot be read as such: "
-            + stored);
-      validateEmbeddedValues(document, p, type, coerced);
-      value = coerced;
     }
 
     if (constraints.pattern() != null && !TimeBoundRegex.matchesUntil(constraints.pattern(),
@@ -374,7 +491,7 @@ public class DocumentValidator {
   public static void requireReadableBound(final Database database, final DocumentType owner, final Property p, final String bound, final String side) {
     final String reason = unreadableBound(database, p.getType(), bound);
     if (reason != null)
-      throw new CommandExecutionException("The " + side + " '" + bound + "' of property '" + owner.getName() + "." + p.getName()
+      throw new InvalidArgumentException("The " + side + " '" + bound + "' of property '" + owner.getName() + "." + p.getName()
           + "' " + reason);
   }
 
@@ -393,7 +510,7 @@ public class DocumentValidator {
       final String regexp) {
     final String reason = unusableRegexp(database, p.getType(), regexp);
     if (reason != null)
-      throw new CommandExecutionException("The REGEXP '" + regexp + "' of property '" + owner.getName() + "." + p.getName()
+      throw new InvalidArgumentException("The REGEXP '" + regexp + "' of property '" + owner.getName() + "." + p.getName()
           + "' " + reason);
   }
 
@@ -826,6 +943,16 @@ public class DocumentValidator {
   }
 
   /**
+   * The types whose stored value the save path refuses for its shape alone, whatever the other properties of the record:
+   * {@link #validateEmbeddedValues} refuses a value that is not a list, a map or an embedded document of the declared type, and
+   * a LINK that holds an embedded document (or, with {@code OF}, anything but a link to a record of that type). A BINARY or an
+   * ARRAY_OF_* is not one of them: a stored value of another shape still saves.
+   */
+  private static boolean isShapeCheckedType(final Type type) {
+    return type == Type.LIST || type == Type.MAP || type == Type.EMBEDDED || type == Type.LINK;
+  }
+
+  /**
    * The properties of a type that carry an existence constraint at all - the only ones
    * {@link #unmetExistenceConstraint} can answer anything but null for - polymorphic properties included.
    * <p>
@@ -918,7 +1045,7 @@ public class DocumentValidator {
       }
     }
 
-    if (p.isReadonly()) {
+    if (p.isReadonly() && !readonlyCheckDeferred(document, p)) {
       if (document.isDirty() && document.getIdentity() != null) {
         // document.getDatabase() returns the wrapper instance (e.g. RaftReplicatedDatabase) when
         // the database is HA-wrapped, so we must unwrap to the embedded LocalDatabase before
@@ -926,13 +1053,86 @@ public class DocumentValidator {
         final LocalDatabase embedded = (LocalDatabase) ((DatabaseInternal) document.getDatabase()).getEmbedded();
         final Document originalDocument = embedded.getOriginalDocument(document);
         final Object originalFieldValue = originalDocument.get(p.getName());
-        if (!sameReadonlyValue(fieldValue, originalFieldValue))
+        if (!sameReadonlyValue(fieldValue, originalFieldValue) && !isReadonlyValueOfDeferredWrite(embedded, document, p, fieldValue))
           throwValidationException(document.getType(), p, ValidationException.Kind.READONLY,
               "is immutable and cannot be altered. Field value is: " + printableValue(fieldValue));
       }
     }
 
     return deferred;
+  }
+
+  private static boolean isReadonlyValueOfDeferredWrite(final LocalDatabase database, final MutableDocument document, final Property p,
+      final Object fieldValue) {
+    final TransactionContext tx = database.getTransactionIfExists();
+    return tx != null && tx.isActive() && tx.isReadonlyValueOfDeferredWrite(document.getIdentity(), p.getName(), fieldValue);
+  }
+
+  /**
+   * Called by an update the transaction has just queued for its commit (issue #12612): the READONLY properties a deferral scope of the
+   * calling thread opened for this very {@code document} were written by this update as the second half of the record's creation
+   * ({@link #deferReadonlyChecks}), so the values it wrote stay allowed for the rest of the transaction, the commit included, as well
+   * as the stored ones. Only a write that completed is remembered: one a later check, a listener or an index refused leaves nothing. A
+   * snapshot of the value is kept, so that changing a container in place afterwards does not change what is allowed. Costs one volatile
+   * read unless a restore holds a deferral open.
+   */
+  static void rememberReadonlyValuesOfDeferredWrite(final TransactionContext tx, final MutableDocument document) {
+    if (READONLY_DEFERRING_THREADS.get() == 0 || document.getIdentity() == null)
+      return;
+    for (ReadonlyScope scope = READONLY_DEFERRALS.get(); scope != null; scope = scope.enclosing)
+      if (scope.document == document)
+        for (final String name : scope.properties) {
+          final Property p = document.getType().getPolymorphicPropertyIfExists(name);
+          if (p != null && p.isReadonly())
+            tx.setReadonlyValueOfDeferredWrite(document.getIdentity(), name, readonlySnapshot(document.get(name)));
+        }
+  }
+
+  /**
+   * A copy of {@code value} that compares as it does with {@link #sameReadonlyValue} and that no change made in place to the original
+   * reaches: arrays, lists, maps and embedded documents are copied, recursively. Everything else is kept as it is.
+   */
+  static Object readonlySnapshot(final Object value) {
+    return switch (value) {
+      case null -> null;
+      case Object[] array -> {
+        final Object[] copy = array.clone();
+        for (int i = 0; i < copy.length; i++)
+          copy[i] = readonlySnapshot(copy[i]);
+        yield copy;
+      }
+      case byte[] array -> array.clone();
+      case short[] array -> array.clone();
+      case int[] array -> array.clone();
+      case long[] array -> array.clone();
+      case float[] array -> array.clone();
+      case double[] array -> array.clone();
+      case boolean[] array -> array.clone();
+      case char[] array -> array.clone();
+      case List<?> list -> {
+        final List<Object> copy = new ArrayList<>(list.size());
+        for (final Object item : list)
+          copy.add(readonlySnapshot(item));
+        yield copy;
+      }
+      case Map<?, ?> map -> {
+        final Map<Object, Object> copy = new LinkedHashMap<>(map.size());
+        for (final Map.Entry<?, ?> entry : map.entrySet())
+          copy.put(entry.getKey(), readonlySnapshot(entry.getValue()));
+        yield copy;
+      }
+      case EmbeddedDocument embedded -> {
+        // a document of its own, holding no buffer and bound to no record: only compared, never saved
+        final MutableEmbeddedDocument copy = new MutableEmbeddedDocument(embedded.getDatabase(), embedded.getType(), null);
+        final Map<String, Object> properties = embedded.toMap(false);
+        final Map<String, Object> copied = new LinkedHashMap<>(properties.size());
+        for (final Map.Entry<String, Object> entry : properties.entrySet())
+          copied.put(entry.getKey(), readonlySnapshot(entry.getValue()));
+        copy.map = copied;
+        yield copy;
+      }
+      default -> value;
+    };
   }
 
   /**
@@ -1233,6 +1433,11 @@ public class DocumentValidator {
             "has been declared as LINK but an EMBEDDED document is used. Value: " + fieldValue);
 
       if (ofType != null && !linkTargetTypeCheckDeferred()) {
+        // a value stored before the declaration reaches here unconverted: refuse it as the schema error it is, not as a
+        // ClassCastException on every later save of the record (#12932)
+        if (!(fieldValue instanceof Identifiable))
+          throwValidationException(document.getType(), p, ValidationException.Kind.TYPE,
+              "has been declared as LINK of '" + ofType + "' but a value that is not a link is used. Value: " + printableValue(fieldValue));
         final RID rid = ((Identifiable) fieldValue).getIdentity();
         final DocumentType embSchemaType = document.getDatabase().getSchema().getTypeByBucketId(rid.getBucketId());
         if (embSchemaType == null || !embSchemaType.instanceOf(ofType))
@@ -1307,6 +1512,10 @@ public class DocumentValidator {
    * (#9111). A document {@code ofType} accepts an embedded document of that type or a link to a record of it, and
    * refuses everything else: a map has already been turned into an embedded document by the write path, so a value that
    * is still a plain scalar or map here is not one (#9111).
+   * <p>
+   * A number of a narrower type that widens to a numeric {@code ofType} without loss is accepted too (#12932): the write path
+   * converts it on a fresh write, but the save of a record that only touches another property hands the stored element over
+   * unconverted, so an exact-type check refused every such save of a list written before the declaration.
    */
   private static void validateCollectionElement(final Document document, final Property p, final String ofType,
       final Type embType, final Object item, final boolean isMap, final Object fieldValue) {
@@ -1314,7 +1523,8 @@ public class DocumentValidator {
       return;
 
     if (embType != null) {
-      if (Type.getTypeByValue(item) != embType && !(embType.isDateOrDateTime() && Type.isDateValue(item)))
+      if (Type.getTypeByValue(item) != embType && !(embType.isDateOrDateTime() && Type.isDateValue(item)) && !widensLosslessly(item,
+          embType))
         throwValidationException(document.getType(), p, ValidationException.Kind.TYPE,
             "has been declared as " + declaredAs(isMap, ofType) + " but a value of type '" + Type.getTypeByValue(item) + "' is used. Value: "
                 + fieldValue);
@@ -1339,6 +1549,18 @@ public class DocumentValidator {
       throwValidationException(document.getType(), p, ValidationException.Kind.TYPE,
           "has been declared as " + declaredAs(isMap, ofType) + " but a value that is not a document of that type is used (" + item.getClass()
               .getSimpleName() + "). Value: " + fieldValue);
+  }
+
+  /** Whether {@code item} is a number of a narrower type that {@code target} holds exactly, so converting it loses nothing. */
+  private static boolean widensLosslessly(final Object item, final Type target) {
+    return switch (target) {
+      case SHORT -> item instanceof Byte;
+      case INTEGER, FLOAT -> item instanceof Byte || item instanceof Short;
+      case LONG -> item instanceof Byte || item instanceof Short || item instanceof Integer;
+      case DOUBLE -> item instanceof Byte || item instanceof Short || item instanceof Integer || item instanceof Float;
+      case DECIMAL -> item instanceof Byte || item instanceof Short || item instanceof Integer || item instanceof Long;
+      default -> false;
+    };
   }
 
   /**

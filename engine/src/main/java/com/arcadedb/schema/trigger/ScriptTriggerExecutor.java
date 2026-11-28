@@ -21,6 +21,7 @@ package com.arcadedb.schema.trigger;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.QueryTerminatedException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.RunningQuery;
@@ -73,6 +74,42 @@ public class ScriptTriggerExecutor implements TriggerExecutor {
   public ScriptTriggerExecutor(final String triggerName, final String script) {
     this.triggerName = triggerName;
     this.script = script;
+  }
+
+  /**
+   * Refuses a script that does not parse, where the trigger is created (issue #12904): accepted, it failed every later write
+   * on the type. Compiled without being run, in a context built like the one the trigger fires in.
+   * <p>
+   * The context is built for this one check and closed with it: the trigger's own is created lazily, on the thread of its
+   * first firing. That is paid once per CREATE TRIGGER, a DDL statement, on the shared GraalVM engine that keeps the compiled
+   * code, and never on a write path.
+   * <p>
+   * Only a syntax error refuses the trigger. A check that could not be made at all (the context cannot be built, the
+   * JavaScript language is not installed in this runtime) is not the caller's mistake and says nothing about the script, so
+   * the trigger is accepted as it was before the check existed, and fails when it fires if the cause is still there.
+   *
+   * @throws CommandParsingException when the script has a syntax error
+   */
+  public static void checkSyntax(final Database database, final String triggerName, final String script) {
+    try (final GraalPolyglotEngine engine = GraalPolyglotEngine.newBuilder(database,
+            PolyglotEngineManager.getInstance().getSharedEngine())
+        .setLanguage("js")
+        .setAllowedPackages(ALLOWED_PACKAGES)
+        .build()) {
+      engine.parse(script);
+    } catch (final PolyglotException e) {
+      if (e.isSyntaxError())
+        throw new CommandParsingException(
+            "JavaScript trigger '" + triggerName + "' does not parse: " + GraalPolyglotEngine.endUserMessage(e, true), e);
+      LogManager.instance().log(ScriptTriggerExecutor.class, Level.WARNING,
+          "The syntax of JavaScript trigger '%s' could not be checked, the trigger is accepted unchecked: %s", e, triggerName,
+          GraalPolyglotEngine.endUserMessage(e, true));
+    } catch (final IllegalArgumentException | IllegalStateException e) {
+      // What GraalVM raises for a language that is not installed, or an engine already closed
+      LogManager.instance().log(ScriptTriggerExecutor.class, Level.WARNING,
+          "The syntax of JavaScript trigger '%s' could not be checked, the trigger is accepted unchecked: %s", e, triggerName,
+          e.getMessage());
+    }
   }
 
   @Override

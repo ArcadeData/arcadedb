@@ -18,8 +18,11 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
+import com.arcadedb.query.OperationType;
+
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 /**
  * AST node representing a UNION query that combines multiple subqueries.
@@ -100,6 +103,14 @@ public class UnionStatement implements CypherStatement {
       if (!query.isReadOnly())
         return false;
     return true;
+  }
+
+  @Override
+  public boolean hasUnconfirmedFunctionCall() {
+    for (final CypherStatement query : queries)
+      if (query.hasUnconfirmedFunctionCall())
+        return true;
+    return false;
   }
 
   @Override
@@ -191,6 +202,13 @@ public class UnionStatement implements CypherStatement {
       if (query.hasSchemaProcedureCall())
         return true;
     return false;
+  }
+
+  /** The writes of every branch, the ones nested in a branch's subqueries and {@code FOREACH} bodies included. */
+  @Override
+  public void collectWriteOperations(final Set<OperationType> operations) {
+    for (final CypherStatement query : queries)
+      query.collectWriteOperations(operations);
   }
 
   @Override

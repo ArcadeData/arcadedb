@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.parser.Skip;
 
 import java.util.ArrayDeque;
@@ -30,6 +31,10 @@ public class SkipExecutionStep extends AbstractExecutionStep {
   private final Skip    skip;
   private       int     skipped = 0;
   private       boolean finished;
+  // The rows of the SKIP the step that reads the index passed over without loading their records, see skipUnloaded(). -1 until the
+  // first pull. Like skipped and finished it is not reset: a plan with a SKIP runs once, this step has no reset() and no copy(), and
+  // neither has the LIMIT step that goes with it, so the plan is never cached nor executed again
+  private       int     skippedUnloaded = -1;
 
   /**
    * Rows an upstream batch carried PAST the skip point, waiting to be handed to the caller.
@@ -55,6 +60,12 @@ public class SkipExecutionStep extends AbstractExecutionStep {
     checkForPrevious();
 
     final int skipValue = skip.getValue(context);
+    if (skipValue < 0)
+      throw new CommandExecutionException("Cannot execute a query with a negative SKIP");
+    if (skippedUnloaded < 0) {
+      skippedUnloaded = skipUnloaded(context, skipValue);
+      skipped = skippedUnloaded;
+    }
     while (skipped < skipValue) {
       //fetch and discard
       final ResultSet rs = prev.syncPull(context, Math.min(100, skipValue - skipped));//fetch blocks of 100, at most
@@ -83,6 +94,44 @@ public class SkipExecutionStep extends AbstractExecutionStep {
     return prev.syncPull(context, nRecords);
   }
 
+  /**
+   * Hands the SKIP to the step that reads the index entries, which passes over the rows without loading their records (issue
+   * #11954), when every step in between makes one row of each row it reads and decides nothing on the record: a projection, and the
+   * type filter, whose decision the index step takes from the record's bucket. Any other step in between (a WHERE left to evaluate,
+   * DISTINCT, expand(), UNWIND, LET) leaves the SKIP to discard the rows as they come.
+   * <p>
+   * A projection under the SKIP is not computed for the rows passed over: what it would evaluate for a row the SKIP throws away (an
+   * error, a function with a side effect) is not evaluated, exactly as in a statement with no ORDER BY, where the planner chains the
+   * SKIP before the projection.
+   *
+   * @return the rows passed over, the rest of the SKIP being discarded from the rows that follow
+   */
+  private int skipUnloaded(final CommandContext context, final int skipValue) {
+    if (skipValue <= 0)
+      return 0;
+
+    String typeName = null;
+    ExecutionStepInternal step = prev;
+    while (step != null) {
+      final Class<?> stepClass = step.getClass();
+      if (stepClass == ProjectionCalculationStep.class)
+        step = ((ProjectionCalculationStep) step).getPrev();
+      else if (stepClass == FilterByTypeStep.class && typeName == null) {
+        typeName = ((FilterByTypeStep) step).getTypeName();
+        step = ((FilterByTypeStep) step).getPrev();
+        // the filter judges the stored record, which the index step knows from its bucket: not a row a projection made of it
+        if (step == null || step.getClass() != GetValueFromIndexEntryStep.class && step.getClass() != ParallelExecStep.class)
+          return 0;
+      } else if (stepClass == GetValueFromIndexEntryStep.class)
+        return ((GetValueFromIndexEntryStep) step).skipUnloaded(context, skipValue, typeName);
+      else if (stepClass == ParallelExecStep.class)
+        return ((ParallelExecStep) step).skipUnloaded(context, skipValue, typeName);
+      else
+        return 0;
+    }
+    return 0;
+  }
+
   @Override
   public void sendTimeout() {
     // IGNORE THE TIMEOUT
@@ -97,12 +146,16 @@ public class SkipExecutionStep extends AbstractExecutionStep {
 
   @Override
   public String prettyPrint(final int depth, final int indent) {
-    return ExecutionStepInternal.getIndent(depth, indent) + "+ SKIP (" + skip.toString() + ")";
+    String result = ExecutionStepInternal.getIndent(depth, indent) + "+ SKIP (" + skip.toString() + ")";
+    if (context.isProfiling() && skippedUnloaded > 0)
+      result += " (" + skippedUnloaded + " rows passed over in the index, records not loaded)";
+    return result;
   }
 
+  /** A SKIP computed by an expression is planned again on each run, for the reason {@link LimitExecutionStep#canBeCached()} gives. */
   @Override
   public boolean canBeCached() {
-    return true;
+    return skip.expression == null;
   }
 
   @Override

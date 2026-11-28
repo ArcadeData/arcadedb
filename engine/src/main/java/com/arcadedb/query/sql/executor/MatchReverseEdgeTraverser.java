@@ -50,6 +50,16 @@ public class MatchReverseEdgeTraverser extends MatchEdgeTraverser {
   }
 
   /**
+   * This walk starts at the hop's target and ends at its source, so the vertices it crosses come in the opposite direction of
+   * the pattern: its {@code $matchPath} is built the other way round, the source excluded and the target included, as a forward
+   * walk reports it (issue #12945).
+   */
+  @Override
+  protected boolean walksAgainstThePattern() {
+    return true;
+  }
+
+  /**
    * {@code item.getMethod()} is still the pattern edge's method as parsed from its syntactic out-side (this class
    * never rewrites it), so the direction it names is relative to that side, not to {@link #getStartingPointAlias()}
    * (the in-side, which this reverse traverser actually starts from) - the same out<->in flip

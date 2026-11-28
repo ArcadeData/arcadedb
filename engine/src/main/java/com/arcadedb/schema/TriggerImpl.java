@@ -18,9 +18,12 @@
  */
 package com.arcadedb.schema;
 
+import com.arcadedb.exception.SchemaException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.Objects;
+import java.util.logging.Level;
 
 /**
  * Implementation of the Trigger interface with JSON serialization support.
@@ -34,7 +37,10 @@ public class TriggerImpl implements Trigger, TypeNameDependant {
   // volatile, not final: a rename of the type rewrites it in place (#10096), see retargetType()
   private volatile String typeName;
   private final ActionType actionType;
-  private final String actionCode;
+  // volatile, not final: a rename of a type the body of a SQL trigger names rewrites it in place (#12941), see carryTypeRename()
+  private volatile String actionCode;
+  // the types the SQL body names, read off the body they were parsed from and parsed again only when the body changes
+  private volatile SQLTriggerBodyTypes bodyTypes;
 
   public TriggerImpl(final String name, final TriggerTiming timing, final TriggerEvent event,
                      final String typeName, final ActionType actionType, final String actionCode) {
@@ -89,15 +95,67 @@ public class TriggerImpl implements Trigger, TypeNameDependant {
     typeName = newTypeName;
   }
 
-  /** Nothing to refuse: a trigger is part of its type and is dropped with it (issue #10207). */
+  /**
+   * A trigger is part of its type and is dropped with it (issue #10207), so the drop of the type it is bound to is never
+   * refused, whatever its body names. The drop of a type the body of a SQL trigger names is (issue #12941): the trigger would
+   * fail every write to its own type from then on. A body that names no type that exists is not refused for, unlike the stored
+   * names of a view: a body is not checked when the trigger is created, and it fails when it fires, not here.
+   */
   @Override
   public void checkTypeDrop(final LocalSchema schema, final String typeName, final String canonicalTypeName) {
+    if (canonicalTypeName.equals(TypeNameDependant.canonicalNameOf(schema, this.typeName)))
+      return;
+    final SQLTriggerBodyTypes body = bodyTypes(schema);
+    if (body != null && body.names(schema, canonicalTypeName))
+      throw new SchemaException("Cannot drop type '" + typeName + "' because the SQL body of trigger '" + name + "' names it. Drop "
+          + "the trigger first with: " + dropStatement() + ", and create it again without the type if it is still needed");
   }
 
+  /** Refuses the rename of a type the SQL body names when the body cannot be re-pointed at the new name with certainty (#12941). */
+  @Override
+  public void checkTypeRename(final LocalSchema schema, final String oldName, final String newName) {
+    final SQLTriggerBodyTypes body = bodyTypes(schema);
+    if (body != null && body.namesExactly(oldName)
+        && SQLTriggerBodyTypes.retarget(schema.getDatabase(), body.body(), oldName, newName) == null)
+      throw new SchemaException("Cannot rename type '" + oldName + "' to '" + newName + "' because the SQL body of trigger '" + name
+          + "' names it and the body cannot be re-pointed at the new name with certainty. Drop the trigger first with: "
+          + dropStatement() + ", rename the type, and create the trigger again");
+  }
+
+  /** Follows the rename to the type the trigger is bound to (#10096) and in the SQL body (#12941). */
   @Override
   public void carryTypeRename(final LocalSchema schema, final String oldName, final String newName) {
     if (oldName.equals(typeName))
       retargetType(newName);
+
+    final SQLTriggerBodyTypes body = bodyTypes(schema);
+    if (body == null || !body.namesExactly(oldName))
+      return;
+    final String retargeted = SQLTriggerBodyTypes.retarget(schema.getDatabase(), body.body(), oldName, newName);
+    if (retargeted != null)
+      actionCode = retargeted;
+    else
+      // ONLY A TRIGGER CREATED AFTER THE CHECK OF THE RENAME CAN GET HERE: THE FILES HAVE MOVED, SO THIS CANNOT REFUSE
+      LogManager.instance().log(this, Level.WARNING,
+          "The body of the SQL trigger '%s' still names the type '%s', renamed to '%s': it cannot be re-pointed with certainty, so "
+              + "the trigger will fail until it is dropped and created again", name, oldName, newName);
+  }
+
+  /** The types the body names, for a SQL trigger; {@code null} for a JAVASCRIPT or a JAVA one, whose code is not analysed. */
+  private SQLTriggerBodyTypes bodyTypes(final LocalSchema schema) {
+    if (actionType != ActionType.SQL)
+      return null;
+    final String code = actionCode;
+    SQLTriggerBodyTypes parsed = bodyTypes;
+    if (parsed == null || !parsed.body().equals(code)) {
+      parsed = SQLTriggerBodyTypes.of(schema.getDatabase(), code);
+      bodyTypes = parsed;
+    }
+    return parsed;
+  }
+
+  private String dropStatement() {
+    return "DROP TRIGGER " + name;
   }
 
   @Override

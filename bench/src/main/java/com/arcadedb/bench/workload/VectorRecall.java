@@ -41,7 +41,23 @@ public final class VectorRecall {
   }
 
   public static int[] exactTopK(final float[][] base, final double[] baseNorms, final float[] query, final int k) {
-    final int size = Math.min(k, base.length);
+    return exactTopK(base, baseNorms, null, query, k);
+  }
+
+  /**
+   * Like {@link #exactTopK(float[][], double[], float[], int)} but only the vectors whose {@code visible} flag is set compete, so it
+   * returns {@code min(k, visibleCount)} ids. A {@code null} mask means every vector is visible.
+   */
+  public static int[] exactTopK(final float[][] base, final double[] baseNorms, final boolean[] visible, final float[] query,
+      final int k) {
+    int candidates = base.length;
+    if (visible != null) {
+      candidates = 0;
+      for (int i = 0; i < base.length; i++)
+        if (visible[i])
+          candidates++;
+    }
+    final int size = Math.min(k, candidates);
     if (size <= 0)
       return new int[0];
     final int[] ids = new int[size];
@@ -49,6 +65,8 @@ public final class VectorRecall {
     int filled = 0;
     final double queryNorm = norm(query);
     for (int i = 0; i < base.length; i++) {
+      if (visible != null && !visible[i])
+        continue;
       final float[] v = base[i];
       double dot = 0;
       for (int j = 0; j < v.length; j++)

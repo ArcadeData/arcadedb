@@ -19,6 +19,7 @@
 package com.arcadedb.function.util;
 
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.query.sql.executor.MultiValue;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -40,19 +41,41 @@ public abstract class AbstractUtilFunction implements StatelessFunction {
   protected abstract String getSimpleName();
 
   /**
-   * Computes a hash of the given value using the specified algorithm.
+   * Computes the hex hash of {@code values} as APOC's {@code apoc.util.md5} / {@code sha*} do (issue #12108): the hash of the
+   * concatenation of each element's string form, a {@code null} element contributing nothing, so {@code md5(['a', 'b'])} is
+   * the MD5 of {@code ab} and {@code md5([])} the MD5 of the empty string. A single value that is not a list is hashed as its
+   * string form (an ArcadeDB extension: APOC accepts only a list), and {@code null} answers {@code null}.
    */
-  protected String computeHash(final Object value, final String algorithm) {
-    if (value == null)
+  protected String computeHash(final Object values, final String algorithm) {
+    if (values == null)
       return null;
+
+    final StringBuilder text = new StringBuilder();
+    if (values instanceof Iterable<?> iterable) {
+      for (final Object value : iterable)
+        appendText(value, text);
+    } else if (MultiValue.isSequenceArray(values)) {
+      for (final Object value : MultiValue.getMultiValueAsList(values))
+        appendText(value, text);
+    } else
+      appendText(values, text);
 
     try {
       final MessageDigest digest = MessageDigest.getInstance(algorithm);
-      final byte[] hash = digest.digest(value.toString().getBytes(StandardCharsets.UTF_8));
-      return bytesToHex(hash);
+      return bytesToHex(digest.digest(text.toString().getBytes(StandardCharsets.UTF_8)));
     } catch (final NoSuchAlgorithmException e) {
       throw new IllegalStateException("Hash algorithm not available: " + algorithm, e);
     }
+  }
+
+  private static void appendText(final Object value, final StringBuilder text) {
+    if (value == null)
+      return;
+    // a stored ARRAY_OF_LONGS / ARRAY_OF_DOUBLES reads as the list it holds, not as the Java identity string "[J@..."
+    if (MultiValue.isSequenceArray(value))
+      text.append(MultiValue.getMultiValueAsList(value));
+    else
+      text.append(value);
   }
 
   /**

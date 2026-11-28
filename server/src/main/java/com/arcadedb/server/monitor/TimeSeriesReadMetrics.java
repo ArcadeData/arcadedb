@@ -97,6 +97,12 @@ public final class TimeSeriesReadMetrics {
   // before anything collapses: the collapse is a backstop, not a routine operating mode. Soft, like the sibling
   // caches: the size test and the computeIfAbsent are not one atomic step.
   static final         int    MAX_METER_SETS = 10_000;
+  // Ceiling on the length of the db and the type value of a tuple. The one above bounds how MANY tuples are
+  // cached and says nothing about how big each is: a cached tuple keeps its key string, and its twelve meters
+  // keep both values as tags. A database is a directory and a TimeSeries type is the first part of the names of
+  // its files, so neither can be longer than the 255 characters a file name holds; a longer value is not the
+  // name of anything the server holds and is counted under the overflow tag instead of being kept.
+  static final         int    MAX_TAG_VALUE_LENGTH = 255;
   // Cache entries the collapse itself can add, above MAX_METER_SETS: the overflow tuple keeps the surface - it
   // is the half worth keeping, being what distinguishes a slow dashboard from a slow label picker - so there is
   // one "other|other|<surface>" entry per surface, not one in total. Named for the same reason
@@ -208,6 +214,10 @@ public final class TimeSeriesReadMetrics {
    * the half of the tuple an operator still needs once the tenant half has been given up.
    */
   private static MeterSet meterSet(final String database, final String type, final String surface) {
+    // Before the key is built: the concatenation would otherwise copy a value of any size just to refuse it.
+    if (isOverlong(database) || isOverlong(type))
+      return meterSet(OVERFLOW_TAG, OVERFLOW_TAG, surface);
+
     final String key = database + '|' + type + '|' + surface;
     final MeterSet cached = METER_SETS.get(key);
     if (cached != null)
@@ -223,6 +233,10 @@ public final class TimeSeriesReadMetrics {
       return meterSet(OVERFLOW_TAG, OVERFLOW_TAG, surface);
 
     return METER_SETS.computeIfAbsent(key, k -> new MeterSet(database, type, surface));
+  }
+
+  private static boolean isOverlong(final String value) {
+    return value != null && value.length() > MAX_TAG_VALUE_LENGTH;
   }
 
   /**

@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.query.ResultRowCapScope;
 import com.arcadedb.query.sql.parser.ExecutionPlanCache;
 import com.arcadedb.query.sql.parser.LocalResultSet;
 import com.arcadedb.query.sql.parser.SelectStatement;
@@ -292,6 +293,25 @@ class PlanCacheLimitOrderDistinctTest extends TestHelper {
   }
 
   @Test
+  void aLetSubqueryWhoseSkipDependsOnTheRowIsPlannedForEveryRow() {
+    // the subquery reads $parent in its SKIP only: it is correlated, so it runs for each row rather than once before the first one
+    final String sql = "SELECT id, (SELECT FROM Item WHERE grp = 1 ORDER BY seq SKIP $parent.$current.id LIMIT 2) AS xs FROM Node WHERE id IN [3, 1, 0]";
+    final List<Integer> own = ownSeqs(1);
+    int rows = 0;
+    try (final ResultSet rs = database.query("sql", sql)) {
+      while (rs.hasNext()) {
+        final Result row = rs.next();
+        final int id = row.getProperty("id");
+        final List<Result> xs = row.getProperty("xs");
+        assertThat(xs.stream().map(x -> x.<Integer>getProperty("seq")).toList()).as("id %d", id)
+            .containsExactlyElementsOf(own.subList(id, id + 2));
+        rows++;
+      }
+    }
+    assertThat(rows).isEqualTo(3);
+  }
+
+  @Test
   void aLetSubqueryWithALimitAnOrderAndADistinctAnswersEveryRowInFull() {
     // the plan of the first row is built and run, the next rows run copies of it
     final String sql = "SELECT id, (SELECT FROM Item WHERE grp = 1 ORDER BY seq DESC LIMIT 3) AS top,"
@@ -330,6 +350,24 @@ class PlanCacheLimitOrderDistinctTest extends TestHelper {
     final Set<Integer> held = IntStream.rangeClosed(1, distinctLimits).boxed()
         .filter(limit -> cache.contains("SELECT FROM Item WHERE grp = :g LIMIT " + limit)).collect(Collectors.toSet());
     assertThat(held).containsExactlyInAnyOrder(9, 10, 11, 12);
+  }
+
+  @Test
+  void anOrderedPlanTakenFromTheCacheStillSortsOnlyTheRowsOfTheCallersCap() {
+    final String sql = "SELECT FROM Item WHERE grp = :g ORDER BY seq";
+    // planned without a cap, then copied for an execution whose caller reads 3 rows: the copy keeps the sort bound (#12016)
+    assertCachedAfterRun(sql);
+    final int cap = 3;
+    final List<Integer> rows = new ArrayList<>();
+    final String plan;
+    try (final ResultRowCapScope ignored = ResultRowCapScope.open(cap);
+        final ResultSet rs = database.query("sql", sql, Map.of("g", 5))) {
+      while (rs.hasNext())
+        rows.add(rs.next().getProperty("seq"));
+      plan = rs.getExecutionPlan().map(p -> p.prettyPrint(0, 2)).orElse("");
+    }
+    assertThat(plan).contains("buffer size: " + cap);
+    assertThat(rows).containsExactlyElementsOf(ownSeqs(5).subList(0, cap));
   }
 
   private static List<Integer> linkedFrom(final int id) {

@@ -22,7 +22,9 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.exception.TypeMismatchException;
 
 import java.util.Iterator;
 import java.util.List;
@@ -140,9 +142,8 @@ public class ExpandStep extends AbstractExecutionStep {
         if (nextAggregateItem.getPropertyNames().size() == 0) {
           continue;
         }
-        if (nextAggregateItem.getPropertyNames().size() > 1) {
-          throw new IllegalStateException("Invalid EXPAND on record " + nextAggregateItem);
-        }
+        if (nextAggregateItem.getPropertyNames().size() > 1)
+          throw invalidExpand(nextAggregateItem);
 
         final String propName = nextAggregateItem.getPropertyNames().iterator().next();
         final Object projValue = nextAggregateItem.getProperty(propName);
@@ -181,6 +182,20 @@ public class ExpandStep extends AbstractExecutionStep {
           cost += System.nanoTime() - begin;
       }
     } while (true);
+  }
+
+  /**
+   * The refusal of a row that is not one value: {@code expand(@this)} or {@code expand(*)} projects the whole record. It names
+   * the record by RID and type instead of writing all of it into the message, and is the caller's mistake, a client error (issue
+   * #12795, where it answered 500 with the record's JSON as the message).
+   */
+  private static TypeMismatchException invalidExpand(final Result row) {
+    final Document element = row.getElement().orElse(null);
+    final String what = element != null ?
+        "record " + element.getIdentity() + " of type " + element.getTypeName() :
+        "a row of properties " + InvalidArgumentException.quote(row.getPropertyNames());
+    return new TypeMismatchException("Invalid EXPAND on " + what
+        + ": expand() takes one value (a collection, a link or a map), not a whole record or a row of several properties");
   }
 
   @Override
