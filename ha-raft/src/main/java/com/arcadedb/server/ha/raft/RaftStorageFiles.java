@@ -114,6 +114,11 @@ final class RaftStorageFiles {
           databaseName);
       return;
     }
+    // The data files are forced here first, on the installer's thread, as the compaction does on its own (issues #11989,
+    // #12587): the checkpoint runs on the apply thread, where every commit of the node waits for what it forces, and finds
+    // only what was written in between. It waits at most SNAPSHOT_DATA_FLUSH_WAIT_MS for the pending pages, which the apply
+    // thread would otherwise wait for itself while this request queued behind it
+    sm.syncDataFilesAheadOfCheckpoint(RaftLogCompactionScheduler.DISK_PRESSURE_CREATION_GAP);
     final long index = ha.takeLocalSnapshot(RaftLogCompactionScheduler.DISK_PRESSURE_CREATION_GAP,
         PRE_INSTALL_SNAPSHOT_REQUEST_TIMEOUT_MS);
     if (index >= 0)

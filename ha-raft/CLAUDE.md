@@ -59,6 +59,8 @@ A node holding an unfilled gap fails LINEARIZABLE reads (503) and reports not-re
 
 Three triggers, not one: the Ratis auto-trigger (`arcadedb.ha.snapshotThreshold`, default 100k entries), ArcadeDB's own wall-clock `RaftLogCompactionScheduler` (`arcadedb.ha.snapshotInterval` 300 s, `arcadedb.ha.snapshotMinEntries` 64), **and shutdown**, via Ratis's `StateMachineUpdater.stop()`.
 
+`takeSnapshot()` forces every open database's data files (#11258) and runs on the StateMachineUpdater, which is the apply thread, so whoever asks for a checkpoint forces the files on its own thread first (`ArcadeStateMachine.syncDataFilesAheadOfCheckpoint`, #11989) and leaves the apply thread only what was written in between. The entry count is not asked by the Ratis auto-trigger in practice any more (#12587): at three quarters of the threshold the apply path wakes the compaction scheduler (`setEarlyCheckpointWake`, once per window, re-armed by `registerSnapshotMarker`), whose thread runs even with `snapshotInterval=0` for this. The auto-trigger stays ON as the backstop, and must: Ratis takes the shutdown snapshot only while it is on. A new caller of `takeLocalSnapshot` off the apply thread runs the early pass first, as `RaftStorageFiles.compactRaftLogBeforeSnapshotInstall` does.
+
 The shutdown trigger has a counterintuitive consequence when reproducing durability bugs: a graceful `server.stop()` takes a snapshot and makes an apply-ordering gap **permanent**, while a `SIGKILL` takes no snapshot and replays cleanly. If a durability test passes under kill -9 and fails under a clean stop, this is why. Choose the shutdown mode deliberately.
 
 ## Peer-list filtering is duplicated across three methods
