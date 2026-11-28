@@ -25,6 +25,8 @@ import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.EquivalentIndexException;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -74,6 +76,22 @@ class Issue13664BoltSchemaRuleCodeTest {
         .isEqualTo("engine text");
     assertThat(BoltNetworkExecutor.uniquenessViolationText(BoltErrorCodes.DATABASE_ERROR, "engine text", duplicate, null))
         .isEqualTo("engine text");
+  }
+
+  /** An indexed value read back as an array is written by its elements, as a list is, never by the array's identity. */
+  @Test
+  void aValueIsWrittenAsNeo4jWritesItArraysIncluded() {
+    assertThat(cypherValue("x")).isEqualTo("'x'");
+    assertThat(cypherValue(List.of(1, "b"))).isEqualTo("[1, 'b']");
+    assertThat(cypherValue(new int[] { 1, 2 })).isEqualTo("[1, 2]");
+    assertThat(cypherValue(new String[] { "a", "b" })).isEqualTo("['a', 'b']");
+    assertThat(cypherValue(new Object[] { new long[] { 3L }, "c" })).isEqualTo("[[3], 'c']");
+  }
+
+  private static String cypherValue(final Object value) {
+    final StringBuilder out = new StringBuilder();
+    BoltNetworkExecutor.appendCypherValue(out, value);
+    return out.toString();
   }
 
   private static String code(final Throwable error) {

@@ -102,6 +102,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.SequenceInputStream;
+import java.lang.reflect.Array;
 import java.net.InetAddress;
 import java.net.Socket;
 import java.net.SocketException;
@@ -2433,8 +2434,11 @@ public class BoltNetworkExecutor extends Thread {
     }
   }
 
-  /** A value as Neo4j writes it in a message: a string in single quotes, a list in brackets, anything else as it prints. */
-  private static void appendCypherValue(final StringBuilder out, final Object value) {
+  /**
+   * A value as Neo4j writes it in a message: a string in single quotes, a list in brackets, anything else as it prints. An array,
+   * which is how a record can hold an indexed list, is written as the list it is.
+   */
+  static void appendCypherValue(final StringBuilder out, final Object value) {
     if (value instanceof String string)
       out.append('\'').append(string).append('\'');
     else if (value instanceof Collection<?> collection) {
@@ -2445,6 +2449,15 @@ public class BoltNetworkExecutor extends Thread {
           out.append(", ");
         appendCypherValue(out, item);
         first = false;
+      }
+      out.append(']');
+    } else if (value != null && value.getClass().isArray()) {
+      out.append('[');
+      final int length = Array.getLength(value);
+      for (int i = 0; i < length; i++) {
+        if (i > 0)
+          out.append(", ");
+        appendCypherValue(out, Array.get(value, i));
       }
       out.append(']');
     } else

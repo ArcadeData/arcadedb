@@ -24,6 +24,7 @@ import com.arcadedb.index.Index;
 import com.arcadedb.query.opencypher.ast.CypherDDLStatement;
 import com.arcadedb.query.opencypher.ast.CypherDDLStatement.ConstraintKind;
 import com.arcadedb.query.opencypher.ast.CypherDDLStatement.IndexKind;
+import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.MultiTypeIndexes;
 import com.arcadedb.schema.Schema;
 
@@ -137,7 +138,8 @@ final class CypherSchemaRuleConflicts {
       return false;
     final Index index = schema.getIndexByName(name);
     return !index.isUnique() && labels.getFirst().equals(index.getTypeName()) && ddl.getPropertyNames().equals(index.getPropertyNames())
-        && index.getType() == indexType(ddl.getIndexKind());
+        && index.getType() == indexType(ddl.getIndexKind())
+        && schema.getType(index.getTypeName()) instanceof EdgeType == ddl.isForRelationship();
   }
 
   private static Schema.INDEX_TYPE indexType(final IndexKind kind) {

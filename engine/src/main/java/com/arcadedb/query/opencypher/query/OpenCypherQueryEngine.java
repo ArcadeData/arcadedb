@@ -78,6 +78,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.utility.DateUtils;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.MultiTypeIndexes;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
@@ -1316,14 +1317,15 @@ public class OpenCypherQueryEngine implements QueryEngine {
     try {
       return builder.create();
     } catch (final EquivalentIndexException e) {
-      final DocumentType type = schema.getType(typeName);
-      final TypeIndex existing = CypherConstraintRegistry.uniqueIndexOver(type, ddl.getPropertyNames());
+      // the builder refuses over an inherited index too: the constraint that owns it is recorded on the type that holds it
+      final TypeIndex existing = uniqueIndexOverPolymorphic(schema.getType(typeName), ddl.getPropertyNames());
+      final DocumentType holder = existing != null ? schema.getType(existing.getTypeName()) : schema.getType(typeName);
       final String owner = existing != null ? CypherConstraintRegistry.findIndexOwner(schema, existing.getName()) : null;
-      final CypherDDLStatement.ConstraintKind existingKind = owner != null ? CypherConstraintRegistry.kindOf(type, owner) : null;
+      final CypherDDLStatement.ConstraintKind existingKind = owner != null ? CypherConstraintRegistry.kindOf(holder, owner) : null;
       // a unique index no constraint recorded is listed under its generated name, as SHOW CONSTRAINTS lists it
       final String existingName = owner != null ?
           owner :
-          CypherConstraintRegistry.generatedName(typeName, CypherDDLStatement.ConstraintKind.UNIQUE, ddl.getPropertyNames());
+          CypherConstraintRegistry.generatedName(holder.getName(), CypherDDLStatement.ConstraintKind.UNIQUE, ddl.getPropertyNames());
       final String requestedName = ddl.getConstraintName() != null ?
           ddl.getConstraintName() :
           CypherConstraintRegistry.generatedName(typeName, ddl.getConstraintKind(), ddl.getPropertyNames());
@@ -1331,12 +1333,24 @@ public class OpenCypherQueryEngine implements QueryEngine {
     }
   }
 
+  /** The unique index over exactly these properties, the type's own first and then one a super type holds, or null. */
+  private static TypeIndex uniqueIndexOverPolymorphic(final DocumentType type, final List<String> properties) {
+    final TypeIndex own = CypherConstraintRegistry.uniqueIndexOver(type, properties);
+    if (own != null)
+      return own;
+    for (final TypeIndex index : type.getAllIndexes(true))
+      if (index.isUnique() && index.getPropertyNames().equals(properties))
+        return index;
+    return null;
+  }
+
   /**
    * Whether the constraint {@code name}, recorded on {@code owner}, requires what the statement asks for: the same type, kind,
    * properties and, for a type constraint, the same declared type (issue #13664).
    */
   private static boolean isSameConstraint(final DocumentType owner, final String name, final CypherDDLStatement ddl) {
-    if (!owner.getName().equals(ddl.getLabelName()))
+    // a node rule and a relationship rule are two definitions, even over the same name, properties and kind
+    if (!owner.getName().equals(ddl.getLabelName()) || owner instanceof EdgeType != ddl.isForRelationship())
       return false;
     Type declaredType = null;
     String declaredOfType = null;

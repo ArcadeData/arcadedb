@@ -114,6 +114,31 @@ class Issue13664CypherSchemaRuleConflictTest extends TestHelper {
             + "schema=()-[:KNOWS {uid}]-() )");
   }
 
+  /** A node rule and a relationship rule over the same type name, properties and kind are two definitions, not one. */
+  @Test
+  void aRelationshipRuleIsNeverTheSameAsANodeRule() {
+    cypher("CREATE CONSTRAINT k1 FOR (n:K) REQUIRE n.a IS UNIQUE");
+    final AlreadyExistsException constraint = taken("CREATE CONSTRAINT k1 FOR ()-[r:K]-() REQUIRE r.a IS UNIQUE");
+    assertThat(constraint.getKind()).isEqualTo(AlreadyExistsException.Kind.CONSTRAINT);
+    assertThat(constraint.isEquivalent()).isFalse();
+
+    cypher("CREATE INDEX j1 FOR (n:J) ON (n.a)");
+    final AlreadyExistsException index = taken("CREATE INDEX j1 FOR ()-[r:J]-() ON (r.a)");
+    assertThat(index.getKind()).isEqualTo(AlreadyExistsException.Kind.INDEX);
+    assertThat(index.isEquivalent()).isFalse();
+  }
+
+  /** The unique index a super type's constraint owns is that constraint's, and the refusal names it. */
+  @Test
+  void anInheritedUniqueIndexIsNamedByTheConstraintThatOwnsIt() {
+    cypher("CREATE CONSTRAINT base_a FOR (n:Base) REQUIRE n.a IS UNIQUE");
+    database.command("sql", "CREATE VERTEX TYPE Sub EXTENDS Base").close();
+
+    final EquivalentIndexException inherited = equivalent("CREATE CONSTRAINT sub_a FOR (n:Sub) REQUIRE n.a IS UNIQUE");
+    assertThat(inherited.getKind()).isEqualTo(AlreadyExistsException.Kind.CONSTRAINT);
+    assertThat(inherited).hasMessageStartingWith("Constraint already exists: Constraint( name='base_a', type='UNIQUENESS'");
+  }
+
   private void cypher(final String statement) {
     database.command("opencypher", statement).close();
   }
