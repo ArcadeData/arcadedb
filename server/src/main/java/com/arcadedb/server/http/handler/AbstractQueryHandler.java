@@ -29,6 +29,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
+import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.facet.FacetResults;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.ExecutionPlan;
@@ -105,6 +106,8 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
    * the log: the leading characters are what identifies the query for an operator.
    */
   private static final int MAX_LOGGED_COMMAND_CHARS = 120;
+  /** How far past {@link #MAX_LOGGED_COMMAND_CHARS} the mask looks, for a value that starts before the cap and ends after it. */
+  private static final int LOGGED_COMMAND_MASKING_MARGIN = 256;
 
   /**
    * Outcome of serializing a {@link ResultSet} into an HTTP response: how many rows reached the response and
@@ -252,28 +255,34 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
   }
 
   /**
-   * Prepares a client-supplied command to be echoed in a log line: caps the length so a large payload cannot
-   * flood the log, and replaces control characters with a space so an embedded line break cannot forge log
+   * Prepares a client-supplied command to be echoed in a log line: masks the values after the keywords that introduce a
+   * credential ({@link RunningQuery#maskCredentials}), the way the running-query listing does, caps the length so a large
+   * payload cannot flood the log, and replaces control characters with a space so an embedded line break cannot forge log
    * lines of its own. Same concern - and same shape - as
-   * {@link AbstractServerHttpHandler#sanitizeRequestId(String)} for the {@code X-Request-Id} header; allocates
-   * only when the command actually needs cleaning. Package-private for direct unit testing.
+   * {@link AbstractServerHttpHandler#sanitizeRequestId(String)} for the {@code X-Request-Id} header. The mask is applied before
+   * the cap, to the start of the command and a margin past it, so the cap cannot split a value and leave its start in the line,
+   * and a command of any size costs the same; it allocates only when the command needs masking or cleaning. Package-private for
+   * direct unit testing.
    */
   static String abbreviateForLog(final String command) {
     if (command == null)
       return null;
-    final int len = Math.min(command.length(), MAX_LOGGED_COMMAND_CHARS);
+    final boolean partial = command.length() > MAX_LOGGED_COMMAND_CHARS + LOGGED_COMMAND_MASKING_MARGIN;
+    final String masked = RunningQuery.maskCredentials(
+        partial ? command.substring(0, MAX_LOGGED_COMMAND_CHARS + LOGGED_COMMAND_MASKING_MARGIN) : command);
+    final int len = Math.min(masked.length(), MAX_LOGGED_COMMAND_CHARS);
     StringBuilder cleaned = null;
     for (int i = 0; i < len; i++) {
-      final char c = command.charAt(i);
+      final char c = masked.charAt(i);
       if (c < 0x20 || c == 0x7F) {
         if (cleaned == null)
-          cleaned = new StringBuilder(len).append(command, 0, i);
+          cleaned = new StringBuilder(len).append(masked, 0, i);
         cleaned.append(' ');
       } else if (cleaned != null)
         cleaned.append(c);
     }
-    final String result = cleaned != null ? cleaned.toString() : command.substring(0, len);
-    return command.length() > MAX_LOGGED_COMMAND_CHARS ? result + "..." : result;
+    final String result = cleaned != null ? cleaned.toString() : masked.substring(0, len);
+    return partial || masked.length() > MAX_LOGGED_COMMAND_CHARS ? result + "..." : result;
   }
 
   /**

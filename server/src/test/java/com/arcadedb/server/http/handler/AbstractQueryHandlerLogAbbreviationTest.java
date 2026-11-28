@@ -68,6 +68,32 @@ class AbstractQueryHandlerLogAbbreviationTest {
   }
 
   @Test
+  void theValueAfterACredentialKeywordIsMasked() {
+    assertThat(AbstractQueryHandler.abbreviateForLog("SELECT FROM Account WHERE name = 'bob' AND password = 'Zq7-masked-4471'"))
+        .isEqualTo("SELECT FROM Account WHERE name = 'bob' AND password = ***");
+    assertThat(AbstractQueryHandler.abbreviateForLog("CREATE USER bob IDENTIFIED BY Zq7-masked-4471 ROLE admin"))
+        .isEqualTo("CREATE USER bob IDENTIFIED BY *** ROLE admin");
+  }
+
+  @Test
+  void aValueThatStartsBeforeTheCapIsMaskedBeforeTheCut() {
+    final String head = "SELECT FROM Account WHERE note = '" + "x".repeat(60) + "' AND password = '";
+    assertThat(head.length()).isLessThan(120);
+
+    final String abbreviated = AbstractQueryHandler.abbreviateForLog(head + "Zq7-masked-4471 and more text" + "y".repeat(300) + "'");
+
+    assertThat(abbreviated).doesNotContain("Zq7").doesNotContain("more text");
+    assertThat(abbreviated).endsWith("AND password = ***...");
+  }
+
+  @Test
+  void aValueThatOutlastsTheTextThatIsLookedAtIsMasked() {
+    final String abbreviated = AbstractQueryHandler.abbreviateForLog("ALTER USER bob SET PASSWORD 'one two " + "three ".repeat(500) + "'");
+
+    assertThat(abbreviated).isEqualTo("ALTER USER bob SET PASSWORD ***...");
+  }
+
+  @Test
   void aLineBreakBeyondTheCapIsDroppedWithTheRest() {
     final String abbreviated = AbstractQueryHandler.abbreviateForLog("SELECT " + "x".repeat(200) + "\nforged");
 

@@ -83,10 +83,12 @@ public final class RunningQuery implements AutoCloseable {
   };
   private static final ThreadLocal<RunningQuery> CURRENT    = new ThreadLocal<>();
   // The keyword, the closing quote of a JSON key, a separator and an authentication scheme (Authorization: Bearer x),
-  // then the value: quoted, or up to the next delimiter. The
-  // separator's quantifiers are possessive, so a long run of blanks after a keyword is scanned once, never backtracked
+  // then the value: quoted (a backslash keeps the next character in the value, and a quote that is never closed ends the value
+  // at the end of the text), or up to the next delimiter. The separator's and the quoted value's quantifiers are possessive,
+  // so a long run of blanks after a keyword, or a long quoted value, is scanned once, never backtracked, and the loop over the
+  // escapes is not a recursion, so the length of the text does not bound the stack
   private static final Pattern                   CREDENTIAL =
-      Pattern.compile("(?i)\\b(identified\\s+by|password|passwd|pwd|token|secret|api[_-]?key|authorization|bearer)\\b([\"']?+\\s*+(?:[=:]\\s*+)?(?:(?:bearer|basic)\\s++)?)('[^']*'|\"[^\"]*\"|[^\\s,;)}\\]]+)");
+      Pattern.compile("(?is)\\b(identified\\s+by|password|passwd|pwd|token|secret|api[_-]?key|authorization|bearer)\\b([\"']?+\\s*+(?:[=:]\\s*+)?(?:(?:bearer|basic)\\s++)?)('[^'\\\\]*+(?:\\\\.[^'\\\\]*+)*+(?:'|\\\\?+\\z)|\"[^\"\\\\]*+(?:\\\\.[^\"\\\\]*+)*+(?:\"|\\\\?+\\z)|[^\\s,;)}\\]]+)");
 
   private final RunningQueryRegistry registry;
   private final long                 id;
@@ -187,8 +189,22 @@ public final class RunningQuery implements AutoCloseable {
     // Only what can be shown is scanned, plus a margin for a credential that straddles the cut: the listing costs the same
     // for a statement of a kilobyte and for one of a hundred megabytes
     final String scanned = text.length() > MAX_TEXT_LENGTH + MASKING_MARGIN ? text.substring(0, MAX_TEXT_LENGTH + MASKING_MARGIN) : text;
-    final String masked = CREDENTIAL.matcher(scanned).replaceAll("$1$2***");
+    final String masked = maskCredentials(scanned);
     return masked.length() > MAX_TEXT_LENGTH ? masked.substring(0, MAX_TEXT_LENGTH) + "..." : masked;
+  }
+
+  /**
+   * {@code text} with the value after the keywords {@link #maskAndTruncate(String)} recognizes replaced by {@code ***}: the same
+   * rule, without the cut, for a surface that shows a statement or a record its own way (a request log). The whole text is
+   * scanned, in one pass, so a surface that shows only the start of a long text hands over that start and a margin past it
+   * rather than the whole of it; a quoted value that is not closed inside what it is handed is masked up to the end of it, so a
+   * cut made after the masking never leaves the start of a value behind. Best effort, like the listing: it recognizes those
+   * keywords, not every way a secret can be spelled.
+   *
+   * @return {@code text} itself when nothing in it is masked
+   */
+  public static String maskCredentials(final String text) {
+    return CREDENTIAL.matcher(text).replaceAll("$1$2***");
   }
 
   /**
