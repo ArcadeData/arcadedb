@@ -29,6 +29,7 @@ import com.arcadedb.function.agg.CollectFunction;
 import com.arcadedb.function.agg.CypherAvgFunction;
 import com.arcadedb.function.agg.CypherMaxFunction;
 import com.arcadedb.function.agg.CypherMinFunction;
+import com.arcadedb.function.agg.CypherSumFunction;
 import com.arcadedb.function.agg.DistinctAggregationWrapper;
 import com.arcadedb.function.agg.PercentileContFunction;
 import com.arcadedb.function.agg.PercentileDiscFunction;
@@ -173,7 +174,7 @@ public class CypherFunctionFactory {
 
     // Aggregation functions
     mapping.put("count", "count");
-    mapping.put("sum", "sum");
+    // sum is handled as Cypher-specific: an INTEGER total past the long range is a long overflow, not a DECIMAL (issue #12993)
     // avg is handled as Cypher-specific (always returns Double, matching Neo4j)
     // min/max handled as Cypher-specific to support mixed-type comparison
     mapping.put("stdev", "stddev");
@@ -503,6 +504,8 @@ public class CypherFunctionFactory {
       case "valuetype" -> new ValueTypeFunction();
       // Aggregation functions
       case "avg" -> distinct ? new DistinctAggregationWrapper(new CypherAvgFunction()) : new CypherAvgFunction();
+      case "sum" -> distinct ? new DistinctAggregationWrapper(new SQLFunctionBridge(new CypherSumFunction(), "sum")) :
+          new SQLFunctionBridge(new CypherSumFunction(), "sum");
       case "collect", "collect_list" -> distinct ? new CollectDistinctFunction() : new CollectFunction();
       case "min" -> distinct ? new DistinctAggregationWrapper(new CypherMinFunction()) : new CypherMinFunction();
       case "max" -> distinct ? new DistinctAggregationWrapper(new CypherMaxFunction()) : new CypherMaxFunction();
