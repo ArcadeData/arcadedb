@@ -23,6 +23,7 @@ import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.query.opencypher.ast.*;
 import java.util.*;
+import java.util.regex.Pattern;
 
 /**
  * The scope phase of the semantic validation: every variable an expression reads must be in scope where it is read.
@@ -468,6 +469,7 @@ final class VariableScopeValidator {
     } else if (startsWithImportingWith(branch)) {
       // The importing WITH may reference outer variables; it then resets the scope to its projections,
       // so exposing the whole outer scope here does not leak variables past the WITH.
+      checkImportingWithReferencesOnlyPlainNames(branch, outerScope);
       seed = new Scope(outerScope);
       imported = importedNamesFromLeadingWith(branch, outerScope);
     } else {
@@ -481,6 +483,49 @@ final class VariableScopeValidator {
     shadowed.removeAll(imported);
 
     validateVariableScope(branch, seed, shadowed);
+  }
+
+  /**
+   * The importing WITH of an implicit-scope subquery body imports an outer variable only as a plain reference ({@code WITH i},
+   * {@code WITH i AS i}, {@code WITH *}), which is what {@code SubqueryStep} imports at run time. An outer variable that only
+   * appears inside an alias or an expression ({@code WITH i AS q}, {@code WITH i + 1 AS q}) is not imported, and reading it
+   * returned NULL without an error, a NULL the body then wrote (issue #13282). Neo4j refuses the same statement
+   * ({@code Importing WITH should consist only of simple references to outer variables}). A WITH that also names the variable as
+   * a plain reference ({@code WITH i, i * 2 AS d}) imports it, and a leading WITH that reads no outer variable
+   * ({@code WITH 1 AS x}) is an ordinary projection.
+   */
+  private static void checkImportingWithReferencesOnlyPlainNames(final CypherStatement branch, final Set<String> outerScope) {
+    final WithClause withClause = branch.getClausesInOrder().get(0).getTypedClause();
+    final Set<String> plainlyImported = new HashSet<>();
+    for (final ReturnClause.ReturnItem item : withClause.getItems()) {
+      if (item.isStar())
+        return; // WITH * imports every outer variable
+      if (isPlainReference(item))
+        plainlyImported.add(((VariableExpression) item.getExpression()).getVariableName());
+    }
+    for (final ReturnClause.ReturnItem item : withClause.getItems()) {
+      if (isPlainReference(item))
+        continue;
+      final Expression expression = item.getExpression();
+      final Set<String> read = new HashSet<>(WhereClause.collectExpressionVariables(expression));
+      // A nested body the walk cannot follow (COLLECT { WITH * RETURN i }) leaves the names incomplete: read its text for the
+      // outer names too, as a bare word that is not a property, a label, a parameter or a map key
+      if (!CypherReferencedVariables.freeOf(expression).isComplete() && expression.getText() != null)
+        for (final String name : outerScope)
+          if (!read.contains(name) && Pattern.compile("(?<![\\w.:$])" + Pattern.quote(name) + "(?![\\w]|\\s*:)")
+              .matcher(expression.getText()).find())
+            read.add(name);
+      for (final String name : read)
+        if (outerScope.contains(name) && !plainlyImported.contains(name))
+          throw new CommandSemanticException("UndefinedVariable: Variable '" + name
+              + "' not defined: the importing WITH of a CALL subquery imports an outer variable only as a plain reference"
+              + " (WITH " + name + "), not inside an alias or an expression");
+    }
+  }
+
+  private static boolean isPlainReference(final ReturnClause.ReturnItem item) {
+    return item.getExpression() instanceof VariableExpression variable
+        && (item.getAlias() == null || item.getAlias().equals(variable.getVariableName()));
   }
 
   /**
@@ -501,9 +546,10 @@ final class VariableScopeValidator {
   /**
    * Follows {@code name} through the clauses of one branch: it starts as the outer variable when the explicit scope list imports
    * it, or when the branch opens with a {@code WITH} (the importing one, walked as the first clause). A {@code WITH} that does not
-   * forward it as itself ({@code WITH name}, {@code WITH name AS name}, {@code WITH *}) drops or replaces it, so {@code WITH 1 AS z}
-   * or {@code WITH b AS z} binds a value of the body's own, which is also what {@code SubqueryStep} imports at runtime. An
-   * {@code UNWIND}, a {@code LOAD CSV} or a procedure {@code YIELD} under that name re-binds it too (issue #12387).
+   * forward it as itself ({@code WITH name}, {@code WITH name AS name}, {@code WITH *}) drops or replaces it, so
+   * {@code WITH 1 AS z} or, in a later clause, {@code WITH b AS z} binds a value of the body's own, which is also what
+   * {@code SubqueryStep} imports at runtime. An {@code UNWIND}, a {@code LOAD CSV} or a procedure {@code YIELD} under that name
+   * re-binds it too (issue #12387).
    */
   private static boolean keepsImportedBinding(final CypherStatement branch, final List<String> scopeVariables, final String name,
       final Set<String> outerScope) {

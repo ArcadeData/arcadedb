@@ -152,7 +152,7 @@ class CypherCallSubqueryExportShadowIssue11689Test extends TestHelper {
         "UNWIND [1] AS k CALL { UNWIND [2] AS j CALL { UNWIND [3] AS j RETURN * } RETURN j AS m } RETURN m",//
         // a leading WITH that aliases a value to the outer name is no import: the body's z is a value of its own
         "MATCH (z:A12387) CALL { WITH 1 AS z RETURN * } RETURN z",//
-        "MATCH (z:A12387), (b:B12387) CALL { WITH b AS z RETURN * } RETURN z",//
+        "MATCH (z:A12387), (b:B12387) CALL { WITH b WITH b AS z RETURN * } RETURN z",//
         // imported, then re-bound by the body before the RETURN *
         "MATCH (z:A12387) CALL (z) { WITH 1 AS z RETURN * } RETURN z",//
         "MATCH (z:A12387) CALL { WITH z WITH 1 AS z RETURN * } RETURN z",//
