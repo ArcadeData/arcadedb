@@ -91,7 +91,8 @@ final class BoltSystemProcedures {
 
   /**
    * Normalizes a query for the Bolt executor's system-query matching: trimmed, lowercased and with every
-   * whitespace run collapsed to a single space.
+   * whitespace run collapsed to a single space, without the comments in front of the statement and without those
+   * between an opening {@code CALL} and what it calls.
    * <p>
    * The lowercasing is {@link Locale#ROOT}-bound on purpose: under a Turkish default locale {@code toLowerCase()}
    * maps {@code I} to {@code ı}, so an upper-case {@code CALL DB.RELATIONSHIPTYPES()} would stop matching.
@@ -102,28 +103,65 @@ final class BoltSystemProcedures {
    * @return the normalized form used by every anchored match
    */
   static String normalize(final String query) {
-    return WHITESPACE.matcher(stripLeadingComments(query.trim()).toLowerCase(Locale.ROOT)).replaceAll(" ");
+    return WHITESPACE.matcher(stripCommentsAfterCall(stripLeadingComments(query.trim())).toLowerCase(Locale.ROOT))
+        .replaceAll(" ");
   }
 
   /**
    * Drops the {@code //} and block comments a driver or tool may put in front of a statement, so that the anchored
-   * matching sees the statement itself. Done on the raw text, because normalizing collapses the newline that ends a
+   * matching sees the statement itself. Done on the raw text, because normalizing collapses the line break that ends a
    * line comment.
+   * <p>
+   * A comment ends exactly where the Cypher lexer ends it: a line comment at the first carriage return or line feed, a
+   * block comment at the first star-slash after its two-character opener (so {@code /*&#47;} opens one, it does not close
+   * it). Dropping more or less than the lexer hides would anchor the matching on a statement the engine does not see, and
+   * answer it with a canned row.
+   * </p>
    */
   private static String stripLeadingComments(final String trimmed) {
     String text = trimmed;
     while (text.startsWith("//") || text.startsWith("/*")) {
       final int end;
       if (text.startsWith("//")) {
-        final int newline = text.indexOf('\n');
-        end = newline < 0 ? text.length() : newline + 1;
+        int lineEnd = 2;
+        while (lineEnd < text.length() && text.charAt(lineEnd) != '\n' && text.charAt(lineEnd) != '\r')
+          ++lineEnd;
+        end = lineEnd;
       } else {
-        final int close = text.indexOf("*/");
+        final int close = text.indexOf("*/", 2);
         end = close < 0 ? text.length() : close + 2;
       }
       text = text.substring(end).trim();
     }
     return text;
+  }
+
+  /**
+   * Drops the comments between the {@code CALL} a statement opens with and what it calls, so that
+   * {@code CALL /*+ OGM READ_ONLY *&#47; dbms.components()} - the hint Neo4j-OGM tags every read-only statement with - anchors
+   * like the bare call (issue #13583). Neo4j skips such a comment, and so does the Cypher lexer; the procedures served only
+   * here have no engine to fall back on, so missing the call answered ProcedureNotFound. Done on the raw text, for the
+   * reason {@link #stripLeadingComments(String)} gives.
+   * <p>
+   * Only the comments are removed: what follows them is anchored and checked as it always was, so a commented call that
+   * goes on with a write is still the engine's.
+   * </p>
+   *
+   * @param statement the statement with its leading comments already dropped
+   *
+   * @return the statement as it was when no comment follows its {@code CALL}, else {@code call } and what the comments hid
+   */
+  private static String stripCommentsAfterCall(final String statement) {
+    final int keywordEnd = CALL_PREFIX.length() - 1;
+    if (!statement.regionMatches(true, 0, CALL_PREFIX, 0, keywordEnd))
+      return statement;
+    int pos = keywordEnd;
+    while (pos < statement.length() && Character.isWhitespace(statement.charAt(pos)))
+      ++pos;
+    // The common statement has no comment here and is returned as it came, without a copy
+    if (!statement.startsWith("//", pos) && !statement.startsWith("/*", pos))
+      return statement;
+    return CALL_PREFIX + stripLeadingComments(statement.substring(pos));
   }
 
   /**
@@ -176,8 +214,9 @@ final class BoltSystemProcedures {
    * required (plus no write or further-reading clause in the tail), which is what keeps a mere mention of the name
    * elsewhere in a larger statement out (issue #8908). The tail check is a deny-list on a family with no engine
    * fallback: quoted literals are blanked and a keyword after {@code $} or {@code .} is not a clause, so parameters
-   * and property names do not trip it. An {@code EXPLAIN} or
-   * {@code PROFILE} prefix, or a comment between {@code CALL} and the name, reaches the engine.
+   * and property names do not trip it. A comment between
+   * {@code CALL} and the name is gone by the time the query is normalized (issue #13583); an {@code EXPLAIN} or
+   * {@code PROFILE} prefix reaches the engine.
    */
   static boolean isSystemCall(final String normalized, final String procedureName) {
     final int end = endOfCallName(normalized, procedureName);
