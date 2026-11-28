@@ -159,8 +159,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
               // The type says the edge lives inside the two vertices. The rest of the pipeline still works:
               // SaveElementStep's save() is a no-op on a record-less RID, and ConnectEdgeStep does the linking.
               if (properties != null && properties.length > 0)
-                throw new CommandExecutionException("Edge type '" + edgeType.getName()
-                    + "' is declared LIGHTWEIGHT, so its edges cannot have properties");
+                throw GraphEngine.lightweightEdgeCannotHaveProperties(edgeType.getName());
 
               context.getDatabase().getGraphEngine()
                   .checkLightEdgeUniqueness((VertexInternal) currentFrom, edgeType, currentTo.getIdentity());

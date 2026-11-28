@@ -162,7 +162,7 @@ class MergeRelationshipOnMatchPropsTest {
   /**
    * An edge of a {@code LIGHTWEIGHT} type has no record, so there is nothing for {@code onMatchProps} to write to.
    * The call has to say so - naming the procedure and the argument - rather than fail with the bare
-   * "Lightweight edges cannot be modified" that {@code ImmutableLightEdge.modify()} raises, and rather than
+   * refusal that {@code ImmutableLightEdge.modify()} raises, which names neither, and rather than
    * silently drop the properties the caller asked for.
    */
   @Test

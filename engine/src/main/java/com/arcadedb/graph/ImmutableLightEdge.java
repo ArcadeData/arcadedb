@@ -95,8 +95,12 @@ public class ImmutableLightEdge extends ImmutableDocument implements LightEdge {
     return null;
   }
 
+  /**
+   * A lightweight edge has no record, so there is nothing to make mutable. Every caller of {@code modify()} on an edge means to
+   * write a property, so it is refused like any property write on a lightweight edge (issue #12871).
+   */
   public MutableEdge modify() {
-    throw new IllegalStateException("Lightweight edges cannot be modified");
+    throw GraphEngine.lightweightEdgeCannotHaveProperties(getTypeName());
   }
 
 

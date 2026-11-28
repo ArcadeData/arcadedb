@@ -34,7 +34,7 @@ import java.util.Set;
  * <p>
  * It is a {@link MutableEdge} <b>in type only</b>, so that {@code newEdge()} can keep its declared return type on a
  * lightweight edge type without a source-breaking signature change. Nothing about it is actually mutable: there is no
- * record behind it, so every mutator throws. {@code save()} is the deliberate exception - it is a no-op returning
+ * record behind it, so every mutator that would write a property throws (an empty content writes none and is accepted). {@code save()} is the deliberate exception - it is a no-op returning
  * {@code this}, because the edge is already connected by the time {@code newEdge()} returns and
  * {@code v.newEdge(...).save()} is a harmless idiom that should not fail.
  * <p>
@@ -96,14 +96,25 @@ public class MutableLightEdge extends MutableEdge implements LightEdge {
     return includeMetadata ? new JSONObject(lightEdgeMetadata()) : new JSONObject();
   }
 
+  /**
+   * Refused with the {@link IllegalArgumentException} {@link GraphEngine#newEdge} raises for the same mistake (issue #12871). An
+   * empty property map describes no property and is accepted, as it is on creation.
+   */
   @Override
   public MutableEdge set(final Object... properties) {
-    throw cannotHaveProperties();
+    if (properties != null && properties.length == 1 && properties[0] instanceof Map<?, ?> map) {
+      if (describesProperties(map.keySet()))
+        throw cannotHaveProperties();
+    } else if (GraphEngine.describesProperties(properties))
+      throw cannotHaveProperties();
+    return this;
   }
 
   @Override
   public MutableEdge set(final Map<String, Object> properties) {
-    throw cannotHaveProperties();
+    if (properties != null && describesProperties(properties.keySet()))
+      throw cannotHaveProperties();
+    return this;
   }
 
   @Override
@@ -124,22 +135,42 @@ public class MutableLightEdge extends MutableEdge implements LightEdge {
 
   @Override
   public MutableEdge fromMap(final Map<String, Object> map) {
-    throw cannotHaveProperties();
+    if (map != null && describesProperties(map.keySet()))
+      throw cannotHaveProperties();
+    return this;
   }
 
+  /**
+   * An empty object is accepted, so a client that always sends a {@code CONTENT} sends {@code {}} for an edge without data, as
+   * openCypher {@code CREATE (a)-[:K {}]->(b)} and the batch loader accept the same empty map (issue #12871).
+   */
   @Override
   public MutableEdge fromJSON(final JSONObject json) {
-    throw cannotHaveProperties();
+    if (json != null && describesProperties(json.keySet()))
+      throw cannotHaveProperties();
+    return this;
   }
 
   @Override
   public void merge(final Map<String, Object> other) {
-    throw cannotHaveProperties();
+    if (other != null && describesProperties(other.keySet()))
+      throw cannotHaveProperties();
   }
 
-  private IllegalStateException cannotHaveProperties() {
-    return new IllegalStateException("Edge type '" + getTypeName()
-        + "' is declared LIGHTWEIGHT, so its edges are stored inside the vertices and cannot have properties. "
-        + "Use a regular edge type if the edge needs to carry data");
+  /**
+   * Whether a content with these keys writes anything to the edge, by the rule {@link com.arcadedb.database.MutableDocument#fromMap}
+   * applies to any record: a property name writes, a metadata name ({@code @rid}, {@code @type}, {@code @cat}, ...) is skipped,
+   * except {@code @in} / {@code @out}, which re-point the edge and are refused too. So a content echoing only the metadata of a
+   * record, as {@code CONTENT} of a document does, describes no property, like an empty one (issue #12871).
+   */
+  private boolean describesProperties(final Set<?> names) {
+    for (final Object name : names)
+      if (!(name instanceof String s) || s.isEmpty() || s.charAt(0) != '@' || isAssignableMetadata(s))
+        return true;
+    return false;
+  }
+
+  private IllegalArgumentException cannotHaveProperties() {
+    return GraphEngine.lightweightEdgeCannotHaveProperties(getTypeName());
   }
 }

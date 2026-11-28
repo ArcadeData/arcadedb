@@ -182,16 +182,16 @@ public class MergeRelationship implements CypherProcedure {
    * the match branch only, which is why the create branch below does not consult it (issue #8103).
    * <p>
    * An edge of a {@code LIGHTWEIGHT} type has no record and therefore no properties, so there is nothing to apply
-   * the map to. {@code ImmutableLightEdge.modify()} does refuse - "Lightweight edges cannot be modified" - but names
-   * neither this procedure nor the argument that asked for the write, so the refusal is raised here instead. The
-   * create branch already refuses the same configuration the same way, from {@code MutableLightEdge.set()}.
+   * the map to. {@code ImmutableLightEdge.modify()} does refuse, but names neither this procedure nor the argument that
+   * asked for the write, so the refusal is raised here instead. The create branch already refuses the same configuration
+   * with the same exception type, from {@code MutableLightEdge.set()}: a caller mistake, 400 over HTTP (issue #12871).
    */
   private Edge applyOnMatchProps(final Edge existingEdge, final Map<String, Object> onMatchProps) {
     if (onMatchProps == null || onMatchProps.isEmpty())
       return existingEdge;
 
     if (existingEdge instanceof LightEdge)
-      throw new IllegalStateException(getName() + "(): edge type '" + existingEdge.getTypeName()
+      throw new IllegalArgumentException(getName() + "(): edge type '" + existingEdge.getTypeName()
           + "' is declared LIGHTWEIGHT, so its edges cannot have properties and onMatchProps cannot be applied");
 
     final MutableEdge mutableEdge = existingEdge.modify();
