@@ -1891,6 +1891,8 @@ public class CypherOptimizer {
    * bind, which is what a path variable is.
    */
   private static Set<String> patternVariablesRead(final BooleanExpression expression, final LogicalPlan logicalPlan) {
+    if (readsPathVariable(expression, logicalPlan))
+      return null;
     final Set<String> reads = new HashSet<>();
     for (final String variable : logicalPlan.getPatternNodes().keySet())
       if (CypherVariableUsage.expressionReferencesVariable(expression, variable))
@@ -1901,6 +1903,20 @@ public class CypherOptimizer {
         reads.add(variable);
     }
     return reads;
+  }
+
+  /**
+   * Whether the predicate reads a named path variable ({@code p} of {@code MATCH p = ...}). A path is built when its last hop binds
+   * its end, so no scan or earlier hop can decide a predicate on it (issue #13470).
+   */
+  private static boolean readsPathVariable(final BooleanExpression expression, final LogicalPlan logicalPlan) {
+    for (final LogicalRelationship relationship : logicalPlan.getRelationships()) {
+      final String pathVariable = relationship.getPathVariable();
+      if (pathVariable != null && !pathVariable.isEmpty()
+          && CypherVariableUsage.expressionReferencesVariable(expression, pathVariable))
+        return true;
+    }
+    return false;
   }
 
   /**
@@ -1955,6 +1971,9 @@ public class CypherOptimizer {
           && CypherVariableUsage.expressionReferencesVariable(expression, relationshipVariable))
         return false;
     }
+
+    if (readsPathVariable(expression, logicalPlan))
+      return false;
 
     return true;
   }
