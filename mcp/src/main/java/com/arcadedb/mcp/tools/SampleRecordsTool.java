@@ -149,7 +149,7 @@ public class SampleRecordsTool {
       final JsonSerializer serializer) {
     final String query = "SELECT FROM " + MCPToolUtils.quoteIdentifier("type name", typeName) + " LIMIT " + limit;
     final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine("sql").analyze(query);
-    if (!analyzed.isIdempotent())
+    if (!analyzed.writesNothing())
       throw new MCPRefusalException("Generated sample query is not read-only");
 
     // Reuse the already-parsed statement when possible (SQL). For other engines analyzed.execute()

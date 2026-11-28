@@ -56,6 +56,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
+import java.util.function.IntFunction;
 
 /**
  * Execution step for shortestPath() and allShortestPaths() patterns in MATCH clauses.
@@ -84,6 +85,7 @@ public class ShortestPathStep extends AbstractExecutionStep {
   private final String targetVariable;
   private final String pathVariable;
   private final ShortestPathPattern pattern;
+  private final BooleanExpression   pathPredicate;
 
   /**
    * Creates a shortest path step.
@@ -96,11 +98,24 @@ public class ShortestPathStep extends AbstractExecutionStep {
    */
   public ShortestPathStep(final String sourceVariable, final String targetVariable, final String pathVariable,
       final ShortestPathPattern pattern, final CommandContext context) {
+    this(sourceVariable, targetVariable, pathVariable, pattern, null, context);
+  }
+
+  /**
+   * Creates a shortest path step whose search is restricted by a predicate on the path (issue #13574).
+   *
+   * @param pathPredicate the MATCH WHERE conjuncts that read the path variable, or {@code null}: the step then answers the
+   *                      shortest path(s) satisfying it, as Neo4j does, instead of the shortest path(s) of the graph alone.
+   *                      Ignored when the pattern binds no path variable
+   */
+  public ShortestPathStep(final String sourceVariable, final String targetVariable, final String pathVariable,
+      final ShortestPathPattern pattern, final BooleanExpression pathPredicate, final CommandContext context) {
     super(context);
     this.sourceVariable = sourceVariable;
     this.targetVariable = targetVariable;
     this.pathVariable = pathVariable;
     this.pattern = pattern;
+    this.pathPredicate = pathVariable == null || pathVariable.isEmpty() ? null : pathPredicate;
   }
 
   @Override
@@ -197,7 +212,10 @@ public class ShortestPathStep extends AbstractExecutionStep {
             // For allShortestPaths(), enumerate every path sharing the minimal length; for shortestPath()
             // (singular), keep returning just one. Reuse the same compute method for the single-path case
             // so existing behaviour and CSR-accelerated lookups in SQLFunctionShortestPath stay in play.
-            if (pattern.isAllPaths())
+            if (pathPredicate != null)
+              // The predicate restricts the paths the search may answer, so it is decided during the search (issue #13574)
+              currentPaths = searchWithPathPredicate(sourceVertex, targetVertex, inputResult, context);
+            else if (pattern.isAllPaths())
               currentPaths = iterateAllShortestPaths(sourceVertex, targetVertex, inputResult, context);
             else {
               final List<Object> single = computeShortestPath(sourceVertex, targetVertex, inputResult, context);
@@ -436,6 +454,361 @@ public class ShortestPathStep extends AbstractExecutionStep {
     final Database database = context.getDatabase();
     return new PathEnumerator(target, sourceRid, foundDepth,
         current -> resolveHops(current, predecessors.get(current.getIdentity()), direction, typesArray, database), guard);
+  }
+
+  /**
+   * The shortest path(s) between {@code source} and {@code target} that satisfy {@link #pathPredicate} (issue #13574), which is
+   * how Neo4j reads a MATCH WHERE on the path variable of a shortestPath()/allShortestPaths() pattern: the predicate limits the
+   * search, it does not filter the one path the search found first. shortestPath() answers the first path that passes, of the
+   * smallest length any passing path has; allShortestPaths() answers every passing path of that length.
+   * <p>
+   * The candidates are the paths a variable-length MATCH of the same pattern answers (no relationship twice, the direction, the
+   * types, the inline constraint and the hop bounds honoured), enumerated length by length from the unconstrained shortest one.
+   * The distances to the target, grown with the length, prune every branch that cannot reach the target in the hops left, and the
+   * search stops at the first length no candidate can reach. Like Neo4j's fallback for such predicates the search can grow
+   * exponentially with the length, so the command deadline is checked as it runs.
+   * <p>
+   * A source that is the target keeps the rule of {@link HopBounds}: only the zero-length path answers, and only a minimum of zero.
+   * A shortest path below the declared minimum answers nothing either, as without a predicate.
+   */
+  private Iterator<List<Object>> searchWithPathPredicate(final Vertex source, final Vertex target, final Result inputResult,
+      final CommandContext context) {
+    final HopBounds bounds = patternHopBounds();
+    final ResultInternal evalRow = new ResultInternal();
+    for (final String prop : inputResult.getPropertyNames())
+      evalRow.setProperty(prop, inputResult.getProperty(prop));
+
+    final RID sourceRid = source.getIdentity();
+    final RID targetRid = target.getIdentity();
+    if (sourceRid.equals(targetRid)) {
+      final List<Object> single = new ArrayList<>(1);
+      single.add(source);
+      return bounds.accepts(0) && passes(evalRow, single, context) ?
+          Collections.singletonList(single).iterator() :
+          Collections.emptyIterator();
+    }
+
+    final Vertex.DIRECTION direction = patternDirection();
+    final String[] typesArray = patternEdgeTypesArray();
+    final EdgeConstraint constraint = edgeConstraint(inputResult, context);
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
+
+    // Hops from the vertices to the target, walking the relationships backwards: a lower bound of what any path still needs. Grown
+    // until it reaches the source, which gives the length of the shortest path regardless of the predicate
+    final LayeredDistances toTarget = new LayeredDistances(target, reverse(direction), typesArray, constraint, context, guard);
+    while (toTarget.get(sourceRid) == null && !toTarget.isComplete() && toTarget.expandedDepth() < bounds.getMax())
+      toTarget.expandTo(toTarget.expandedDepth() + 1);
+    final Integer shortest = toTarget.get(sourceRid);
+    if (shortest == null || !bounds.accepts(shortest))
+      return Collections.emptyIterator();
+
+    final Vertex.DIRECTION[] directions = expandDirections(direction);
+    return new PredicatePathIterator(shortest, bounds.getMax(), length -> {
+      // A walk of this length never asks for a vertex farther from the target than the length itself
+      toTarget.expandTo(length);
+      return new PathPredicateSearch(source, targetRid, length, directions, typesArray, constraint, toTarget, context, guard);
+    }, evalRow, context);
+  }
+
+  /**
+   * Hands out the passing paths of {@link #searchWithPathPredicate} one at a time: the paths of a length are enumerated as the
+   * consumer asks for them, so a LIMIT or a consumer that stops reading also stops the search (issue #9123), and the next length is
+   * entered only when the current one had no passing path and a longer path can still exist. shortestPath() ends after the first
+   * passing path.
+   */
+  private final class PredicatePathIterator implements Iterator<List<Object>> {
+    private final int                                maxLength;
+    private final IntFunction<PathPredicateSearch>   searchOfLength;
+    private final ResultInternal                     evalRow;
+    private final CommandContext                     context;
+    private       int                                length;
+    private       PathPredicateSearch                search;
+    private       boolean                            foundAtThisLength;
+    private       boolean                            exhausted;
+    private       List<Object>                       pending;
+
+    PredicatePathIterator(final int shortest, final int maxLength, final IntFunction<PathPredicateSearch> searchOfLength,
+        final ResultInternal evalRow, final CommandContext context) {
+      this.maxLength = maxLength;
+      this.searchOfLength = searchOfLength;
+      this.evalRow = evalRow;
+      this.context = context;
+      this.length = shortest;
+      this.search = searchOfLength.apply(shortest);
+    }
+
+    @Override
+    public boolean hasNext() {
+      if (pending != null)
+        return true;
+      if (exhausted)
+        return false;
+      pending = advance();
+      if (pending == null)
+        exhausted = true;
+      return pending != null;
+    }
+
+    @Override
+    public List<Object> next() {
+      if (!hasNext())
+        throw new NoSuchElementException();
+      final List<Object> path = pending;
+      pending = null;
+      return path;
+    }
+
+    private List<Object> advance() {
+      while (true) {
+        List<Object> path = search.next();
+        while (path != null && !passes(evalRow, path, context))
+          path = search.next();
+        if (path != null) {
+          foundAtThisLength = true;
+          // shortestPath() answers one path: nothing follows it
+          exhausted = !pattern.isAllPaths();
+          return path;
+        }
+        if (foundAtThisLength || !search.couldGoLonger || length >= maxLength)
+          return null;
+        search = searchOfLength.apply(++length);
+      }
+    }
+  }
+
+  private boolean passes(final ResultInternal evalRow, final List<Object> path, final CommandContext context) {
+    evalRow.setProperty(pathVariable, TraversalPath.ofWalk(path));
+    return pathPredicate.evaluate(evalRow, context);
+  }
+
+  private static Vertex.DIRECTION reverse(final Vertex.DIRECTION direction) {
+    return switch (direction) {
+      case OUT -> Vertex.DIRECTION.IN;
+      case IN -> Vertex.DIRECTION.OUT;
+      default -> Vertex.DIRECTION.BOTH;
+    };
+  }
+
+  /**
+   * Breadth-first hop counts from one vertex to the vertices it reaches, walking one direction over the relationships the pattern
+   * accepts, grown one layer at a time on demand: the search only pays for the ball of the radius it has asked for so far, as the
+   * shortest-path search without a predicate does, instead of walking the whole component up front.
+   */
+  private static final class LayeredDistances {
+    private final Map<RID, Integer>  distance = new HashMap<>();
+    private final Vertex.DIRECTION[] directions;
+    private final String[]           typesArray;
+    private final EdgeConstraint     constraint;
+    private final CommandContext     context;
+    private final WorkGuard          guard;
+    private       Deque<Vertex>      frontier = new ArrayDeque<>();
+    private       int                depth    = 0;
+
+    LayeredDistances(final Vertex from, final Vertex.DIRECTION direction, final String[] typesArray,
+        final EdgeConstraint constraint, final CommandContext context, final WorkGuard guard) {
+      this.directions = expandDirections(direction);
+      this.typesArray = typesArray;
+      this.constraint = constraint;
+      this.context = context;
+      this.guard = guard;
+      distance.put(from.getIdentity(), 0);
+      frontier.add(from);
+    }
+
+    /** True once every vertex reachable has its distance: a vertex without one is then unreachable. */
+    boolean isComplete() {
+      return frontier.isEmpty();
+    }
+
+    /** Every vertex up to {@code hops} away has its distance once this returns (or the walk is complete). */
+    void expandTo(final int hops) {
+      while (depth < hops && !frontier.isEmpty())
+        expandLayer();
+    }
+
+    /** The hop count of {@code rid}, or null when it is unreachable or farther than the layers expanded so far. */
+    Integer get(final RID rid) {
+      return distance.get(rid);
+    }
+
+    int expandedDepth() {
+      return depth;
+    }
+
+    private void expandLayer() {
+      if (Thread.interrupted())
+        throw new CommandExecutionException("The shortestPath() function has been interrupted");
+      guard.check();
+      final Deque<Vertex> next = new ArrayDeque<>();
+      for (final Vertex v : frontier) {
+        for (final Vertex.DIRECTION dir : directions) {
+          for (final Iterator<Edge> edges = IncomingEdgeLookup.getEdges(context, v, dir, typesArray); edges.hasNext(); ) {
+            final Edge edge = edges.next();
+            if (constraint != null && !constraint.matches(edge))
+              continue;
+            final RID neighborRid = dir == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut();
+            if (neighborRid == null || distance.containsKey(neighborRid))
+              continue;
+            final Vertex neighbor;
+            try {
+              neighbor = dir == Vertex.DIRECTION.OUT ? edge.getInVertex() : edge.getOutVertex();
+            } catch (final RecordNotFoundException e) {
+              GhostEdgeReporter.reportSkipped(e);
+              continue;
+            }
+            distance.put(neighborRid, depth + 1);
+            next.add(neighbor);
+          }
+        }
+      }
+      frontier = next;
+      depth++;
+    }
+  }
+
+  /**
+   * Enumerates, one per call, the paths of exactly {@code length} relationships from the source to the target that use no
+   * relationship twice: a depth-first walk over an explicit stack, so a long path cannot overflow the thread's stack. A branch is
+   * cut as soon as the hops it has left are fewer than its vertex's distance to the target (a vertex the distances have not
+   * reached yet is farther than the whole length). {@link #couldGoLonger} records whether
+   * any branch was cut by the length alone, the only case in which a longer path can exist.
+   */
+  private static final class PathPredicateSearch {
+    private final RID                targetRid;
+    private final int                length;
+    private final Vertex.DIRECTION[] directions;
+    private final String[]           typesArray;
+    private final EdgeConstraint     constraint;
+    private final LayeredDistances   toTarget;
+    private final CommandContext     context;
+    private final WorkGuard          guard;
+    private final Vertex[]           vertices;
+    private final Edge[]             edges;
+    private final int[]              directionIndex;
+    @SuppressWarnings("unchecked")
+    private final Iterator<Edge>[]   cursors;
+    private final Set<RID>           usedEdges = new HashSet<>();
+    private       int                depth     = 0;
+    private       long               steps     = 0L;
+    boolean couldGoLonger = false;
+
+    @SuppressWarnings("unchecked")
+    PathPredicateSearch(final Vertex source, final RID targetRid, final int length, final Vertex.DIRECTION[] directions,
+        final String[] typesArray, final EdgeConstraint constraint, final LayeredDistances toTarget,
+        final CommandContext context, final WorkGuard guard) {
+      this.targetRid = targetRid;
+      this.length = length;
+      this.directions = directions;
+      this.typesArray = typesArray;
+      this.constraint = constraint;
+      this.toTarget = toTarget;
+      this.context = context;
+      this.guard = guard;
+      this.vertices = new Vertex[length + 1];
+      this.edges = new Edge[length];
+      this.directionIndex = new int[length + 1];
+      this.cursors = new Iterator[length + 1];
+      vertices[0] = source;
+    }
+
+    /** The next path of the length, or {@code null} once there is none left. */
+    List<Object> next() {
+      while (depth >= 0) {
+        if ((++steps & 1023) == 0) {
+          if (Thread.interrupted())
+            throw new CommandExecutionException("The shortestPath() function has been interrupted");
+          guard.check();
+        }
+
+        final Edge edge = nextEdge(depth);
+        if (edge == null) {
+          // Every relationship of this vertex was tried: back to the previous one, freeing the relationship that led here
+          cursors[depth] = null;
+          directionIndex[depth] = 0;
+          depth--;
+          if (depth >= 0)
+            usedEdges.remove(edges[depth].getIdentity());
+          continue;
+        }
+
+        final Vertex.DIRECTION dir = directions[directionIndex[depth]];
+        final RID neighborRid;
+        try {
+          neighborRid = dir == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut();
+        } catch (final RecordNotFoundException e) {
+          GhostEdgeReporter.reportSkipped(e);
+          continue;
+        }
+        final int left = length - depth - 1;
+        final Integer distance = toTarget.get(neighborRid);
+        if (distance == null) {
+          // Unreachable when the distances are complete, otherwise farther from the target than the length allows
+          if (!toTarget.isComplete())
+            couldGoLonger = true;
+          continue;
+        }
+        if (distance > left) {
+          couldGoLonger = true;
+          continue;
+        }
+        if (!usedEdges.add(edge.getIdentity()))
+          continue;
+        final Vertex neighbor;
+        try {
+          neighbor = dir == Vertex.DIRECTION.OUT ? edge.getInVertex() : edge.getOutVertex();
+        } catch (final RecordNotFoundException e) {
+          usedEdges.remove(edge.getIdentity());
+          GhostEdgeReporter.reportSkipped(e);
+          continue;
+        }
+
+        edges[depth] = edge;
+        vertices[depth + 1] = neighbor;
+        if (left == 0) {
+          // A walk through the target can go on and come back to it, so a path of this length does not end the search
+          couldGoLonger = true;
+          usedEdges.remove(edge.getIdentity());
+          if (neighborRid.equals(targetRid))
+            return buildPath();
+          continue;
+        }
+        depth++;
+      }
+      return null;
+    }
+
+    /** The next relationship of the vertex at {@code level} the pattern accepts, across its directions, or null. */
+    private Edge nextEdge(final int level) {
+      while (directionIndex[level] < directions.length) {
+        Iterator<Edge> cursor = cursors[level];
+        if (cursor == null) {
+          cursor = IncomingEdgeLookup.getEdges(context, vertices[level], directions[directionIndex[level]], typesArray);
+          cursors[level] = cursor;
+        }
+        // An undirected walk meets a self-loop on both of its lists: it is one relationship, so it is taken from the outgoing one only
+        final boolean skipSelfLoops = directionIndex[level] > 0 && directions[directionIndex[level]] == Vertex.DIRECTION.IN;
+        while (cursor.hasNext()) {
+          final Edge edge = cursor.next();
+          if (skipSelfLoops && edge.getOut().equals(edge.getIn()))
+            continue;
+          if (constraint == null || constraint.matches(edge))
+            return edge;
+        }
+        cursors[level] = null;
+        directionIndex[level]++;
+      }
+      return null;
+    }
+
+    private List<Object> buildPath() {
+      final List<Object> path = new ArrayList<>(2 * length + 1);
+      path.add(vertices[0]);
+      for (int i = 0; i < length; i++) {
+        path.add(edges[i]);
+        path.add(vertices[i + 1]);
+      }
+      return path;
+    }
   }
 
   /**

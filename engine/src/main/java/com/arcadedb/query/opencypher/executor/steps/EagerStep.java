@@ -140,9 +140,10 @@ public class EagerStep extends AbstractExecutionStep {
       // deadline per row only starts once this one has finished - so a TIMEOUT clause could not end a
       // long barrier before this guard. Same reason CypherExecutionPlan.execute() carries one (#6266).
       final WorkGuard guard = WorkGuard.forCommandDeadline(context);
-      // Integer.MAX_VALUE rather than nRecords: a partial drain would leave the upstream cursor open
-      // across the writes, which is the very interleaving this step exists to prevent.
-      final ResultSet prevResults = prev.syncPull(context, Integer.MAX_VALUE);
+      // The loop below drains the input whatever the batch size, so no upstream cursor stays open across the writes: a step
+      // hands on its whole input however small its batch is. The batch is only what each step buffers per pull, and it is a
+      // bounded one so that an upstream step does not fill its buffer with the whole input before the first row is counted
+      final ResultSet prevResults = prev.syncPull(context, DEFAULT_FETCH_RECORDS_PER_PULL);
       heapLimit = OperationHeapLimit.of(context, "eager read/write barrier");
       try {
         while (prevResults.hasNext()) {

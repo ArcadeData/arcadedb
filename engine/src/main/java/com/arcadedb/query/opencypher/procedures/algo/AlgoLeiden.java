@@ -93,6 +93,7 @@ public class AlgoLeiden extends AbstractAlgoProcedure {
     final String[] relTypes = extractRelTypes(argOrDefault(args, 0, null), context);
     final int maxIterations = extractInt(optionalNumberArg(args, 1, "maxIterations", 10), "maxIterations", 1);
     final double resolution = optionalNumberArg(args, 2, "resolution", 1.0).doubleValue();
+    requireNonNegativeFinite("resolution", resolution);
 
     final Database db = context.getDatabase();
     final WorkGuard guard = newWorkGuard(context);

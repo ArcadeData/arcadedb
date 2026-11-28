@@ -54,6 +54,7 @@ import com.arcadedb.exception.ExternalResourceException;
 import com.arcadedb.exception.ImplicitTransactionRequiredException;
 import com.arcadedb.exception.InvalidPropertyTypeException;
 import com.arcadedb.exception.ObjectInUseException;
+import com.arcadedb.exception.ProcedureCallFailedException;
 import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryAdmissionException;
@@ -2354,8 +2355,24 @@ public class BoltNetworkExecutor extends Thread {
    */
   private void sendExecutionFailure(final String code, final String failureText, final Throwable error) throws IOException {
     // A concealing server sends no engine text, the refusal's own sentence included
-    final String text = ErrorConcealment.isConcealing(server) ? failureText : withUnavailableReason(failureText, error);
+    final String text = ErrorConcealment.isConcealing(server) ?
+        failureText :
+        procedureCallFailedText(code, withUnavailableReason(failureText, error), error);
     sendFailure(code, withLeaderRedirect(text, error));
+  }
+
+  /**
+   * {@code text}, or the text Neo4j with APOC puts on a failed call when {@code code} is ProcedureCallFailed, which clients decode
+   * (issue #13560; the message of the guard stays the engine's on every other protocol). Decided by the code
+   * {@link #classifyExecutionError} picked and not by the cause chain alone, so the title and the text cannot disagree: a chain
+   * that carries a fired guard under a failure classified as something else - a conflict to retry, a follower's refusal, a
+   * database that is not available - keeps the text of that failure, with its leader redirect or its reason.
+   */
+  static String procedureCallFailedText(final String code, final String text, final Throwable error) {
+    if (!BoltErrorCodes.PROCEDURE_CALL_FAILED_ERROR.equals(code))
+      return text;
+    final ProcedureCallFailedException failedCall = CauseChain.find(error, ProcedureCallFailedException.class);
+    return failedCall != null ? failedCall.getNeo4jMessage() : text;
   }
 
   /**
@@ -2458,6 +2475,11 @@ public class BoltNetworkExecutor extends Thread {
     // ConstraintValidationFailed, where the category alone says ArgumentError (issue #11974)
     if (category == ErrorCategory.VALIDATION && CauseChain.contains(error, ObjectInUseException.class))
       return BoltErrorCodes.CONSTRAINT_VIOLATION_ERROR;
+
+    // A guard of apoc.util.validate that fired: Neo4j's ProcedureCallFailed, where the category alone says ArgumentError
+    // (issue #13560). Its text is procedureCallFailedText's, which keys on this code
+    if (category == ErrorCategory.VALIDATION && CauseChain.contains(error, ProcedureCallFailedException.class))
+      return BoltErrorCodes.PROCEDURE_CALL_FAILED_ERROR;
 
     // A LOAD CSV URL that cannot be opened or read: Neo4j's ExternalResourceFailed (issue #11974)
     if (category == ErrorCategory.VALIDATION && CauseChain.contains(error, ExternalResourceException.class))

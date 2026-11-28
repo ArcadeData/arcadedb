@@ -3734,6 +3734,10 @@ public class TransactionContext implements Transaction {
    *                    whose replayed slots are the edge-list segments this transaction appended to
    */
   private boolean areReadsFromOwnImageCurrent(final MutablePage page, final boolean bySlotMerge) {
+    // #13572: every read of the page was made before anybody else committed to it, so each one read the committed page plus this
+    // transaction's own writes; what was committed since is a phantom READ_COMMITTED allows, and the merges may replay over it
+    if (!page.isStaleReadRecorded())
+      return true;
     final boolean wholePage = page.isWholePageRead();
     if (!wholePage && page.nextSlotRead(0) < 0 && (bySlotMerge || !hasAppendedChunkReadOn(page.getPageId())))
       return true;
@@ -3912,10 +3916,46 @@ public class TransactionContext implements Transaction {
       ++ownImageReads;
       if (edgeAppendDepth > 0)
         deferRead(mutable, slot);
-      else if (slot < 0)
-        mutable.markWholePageRead();
-      else
-        mutable.markSlotRead(slot);
+      else {
+        if (slot < 0)
+          mutable.markWholePageRead();
+        else
+          mutable.markSlotRead(slot);
+        noteReadStaleness(mutable);
+      }
+    }
+  }
+
+  /**
+   * Notes on {@code image} whether the read just recorded on it was made when the image was already stale (#13572): another
+   * transaction had committed to the page after this transaction's first write to it, which is what the image misses. A read made
+   * before that saw the committed page plus this transaction's own writes, a valid {@code READ_COMMITTED} read: a commit landing on
+   * the page after it is an ordinary phantom, and must not refuse the merge of the page, as it does not refuse the merge of a
+   * transaction that did not read. One page-version lookup per read until the page is found stale, and none after. An image this
+   * transaction did not take from a committed page (one it created, or one that is no longer the image it holds) is taken as stale.
+   */
+  private void noteReadStaleness(final MutablePage image) {
+    if (image.isStaleReadRecorded())
+      return;
+    if (modifiedPages == null || modifiedPages.get(image.getPageId()) != image || isCommittedPageNewer(image))
+      image.markStaleReadRecorded();
+  }
+
+  /** Whether a transaction committed to the page of {@code image} after the image was taken (#13572), as the commit checks it. */
+  private boolean isCommittedPageNewer(final MutablePage image) {
+    final PageId pageId = image.getPageId();
+    try {
+      int committed = database.getPageManager().getMostRecentVersionOfPage(pageId, image.getPhysicalSize());
+      // #6965: a version the replication log already assigned to the page is the most recent one, as for the commit's own check
+      if (database.getEmbedded() instanceof LocalDatabase localDatabase) {
+        final PageVersionReservations reservations = localDatabase.getPageVersionReservations();
+        if (reservations != null)
+          committed = Math.max(committed, reservations.reservedVersion(pageId));
+      }
+      return committed != image.getVersion();
+    } catch (final IOException e) {
+      // a page that cannot be read cannot vouch for the read
+      return true;
     }
   }
 
@@ -4028,10 +4068,13 @@ public class TransactionContext implements Transaction {
       final MutablePage page = deferredReadPages[i];
       final int slot = deferredReadSlots[i];
       deferredReadPages[i] = null;
-      if (slot < 0)
+      if (slot < 0) {
         page.markWholePageRead();
-      else if (!isChunkAppendedInWindow(page.getPageId(), slot))
+        noteReadStaleness(page);
+      } else if (!isChunkAppendedInWindow(page.getPageId(), slot)) {
         page.markSlotRead(slot);
+        noteReadStaleness(page);
+      }
     }
     deferredReads = 0;
     for (int i = 0; i < deferredChunkReads; ++i) {
@@ -4127,8 +4170,10 @@ public class TransactionContext implements Transaction {
     // the edge-list head merge asks whether the application read such a chunk
     final LocalBucket bucket = database.getSchema().getEmbedded().getBucketById(rid.getBucketId(), false);
     final MutablePage image = bucket != null ? ownPageImageOf(bucket, rid) : null;
-    if (image != null)
+    if (image != null) {
       image.markSlotRead((int) (rid.getPosition() % bucket.getMaxRecordsInPage()));
+      noteReadStaleness(image);
+    }
   }
 
   private boolean isTrackingReadsFromOwnImage() {
@@ -4280,7 +4325,8 @@ public class TransactionContext implements Transaction {
       // #11590: appends replayed onto a chunk somebody else appended to meanwhile, only when the application did not read the chunk
       // this transaction holds, which misses those entries
       if (!bucket.rebaseRecordOnPage(committed, slot, finalBody, baseBody, buffer.kindOf(slot))//
-          && (insertedHere || buffer.kindOf(slot) != SLOT_KIND_RECORD || ownPage.isWholePageRead() || ownPage.isSlotRead(slot)
+          && (insertedHere || buffer.kindOf(slot) != SLOT_KIND_RECORD
+          || ownPage.isStaleReadRecorded() && (ownPage.isWholePageRead() || ownPage.isSlotRead(slot))
           || !replayEdgeAppendsOnSlot(bucket, committed, slot, baseBody, finalBody)))
         throw new ConcurrentModificationException(
             "Slot rebase not possible on page " + pageId + " slot " + slot + " (concurrent change to the same record). Please retry the operation");

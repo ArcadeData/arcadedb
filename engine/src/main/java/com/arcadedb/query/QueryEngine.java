@@ -79,6 +79,22 @@ public interface QueryEngine {
     }
 
     /**
+     * Whether executing the statement writes nothing, anywhere: it is {@linkplain #isIdempotent() idempotent}, is not a DDL and
+     * declares no operation type but {@link OperationType#READ}.
+     * <p>
+     * {@link #isIdempotent()} alone is not that. It says the statement mutates no record, which is what lets {@code query()} run
+     * it, and a statement can answer true while still writing outside the records: {@code BACKUP DATABASE} writes an archive to
+     * the server's file system, and says so through {@link #getOperationTypes()}. A caller that offers read-only access to text
+     * it did not write asks this instead.
+     */
+    default boolean writesNothing() {
+      if (!isIdempotent() || isDDL())
+        return false;
+      final Set<OperationType> operations = getOperationTypes();
+      return operations.size() == 1 && operations.contains(OperationType.READ);
+    }
+
+    /**
      * Executes this analyzed query, reusing the already-parsed AST to avoid double parsing.
      * Returns null if direct execution is not supported, in which case the caller should
      * fall back to the standard query/command methods.
