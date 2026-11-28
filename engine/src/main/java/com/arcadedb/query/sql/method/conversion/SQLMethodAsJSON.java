@@ -83,10 +83,20 @@ public class SQLMethodAsJSON extends AbstractSQLMethod {
     } else if (MultiValue.isMultiValue(me)) {
       final JSONArray json = new JSONArray();
       for (final Object o : MultiValue.getMultiValueIterable(me, false))
-        json.put(execute(o, currentRecord, context, params));
+        // An element this method has no conversion for (a number, a boolean, a link, a date...) is written the way the value of
+        // a map entry is: answering null for it turned [1,2] into [null,null] and dropped the links of a list (issue #12835)
+        json.put(hasConversion(o) ? execute(o, currentRecord, context, params) : o);
       return json;
     }
 
     return null;
+  }
+
+  /**
+   * Whether {@link #execute} converts the value itself, so the branches stay the single list of what it handles.
+   */
+  private static boolean hasConversion(final Object value) {
+    return value instanceof Result || value instanceof Document || value instanceof Map || value instanceof String
+        || MultiValue.isMultiValue(value);
   }
 }
