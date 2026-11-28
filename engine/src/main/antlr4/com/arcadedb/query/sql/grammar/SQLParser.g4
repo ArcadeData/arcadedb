@@ -1390,10 +1390,13 @@ unwind
     ;
 
 /**
- * SKIP_KW clause
+ * SKIP_KW clause. OFFSET is the PostgreSQL spelling of the same clause and is accepted as its alias: the Postgres wire
+ * protocol speaks PostgreSQL, and OFFSET is a reserved word there, so a client can only write it as this clause
+ * (issue #12973). The word stays an identifier as well, so a column named OFFSET is still readable.
  */
 skip
     : SKIP_KW expression
+    | OFFSET expression
     ;
 
 /**
