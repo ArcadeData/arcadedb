@@ -237,7 +237,15 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // Executors.newSingleThreadExecutor, which hides its ThreadPoolExecutor behind a non-tunable wrapper)
       // so callers can inspect it, e.g. getQueue().size() in tests.
       this.executor = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>(), r -> {
-        Thread t = new Thread(r, "arcadedb-tx-" + txId);
+        // The thread ends with the transaction: its contexts go with it, not with the dead-thread sweep that runs every 1000
+        // init() calls, which left hundreds of them (page lists, undo journals) on the heap of a busy server
+        Thread t = new Thread(() -> {
+          try {
+            r.run();
+          } finally {
+            DatabaseContext.INSTANCE.releaseCurrentThreadContextsIfIdle();
+          }
+        }, "arcadedb-tx-" + txId);
         t.setDaemon(true);
         return t;
       });
@@ -1043,6 +1051,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             while (rs.hasNext()) {
 
               Result result = rs.next();
+              if (emitted == 0)
+                out.addAllColumnNames(projectionColumns(result));
 
               if (result.isElement()) {
                 affected++;
@@ -1876,6 +1886,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         while (resultSet.hasNext()) {
 
           Result result = resultSet.next();
+          if (count == 0)
+            resultBuilder.addAllColumnNames(projectionColumns(result));
 
           // THE ROW BY ITS SHAPE, NOT ITS CONTENT: SEE LOG_SHOW_VALUES (#9984)
           if (LogManager.instance().isLoggable(this, Level.FINE))
@@ -2574,6 +2586,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // (previously the final full batch went out with is_last_batch=false and no terminal followed).
     QueryResult pending = null;
     final FacetResults facets;
+    // the first row's, on every batch that carries rows (issue #13464)
+    List<String> columns = null;
 
     try (ResultSet rs = db.query(language, request.getQuery(),
         GrpcTypeConverter.convertParameters(request.getParametersMap()))) {
@@ -2595,6 +2609,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           safeOnNext(scso, cancelled, pending);
           pending = null;
         }
+
+        if (columns == null)
+          columns = projectionColumns(r);
+        if (inBatch == 0)
+          batch.addAllColumnNames(columns);
 
         // The row, not the record behind it: a SELECT *, !name row must not stream the excluded column back and a
         // SELECT *, x AS y row must keep its alias, exactly as ExecuteQuery answers them (issue #11942)
@@ -2665,6 +2684,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     final int maxMaterializedRows = serverConfiguration().getValueAsInteger(
         GlobalConfiguration.SERVER_GRPC_STREAM_MAX_MATERIALIZED_ROWS);
     final FacetResults facets;
+    // the first row's, on every batch (issue #13464)
+    List<String> columns = List.of();
 
     try (ResultSet rs = db.query(language, request.getQuery(),
         GrpcTypeConverter.convertParameters(request.getParametersMap()))) {
@@ -2674,6 +2695,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           return;
 
         Result r = rs.next();
+        if (all.isEmpty())
+          columns = projectionColumns(r);
 
         // The row, not the record behind it, as in streamCursor (issue #11942)
         all.add(convertResultToGrpcRecord(r, db, projectionConfig, encodingBudget));
@@ -2706,7 +2729,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         return;
 
       int end = Math.min(i + batchSize, all.size());
-      QueryResult.Builder b = QueryResult.newBuilder();
+      QueryResult.Builder b = QueryResult.newBuilder().addAllColumnNames(columns);
       for (int j = i; j < end; j++)
         b.addRecords(all.get(j));
 
@@ -4111,8 +4134,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         : TS_DEFAULT_BATCH_SIZE;
 
     if (req.hasAggregation())
-      streamTimeSeriesBuckets(call, cancelled, serverTimedOut, req, engine, columns, fromTs, toTs, tagFilter,
-          batchSize);
+      // The names the read counters are filed under are the resolved ones: the database field of a request that
+      // names a transaction is not what the read ran against.
+      streamTimeSeriesBuckets(call, cancelled, serverTimedOut, req, db.getName(), resolved.type().getName(), engine,
+          columns, fromTs, toTs, tagFilter, batchSize);
     else
       streamTimeSeriesRows(call, cancelled, serverTimedOut, req, engine, columns, fromTs, toTs, tagFilter,
           batchSize);
@@ -4256,8 +4281,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    */
   private void streamTimeSeriesBuckets(final ServerCallStreamObserver<TimeSeriesQueryResult> call,
       final AtomicBoolean cancelled, final AtomicBoolean serverTimedOut, final TimeSeriesQueryRequest req,
-      final TimeSeriesEngine engine, final List<ColumnDefinition> columns, final long fromTs, final long toTs,
-      final TagFilter tagFilter, final int batchSize) throws Exception {
+      final String databaseName, final String typeName, final TimeSeriesEngine engine,
+      final List<ColumnDefinition> columns, final long fromTs, final long toTs, final TagFilter tagFilter,
+      final int batchSize) throws Exception {
 
     final TimeSeriesAggregation aggregation = req.getAggregation();
     // Both refusals moved into TimeSeriesGateway (issue #7675): the RULE is now the one the two HTTP endpoints
@@ -4312,7 +4338,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           TimeBucketGrid.normalizeOffset(aggregation.getBucketOriginMs(), aggregation.getBucketIntervalMs()), tagFilter,
           readMetrics, configuredMax);
     } finally {
-      TimeSeriesReadMetrics.publish(readMetrics, req.getDatabase(), req.getType(), TimeSeriesReadMetrics.SURFACE_GRPC);
+      TimeSeriesReadMetrics.publish(readMetrics, databaseName, typeName, TimeSeriesReadMetrics.SURFACE_GRPC);
     }
     final List<Long> timestamps = result.getBucketTimestamps();
 
@@ -4431,7 +4457,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     try {
       latest = TimeSeriesGateway.latest(resolved.engine(), tagFilter, readMetrics);
     } finally {
-      TimeSeriesReadMetrics.publish(readMetrics, db.getName(), req.getType(), TimeSeriesReadMetrics.SURFACE_TS_LATEST);
+      TimeSeriesReadMetrics.publish(readMetrics, db.getName(), resolved.type().getName(),
+          TimeSeriesReadMetrics.SURFACE_TS_LATEST);
     }
 
     final TimeSeriesLatestResponse.Builder response = TimeSeriesLatestResponse.newBuilder()
@@ -6467,6 +6494,21 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    */
   GrpcRecord convertResultToGrpcRecord(Result result, Database db, ProjectionConfig projectionConfig) {
     return convertResultToGrpcRecord(result, db, projectionConfig, newEncodingBudget());
+  }
+
+  /**
+   * The column names of a projection row in projection order, which GrpcRecord.properties (a protobuf map) cannot carry (issue #13464).
+   * A row that is a single node or relationship (RETURN n) goes out as that record, whose properties are not columns: its one column
+   * is named by the projection, so a client can wrap the record under it. A record row a projection reshaped (SELECT *, x AS y) goes
+   * out as its projected columns, which it lists in order. A plain record row (SELECT FROM T) has no columns, only properties.
+   */
+  private static List<String> projectionColumns(final Result result) {
+    if (!result.isElement())
+      return new ArrayList<>(result.getPropertyNames());
+    if (result.getMetadata(FinalProjectionStep.PROJECTION_NAME_METADATA) instanceof String name)
+      return List.of(name);
+    final Set<String> columns = result.getPropertyNames();
+    return columns.equals(result.toElement().getPropertyNames()) ? List.of() : new ArrayList<>(columns);
   }
 
   /**

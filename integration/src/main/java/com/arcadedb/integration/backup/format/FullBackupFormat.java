@@ -638,8 +638,20 @@ public class FullBackupFormat extends AbstractBackupFormat {
     return TimeSeriesCompactionPause.acquire(database, COMPACTION_PAUSE_TIMEOUT_MS);
   }
 
+  /**
+   * Runs the check the caller of this backup handed over, which ends it by throwing. Asked between two archive entries here, and
+   * by the {@link IoThrottler} for every chunk read inside one, so a backup stops at its next chunk whatever its rate cap or
+   * archive writer is.
+   */
+  private void checkNotAborted() {
+    if (settings.abortCheck != null)
+      settings.abortCheck.run();
+  }
+
   private long compressEntry(final BackupArchiveWriter archive, final String name, final long lastModified,
       final InputStream input) throws IOException {
+    checkNotAborted();
+
     final String entryName = archiveEntryName(name);
     if (!entryName.equals(name))
       // A DIRECTORY-BEARING NAME HERE IS ALREADY A BUG UPSTREAM (issue #7586) - LOGGED RATHER THAN SILENTLY
@@ -691,6 +703,8 @@ public class FullBackupFormat extends AbstractBackupFormat {
    */
   private long compressFile(final BackupArchiveWriter archive, final File inputFile, final boolean skippable)
       throws IOException {
+    checkNotAborted();
+
     logger.log(2, "- File '%s'...", inputFile.getName());
     if (!skippable || inputFile.exists()) {
       final BackupArchiveWriter.EntryStats stats = archive.addFile(inputFile);
@@ -800,7 +814,7 @@ public class FullBackupFormat extends AbstractBackupFormat {
     schemaArchived = false;
 
     encryptFile(backupFile, out -> {
-      final IoThrottler throttler = new IoThrottler(maxMBPerSecond);
+      final IoThrottler throttler = new IoThrottler(maxMBPerSecond, settings.abortCheck);
       final BackupArchiveWriter archive = compressionThreads > 0 ?
           new ParallelZipArchiveWriter(out, compressionLevel, compressionThreads, throttler) :
           new ZipStreamArchiveWriter(out, compressionLevel, throttler);

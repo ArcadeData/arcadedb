@@ -36,6 +36,7 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -266,16 +267,37 @@ public class TextEmbeddingsImporterLSM {
       if (skipEntries > 0)
         parser = parser.skip(skipEntries);
 
+      // A BLANK LINE, THE EMPTY LAST LINE OF A TEXT FILE FIRST OF ALL, IS NO EMBEDDING: IT IS SKIPPED, AND COUNTED AS SKIPPED SO THE
+      // REPORT STILL ADDS UP (issue #12772)
+      parser = parser.filter(line -> {
+        if (!line.isBlank())
+          return true;
+        context.skippedRecords.incrementAndGet();
+        return false;
+      });
+
       final AtomicInteger vectorSize = new AtomicInteger(301);
 
       final List<TextFloatsEmbedding> texts = parser.map(line -> {
         final List<String> tokens = CodeUtils.split(line, ' ', -1, vectorSize.get());
 
-        String word = tokens.getFirst();
+        // THE WORD IS THE FIRST TOKEN WITH CONTENT: A LINE THAT STARTS WITH A SEPARATOR HAS AN EMPTY ONE IN FRONT OF IT. THE LINE
+        // IS NOT BLANK, SO THERE IS ONE
+        int first = 0;
+        while (tokens.get(first).isEmpty())
+          ++first;
+        final String word = tokens.get(first);
 
-        float[] vector = new float[tokens.size() - 1];
-        for (int i = 1; i < tokens.size(); i++)
-          vector[i - 1] = Float.parseFloat(tokens.get(i));
+        float[] vector = new float[tokens.size() - 1 - first];
+        int dimensions = 0;
+        for (int i = first + 1; i < tokens.size(); i++) {
+          final String token = tokens.get(i);
+          // TWO SEPARATORS IN A ROW LEAVE AN EMPTY TOKEN BETWEEN THEM, WHICH IS NO COMPONENT (issue #12772)
+          if (!token.isEmpty())
+            vector[dimensions++] = Float.parseFloat(token);
+        }
+        if (dimensions < vector.length)
+          vector = Arrays.copyOf(vector, dimensions);
 
         vectorSize.set(vector.length);
 

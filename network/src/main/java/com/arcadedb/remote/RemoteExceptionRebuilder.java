@@ -18,6 +18,8 @@
  */
 package com.arcadedb.remote;
 
+import com.arcadedb.database.RID;
+import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.ArithmeticErrorException;
 import com.arcadedb.exception.BrokenChunkChainException;
@@ -53,6 +55,7 @@ import com.arcadedb.exception.QueryAdmissionException;
 import com.arcadedb.exception.QueryHeapBudgetExceededException;
 import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.QueryTerminatedException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.RecordVetoedException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.SerializationException;
@@ -60,6 +63,7 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.exception.TransactionOutcomeUnknownException;
+import com.arcadedb.exception.TypeAlreadyExistsException;
 import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.exception.ImplicitTransactionRequiredException;
 import com.arcadedb.exception.ObjectInUseException;
@@ -68,6 +72,7 @@ import com.arcadedb.exception.UnknownProcedureException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.exception.ValueOutOfRangeException;
 import com.arcadedb.exception.VectorGraphBuildRefusedException;
+import com.arcadedb.exception.VertexNotFoundException;
 import com.arcadedb.exception.WALVersionGapException;
 import com.arcadedb.function.FunctionExecutionException;
 import com.arcadedb.index.IndexException;
@@ -191,7 +196,68 @@ public final class RemoteExceptionRebuilder {
       // THE ROOT ITSELF: A FAILURE THE SERVER RAISED AS A PLAIN ArcadeDBException
       Map.entry(ArcadeDBException.class.getName(), ArcadeDBException::new));
 
+  // THE ONES OF rebuildWithArguments: THEY CARRY MORE THAN A MESSAGE, AND WHAT THEY CARRY IS READ THE SAME WAY BY EVERY READER
+  private static final String      RECORD_NOT_FOUND    = RecordNotFoundException.class.getName();
+  private static final String      VERTEX_NOT_FOUND    = VertexNotFoundException.class.getName();
+  private static final String      ALREADY_EXISTS      = AlreadyExistsException.class.getName();
+  private static final String      TYPE_ALREADY_EXISTS = TypeAlreadyExistsException.class.getName();
+  private static final Set<String> WITH_ARGUMENTS      = Set.of(RECORD_NOT_FOUND, VERTEX_NOT_FOUND, ALREADY_EXISTS,
+      TYPE_ALREADY_EXISTS);
+
   private RemoteExceptionRebuilder() {
+  }
+
+  /**
+   * The exception {@code className} names when it is one whose answer carries more than its message, or null for any other
+   * name (issue #12931). A missing record ({@link RecordNotFoundException}, and the {@link VertexNotFoundException} of a
+   * missing edge endpoint, which keeps its own type) is rebuilt with the RID its message names; a taken schema name
+   * ({@link AlreadyExistsException}) with the kind of object that holds it, which travels in {@code exceptionArgs}. A
+   * {@link TypeAlreadyExistsException} comes back as the {@link AlreadyExistsException} it extends, of kind
+   * {@link AlreadyExistsException.Kind#TYPE} when the server says so: its constructor takes a type name, not a message.
+   * <p>
+   * One reading for the HTTP driver and for a follower rebuilding the answer of the leader it forwarded a write to: each had
+   * its own copy, and the follower's knew neither the missing endpoint nor the type.
+   */
+  public static RuntimeException rebuildWithArguments(final String className, final String exceptionArgs, final String message) {
+    if (className == null)
+      return null;
+    if (className.equals(RECORD_NOT_FOUND))
+      return new RecordNotFoundException(message, ridNamedIn(message));
+    if (className.equals(VERTEX_NOT_FOUND))
+      return new VertexNotFoundException(message, ridNamedIn(message), null);
+    if (className.equals(ALREADY_EXISTS) || className.equals(TYPE_ALREADY_EXISTS))
+      return new AlreadyExistsException(AlreadyExistsException.Kind.fromName(exceptionArgs), message);
+    return null;
+  }
+
+  /**
+   * The class names {@link #rebuildWithArguments} rebuilds: with {@link #names()}, everything a reader of this class gets back
+   * typed. The census tests enumerate both.
+   */
+  public static Set<String> namesWithArguments() {
+    return WITH_ARGUMENTS;
+  }
+
+  /**
+   * The RID a message such as "Record #12:7 not found" names: the first token that starts with '#', up to the next space or the
+   * end of the message. Null when the message is null, names none, or the token is not a RID (issue #4551): the caller still
+   * rebuilds the typed exception, without one. The server writes the RID in the message and nowhere else, so this is the one
+   * place that reads it back.
+   */
+  static RID ridNamedIn(final String message) {
+    if (message == null)
+      return null;
+    final int begin = message.indexOf('#');
+    if (begin < 0)
+      return null;
+    int end = message.indexOf(' ', begin);
+    if (end < 0)
+      end = message.length();
+    try {
+      return new RID(message.substring(begin, end));
+    } catch (final RuntimeException e) {
+      return null;
+    }
   }
 
   /**

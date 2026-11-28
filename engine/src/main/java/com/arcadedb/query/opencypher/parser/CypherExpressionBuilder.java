@@ -937,11 +937,14 @@ class CypherExpressionBuilder {
     final boolean distinct = ctx.DISTINCT() != null;
     final List<Expression> arguments = new ArrayList<>();
 
-    // Function-style pattern predicate: exists((a)-[:R]->(b)) -> pattern existence check.
+    // Function-style pattern predicate: exists((a)-[:R]->(b)) -> pattern existence check. Only when the pattern is the
+    // whole argument of THIS call: one found deeper (exists([(a)-->()]), or the argument of an exists() nested in this
+    // one) belongs to a larger expression, and returning the pattern predicate alone would silently drop that expression
+    // (issue #13466).
     if (!distinct && "exists".equalsIgnoreCase(functionName) && ctx.functionArgument().size() == 1) {
       final Cypher25Parser.ExpressionContext argExpr = ctx.functionArgument(0).expression();
       final Cypher25Parser.PatternExpressionContext patternExpr = ParseTreeSearch.findPatternExpressionRecursive(argExpr);
-      if (patternExpr != null)
+      if (patternExpr != null && BooleanExpressionBuilder.existsFunctionOf(patternExpr) == ctx)
         return parsePatternPredicate(patternExpr);
     }
 
@@ -980,6 +983,8 @@ class CypherExpressionBuilder {
     // Parse each WHEN...THEN alternative
     for (final Cypher25Parser.CaseAlternativeContext altCtx : ctx.caseAlternative()) {
       final Expression whenExpr = parseExpression(altCtx.expression(0)); // First expression is WHEN
+      // A list literal cannot be coerced to a boolean (issue #12975)
+      BooleanOperandValidator.refuseListPredicate(whenExpr);
       final Expression thenExpr = parseExpression(altCtx.expression(1)); // Second expression is THEN
       alternatives.add(new CaseAlternative(whenExpr, thenExpr));
     }
@@ -1398,8 +1403,11 @@ class CypherExpressionBuilder {
 
     // Optional WHERE clause
     Expression whereExpression = null;
-    if (ctx.whereExp != null)
+    if (ctx.whereExp != null) {
       whereExpression = parseExpression(ctx.whereExp);
+      // A list literal cannot be coerced to a boolean (issue #12975)
+      BooleanOperandValidator.refuseListPredicate(whereExpression);
+    }
 
     // Optional mapping expression after |
     Expression mapExpression = null;
@@ -1429,8 +1437,11 @@ class CypherExpressionBuilder {
 
     // Optional WHERE clause
     Expression whereExpression = null;
-    if (ctx.whereExp != null)
+    if (ctx.whereExp != null) {
       whereExpression = parseExpression(ctx.whereExp);
+      // A list literal cannot be coerced to a boolean (issue #12975)
+      BooleanOperandValidator.refuseListPredicate(whereExpression);
+    }
 
     // Required mapping expression after |
     final Expression mapExpression = parseExpression(ctx.barExp);
@@ -1464,8 +1475,11 @@ class CypherExpressionBuilder {
     final Expression listExpression = parseExpression(ctx.inExp);
 
     Expression whereExpression = null;
-    if (ctx.whereExp != null)
+    if (ctx.whereExp != null) {
       whereExpression = parseExpression(ctx.whereExp);
+      // A list literal cannot be coerced to a boolean (issue #12975)
+      BooleanOperandValidator.refuseListPredicate(whereExpression);
+    }
 
     return new ListPredicateExpression(predicateType, variable, listExpression, whereExpression, ctx.getText());
   }
@@ -1515,6 +1529,8 @@ class CypherExpressionBuilder {
 
       final Expression reduceExpression = parseExpression(expressions.get(2));
       final Expression predicateExpression = parseExpression(expressions.get(3));
+      // A list literal cannot be coerced to a boolean (issue #12975)
+      BooleanOperandValidator.refuseListPredicate(predicateExpression);
 
       return new AllReduceExpression(accumulatorVariable, initialValue, iteratorVariable,
           listExpression, reduceExpression, predicateExpression, ctx.getText());

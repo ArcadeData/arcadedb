@@ -215,8 +215,8 @@ class SqlProjectionTest {
       final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(database);
       // null sorts first; reading through to the record would answer "T" for both and compare them equal
-      assertThat(item.compare(projectedNull, plain, context)).isNegative();
-      assertThat(item.compare(plain, plain, context)).isZero();
+      assertThat(item.compareKeys(item.extractKey(projectedNull, context), item.extractKey(plain, context))).isNegative();
+      assertThat(item.compareKeys(item.extractKey(plain, context), item.extractKey(plain, context))).isZero();
 
       // the context variable paths read the attribute the same way: the column first, then the record
       context.setVariable("p", projectedNull);
@@ -234,7 +234,7 @@ class SqlProjectionTest {
       // ORDER BY @TYPE finds the projected @type column, not the record's type: "Other" sorts before "T"
       final OrderByItem upperCase = new OrderByItem();
       upperCase.setRecordAttr("@TYPE");
-      assertThat(upperCase.compare(projectedOther, plain, context)).isNegative();
+      assertThat(upperCase.compareKeys(upperCase.extractKey(projectedOther, context), upperCase.extractKey(plain, context))).isNegative();
       assertThat(context.getVariable("$o.@TYPE")).isEqualTo("Other");
 
       // a key stored under the exact spelling wins over the canonical one, even holding null

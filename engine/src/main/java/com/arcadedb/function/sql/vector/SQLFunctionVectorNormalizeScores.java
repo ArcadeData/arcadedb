@@ -83,12 +83,12 @@ public class SQLFunctionVectorNormalizeScores extends SQLFunctionVectorAbstract 
       return result;
     }
 
-    // Normalize to [0, 1]
+    // Normalize to [0, 1]. In double: max - min of two finite floats can overflow a float (-3e38 .. 3e38), which made every
+    // score but the minimum come out NaN or 0
     final float[] normalized = new float[scores.length];
-    final float range = max - min;
-    for (int i = 0; i < scores.length; i++) {
-      normalized[i] = (scores[i] - min) / range;
-    }
+    final double range = (double) max - min;
+    for (int i = 0; i < scores.length; i++)
+      normalized[i] = (float) (((double) scores[i] - min) / range);
 
     return normalized;
   }

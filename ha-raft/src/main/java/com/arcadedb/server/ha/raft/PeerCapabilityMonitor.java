@@ -113,8 +113,26 @@ final class PeerCapabilityMonitor {
         t.setDaemon(true);
         return t;
       });
-      capabilityMonitorExecutor.scheduleWithFixedDelay(this::refreshPeerCapabilities, 0,
+      capabilityMonitorExecutor.scheduleWithFixedDelay(this::scheduledRound, 0,
           PeerCapabilityRegistry.REFRESH_PERIOD_MS, TimeUnit.MILLISECONDS);
+    }
+  }
+
+  /**
+   * One round of the schedule: the refresh, and then what waits for its answers.
+   * <p>
+   * A security seed the capability gate refused is run again here (issue #13447), because this is the moment the leader
+   * learns that the peer it was refused for advertises its capabilities again. Only on the schedule, not in
+   * {@link #refreshPeerCapabilities} itself: the gate runs that round synchronously, on the seed's own worker and under
+   * the security monitor, which is no place to start another seed from.
+   */
+  private void scheduledRound() {
+    refreshPeerCapabilities();
+    try {
+      ha.rerunOwedSecuritySeedIfDue();
+    } catch (final Exception e) {
+      // Never let the scheduled task die, for the reason refreshPeerCapabilities gives for its own catch
+      LogManager.instance().log(ha, Level.WARNING, "Could not run the owed security seed again: %s", e.getMessage());
     }
   }
 

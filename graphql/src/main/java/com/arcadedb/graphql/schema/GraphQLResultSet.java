@@ -35,10 +35,14 @@ import com.arcadedb.graphql.parser.FieldDefinition;
 import com.arcadedb.graphql.parser.ObjectTypeDefinition;
 import com.arcadedb.graphql.parser.Selection;
 import com.arcadedb.graphql.parser.SelectionSet;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.ExecutionPlan;
+import com.arcadedb.query.sql.executor.HeapEstimator;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.TimeSeriesType;
 
@@ -64,6 +68,15 @@ public class GraphQLResultSet implements ResultSet {
    * reserved for introspection, so it is never read from a record property of the same name. See issue #8745.
    */
   private static final String TYPENAME_FIELD = "__typename";
+
+  /**
+   * The heap charged for one object of the answer beside the entries it holds: the result, its map and the slot that holds it in
+   * the list or the map above it. Each entry is charged {@link HeapEstimator#HASH_ENTRY_BYTES}.
+   */
+  private static final int OBJECT_HEAP_BYTES = HeapEstimator.RESULT_BYTES + HeapEstimator.OBJECT_BYTES + HeapEstimator.REFERENCE_BYTES;
+
+  /** The entries every object of the answer holds beside its fields: {@code @rid}, {@code @type} and {@code @cat}. */
+  private static final int METADATA_ENTRIES = 3;
 
   private final GraphQLSchema        schema;
   private final GraphQLTypeRegistry  registry;
@@ -174,6 +187,26 @@ public class GraphQLResultSet implements ResultSet {
   private final List<ObjectTypeDefinition> expansionPath = new ArrayList<>(4);
 
   /**
+   * What stops the work of this query when it is terminated or reaches the command timeout. The size of a document says little of
+   * the work it asks for, which is the product of the aliases and fragment spreads written at each level, so the validation of the
+   * document and the building of every object of the answer check it as they go.
+   */
+  private final WorkGuard guard;
+
+  /**
+   * The objects of the answer, counted for the row being built against the cap of elements, and charged by their estimated bytes to
+   * the heap budget of the JVM until this result set is closed: the rows read so far are held by whoever reads them, a response
+   * buffer for one. Neither the nesting depth of the document nor the length of a chain of fragments bounds the size of a row.
+   */
+  private final OperationHeapLimit heap;
+
+  /** The objects built for the row being resolved by {@link #next()}. */
+  private long rowObjects;
+
+  /** The units of work done so far, which {@link #guard} reads to check periodically. */
+  private int steps;
+
+  /**
    * @param name        output key: the alias when present, otherwise the field name
    * @param fieldName   real field/property name to resolve, ignoring any alias
    * @param field       the field as written in the query document, carrying any inline directive
@@ -208,10 +241,16 @@ public class GraphQLResultSet implements ResultSet {
     this.variables = variables;
     this.fragments = fragments;
 
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(schema.getDatabase());
+    this.guard = WorkGuard.forCommandDeadline(context);
+    this.heap = OperationHeapLimit.of(context, "objects", "GraphQL result");
+
     // VALIDATED BEFORE ANY RECORD IS READ, SO A DOCUMENT THE SPECIFICATION REJECTS IS REJECTED ALSO WHEN NO RECORD MATCHES
     if (projections != null)
       try {
-        checkScalarLeafs(projections, returnType);
+        guard.check();
+        checkScalarLeafs(projections, returnType, new IdentityHashMap<>());
       } catch (final RuntimeException e) {
         // the caller never receives this wrapper, so nobody else would close the result set it wraps
         resultSet.close();
@@ -225,10 +264,25 @@ public class GraphQLResultSet implements ResultSet {
    * far as the SDL describes it: a field the SDL does not declare, or one of a type it does not declare, is checked against the
    * value it resolves to instead (see {@link #resolveSelection}). A fragment is followed when its type condition is the type the
    * level is written against, or names no type the SDL declares, since that is all the SDL alone can decide.
+   * <p>
+   * What is decided for a selection list depends only on the list and on the type it is written against, and a fragment is one list
+   * for every place that spreads it: each pair is walked once, however many paths of the document reach it, so the walk is
+   * proportional to the size of the document and not to the number of paths through its fragments.
+   *
+   * @param checked the types each selection list has been walked against, by identity of the list
    */
-  private void checkScalarLeafs(final List<Selection> selections, final ObjectTypeDefinition parentType) {
+  private void checkScalarLeafs(final List<Selection> selections, final ObjectTypeDefinition parentType,
+      final IdentityHashMap<List<Selection>, List<ObjectTypeDefinition>> checked) {
     if (parentType == null)
       return;
+
+    final List<ObjectTypeDefinition> types = checked.computeIfAbsent(selections, k -> new ArrayList<>(1));
+    for (int i = 0; i < types.size(); i++)
+      if (types.get(i) == parentType)
+        return;
+    types.add(parentType);
+    guard.checkPeriodically(++steps);
+
     for (final Selection selection : fragments.expand(selections,
         typeCondition -> typeCondition.equals(parentType.getName()) || !registry.isObjectType(typeCondition))) {
       final SelectionSet set = selection.getSelectionSet();
@@ -240,7 +294,7 @@ public class GraphQLResultSet implements ResultSet {
       final String namedType = namedTypeOf(schemaField.getType());
       if (namedType != null && GraphQLSchema.isBuiltInScalar(namedType))
         throw scalarWithSelection(selection.getName(), "it is declared as " + namedType);
-      checkScalarLeafs(set.getSelections(), registry.getTypeFromField(schemaField));
+      checkScalarLeafs(set.getSelections(), registry.getTypeFromField(schemaField), checked);
     }
   }
 
@@ -266,9 +320,28 @@ public class GraphQLResultSet implements ResultSet {
 
   @Override
   public Result next() {
-    return projections != null ?
-        mapBySelections(resultSet.next(), projections, returnType, true) :
-        mapByReturnType(resultSet.next(), returnType);
+    guard.check();
+    rowObjects = 0L;
+    try {
+      return projections != null ?
+          mapBySelections(resultSet.next(), projections, returnType, true) :
+          mapByReturnType(resultSet.next(), returnType);
+    } catch (final RuntimeException e) {
+      // A ROW THAT FAILS ENDS THE ANSWER: WHAT THE ROWS BEFORE IT TOOK GOES BACK TO THE BUDGET WITHOUT WAITING FOR THE CLOSE
+      heap.release();
+      throw e;
+    }
+  }
+
+  /**
+   * Counts one more object of the answer, built from {@code fields} fields, against the cap of elements for the row and against the
+   * heap budget, and checks that the query may go on. Called before the object is built, so a row that passes a limit stops at the
+   * object that passes it, whatever the document asks for beyond.
+   */
+  private void chargeObject(final int fields) {
+    guard.checkPeriodically(++steps);
+    heap.check(++rowObjects);
+    heap.charge(OBJECT_HEAP_BYTES + (long) (fields + METADATA_ENTRIES) * HeapEstimator.HASH_ENTRY_BYTES);
   }
 
   private GraphQLResult mapByReturnType(final Result current, final ObjectTypeDefinition type) {
@@ -450,7 +523,11 @@ public class GraphQLResultSet implements ResultSet {
 
   @Override
   public void close() {
-    resultSet.close();
+    try {
+      resultSet.close();
+    } finally {
+      heap.release();
+    }
   }
 
   @Override
@@ -564,6 +641,10 @@ public class GraphQLResultSet implements ResultSet {
    */
   private GraphQLResult mapProjections(final Result current, final List<Projection> projections,
       final ObjectTypeDefinition parentType) {
+    // EVERY OBJECT OF THE ANSWER IS BUILT HERE, WHETHER IT IS SELECTED BY THE DOCUMENT OR EXPANDED FROM THE SCHEMA, AND WHETHER IT IS
+    // THE VALUE OF A FIELD OR ONE OF THE ELEMENTS OF A LIST
+    chargeObject(projections.size());
+
     final Map<String, Object> map = new HashMap<>();
     Map<String, String> aliases = null;
 

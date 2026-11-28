@@ -98,33 +98,42 @@ final class BoltQueryStream {
   }
 
   /**
-   * Releases the engine resources behind this stream. Never throws: it runs on the teardown paths (PULL
-   * completion, DISCARD, RESET, ROLLBACK, LOGOFF, connection close) where a failure to close one stream must
-   * not stop the others from being released.
+   * Releases the engine resources behind this stream. Never throws for a failure to close the result set: it runs on the
+   * teardown paths (PULL completion, DISCARD, RESET, ROLLBACK, LOGOFF, connection close) where a failure to close one stream
+   * must not stop the others from being released. The slot and the entry of the statement go back whatever the result set did
+   * when it was closed, an {@link Error} included, and closing a stream twice is harmless.
    */
   void close(final Object requester, final String phase) {
-    if (resultSet != null) {
-      try {
-        resultSet.close();
-      } catch (final Exception e) {
-        LogManager.instance().log(requester, Level.WARNING, "Failed to close ResultSet during " + phase, e);
-      }
-      resultSet = null;
-    }
+    final ResultSet toClose = resultSet;
+    final QueryAdmissionGate.Ticket slot = admission;
+    final RunningQuery entry = runningQuery;
+    resultSet = null;
     fields = null;
     firstResult = null;
     syntheticResults = null;
     planMetadata = null;
     planMetadataKey = null;
-    if (admission != null) {
-      // AFTER THE RESULT SET: THE NEXT QUERY STARTS ONCE THIS ONE HAS GIVEN BACK THE HEAP ITS BUFFERS RESERVED
-      admission.close();
-      admission = null;
-    }
-    if (runningQuery != null) {
-      // LAST: THE ENTRY LEAVING THE LIST IS THE PROOF THE WORK IS OVER (issue #9689)
-      runningQuery.close();
-      runningQuery = null;
+    admission = null;
+    runningQuery = null;
+
+    try {
+      if (toClose != null) {
+        try {
+          toClose.close();
+        } catch (final Exception e) {
+          LogManager.instance().log(requester, Level.WARNING, "Failed to close ResultSet during " + phase, e);
+        }
+      }
+    } finally {
+      try {
+        // AFTER THE RESULT SET: THE NEXT QUERY STARTS ONCE THIS ONE HAS GIVEN BACK THE HEAP ITS BUFFERS RESERVED
+        if (slot != null)
+          slot.close();
+      } finally {
+        // LAST: THE ENTRY LEAVING THE LIST IS THE PROOF THE WORK IS OVER (issue #9689)
+        if (entry != null)
+          entry.close();
+      }
     }
   }
 

@@ -23,6 +23,8 @@ import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.index.Index;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Property;
+import com.arcadedb.schema.Type;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -169,6 +171,35 @@ public final class SecurityHelper {
    */
   public static boolean isReadable(final Database database, final DocumentType type) {
     return canAccessType(currentUser(database), type, SecurityDatabaseUser.ACCESS.READ_RECORD);
+  }
+
+  /**
+   * The type {@code property} is declared of ({@link Property#getOfType()}) as a listing may show it to the user bound to
+   * {@code database}'s current context: the declaration itself when it names a scalar type, no type or a type the user may read,
+   * {@code null} when it names a type the user may not read. The declared type is a reference to another type, so a route that
+   * PRESENTS a property leaves it out for a user who may not read that type, as it leaves out the type itself and its parents
+   * ({@link #readableTypes(Database)}).
+   */
+  public static String readableOfType(final Database database, final Property property) {
+    return property.getOfType() == null ? null : readableOfType(database, currentUser(database), property);
+  }
+
+  /**
+   * Same as {@link #readableOfType(Database, Property)} for a route that holds the user it answers: the user is resolved once
+   * by a listing that then asks for each property it walks. A {@code null} user sees every declaration.
+   */
+  public static String readableOfType(final Database database, final SecurityDatabaseUser user, final Property property) {
+    final String ofType = property.getOfType();
+    if (ofType == null || user == null)
+      return ofType;
+
+    // the scalar wins for a collection, as it does when the declaration is set: LIST OF STRING names no schema type
+    final Type propertyType = property.getType();
+    if ((propertyType == Type.LIST || propertyType == Type.MAP) && Type.getTypeByName(ofType) != null)
+      return ofType;
+
+    final DocumentType declared = database.getSchema().getTypeOrNull(ofType);
+    return declared == null || canAccessType(user, declared, SecurityDatabaseUser.ACCESS.READ_RECORD) ? ofType : null;
   }
 
   /**

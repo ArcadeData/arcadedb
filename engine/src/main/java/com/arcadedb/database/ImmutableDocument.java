@@ -523,6 +523,25 @@ public class ImmutableDocument extends BaseDocument {
     return result;
   }
 
+  /**
+   * {@link #toMap(boolean) toMap(false)}, telling the caller whether it lost anything: the first part of the content that did not
+   * decode is described in {@code damage[0]}, which stays null when the whole record decoded. A consumer that needs the names of the
+   * record as well (a row serializer: a property that does not decode is still a column, with a null value) learns from it that
+   * the values it was handed are every property the record holds, and skips the second pass over the header that listing the names
+   * costs (issue #12979).
+   * <p>
+   * It reads the stored content directly, which a subclass may not answer its map and its names from (a remote record holds the map
+   * the server sent, and no content), so {@code ResultInternal.propertiesOf} reads a record through this method only when its class
+   * is one of the engine's own record classes or declares this method itself, matching its own {@code toMap(false)}.
+   *
+   * @return a NEW, mutable map the caller owns
+   */
+  public Map<String, Object> toMapReportingDamage(final String[] damage) {
+    checkForLazyLoading();
+    final Binary content = requireBuffer("convert to a map");
+    return database.getSerializer().deserializePropertiesReportingDamage(database, content, new EmbeddedModifierObject(this), rid, damage);
+  }
+
   @Override
   public String toString() {
     final StringBuilder output = new StringBuilder(256);

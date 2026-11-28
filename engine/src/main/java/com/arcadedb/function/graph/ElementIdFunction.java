@@ -23,6 +23,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.graph.LightEdgeRID;
 import com.arcadedb.graph.VirtualElement;
+import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
@@ -58,6 +59,9 @@ public class ElementIdFunction implements StatelessFunction {
       return virtual.getVirtualElementId();
     if (args[0] instanceof Identifiable identifiable)
       return of(identifiable.getIdentity());
+    // A node or relationship the statement deleted keeps the element id it had, as in Neo4j (issue #13582)
+    if (args[0] instanceof DeletedEntityMarker deleted && deleted.getIdentity() != null)
+      return of(deleted.getIdentity());
     return null;
   }
 

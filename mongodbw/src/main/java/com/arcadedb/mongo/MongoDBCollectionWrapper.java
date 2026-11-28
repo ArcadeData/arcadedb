@@ -28,6 +28,7 @@ import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.Identifier;
@@ -156,9 +157,14 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
     return MongoCollection.super.queryAll();
   }
 
+  /**
+   * Every document of the collection, read and converted as the stream is consumed: an aggregation over a big collection holds the
+   * documents its stages keep, not the whole collection. The stream releases the cursor when its last document is taken or when it is
+   * closed, so a caller that stops early closes it.
+   */
   @Override
   public Stream<Document> queryAllAsStream() {
-    return MongoCollection.super.queryAllAsStream();
+    return openCursor(new QueryParameters(new Document(), 0, 0), null).stream();
   }
 
   @Override
@@ -178,12 +184,22 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
 
   @Override
   public QueryResult handleQuery(final QueryParameters queryParameters) {
-    // an OP_QUERY answers every document in the one reply: the cursor is drained, and closed with the last row
+    // an OP_QUERY answers every document in the one reply: the cursor is drained, and closed with the last row. The documents the
+    // answer keeps are counted against the heap limits while it is built
+    final OperationHeapLimit heap = MongoResultHeap.of(database, "MongoDB query result");
     final MongoFindCursor cursor = openCursor(queryParameters, null);
     try {
-      final List<Document> documents = cursor.takeBatch(Integer.MAX_VALUE, Long.MAX_VALUE);
+      final List<Document> documents = new ArrayList<>();
+      final Iterator<Document> rows = cursor.documents();
+      while (rows.hasNext()) {
+        final Document document = rows.next();
+        documents.add(document);
+        MongoResultHeap.add(heap, documents.size(), document);
+      }
       return new QueryResult(documents);
     } finally {
+      // the list is the answer by now: the limits count what a query buffers, not a reply on its way out
+      heap.release();
       cursor.close();
     }
   }
@@ -721,12 +737,21 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
     }
   }
 
-  /** The cursor over the rows in the order of a sort, which is known only once every row is read. */
-  private static MongoFindCursor sorted(final MongoSortOrder sortOrder, final int numberToSkip, final int numberToReturn,
-      final Iterator<?> rows, final MongoProjection projection) {
+  /**
+   * The cursor over the rows in the order of a sort, which is known only once every row is read. The rows it holds are counted
+   * against the heap limits for as long as the cursor is open: closing the cursor gives them back.
+   */
+  private MongoFindCursor sorted(final MongoSortOrder sortOrder, final int numberToSkip, final int numberToReturn, final Iterator<?> rows,
+      final MongoProjection projection) {
+    final OperationHeapLimit heap = MongoResultHeap.of(database, "MongoDB sort");
     final List<Object> result = new ArrayList<>();
-    fillSorted(sortOrder, numberToSkip, numberToReturn, result, rows);
-    return new MongoFindCursor(result.iterator(), null, 0L, 0L, projection);
+    try {
+      fillSorted(sortOrder, numberToSkip, numberToReturn, result, rows, heap);
+    } catch (final RuntimeException | Error e) {
+      heap.release();
+      throw e;
+    }
+    return new MongoFindCursor(result.iterator(), heap::release, 0L, 0L, projection);
   }
 
   /**
@@ -736,19 +761,29 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
    * others are placed by the few properties the sort reads, and the ones answered are converted as the cursor serves them.
    *
    * @param result receives the rows, or the converted documents when every match was converted to be placed
+   * @param heap   what every row or document the sort holds is charged to: the sort fails when it holds more than the limits allow
    */
   private static void fillSorted(final MongoSortOrder sortOrder, final int numberToSkip, final int numberToReturn, final List<Object> result,
-      final Iterator<?> rows) {
+      final Iterator<?> rows, final OperationHeapLimit heap) {
     final int skip = Math.max(numberToSkip, 0);
     if (numberToReturn > 0) {
-      final MongoSortOrder.TopEntries<Object> top = new MongoSortOrder.TopEntries<>(sortOrder, (int) Math.min(Integer.MAX_VALUE,
-          (long) skip + numberToReturn));
+      final int kept = (int) Math.min(Integer.MAX_VALUE, (long) skip + numberToReturn);
+      final MongoSortOrder.TopEntries<Object> top = new MongoSortOrder.TopEntries<>(sortOrder, kept);
+      // every row is estimated: a row that leaves gives back what it was charged, whatever its size
+      heap.estimateEachElement();
       long position = 0;
+      long held = 0;
       while (rows.hasNext()) {
         final Object row = rows.next();
         final Object[] keys = sortOrder.keyOf(MongoDBToSqlTranslator.toMatchDocument(propertiesOf(row), sortOrder.properties()));
-        if (top.accepts(keys))
-          top.offer(new MongoSortOrder.Entry<>(keys, position, row));
+        if (top.accepts(keys)) {
+          final MongoSortOrder.Entry<Object> evicted = top.offer(new MongoSortOrder.Entry<>(keys, position, row));
+          if (evicted == null)
+            heap.add(++held, row);
+          else if (evicted.value != row)
+            // the buffer keeps what it held, with a better row in the place of the worst: the charge follows the rows it retains
+            heap.replace(evicted.value, row);
+        }
         ++position;
       }
       final List<MongoSortOrder.Entry<Object>> sorted = top.sorted();
@@ -756,11 +791,13 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
         result.add(sorted.get(i).value);
     } else {
       // every match is answered: each is converted once, and its keys read off the reply document. Known cost: without a limit
-      // every match is held before the sort (mongod would spill to disk past 100MB), as the SQL ORDER BY this replaces held them
+      // every match is held before the sort (mongod would spill to disk past 100MB), as the SQL ORDER BY this replaces held them,
+      // under the same limits
       final List<MongoSortOrder.Entry<Document>> entries = new ArrayList<>();
       while (rows.hasNext()) {
         final Document document = MongoFindCursor.toDocument(rows.next());
         entries.add(new MongoSortOrder.Entry<>(sortOrder.keyOf(document), 0, document));
+        MongoResultHeap.add(heap, entries.size(), document);
       }
       sortOrder.sort(entries);
       for (int i = skip; i < entries.size(); i++)

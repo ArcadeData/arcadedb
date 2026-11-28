@@ -405,7 +405,7 @@ public class TraversalPath {
 
   /**
    * Returns an unmodifiable list of the vertices in this path, with any deleted vertices replaced
-   * by {@link DeletedEntityMarker#INSTANCE}.
+   * by a {@link DeletedEntityMarker} preserving the identity.
    * <p>
    * Without a {@link #withDeletions deletion check} this is an unmodifiable view over the internal vertices, no list is
    * allocated. With one, a new unmodifiable list is allocated per call.
@@ -417,13 +417,13 @@ public class TraversalPath {
       return Collections.unmodifiableList(vertices);
     final List<Object> result = new ArrayList<>(vertices.size());
     for (final Vertex vertex : vertices)
-      result.add(deletions.isDeleted(vertex) ? DeletedEntityMarker.INSTANCE : vertex);
+      result.add(deletions.isDeleted(vertex) ? DeletedEntityMarker.of(vertex) : vertex);
     return Collections.unmodifiableList(result);
   }
 
   /**
    * Returns an unmodifiable list of the edges in this path, with any deleted edges replaced
-   * by a {@link DeletedEntityMarker} preserving the relationship type.
+   * by a {@link DeletedEntityMarker} preserving the identity and the relationship type.
    * <p>
    * Without a {@link #withDeletions deletion check} this is an unmodifiable view over the internal edges, no list is
    * allocated. With one, a new unmodifiable list is allocated per call.
@@ -435,7 +435,7 @@ public class TraversalPath {
       return Collections.unmodifiableList(edges);
     final List<Object> result = new ArrayList<>(edges.size());
     for (final Edge edge : edges)
-      result.add(deletions.isDeleted(edge) ? new DeletedEntityMarker(edge.getTypeName()) : edge);
+      result.add(deletions.isDeleted(edge) ? DeletedEntityMarker.of(edge) : edge);
     return Collections.unmodifiableList(result);
   }
 
@@ -477,10 +477,10 @@ public class TraversalPath {
     final List<Object> list = new ArrayList<>(vertices.size() + edges.size());
     for (int i = 0; i < vertices.size(); i++) {
       final Vertex vertex = vertices.get(i);
-      list.add(deletions != null && deletions.isDeleted(vertex) ? DeletedEntityMarker.INSTANCE : vertex);
+      list.add(deletions != null && deletions.isDeleted(vertex) ? DeletedEntityMarker.of(vertex) : vertex);
       if (i < edges.size()) {
         final Edge edge = edges.get(i);
-        list.add(deletions != null && deletions.isDeleted(edge) ? new DeletedEntityMarker(edge.getTypeName()) : edge);
+        list.add(deletions != null && deletions.isDeleted(edge) ? DeletedEntityMarker.of(edge) : edge);
       }
     }
     return list;

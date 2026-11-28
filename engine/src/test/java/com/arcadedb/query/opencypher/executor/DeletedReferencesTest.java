@@ -118,7 +118,10 @@ class DeletedReferencesTest extends TestHelper {
     references().mark(row);
 
     assertThat((Object) row.getProperty("a")).isSameAs(alive);
-    assertThat((Object) row.getProperty("b")).isSameAs(DeletedEntityMarker.INSTANCE);
+    assertThat((Object) row.getProperty("b")).isEqualTo(DeletedEntityMarker.of(doomed));
+    // the marker keeps the identity the node had, which id() and elementId() answer (issue #13582)
+    assertThat(row.<DeletedEntityMarker>getProperty("b").getIdentity()).isEqualTo(doomed.getIdentity());
+    assertThat(row.<DeletedEntityMarker>getProperty("b").getRelationshipType()).isNull();
   }
 
   @Test
@@ -133,6 +136,7 @@ class DeletedReferencesTest extends TestHelper {
     final Object inList = row.<List<Object>>getProperty("rs").get(0);
     assertThat(inList).isInstanceOf(DeletedEntityMarker.class);
     assertThat(((DeletedEntityMarker) inList).getRelationshipType()).isEqualTo("E");
+    assertThat(((DeletedEntityMarker) inList).getIdentity()).isEqualTo(relationship.getIdentity());
   }
 
   @Test
@@ -146,12 +150,12 @@ class DeletedReferencesTest extends TestHelper {
     final List<Object> read = row.getProperty("list");
     assertThat(read).hasSize(3);
     assertThat(read.get(0)).isSameAs(alive);
-    assertThat(read.get(1)).isSameAs(DeletedEntityMarker.INSTANCE);
+    assertThat(read.get(1)).isEqualTo(DeletedEntityMarker.of(doomed));
     assertThat(read.get(2)).isEqualTo("text");
     // every way of reading the list answers the same
-    assertThat(new ArrayList<>(read)).containsExactly(alive, DeletedEntityMarker.INSTANCE, "text");
-    assertThat(read.toArray()).containsExactly(alive, DeletedEntityMarker.INSTANCE, "text");
-    assertThat(read.contains(DeletedEntityMarker.INSTANCE)).isTrue();
+    assertThat(new ArrayList<>(read)).containsExactly(alive, DeletedEntityMarker.of(doomed), "text");
+    assertThat(read.toArray()).containsExactly(alive, DeletedEntityMarker.of(doomed), "text");
+    assertThat(read.contains(DeletedEntityMarker.of(doomed))).isTrue();
     assertThat(read.indexOf("text")).isEqualTo(2);
     // and the list the row came with is untouched
     assertThat(list.get(1)).isSameAs(doomed);
@@ -167,7 +171,7 @@ class DeletedReferencesTest extends TestHelper {
 
     deleted.add(doomed.getIdentity());
 
-    assertThat(read.get(1)).isSameAs(DeletedEntityMarker.INSTANCE);
+    assertThat(read.get(1)).isEqualTo(DeletedEntityMarker.of(doomed));
   }
 
   @Test
@@ -183,10 +187,10 @@ class DeletedReferencesTest extends TestHelper {
     final Map<String, Object> read = row.getProperty("map");
     assertThat(read).hasSize(2);
     assertThat(read.get("survivor")).isSameAs(alive);
-    assertThat(read.get("dead")).isSameAs(DeletedEntityMarker.INSTANCE);
+    assertThat(read.get("dead")).isEqualTo(DeletedEntityMarker.of(doomed));
     assertThat(read.containsKey("dead")).isTrue();
     assertThat(read.keySet()).containsExactly("survivor", "dead");
-    assertThat(read.values()).containsExactly(alive, DeletedEntityMarker.INSTANCE);
+    assertThat(read.values()).containsExactly(alive, DeletedEntityMarker.of(doomed));
     assertThat(read.entrySet()).hasSize(2);
   }
 
@@ -207,10 +211,10 @@ class DeletedReferencesTest extends TestHelper {
     @SuppressWarnings("unchecked")
     final List<Object> readItems = (List<Object>) readInner.get("items");
     assertThat(readItems.get(0)).isSameAs(alive);
-    assertThat(readItems.get(1)).isSameAs(DeletedEntityMarker.INSTANCE);
+    assertThat(readItems.get(1)).isEqualTo(DeletedEntityMarker.of(doomed));
 
     final TraversalPath readPath = row.getProperty("path");
-    assertThat(readPath.getNodesOrDeleted()).containsExactly(alive, DeletedEntityMarker.INSTANCE);
+    assertThat(readPath.getNodesOrDeleted()).containsExactly(alive, DeletedEntityMarker.of(doomed));
     assertThat(readPath.getRelationshipsOrDeleted()).containsExactly(relationship);
   }
 
@@ -279,8 +283,8 @@ class DeletedReferencesTest extends TestHelper {
     deleted.add(doomed.getIdentity());
 
     final List<Object> read = row.getProperty("list");
-    assertThat(read.get(0)).isSameAs(DeletedEntityMarker.INSTANCE);
-    assertThat(read.get(1)).isSameAs(DeletedEntityMarker.INSTANCE);
+    assertThat(read.get(0)).isEqualTo(DeletedEntityMarker.of(alive));
+    assertThat(read.get(1)).isEqualTo(DeletedEntityMarker.of(doomed));
   }
 
   @Test

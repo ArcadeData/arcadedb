@@ -30,8 +30,6 @@ import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.time.DateTimeException;
-import java.time.LocalDate;
-import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
@@ -99,16 +97,14 @@ public class DateTimeConstructorFunction implements StatelessFunction {
         throw new CommandSemanticException("datetime() " + e.getMessage());
       }
     }
-    if (args[0] instanceof CypherDateTime)
-      return args[0];
-    if (args[0] instanceof CypherLocalDateTime)
-      return new CypherDateTime(((CypherLocalDateTime) args[0]).getValue().atZone(ZoneOffset.UTC));
-    if (args[0] instanceof CypherDate)
-      return new CypherDateTime(((CypherDate) args[0]).getValue().atStartOfDay(ZoneOffset.UTC));
-    if (args[0] instanceof LocalDateTime)
-      return new CypherDateTime(((LocalDateTime) args[0]).atZone(ZoneOffset.UTC));
-    if (args[0] instanceof LocalDate)
-      return new CypherDateTime(((LocalDate) args[0]).atStartOfDay(ZoneOffset.UTC));
+    // A native temporal (a parameter a driver sent, a value read off a map or a list) is the Cypher temporal its literal is (issue #13569)
+    final Object temporal = TemporalUtil.fromCoreJavaType(args[0]);
+    if (temporal instanceof CypherDateTime)
+      return temporal;
+    if (temporal instanceof CypherLocalDateTime)
+      return new CypherDateTime(((CypherLocalDateTime) temporal).getValue().atZone(ZoneOffset.UTC));
+    if (temporal instanceof CypherDate)
+      return new CypherDateTime(((CypherDate) temporal).getValue().atStartOfDay(ZoneOffset.UTC));
     // Not a String, Map, or any recognized temporal type: determined entirely by the supplied argument, so it is
     // a client error (HTTP 400) rather than a CommandExecutionException (HTTP 500). See issue #5910.
     throw new CommandSemanticException("datetime() expects a string, map, or temporal argument");

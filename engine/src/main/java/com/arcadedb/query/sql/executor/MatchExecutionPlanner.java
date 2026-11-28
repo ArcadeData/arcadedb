@@ -30,6 +30,7 @@ import com.arcadedb.query.sql.parser.AndBlock;
 import com.arcadedb.query.sql.parser.BaseExpression;
 import com.arcadedb.query.sql.parser.BooleanExpression;
 import com.arcadedb.query.sql.parser.Bucket;
+import com.arcadedb.query.sql.parser.BucketList;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.FieldMatchPathItem;
 import com.arcadedb.query.sql.parser.FromClause;
@@ -57,6 +58,7 @@ import com.arcadedb.query.sql.parser.Unwind;
 import com.arcadedb.query.sql.parser.WhereClause;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.Pair;
 
 import java.util.*;
@@ -92,6 +94,8 @@ public class MatchExecutionPlanner {
   private Pattern                  pattern;
   private List<Pattern>            subPatterns;
   private Map<String, WhereClause> aliasFilters;
+  // aliasFilters WITHOUT THE where: OF THE OCCURRENCES THAT READ $depth: WHAT A NODE IS FILTERED BY WHERE NO WALK GAVE $depth A VALUE
+  private Map<String, WhereClause> aliasDepthFreeFilters;
   private Map<String, String>      aliasTypes;
   private Map<String, String>      aliasBuckets;
   private Map<String, Rid>         aliasRids;
@@ -376,7 +380,12 @@ public class MatchExecutionPlanner {
           edge.setLeftCluster(aliasBuckets.get(edge.edge.out.alias));
           edge.setLeftRid(aliasRids.get(edge.edge.out.alias));
           edge.setLeftClass(aliasTypes.get(edge.edge.out.alias));
-          edge.setLeftFilter(aliasFilters.get(edge.edge.out.alias));
+          edge.setLeftFilter(aliasDepthFreeFilters.get(edge.edge.out.alias));
+        }
+        if (edge.edge.in.alias != null) {
+          edge.setRightClass(aliasTypes.get(edge.edge.in.alias));
+          edge.setRightCluster(aliasBuckets.get(edge.edge.in.alias));
+          edge.setRightRid(aliasRids.get(edge.edge.in.alias));
         }
       }
 
@@ -589,7 +598,16 @@ public class MatchExecutionPlanner {
     // Add all the remaining aliases after all the suggested start points.
     remainingStarts.addAll(pattern.aliasToNode.keySet());
 
-    final Set<String> rootCandidates = estimatedRootEntries.keySet();
+    // A NODE WITH NO rid:, type: OR bucket: HAS NO ESTIMATE, BUT IT CAN START A PATTERN TOO, FROM EVERY VERTEX (ISSUE #12743): LEFT
+    // OUT, AN EDGE WALKED ONLY FORWARD WOULD NOT WAIT FOR SUCH A SOURCE AND WOULD BE WALKED BACKWARDS FROM ITS TARGET. NOT ONE
+    // WHOSE where: READS ANOTHER ALIAS OF THIS PATTERN THROUGH $matched: IT STARTS NOTHING BEFORE THAT ALIAS IS BOUND, SO AN EDGE
+    // THAT WAITED FOR IT WOULD BE LEFT TO A ROOT SCAN THAT REJECTS EVERY CANDIDATE, WHERE THE WALK FROM THE TARGET ANSWERS THE
+    // MATCH. AN ALIAS BOUND BY ANOTHER SUB-PATTERN IS NOT IN THE DEPENDENCIES: THE OUTER TUPLE SUPPLIES IT
+    final Set<String> rootCandidates = new HashSet<>(estimatedRootEntries.keySet());
+    for (final String alias : pattern.aliasToNode.keySet())
+      if (aliasRids.get(alias) == null && aliasTypes.get(alias) == null && aliasBuckets.get(alias) == null
+          && remainingDependencies.get(alias).isEmpty())
+        rootCandidates.add(alias);
     while (resultingSchedule.size() < pattern.numOfEdges) {
       // Start a new depth-first pass, adding all nodes with satisfied dependencies.
       // 1. Find a starting vertex for the depth-first pass. A node that an edge walked only forward leads to waits for that
@@ -629,7 +647,26 @@ public class MatchExecutionPlanner {
 
       // 2. Having found a starting vertex, traverse its neighbors depth-first,
       //    adding any non-visited ones with satisfied dependencies to our schedule.
+      final int scheduledBefore = resultingSchedule.size();
+      // The dependency sets the start satisfies, to undo an empty pass: allocated only when an alias reads it through $matched
+      List<Set<String>> satisfiedByStart = null;
+      for (final Set<String> dependencies : remainingDependencies.values())
+        if (dependencies.contains(startingNode.alias)) {
+          if (satisfiedByStart == null)
+            satisfiedByStart = new ArrayList<>(2);
+          satisfiedByStart.add(dependencies);
+        }
       updateScheduleStartingAt(startingNode, visitedNodes, visitedEdges, remainingDependencies, resultingSchedule, rootCandidates);
+      if (resultingSchedule.size() == scheduledBefore) {
+        // A pass that schedules no edge binds nothing (only the first scheduled edge gets a root step): left visited, the node
+        // would have a later edge walked from it unbound (issue #12943). The pass never recursed, so this undoes all it changed.
+        // The node is NOT put back among the starts: started after another pass, it would bind nothing either, and a node no edge
+        // reaches later is refused below rather than walked from unbound
+        visitedNodes.remove(startingNode);
+        if (satisfiedByStart != null)
+          for (final Set<String> dependencies : satisfiedByStart)
+            dependencies.add(startingNode.alias);
+      }
     }
 
     if (resultingSchedule.size() != pattern.numOfEdges) {
@@ -873,6 +910,28 @@ public class MatchExecutionPlanner {
   private static boolean readsDepth(final Object root) {
     // ANY USE OF $depth COUNTS HERE, ALSO ONE FOLLOWED BY A MODIFIER ($depth.asInteger())
     return root != null && !SqlAstInspector.allNodesMatch(root, node -> !isDepthIdentifier(node));
+  }
+
+  /**
+   * The merged {@code where:} of an alias without the conditions that read {@code $depth}. Such a condition belongs to the variable-depth hop
+   * the alias is the target of, where the walk gives {@code $depth} a value; the filter the other hops apply to the node they arrive at (the
+   * left filter of a backwards walk) has no depth, so the condition would read {@code null} and drop every candidate (issue #12960). Each
+   * occurrence of the alias is one conjunct of the merged filter, see {@link #addAliases}, so the where: of an occurrence that reads
+   * {@code $depth} is left out whole, as {@link #rebindFilters} leaves it out of the other occurrences: its other conditions are applied by
+   * the hop it is written on. Answers {@code merged} itself when nothing reads {@code $depth}, {@code null} when nothing is left.
+   */
+  private static WhereClause withoutDepthConditions(final WhereClause merged) {
+    if (merged == null || !readsDepth(merged) || !(merged.getBaseExpression() instanceof AndBlock block))
+      return merged;
+    final AndBlock kept = new AndBlock();
+    for (final BooleanExpression conjunct : block.getSubBlocks())
+      if (!readsDepth(conjunct))
+        kept.getSubBlocks().add(conjunct);
+    if (kept.getSubBlocks().isEmpty())
+      return null;
+    final WhereClause result = new WhereClause();
+    result.setBaseExpression(kept);
+    return result;
   }
 
   /**
@@ -1125,6 +1184,13 @@ public class MatchExecutionPlanner {
    * answers no rows. Without a RID the type is the fetch, so its indexes serve the {@code where:}, and the bucket is a filter
    * on it. The checks run on the record rather than at planning time because the RID can be a parameter or an
    * expression, resolved per execution of a cached plan.
+   * <p>
+   * A node with none of the three is every vertex, as an unlabelled openCypher {@code MATCH (n)} is (issue #12743): the fetch
+   * is the buckets of every vertex type. Buckets rather than types, because a polymorphic scan of each type would visit a
+   * vertex whose type has two vertex supertypes twice. The bucket list is read from the schema at planning time, like the
+   * buckets of a {@code type:}, and a schema change invalidates the cached plan. Every vertex type, not only the readable ones:
+   * the scan reads each bucket through the per-bucket gate, so a user who may not read one vertex type is refused the statement,
+   * as by {@code MATCH (n)} and {@code SELECT FROM V}, rather than answered a silent subset.
    */
   private InternalExecutionPlan createRootPlan(final String alias, final CommandContext context) {
     final String typeName = aliasTypes.get(alias);
@@ -1139,6 +1205,20 @@ public class MatchExecutionPlanner {
       fromItem.setIdentifier(new Identifier(typeName));
     else if (bucketName != null)
       fromItem.setBucket(new Bucket(bucketName));
+    else {
+      final BucketList vertexBuckets = new BucketList();
+      for (final DocumentType type : context.getDatabase().getSchema().getTypes())
+        if (type instanceof VertexType)
+          // var: THE ENGINE BUCKET SHARES ITS SIMPLE NAME WITH THE PARSER NODE IMPORTED ABOVE
+          for (final var bucket : type.getBuckets(false))
+            vertexBuckets.buckets.add(new Identifier(bucket.getName()));
+      if (vertexBuckets.buckets.isEmpty()) {
+        final SelectExecutionPlan nothing = new SelectExecutionPlan(context, 0);
+        nothing.chain(new EmptyStep(context));
+        return nothing;
+      }
+      fromItem.setBucketList(vertexBuckets);
+    }
     final FromClause from = new FromClause();
     from.setItem(fromItem);
 
@@ -1187,7 +1267,15 @@ public class MatchExecutionPlanner {
       addAliases(expr, aliasFilters, aliasUserTypes, aliasClusters, aliasRids, context);
     }
 
+    final Map<String, WhereClause> aliasDepthFreeFilters = new LinkedHashMap<>();
+    for (final Map.Entry<String, WhereClause> entry : aliasFilters.entrySet()) {
+      final WhereClause depthFree = withoutDepthConditions(entry.getValue());
+      if (depthFree != null)
+        aliasDepthFreeFilters.put(entry.getKey(), depthFree);
+    }
+
     this.aliasFilters = aliasFilters;
+    this.aliasDepthFreeFilters = aliasDepthFreeFilters;
     this.aliasTypes = aliasUserTypes;
     this.aliasBuckets = aliasClusters;
     this.aliasRids = aliasRids;
@@ -1202,8 +1290,9 @@ public class MatchExecutionPlanner {
    * another occurrence of the alias, where no walk has given {@code $depth} a value.
    * <p>
    * {@code aliasFilters} (see {@link #addAliases}) holds the same merge once per alias, {@code $depth} included, and is what the root
-   * fetch, the reverse walk ({@code EdgeTraversal.leftFilter}) and the dependencies read. The two have to answer the same where: for a
-   * node, so a change to how the where:s of an alias are combined belongs in both places.
+   * fetch and the dependencies read. {@code aliasDepthFreeFilters} is that merge without the occurrences that read {@code $depth}, by the
+   * same rule as here, and is what the reverse walk applies to the node it arrives at ({@code EdgeTraversal.leftFilter}, issue #12960).
+   * They have to answer the same where: for a node, so a change to how the where:s of an alias are combined belongs in all of them.
    */
   private void rebindFilters() {
     final Map<String, List<MatchFilter>> occurrences = new LinkedHashMap<>();

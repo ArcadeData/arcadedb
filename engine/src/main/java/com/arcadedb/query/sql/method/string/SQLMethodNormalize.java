@@ -22,7 +22,6 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
-import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.PatternConst;
 import com.arcadedb.utility.TimeBoundRegex;
 
@@ -48,7 +47,7 @@ public class SQLMethodNormalize extends AbstractSQLMethod {
     if (value != null) {
       final Normalizer.Form form =
           params != null && params.length > 0 && params[0] != null ?
-              Normalizer.Form.valueOf(FileUtils.getStringContent(params[0].toString())) :
+              Normalizer.Form.valueOf(params[0].toString()) :
               Normalizer.Form.NFD;
 
       final String normalized = Normalizer.normalize(value.toString(), form);
@@ -67,7 +66,7 @@ public class SQLMethodNormalize extends AbstractSQLMethod {
         final long regexDeadline = context != null ?
             context.getRegexDeadline() :
             TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(null));
-        return TimeBoundRegex.replaceAllUntil(Pattern.compile(FileUtils.getStringContent(params[1].toString())), normalized, "", regexDeadline);
+        return TimeBoundRegex.replaceAllUntil(Pattern.compile(params[1].toString()), normalized, "", regexDeadline);
       }
       return PatternConst.PATTERN_DIACRITICAL_MARKS.matcher(normalized).replaceAll("");
     }

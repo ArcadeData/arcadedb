@@ -40,7 +40,7 @@ import static com.arcadedb.bench.server.ServerUnderTest.PASSWORD;
  * going through the load tests' wrapper, because the wrapper times its batches into a global Micrometer timer and the workload
  * needs one latency sample per batch in its own recorder.
  */
-final class LineProtocolClient implements AutoCloseable {
+public final class LineProtocolClient implements AutoCloseable {
   static final int MAX_ATTEMPTS = 10;
 
   private static final Logger   LOGGER         = LoggerFactory.getLogger(LineProtocolClient.class);
@@ -51,7 +51,7 @@ final class LineProtocolClient implements AutoCloseable {
   private final URI        uri;
   private final String     authorization;
 
-  LineProtocolClient(final ServerWrapper server, final String database) {
+  public LineProtocolClient(final ServerWrapper server, final String database) {
     this.uri = URI.create("http://" + server.host() + ":" + server.httpPort() + "/api/v1/ts/" + database + "/write?precision=ms");
     this.authorization = "Basic " + Base64.getEncoder().encodeToString(("root:" + PASSWORD).getBytes(StandardCharsets.UTF_8));
   }
@@ -68,7 +68,7 @@ final class LineProtocolClient implements AutoCloseable {
    * times with a growing pause; the retries are part of the time of the call. Any other non-2xx answer, a 400 partial write
    * included, or a 503 on the last attempt, throws.
    */
-  void write(final String body) {
+  public void write(final String body) {
     final HttpRequest request = HttpRequest.newBuilder(uri).timeout(REQUEST_TIMEOUT).header("Authorization", authorization)
         .header("Content-Type", "text/plain").POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8)).build();
     for (int attempt = 1;; attempt++) {

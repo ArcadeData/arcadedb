@@ -25,22 +25,18 @@ import com.arcadedb.database.DatabaseStats;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
-import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryTerminatedException;
-import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.RecordVetoedException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionException;
-import com.arcadedb.exception.TypeAlreadyExistsException;
 import com.arcadedb.exception.ValidationException;
-import com.arcadedb.exception.VertexNotFoundException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.BoundedHttpExchange;
 import com.arcadedb.network.HostUtil;
@@ -1489,32 +1485,19 @@ public class RemoteHttpComponent extends RWLockContext {
       if (detail == null)
         detail = "Unknown";
 
+      // A MISSING RECORD, WITH THE RID ITS MESSAGE NAMES (e.g. "Record #12:7 not found", null WHEN IT NAMES NONE OR A MALFORMED
+      // ONE, ISSUE #4551), A MISSING EDGE ENDPOINT AS ITS OWN TYPE (ISSUE #11045), AND A TAKEN SCHEMA OBJECT NAME (ISSUE #10153)
+      // WITH THE KIND OF OBJECT THAT HOLDS IT IN exceptionArgs. READ IN ONE PLACE, WHICH A FOLLOWER REBUILDING ITS LEADER'S
+      // ANSWER SHARES (ISSUE #12931)
+      final RuntimeException withArguments = RemoteExceptionRebuilder.rebuildWithArguments(exception, exceptionArgs, detail);
+      if (withArguments != null)
+        return withArguments;
+
       if (exception.equals(ServerIsNotTheLeaderException.class.getName())) {
         // The leader-address hint travels in its own field (exceptionArgs); it is not parsed out of the
         // human-readable detail. Keep the detail message intact so a period in it no longer truncates the
         // text, and preserve the leader address so the client retains the hint to the current leader.
         return new ServerIsNotTheLeaderException(detail, exceptionArgs);
-      } else if (exception.equals(RecordNotFoundException.class.getName()) || exception.equals(
-          VertexNotFoundException.class.getName())) {
-        // PARSE THE RID OUT OF THE DETAIL MESSAGE (e.g. "Record #12:7 not found"). BE ROBUST: THE MESSAGE MAY NOT CONTAIN A '#',
-        // MAY NOT HAVE A TRAILING SPACE AFTER THE RID, OR MAY CARRY A MALFORMED TOKEN (see issue #4551). FALL BACK TO A null RID.
-        RID rid = null;
-        final int begin = detail.indexOf("#");
-        if (begin > -1) {
-          int end = detail.indexOf(" ", begin);
-          if (end < 0)
-            end = detail.length();
-          try {
-            rid = new RID(detail.substring(begin, end));
-          } catch (final Exception e) {
-            // INVALID RID FORMAT: KEEP rid null SO THE TYPED EXCEPTION IS STILL RETURNED
-            rid = null;
-          }
-        }
-        // A MISSING EDGE ENDPOINT KEEPS ITS OWN TYPE (ISSUE #11045), WHICH IS STILL A RecordNotFoundException
-        return exception.equals(VertexNotFoundException.class.getName()) ?
-            new VertexNotFoundException(detail, rid, null) :
-            new RecordNotFoundException(detail, rid);
       } else if (exception.equals(DatabaseNotFoundException.class.getName())) {
         // THE NAME IS NO DATABASE OF THE SERVER (ISSUE #10872): PERMANENT, NOTHING TO RETRY
         return new DatabaseNotFoundException(detail);
@@ -1550,11 +1533,6 @@ public class RemoteHttpComponent extends RWLockContext {
       } else if (exception.equals(QueryTerminatedException.class.getName())) {
         // STOPPED ON REQUEST (issue #9689): ITS OWN TYPE, SO NO RETRY LOOP MISTAKES IT FOR A FAILURE WORTH REPEATING
         return new QueryTerminatedException(detail);
-      } else if (exception.equals(AlreadyExistsException.class.getName())
-          || exception.equals(TypeAlreadyExistsException.class.getName())) {
-        // A TAKEN SCHEMA OBJECT NAME (ISSUE #10153): STILL A SchemaException, WHICH IS WHAT THESE CAME BACK AS BEFORE, WITH THE
-        // KIND OF OBJECT THAT HOLDS THE NAME IN exceptionArgs
-        return new AlreadyExistsException(AlreadyExistsException.Kind.fromName(exceptionArgs), detail);
       } else if (exception.equals(SchemaException.class.getName())) {
         return new SchemaException(detail);
       } else if (exception.equals(RecordVetoedException.class.getName())) {
