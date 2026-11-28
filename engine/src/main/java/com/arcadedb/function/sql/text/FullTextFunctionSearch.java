@@ -345,7 +345,13 @@ final class FullTextFunctionSearch {
         }
         // every row counts, so that rows without postings still use the budget up
         ++analyzed[0];
-        final float own = scorer.score(document, analyzed);
+        final float own;
+        try {
+          own = scorer.score(document, analyzed);
+        } catch (final RecordNotFoundException e) {
+          // a record the target fetched without loading it, deleted by a concurrent commit since: the complete search answers
+          return Float.NaN;
+        }
         if (Float.isNaN(own))
           return Float.NaN;
         if (own != FullTextRecordScorer.NO_MATCH)
