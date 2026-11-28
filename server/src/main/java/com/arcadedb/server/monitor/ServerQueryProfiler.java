@@ -423,18 +423,10 @@ public class ServerQueryProfiler {
   private JSONArray aggregateSteps(final List<ProfiledQueryEntry> entries) {
     final Map<String, List<Long>> stepCosts = new HashMap<>();
 
-    for (final ProfiledQueryEntry entry : entries) {
-      if (entry.executionPlan == null)
-        continue;
-
-      // Extract steps from execution plan
-      if (entry.executionPlan.has("steps")) {
-        final Object stepsObj = entry.executionPlan.get("steps");
-        if (stepsObj instanceof JSONArray stepsArray) {
-          extractStepCosts(stepsArray, stepCosts);
-        }
-      }
-    }
+    // The steps were read from the plan when the query was recorded (see ProfiledQueryEntry)
+    for (final ProfiledQueryEntry entry : entries)
+      for (int i = 0; i < entry.stepNames.length; i++)
+        stepCosts.computeIfAbsent(entry.stepNames[i], k -> new ArrayList<>()).add(entry.stepCosts[i]);
 
     final JSONArray result = new JSONArray();
     for (final Map.Entry<String, List<Long>> stepEntry : stepCosts.entrySet()) {
@@ -470,30 +462,6 @@ public class ServerQueryProfiler {
       result.put(stepObj);
     }
     return result;
-  }
-
-  private void extractStepCosts(final JSONArray stepsArray, final Map<String, List<Long>> stepCosts) {
-    for (int i = 0; i < stepsArray.length(); i++) {
-      final JSONObject step = stepsArray.getJSONObject(i);
-      final String rawName = step.getString("name", "unknown");
-      final String name = rawName.isBlank() ? "unknown" : rawName;
-      // Default to the same -1 the engine uses for "not calculated", so a plan that omits the field is classified
-      // as untimed rather than as a step that measurably took no time at all.
-      //
-      // "cost" is the step's SELF cost and never the subtree roll-up: the roll-up travels as "totalCost" and is
-      // deliberately not read here. Reading it while also recursing into the children it already contains charged
-      // the same nanoseconds to both the container and the step that actually timed them, so a plain type scan
-      // showed up twice and the per-step totals added up to more than the Engine total (issue #7329).
-      final long cost = step.getLong("cost", -1);
-      stepCosts.computeIfAbsent(name, k -> new ArrayList<>()).add(cost);
-
-      // Recurse into sub-steps
-      if (step.has("subSteps")) {
-        final Object sub = step.get("subSteps");
-        if (sub instanceof JSONArray subArray)
-          extractStepCosts(subArray, stepCosts);
-      }
-    }
   }
 
   private JSONObject captureDatabaseStats() {
