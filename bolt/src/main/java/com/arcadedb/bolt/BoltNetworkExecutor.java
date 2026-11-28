@@ -1327,6 +1327,9 @@ public class BoltNetworkExecutor extends Thread {
     final Map<String, Object> metadata = new LinkedHashMap<>();
     metadata.put("type", queryType(stream));
     metadata.put("t_last", (System.nanoTime() - stream.queryStartTime) / 1_000_000);
+    // The database the statement ran on, which a driver exposes as ResultSummary.database() (issue #13681)
+    if (database != null)
+      metadata.put("db", database.getName());
     if (stream.planMetadata != null && stream.planMetadataKey != null)
       metadata.put(stream.planMetadataKey, stream.planMetadata);
     if (stream.resultSet != null) {
