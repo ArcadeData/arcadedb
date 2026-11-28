@@ -23,6 +23,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.UnknownProcedureException;
@@ -33,6 +34,7 @@ import com.arcadedb.graph.olap.GraphAnalyticalViewRegistry;
 import com.arcadedb.query.OperationType;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.opencypher.procedures.CypherProcedureRegistry;
+import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -982,6 +984,108 @@ class CypherProcedureCallTest {
         final Result row = rs.next();
         return row.getProperty(row.getPropertyNames().iterator().next());
       }
+    }
+  }
+
+  /**
+   * Issue #13564: a {@code CALL} of a dotted name nothing answers counts as a possible write (it could be a
+   * {@code DEFINE FUNCTION}, issue #6418), so {@code Database.query()} refused it as not idempotent, and Bolt in READ access
+   * mode as "Writing in read access mode not allowed", where the statement writes nothing and the mistake is the name. The name
+   * is resolved before the refusal, as the namespaced function of an expression already is (issue #11115).
+   */
+  @Nested
+  class Issue13564UnknownProcedureIsNotAWrite extends TestHelper {
+
+    @Test
+    void queryNamesTheUnknownProcedureInsteadOfRefusingAWrite() {
+      assertUnknownProcedure("CALL nosuch.proc() YIELD x RETURN x", "nosuch.proc");
+      assertUnknownProcedure("CALL dbms.procedures() YIELD name RETURN count(*) AS c", "dbms.procedures");
+      assertUnknownProcedure("UNWIND [1] AS x CALL nosuch.proc() YIELD y RETURN y", "nosuch.proc");
+      assertUnknownProcedure("OPTIONAL CALL nosuch.proc() YIELD x RETURN x", "nosuch.proc");
+      assertUnknownProcedure("PROFILE CALL nosuch.proc() YIELD x RETURN x", "nosuch.proc");
+    }
+
+    /** The CALL can sit where the top-level clauses do not show it: a subquery, a UNION branch. */
+    @Test
+    void anUnknownProcedureInANestedStatementIsNamedToo() {
+      assertUnknownProcedure("CALL { CALL nosuch.inner() YIELD x RETURN x } RETURN x", "nosuch.inner");
+      assertUnknownProcedure("RETURN 1 AS x UNION CALL nosuch.branch() YIELD x RETURN x", "nosuch.branch");
+    }
+
+    /** A name that does resolve to something that may write keeps the refusal: the read-only rule is not loosened. */
+    @Test
+    void aCallThatResolvesAndMayWriteIsStillRefused() {
+      database.command("sql", "CREATE DOCUMENT TYPE Issue13564Doc");
+      database.command("sql", "DEFINE FUNCTION issue13564.write \"INSERT INTO Issue13564Doc SET a = 1\" LANGUAGE sql");
+
+      assertThatThrownBy(() -> database.query("opencypher", "CALL issue13564.write()"))
+          .isInstanceOf(QueryNotIdempotentException.class);
+      assertThatThrownBy(() -> database.query("opencypher", "CALL ISSUE13564.WRITE()"))
+          .isInstanceOf(QueryNotIdempotentException.class);
+      assertThatThrownBy(() -> database.query("opencypher", "CALL merge.node(['Issue13564'], {name: 'X'}, {}) YIELD node RETURN node"))
+          .isInstanceOf(QueryNotIdempotentException.class);
+      // refused before anything ran: the function's body wrote nothing
+      assertThat(database.countType("Issue13564Doc", false)).isZero();
+    }
+
+    /**
+     * A statement that writes for another reason is walked too, and every CALL it makes must resolve the way
+     * {@code CallStep} resolves it, or a real write is misreported as an unknown procedure: a UNION branch and a subquery
+     * that resolve, a registered function, the SQL function behind the {@code sql.} prefix and an unqualified one.
+     */
+    @Test
+    void aWriteWhoseCallsAllResolveIsStillRefusedAsAWrite() {
+      assertNotIdempotent("CREATE (:Issue13564Union) RETURN 1 AS x UNION RETURN 2 AS x");
+      assertNotIdempotent("CALL { CREATE (n:Issue13564Sub) RETURN n } RETURN n");
+      assertNotIdempotent("CREATE (:Issue13564Fn) WITH 1 AS one CALL text.indexOf('abc', 'b') YIELD value RETURN value");
+      assertNotIdempotent("CREATE (:Issue13564Sql) WITH 1 AS one CALL sql.abs(-1) YIELD value RETURN value");
+      assertNotIdempotent("CREATE (:Issue13564Sql) WITH 1 AS one CALL SQL.abs(-1) YIELD value RETURN value");
+      assertNotIdempotent("CREATE (:Issue13564Sql) WITH 1 AS one CALL abs(-1) YIELD value RETURN value");
+
+      for (final String type : List.of("Issue13564Union", "Issue13564Sub", "Issue13564Fn", "Issue13564Sql"))
+        assertThat(database.getSchema().existsType(type)).as(type).isFalse();
+    }
+
+    /**
+     * {@code checkCalledNamesResolve} is what Bolt in READ access mode asks before refusing a write: an unknown namespaced
+     * function is the unknown function it is, an unknown procedure the unknown procedure it is, and a statement whose names
+     * all resolve passes, whatever it writes.
+     */
+    @Test
+    void checkCalledNamesResolveNamesTheUnknownFunctionOrProcedure() {
+      database.command("sql", "CREATE DOCUMENT TYPE Issue13564Doc");
+      database.command("sql", "DEFINE FUNCTION issue13564.write \"INSERT INTO Issue13564Doc SET a = 1\" LANGUAGE sql");
+
+      assertThatThrownBy(() -> checkCalledNamesResolve("RETURN nosuch.fn(1) AS x"))
+          .isInstanceOf(CommandParsingException.class).hasMessageContaining("Unknown function 'nosuch.fn'");
+      assertThatThrownBy(() -> checkCalledNamesResolve("CALL nosuch.proc() YIELD x RETURN x"))
+          .isInstanceOf(UnknownProcedureException.class).hasMessageContaining("Unknown procedure/function: nosuch.proc");
+
+      checkCalledNamesResolve("RETURN issue13564.write() AS x");
+      checkCalledNamesResolve("CALL issue13564.write()");
+      checkCalledNamesResolve("CREATE (:Issue13564Checked) RETURN text.indexOf('abc', 'b') AS x");
+      assertThat(database.countType("Issue13564Doc", false)).isZero();
+    }
+
+    private void checkCalledNamesResolve(final String query) {
+      OpenCypherQueryEngine.checkCalledNamesResolve(((DatabaseInternal) database).getCypherStatementCache().getParameterized(query).statement(),
+          database);
+    }
+
+    private void assertNotIdempotent(final String query) {
+      assertThatThrownBy(() -> {
+        try (final ResultSet rs = database.query("opencypher", query)) {
+          rs.stream().toList();
+        }
+      }).as(query).isInstanceOf(QueryNotIdempotentException.class);
+    }
+
+    private void assertUnknownProcedure(final String query, final String writtenName) {
+      assertThatThrownBy(() -> {
+        try (final ResultSet rs = database.query("opencypher", query)) {
+          rs.stream().toList();
+        }
+      }).as(query).isInstanceOf(UnknownProcedureException.class).hasMessageContaining("Unknown procedure/function: " + writtenName);
     }
   }
 }
