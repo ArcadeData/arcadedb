@@ -141,6 +141,14 @@ class RuleTest {
   }
 
   @Test
+  void perHourIsNeverJudged() {
+    assertThat(Rule.absoluteFloor("per_hour")).isEqualTo(Double.POSITIVE_INFINITY);
+    // a leak slope that doubles from a near-zero baseline is no verdict: the soak case judges it against its own limits
+    assertThat(cmp(point(0.01, new double[] { 0.01, 0.01 }, "per_hour", "lower"), point(0.02, new double[] { 0.02, 0.02 }, "per_hour", "lower")))
+        .isEqualTo(Verdict.Kind.SAME);
+  }
+
+  @Test
   void informationalUnitsAreNeverJudged() {
     assertThat(Rule.absoluteFloor("flag")).isEqualTo(Double.POSITIVE_INFINITY);
     assertThat(Rule.absoluteFloor("steps")).isEqualTo(Double.POSITIVE_INFINITY);

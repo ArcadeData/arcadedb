@@ -134,8 +134,9 @@ class ServerUnderTestIT {
     }
     // a server found not answering is asked for no class histogram: a jcmd against it would most likely hang
     assertThat(server.diagnostics(false).has("classHistogram")).isFalse();
-    // the host sees the server process only where Docker runs natively (Linux), not under Docker Desktop
-    if (Files.isDirectory(Path.of("/proc/self")))
-      assertThat(diagnostics.getInt("threads", 0)).isGreaterThan(0);
+    // read on the host where Docker runs natively (Linux), inside the container under Docker Desktop: present on either
+    assertThat(diagnostics.getInt("threads", 0)).isGreaterThan(0);
+    assertThat(server.threadCount()).isGreaterThan(0);
+    assertThat(server.openFiles()).isGreaterThan(0);
   }
 }

@@ -21,8 +21,10 @@ package com.arcadedb.bench.runner;
 import com.arcadedb.bench.workload.Scale;
 import com.arcadedb.serializer.json.JSONObject;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.OptionalInt;
 
 /**
@@ -53,6 +55,22 @@ public interface Workload {
   /** The discarded warm-ups of each case of this workload, overriding the run's; empty to take the run's. */
   default OptionalInt warmup() {
     return OptionalInt.empty();
+  }
+
+  /**
+   * The limit of each warm-up and each measured repetition of this workload, replacing the run's; empty to take the run's. A
+   * workload whose single repetition is long by design (a soak) declares it, and the case cap grows to hold the declared steps.
+   */
+  default Optional<Duration> stepLimit() {
+    return Optional.empty();
+  }
+
+  /**
+   * Whether this workload runs for a run started by {@code trigger} (for example {@code nightly}, {@code release}, {@code manual}).
+   * A workload that does not is left out of that run, and the run file says nothing about it.
+   */
+  default boolean runsOn(final String trigger) {
+    return true;
   }
 
   void prepare(WorkloadContext ctx, String caseName) throws Exception;

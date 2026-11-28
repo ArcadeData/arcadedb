@@ -205,9 +205,15 @@ the run file records the cpusets as shared.
   vertices; qps, p50/p95/p99, recall of the vector step.
   The laptop S run took about 2.5 minutes (153 s) with every case `ok`; `hybrid-rag` stays at S pending the perf-01 S run.
 - `soak`: the mixed phase for 2 hours, Saturday only, one repetition and no warm-up. A workload may declare its own reps,
-  warm-up and step limit (a default method on `Workload`, overriding the run's), which the soak uses; the slopes are
-  published as metrics (unit `ratio`, per hour) so the dashboard charts them, and over a limit the case is `failed`; least-squares slope of heap after GC (limit 5% of its mean per hour),
-  of threads and of file descriptors (limit 10 per hour). Over a limit fails the case.
+  warm-up and step limit (a default method on `Workload`, overriding the run's), which the soak uses (step limit 150 min,
+  so its case cap grows to 180 min); a workload may also leave a trigger out, and the soak runs on `nightly` and `manual`
+  only. The slopes are published as metrics so the dashboard charts them, with unit `per_hour`, never judged by the gate:
+  their baseline is near zero, so relative bands would judge night-to-night noise, and the case's own limits are the
+  judgment. Least-squares slope of heap after GC (the minimum heap of each 5-minute window; limit 5% of its mean per
+  hour), of threads and of file descriptors (limit 10 per hour); over a limit the case is `failed`. The first 15 minutes
+  are left out of every slope (warm-up: a cold server's threads, files and caches climb before they level off), and
+  under 6 samples after it there is no slope and the case is `failed`. A 12-minute XS laptop run published all three
+  slopes; whether the heap floor levels off while the mixed phase keeps ingesting is decided by the first 2-hour M run.
 
 ### Order and delivery
 

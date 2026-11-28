@@ -31,6 +31,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -278,6 +279,55 @@ class BenchRunnerTest {
     assertThat(r.warmup()).isEqualTo(1);
   }
 
+  private static Fake sleeper(final Duration limit) {
+    return new Fake() {
+      @Override
+      public List<String> cases() {
+        return List.of("a");
+      }
+
+      @Override
+      public Optional<Duration> stepLimit() {
+        return Optional.ofNullable(limit);
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) throws Exception {
+        Thread.sleep(100);
+        return m(1);
+      }
+    };
+  }
+
+  @Test
+  void aWorkloadsStepLimitReplacesTheRunsForItsRepetitions() {
+    final List<CaseResult> results = new BenchRunner(1, 0, Duration.ofMillis(10), Duration.ofSeconds(10), Duration.ZERO)
+        .run(sleeper(Duration.ofMillis(500)), CTX, n -> true);
+    assertThat(results.get(0).status()).isEqualTo(CaseResult.Status.OK);
+  }
+
+  @Test
+  void aWorkloadWithoutAStepLimitKeepsTheRuns() {
+    final List<CaseResult> results = new BenchRunner(1, 0, Duration.ofMillis(10)).run(sleeper(null), CTX, n -> true);
+    assertThat(results.get(0).status()).isEqualTo(CaseResult.Status.TIMEOUT);
+  }
+
+  @Test
+  void theCaseCapGrowsToHoldTheDeclaredSteps() {
+    final BenchRunner runner = new BenchRunner(1, 0, Duration.ofMinutes(30), Duration.ofMinutes(30), Duration.ofMinutes(120));
+    assertThat(runner.caseLimitOf(sleeper(Duration.ofMinutes(150)))).isEqualTo(Duration.ofMinutes(180));
+    assertThat(runner.caseLimitOf(sleeper(Duration.ofMinutes(10)))).isEqualTo(Duration.ofMinutes(120));
+    assertThat(runner.caseLimitOf(sleeper(null))).isEqualTo(Duration.ofMinutes(120));
+    assertThat(runner.stepLimitOf(sleeper(Duration.ofMinutes(150)))).isEqualTo(Duration.ofMinutes(150));
+    assertThat(runner.stepLimitOf(sleeper(null))).isEqualTo(Duration.ofMinutes(30));
+  }
+
+  @Test
+  void aRunWithoutACaseCapKeepsNone() {
+    final BenchRunner runner = new BenchRunner(1, 0, Duration.ofMinutes(30), Duration.ofMinutes(30), Duration.ZERO);
+    assertThat(runner.caseLimitOf(sleeper(Duration.ofMinutes(150)))).isEqualTo(Duration.ZERO);
+  }
+
   @Test
   void failedWithMetricsKeepsMetrics() {
     final Fake w = new Fake() {
@@ -362,6 +412,63 @@ class BenchRunnerTest {
     final List<CaseResult> results = new BenchRunner(1, 0, Duration.ofMillis(200)).run(w, CTX, n -> true);
     assertThat(results).hasSize(1);
     assertThat(results.get(0).status()).isEqualTo(CaseResult.Status.TIMEOUT);
+    assertThat(results.get(0).metrics()).isEmpty();
+  }
+
+  @Test
+  void aTimedOutWorkerThatStopsInTheGraceKeepsWhatItMeasured() {
+    final Fake w = new Fake() {
+      @Override
+      public List<String> cases() {
+        return List.of("slow");
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) throws Exception {
+        try {
+          Thread.sleep(5_000);
+        } catch (final InterruptedException e) {
+          // a soak cut short by the deadline publishes what it measured and keeps the interrupt
+          Thread.currentThread().interrupt();
+          throw new CaseFailedWithMetrics("window: interrupted", m(7).perRep());
+        }
+        return m(1);
+      }
+    };
+    final List<CaseResult> results = new BenchRunner(1, 0, Duration.ofMillis(200)).run(w, CTX, n -> true);
+    assertThat(results).hasSize(1);
+    final CaseResult r = results.get(0);
+    assertThat(r.status()).isEqualTo(CaseResult.Status.TIMEOUT);
+    // the message is the runner's, not the worker's
+    assertThat(r.error()).isEqualTo("rep 1/1 exceeded 200 ms");
+    assertThat(r.metrics()).extracting(Metric::name).containsExactly("t");
+    assertThat(r.metrics().get(0).median()).isEqualTo(7.0);
+    assertThat(w.teardowns.get()).isEqualTo(1);
+  }
+
+  @Test
+  void aTimedOutWorkerThatOutlivesTheGracePublishesNoMetrics() {
+    final Fake w = new Fake() {
+      @Override
+      public List<String> cases() {
+        return List.of("stuck");
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) throws Exception {
+        // ignores the interrupt; once released, reports metrics the runner must no longer take
+        while (spin)
+          Thread.onSpinWait();
+        throw new CaseFailedWithMetrics("too late", m(7).perRep());
+      }
+    };
+    final List<CaseResult> results = new BenchRunner(1, 0, Duration.ofMillis(200), Duration.ofMillis(100)).run(w, CTX,
+        n -> true);
+    assertThat(results).hasSize(1);
+    final CaseResult r = results.get(0);
+    assertThat(r.status()).isEqualTo(CaseResult.Status.TIMEOUT);
+    assertThat(r.error()).contains("teardown skipped");
+    assertThat(r.metrics()).isEmpty();
   }
 
   @Test

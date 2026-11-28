@@ -121,6 +121,9 @@ public final class MixedPhase {
       /** The names of every type of the database. */
       List<String> types();
 
+      /** Drops {@code type} when it exists. */
+      void dropType(String type);
+
       @Override
       void close();
     }
@@ -367,7 +370,10 @@ public final class MixedPhase {
 
   /**
    * After a failed repetition: the threads it left alive get one more interrupt and the join bound, then the expectations
-   * become what the database holds. A thread alive even then keeps them lost: the window that follows fails too.
+   * become what the database holds. The scratch types the failed window left are dropped first, and the counts are read until
+   * two reads in a row agree, for at most {@link #CHECK_WAIT}: the server may still be committing a batch whose client was
+   * interrupted. A thread alive even then (nothing is dropped then), a drop that fails or counts still moving keep the expectations
+   * lost: the window that follows fails too.
    */
   private void rebaseline() throws InterruptedException {
     for (final Thread thread : stragglers)
@@ -377,15 +383,42 @@ public final class MixedPhase {
       if (joinUntil(thread, deadline))
         throw new InterruptedException("interrupted while joining the threads of an earlier window");
     stragglers.removeIf(t -> !t.isAlive());
-    try (final Probe.Reader reader = probe.open()) {
-      expectedDocs = reader.count(DOC_TYPE);
-      expectedPoints = reader.count(SENSOR_TYPE);
+    if (!stragglers.isEmpty()) {
+      // a live ddl thread may still be using a scratch type: nothing is dropped, and the expectations stay lost
+      lostReason = stragglers.size() + " loop thread(s) of an earlier window still alive";
+      return;
     }
-    if (stragglers.isEmpty()) {
+    boolean settled = false;
+    try (final Probe.Reader reader = probe.open()) {
+      for (final String type : reader.types())
+        if (type.startsWith(SCRATCH_PREFIX))
+          try {
+            reader.dropType(type);
+          } catch (final RuntimeException e) {
+            LOGGER.warn("Dropping the leftover scratch type {} failed", type, e);
+            lostReason = "dropping the leftover scratch type " + type + " failed: " + e;
+            return;
+          }
+      final long settleBy = System.nanoTime() + checkWait.toNanos();
+      long docs = reader.count(DOC_TYPE);
+      long points = reader.count(SENSOR_TYPE);
+      do {
+        Thread.sleep(CHECK_POLL_MS);
+        final long nextDocs = reader.count(DOC_TYPE);
+        final long nextPoints = reader.count(SENSOR_TYPE);
+        settled = nextDocs == docs && nextPoints == points;
+        docs = nextDocs;
+        points = nextPoints;
+      } while (!settled && System.nanoTime() < settleBy);
+      expectedDocs = docs;
+      expectedPoints = points;
+    }
+    if (!settled)
+      lostReason = "the counts were still moving " + checkWait.toSeconds() + " s after an earlier failed window";
+    else {
       LOGGER.info("Mixed expectations read back after a failed window: {} documents, {} points", expectedDocs, expectedPoints);
       lostReason = null;
-    } else
-      lostReason = stragglers.size() + " loop thread(s) of an earlier window still alive";
+    }
   }
 
   /**
@@ -587,6 +620,11 @@ public final class MixedPhase {
               names.add(rs.next().getProperty("name"));
           }
           return names;
+        }
+
+        @Override
+        public void dropType(final String type) {
+          db.command("sql", "DROP TYPE " + type + " IF EXISTS UNSAFE").close();
         }
 
         @Override

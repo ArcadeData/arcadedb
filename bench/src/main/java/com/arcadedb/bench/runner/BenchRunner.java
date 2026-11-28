@@ -287,18 +287,23 @@ public final class BenchRunner {
       return t;
     });
     final long caseStart = System.nanoTime();
-    final long caseTimeoutNanos = caseTimeout.toNanos();
+    final long caseTimeoutNanos = caseLimitOf(w).toNanos();
     final AtomicReference<Step> step = new AtomicReference<>(new Step("prepare", caseStart, prepareTimeout.toNanos()));
     // a flag of its own: a measure() that swallows the interrupt must not let the worker start another repetition
     final AtomicBoolean cancelled = new AtomicBoolean();
+    // what the worker ended with, read after a timeout once the worker has stopped: a cancelled future gives no value
+    final AtomicReference<CaseResult> outcome = new AtomicReference<>();
     final Future<CaseResult> future = executor.submit(() -> {
+      CaseResult r;
       try {
-        return execute(w, ctx, caseName, cancelled, step);
+        r = execute(w, ctx, caseName, cancelled, step);
       } catch (final CaseFailedWithMetrics e) {
-        return result(w, ctx, caseName, e.metrics(), CaseResult.Status.FAILED, e.getMessage());
+        r = result(w, ctx, caseName, e.metrics(), CaseResult.Status.FAILED, e.getMessage());
       } catch (final Throwable t) {
-        return result(w, ctx, caseName, List.of(), CaseResult.Status.FAILED, describe(t));
+        r = result(w, ctx, caseName, List.of(), CaseResult.Status.FAILED, describe(t));
       }
+      outcome.set(r);
+      return r;
     });
     final int dumpsBefore = watchdog.dumpsTaken();
     final int undumpedBefore = watchdog.stallsWithoutDump();
@@ -312,8 +317,13 @@ public final class BenchRunner {
       future.cancel(true);
       executor.shutdownNow();
       workerStopped = awaitStopped(executor);
-      result = result(w, ctx, caseName, List.of(), CaseResult.Status.TIMEOUT,
-          e.getMessage() + (workerStopped ? "" : "; " + WORKER_STILL_RUNNING));
+      final String error = e.getMessage() + (workerStopped ? "" : "; " + WORKER_STILL_RUNNING);
+      // a worker that stopped in the grace keeps what it measured (a soak cut short publishes its slopes); the status stays
+      // TIMEOUT, so the gate neither judges these metrics nor takes them as a baseline. A worker still running publishes none
+      final CaseResult measured = workerStopped ? outcome.get() : null;
+      result = measured != null && !measured.metrics().isEmpty() ?
+          measured.withStatus(CaseResult.Status.TIMEOUT, error) :
+          result(w, ctx, caseName, List.of(), CaseResult.Status.TIMEOUT, error);
     } catch (final InterruptedException e) {
       cancelled.set(true);
       future.cancel(true);
@@ -434,7 +444,7 @@ public final class BenchRunner {
     if (warmup < 0)
       throw new IllegalArgumentException("workload '" + w.name() + "' declares warmup " + warmup + ", must not be negative");
     w.prepare(ctx, caseName);
-    final long stepNanos = stepTimeout.toNanos();
+    final long stepNanos = stepLimitOf(w).toNanos();
     for (int i = 0; i < warmup; i++) {
       stopIfCancelled(cancelled);
       step.set(new Step("warm-up " + (i + 1) + "/" + warmup, System.nanoTime(), stepNanos));
@@ -502,5 +512,21 @@ public final class BenchRunner {
   /** The warm-ups a case of the workload runs: its own when it declares them, the run's otherwise. */
   public int warmupOf(final Workload w) {
     return w.warmup().orElse(warmup);
+  }
+
+  /** The limit of each warm-up and repetition of a case of the workload: its own when it declares one, the run's otherwise. */
+  public Duration stepLimitOf(final Workload w) {
+    return w.stepLimit().orElse(stepTimeout);
+  }
+
+  /**
+   * The cap over a whole case of the workload. A workload that declares its own step limit gets at least the prepare limit plus
+   * its warm-ups and repetitions at that limit, so the run's cap does not cut it; the run's cap otherwise, and none (zero) stays none.
+   */
+  public Duration caseLimitOf(final Workload w) {
+    if (caseTimeout.isZero() || w.stepLimit().isEmpty())
+      return caseTimeout;
+    final Duration needed = prepareTimeout.plus(w.stepLimit().get().multipliedBy((long) repsOf(w) + warmupOf(w)));
+    return needed.compareTo(caseTimeout) > 0 ? needed : caseTimeout;
   }
 }
