@@ -74,6 +74,9 @@ class TakenNameRefusalCensusTest {
       Map.entry("query/sql/parser/CreateIndexStatement#executeDDL", ANOTHER_DEFINITION),//
       Map.entry("schema/IndexBuilder#conflictWithExistingIndex", ANOTHER_DEFINITION),//
       Map.entry("schema/ManualIndexBuilder#conflictWithExistingManualIndex", ANOTHER_DEFINITION),//
+      // THE SAME EquivalentIndexException REWORDED FOR A CYPHER SCHEMA COMMAND, KEEPING ITS KIND AND UNDER-ANOTHER-NAME FLAG (#13664)
+      Map.entry("query/opencypher/query/CypherSchemaRuleConflicts#equivalentIndex", ANOTHER_DEFINITION),//
+      Map.entry("query/opencypher/query/CypherSchemaRuleConflicts#equivalentConstraint", ANOTHER_DEFINITION),//
       // A CYPHER VARIABLE BOUND TWICE, OR WITH TWO TYPES, IN ONE STATEMENT: A PARSE ERROR, NOT A SCHEMA OBJECT NAME
       Map.entry("query/opencypher/parser/VariableBindingValidator#checkCreateBinding", VARIABLE),//
       Map.entry("query/opencypher/parser/VariableBindingValidator#checkMergeBinding", VARIABLE),//
