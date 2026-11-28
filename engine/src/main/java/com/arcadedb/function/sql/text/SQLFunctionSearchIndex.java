@@ -56,6 +56,10 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
   public static final String NAME  = "fulltext.searchIndex";
   public static final String ALIAS = "search_index";
 
+  // The key of the opaque statement cache that holds the searches built so far (see SearchMemo); the other keys of the function all
+  // carry a ':' and a name after their prefix, so no index name can make one equal to it
+  private static final String SEARCHES_KEY = "search_index_searches";
+
   public SQLFunctionSearchIndex() {
     super(NAME);
   }
@@ -224,6 +228,16 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
    * @throws CommandExecutionException              if the index exists but is not a full-text type index
    */
   private static FullTextFunctionSearch search(final String indexName, final String queryString, final CommandContext context) {
+    // The function runs once per row and arm: a search is a function of the index name and the query alone, and holds no state of
+    // its own (what a statement computes is cached in the context, under keys the search builds), so the statement keeps the ones it
+    // has built rather than building the object and its keys again on every row
+    final SearchMemo memo = (SearchMemo) context.getCachedValue(SEARCHES_KEY);
+    if (memo != null) {
+      final FullTextFunctionSearch known = memo.find(indexName, queryString);
+      if (known != null)
+        return known;
+    }
+
     // Resolved once per statement: the function runs once per row, and the name of a logical index is found by walking the types
     final String membersKey = "search_index_members:" + indexName;
     @SuppressWarnings("unchecked")
@@ -232,7 +246,56 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
       indexes = FullTextSearch.resolveFullTextIndexes(context.getDatabase(), indexName);
       context.setCachedValue(membersKey, indexes);
     }
-    return new FullTextFunctionSearch(indexes, indexName, queryString, null);
+    final FullTextFunctionSearch search = new FullTextFunctionSearch(indexes, indexName, queryString, null);
+    final SearchMemo extended = SearchMemo.with(memo, indexName, queryString, search);
+    if (extended != memo)
+      context.setCachedValue(SEARCHES_KEY, extended);
+    return search;
+  }
+
+  /**
+   * The searches a statement has built, by index name and query. Immutable, so that a context that reads it through its parent never
+   * shares a write with it: a statement that adds a search stores a larger copy in its own context. Holds at most
+   * {@link #CAPACITY} searches (a condition has a handful of arms); a search past that is built again on each row, as without the memo.
+   */
+  private static final class SearchMemo {
+    private static final int CAPACITY = 8;
+
+    private final String[]                 names;
+    private final String[]                 queries;
+    private final FullTextFunctionSearch[] searches;
+
+    private SearchMemo(final String[] names, final String[] queries, final FullTextFunctionSearch[] searches) {
+      this.names = names;
+      this.queries = queries;
+      this.searches = searches;
+    }
+
+    /** {@code memo}, which may be null, with one more search; {@code memo} itself when it is full. */
+    static SearchMemo with(final SearchMemo memo, final String name, final String query, final FullTextFunctionSearch search) {
+      final int size = memo == null ? 0 : memo.searches.length;
+      if (size == CAPACITY)
+        return memo;
+      final String[] names = new String[size + 1];
+      final String[] queries = new String[size + 1];
+      final FullTextFunctionSearch[] searches = new FullTextFunctionSearch[size + 1];
+      if (size > 0) {
+        System.arraycopy(memo.names, 0, names, 0, size);
+        System.arraycopy(memo.queries, 0, queries, 0, size);
+        System.arraycopy(memo.searches, 0, searches, 0, size);
+      }
+      names[size] = name;
+      queries[size] = query;
+      searches[size] = search;
+      return new SearchMemo(names, queries, searches);
+    }
+
+    FullTextFunctionSearch find(final String name, final String query) {
+      for (int i = 0; i < searches.length; i++)
+        if (names[i].equals(name) && queries[i].equals(query))
+          return searches[i];
+      return null;
+    }
   }
 
   /**
