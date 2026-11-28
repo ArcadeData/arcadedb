@@ -168,7 +168,7 @@ public class TimeSeriesMaintenanceScheduler {
       }
 
       if (retentionMs > 0)
-        engine.applyRetention(nowMs - retentionMs);
+        engine.applyRetention(nowMs - retentionMs, retentionMs);
 
       // Apply downsampling tiers
       if (!tiers.isEmpty())

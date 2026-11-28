@@ -90,7 +90,7 @@ public class AlgoKShortestPaths extends AbstractAlgoProcedure {
 
     final Vertex startNode = extractVertex(args[0], "startNode");
     final Vertex endNode = extractVertex(args[1], "endNode");
-    final int k = extractCount((Number) args[2], "k");
+    final int k = extractCount(requiredNumberArg(args, 2, "k"), "k");
     final String[] relTypes = extractRelTypes(argOrDefault(args, 3, null), context);
     final String weightProperty = extractWeightProperty(argOrDefault(args, 4, null), context);
     final String directionArg = extractString(argOrDefault(args, 5, null), "direction");

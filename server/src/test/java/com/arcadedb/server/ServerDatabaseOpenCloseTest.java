@@ -165,11 +165,12 @@ class ServerDatabaseOpenCloseTest {
     private Database       stale;
 
     @BeforeEach
-    void setUp() {
+    void setUp() throws Exception {
       final ContextConfiguration config = new ContextConfiguration();
       config.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, serverDir.toString());
       server = new ArcadeDBServer(config);
-      dbPath = serverDir.resolve(DB).toAbsolutePath().normalize();
+      // THE REAL PATH: IT IS THE KEY OF ACTIVE_INSTANCES (#12823), AND A TEMPORARY DIRECTORY CAN SIT UNDER A LINK (/var ON macOS)
+      dbPath = serverDir.toRealPath().resolve(DB);
     }
 
     @AfterEach

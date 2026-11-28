@@ -61,8 +61,8 @@ public class BoltProtocolPlugin implements ServerPlugin {
 
   /**
    * The listener thread when it has terminated while it was still meant to accept connections, or {@code null} (issue
-   * #12552). Its accept loop survives an exception but not an error: an {@code OutOfMemoryError} ends the thread and
-   * closes the Bolt port while the rest of the server stays up.
+   * #12552). The accept loop goes on after an exception or an error of a single connection, so this is a backstop for a
+   * thread that ended anyway: it would close the Bolt port while the rest of the server stays up.
    */
   @Override
   public String getListenerFailure() {

@@ -604,6 +604,35 @@ public class DateUtils {
   }
 
   /**
+   * The date-time a bare numeric string names when it is ORDERED against a date-time of class {@code dateTimeClass}: an epoch count
+   * whose precision its digit count tells, read exactly as {@link com.arcadedb.serializer.BinaryComparator#compareTo(Object, Object)}
+   * reads it through {@link #dateTimeToTimestampInferringStringPrecision} (issue #5956). An index range bound of a DATETIME key is
+   * converted with this, so the lookup answers what the scan of the same comparison answers (issue #12936): {@code Type.convert}
+   * leaves such a string as it is for a {@link LocalDateTime} or {@link Instant} key, deliberately (an all-digits string is
+   * refused on write, #9110), and the lookup matched nothing.
+   * <p>
+   * In NANOS, as that comparison converts both of its operands: an instant past 2262-04-11 saturates there on both sides, so the
+   * date-time answered for such a string is the last one a count of nanoseconds holds, which is what the scan compares with.
+   *
+   * @return null when {@code value} is not a numeric string, when it has more digits than a long holds (the scan's comparison
+   * refuses that pair, so it matches nothing), or when {@code dateTimeClass} is not one of those two classes: the scan compares
+   * no such string with a {@link ZonedDateTime}, and {@code Type.convert} converts it to a {@link Date} or a {@link Calendar} itself
+   */
+  public static Object numericStringAsDateTime(final Database database, final Object value, final Class<?> dateTimeClass) {
+    if (!(value instanceof String string) || string.isEmpty() || (dateTimeClass != LocalDateTime.class && dateTimeClass != Instant.class)
+        || !FileUtils.isLong(string))
+      return null;
+    final long epochCount;
+    try {
+      epochCount = Long.parseLong(string);
+    } catch (final NumberFormatException e) {
+      return null;
+    }
+    return dateTime(database, convertTimestamp(epochCount, inferEpochPrecision(epochCount), ChronoUnit.NANOS), ChronoUnit.NANOS,
+        dateTimeClass, ChronoUnit.NANOS);
+  }
+
+  /**
    * Infers the epoch precision a bare numeric string most likely represents, from its digit count: for a
    * present-day moment, an epoch value grows by roughly 3 digits per finer precision step (~10 digits for
    * seconds, ~13 for millis, ~16 for micros, ~19 for nanos).

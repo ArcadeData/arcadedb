@@ -23,8 +23,10 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ClusterCapabilityNotReadyException;
 
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 
@@ -177,6 +179,29 @@ final class SecurityEntryCapabilityGate {
     // (AbstractServerHttpHandler.buildErrorBody drops 'detail'), and a refusal that could not name the lagging
     // node is the silence this issue exists to end (PR #7555 review).
     throw new ClusterCapabilityNotReadyException(message, capability, missing);
+  }
+
+  /**
+   * The peers {@link #requireEveryPeerCanDecode} is refusing the group and the API-token entries for, empty when it
+   * would let both through - including when {@code arcadedb.ha.securityEntryCapabilityGate} has switched it off.
+   * <p>
+   * For the security seed, which is not a caller of the gate but lives downstream of it: a seed the gate refused is
+   * run again once this is empty, and the line that reports the failure names these peers (issue #13447). It answers
+   * from the registry the capability monitor fills and never probes, unlike the gate itself: it is asked on the
+   * monitor's own thread, right after a round, when the registry is as fresh as a probe would make it.
+   */
+  static List<String> peersWithholdingSecurityEntries(final ArcadeDBServer server, final RaftHAServer raft) {
+    if (!gateEnabled(server))
+      return List.of();
+    final List<String> groups = raft.peersMissingCapability(capabilityFor(RaftLogEntryType.SECURITY_GROUPS_ENTRY));
+    final List<String> tokens = raft.peersMissingCapability(capabilityFor(RaftLogEntryType.SECURITY_API_TOKENS_ENTRY));
+    if (tokens.isEmpty())
+      return groups;
+    if (groups.isEmpty())
+      return tokens;
+    final Set<String> withholding = new LinkedHashSet<>(groups);
+    withholding.addAll(tokens);
+    return List.copyOf(withholding);
   }
 
   /**

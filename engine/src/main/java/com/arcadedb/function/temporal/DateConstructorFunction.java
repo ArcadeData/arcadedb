@@ -32,7 +32,6 @@ import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.time.DateTimeException;
 import java.time.LocalDate;
-import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.util.Map;
@@ -95,19 +94,17 @@ public class DateConstructorFunction implements StatelessFunction {
         throw new CommandSemanticException("date() " + e.getMessage());
       }
     }
-    if (args[0] instanceof CypherDate)
-      return args[0];
-    if (args[0] instanceof CypherLocalDateTime)
-      return new CypherDate(((CypherLocalDateTime) args[0]).getValue().toLocalDate());
-    if (args[0] instanceof CypherDateTime)
-      return new CypherDate(((CypherDateTime) args[0]).getValue().toLocalDate());
-    if (args[0] instanceof LocalDate)
-      return new CypherDate((LocalDate) args[0]);
-    if (args[0] instanceof LocalDateTime)
-      return new CypherDate(((LocalDateTime) args[0]).toLocalDate());
-    if (args[0] instanceof CypherTemporalValue) {
+    // A native temporal (a parameter a driver sent, a value read off a map or a list) is the Cypher temporal its literal is (issue #13569)
+    final Object temporal = TemporalUtil.fromCoreJavaType(args[0]);
+    if (temporal instanceof CypherDate)
+      return temporal;
+    if (temporal instanceof CypherLocalDateTime)
+      return new CypherDate(((CypherLocalDateTime) temporal).getValue().toLocalDate());
+    if (temporal instanceof CypherDateTime)
+      return new CypherDate(((CypherDateTime) temporal).getValue().toLocalDate());
+    if (temporal instanceof CypherTemporalValue) {
       // Generic temporal -> extract date part
-      final CypherTemporalValue tv = (CypherTemporalValue) args[0];
+      final CypherTemporalValue tv = (CypherTemporalValue) temporal;
       final Object year = tv.getTemporalProperty("year");
       if (year != null)
         return new CypherDate(LocalDate.of(((Number) year).intValue(),

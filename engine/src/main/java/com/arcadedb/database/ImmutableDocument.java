@@ -29,6 +29,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.Interruptions;
 
 import java.io.IOException;
 import java.lang.reflect.Array;
@@ -102,6 +103,7 @@ public class ImmutableDocument extends BaseDocument {
       // A CLOSED DATABASE IS NOT A DAMAGED RECORD: LET THE CALLER SEE IT, AS db.query() DOES (SAME AT EVERY CATCH BELOW)
       throw e;
     } catch (Exception e) {
+      Interruptions.rethrowIfInterruption(e);
       LogManager.instance().log(this, Level.SEVERE, "Error on loading property '%s' from record %s", e, propertyName, rid);
       return null;
     }
@@ -122,6 +124,7 @@ public class ImmutableDocument extends BaseDocument {
     } catch (final DatabaseIsClosedException e) {
       throw e;
     } catch (Exception e) {
+      Interruptions.rethrowIfInterruption(e);
       // deserializeProperty() ALREADY CATCHES EVERYTHING ITSELF (SAME "Possible corrupted record" LOG) AND ANSWERS
       // absentValue/null PER ITS DOCUMENTED FOUND-VS-NOT-FOUND CONTRACT, SO THIS CATCH IS DEAD TODAY. absentValue,
       // NOT null, IS STILL THE RIGHT ANSWER IF IT EVER DOES FIRE: null WOULD SILENTLY BREAK THE "TELL ABSENT FROM
@@ -189,7 +192,13 @@ public class ImmutableDocument extends BaseDocument {
   public void reload() {
     // THE RELOADED CONTENT COMES FROM THE BUCKET, NOT FROM A PAGE WHOSE VERSION THIS RECORD KNOWS
     contentPageVersion = -1;
+    // #12642: a reload reads the content again, from the transaction's own image of the page when it holds the page modified, and
+    // the record that tracks such reads must know it the same way it does for a lazy load (see readContentOfLazyRecord())
+    final TransactionContext tx = tracksReadsFromOwnImage() ? ((DatabaseInternal) database).getTransactionIfExists() : null;
+    final long ownImageReads = tx != null ? tx.getOwnImageReads() : 0L;
     super.reload();
+    if (tx != null && tx.getOwnImageReads() != ownImageReads)
+      contentReadFromOwnImage();
   }
 
   /**
@@ -424,7 +433,7 @@ public class ImmutableDocument extends BaseDocument {
     checkForLazyLoading();
     final Binary content = requireBuffer("modify");
     content.rewind();
-    return markIfReadWentStale(new MutableDocument(database, type, rid, content.copyOfContent()));
+    return markIfReadWentStale(new MutableDocument(database, type, rid, copyOfContentForModify(content)));
   }
 
   @Override
@@ -512,6 +521,25 @@ public class ImmutableDocument extends BaseDocument {
         result.put(RID_PROPERTY, getIdentity().toString());
     }
     return result;
+  }
+
+  /**
+   * {@link #toMap(boolean) toMap(false)}, telling the caller whether it lost anything: the first part of the content that did not
+   * decode is described in {@code damage[0]}, which stays null when the whole record decoded. A consumer that needs the names of the
+   * record as well (a row serializer: a property that does not decode is still a column, with a null value) learns from it that
+   * the values it was handed are every property the record holds, and skips the second pass over the header that listing the names
+   * costs (issue #12979).
+   * <p>
+   * It reads the stored content directly, which a subclass may not answer its map and its names from (a remote record holds the map
+   * the server sent, and no content), so {@code ResultInternal.propertiesOf} reads a record through this method only when its class
+   * is one of the engine's own record classes or declares this method itself, matching its own {@code toMap(false)}.
+   *
+   * @return a NEW, mutable map the caller owns
+   */
+  public Map<String, Object> toMapReportingDamage(final String[] damage) {
+    checkForLazyLoading();
+    final Binary content = requireBuffer("convert to a map");
+    return database.getSerializer().deserializePropertiesReportingDamage(database, content, new EmbeddedModifierObject(this), rid, damage);
   }
 
   @Override
@@ -704,8 +732,13 @@ public class ImmutableDocument extends BaseDocument {
         // serializeForRead() INSTEAD OF serialize(): THIS IS A READ, SO AN EXTERNAL PROPERTY MUST BE RENDERED INLINE
         // INSTEAD OF BEING WRITTEN TO (OR DELETED FROM) THE PAIRED EXTERNAL BUCKET (ISSUE #5770).
         // getNotReusable() IS MANDATORY: FOR A DIRTY RECORD THE SERIALIZER RETURNS THE PER-THREAD SCRATCH BUFFER, WHICH
-        // IT COPIES OUT, WHILE THE ALREADY-PRIVATE BUFFER OF THE OTHER BRANCH IS KEPT AS IS
-        content = database.getSerializer().serializeForRead(database, loaded).getNotReusable();
+        // IT COPIES OUT, WHILE THE ALREADY-PRIVATE BUFFER OF THE OTHER BRANCH IS KEPT AS IS.
+        // THE STORED IMAGE IS KEPT WITH IT (ISSUE #12579): A WRITE OR A DELETE OF THIS RECORD COMPARES THAT ONE WITH THE SLOT, NOT
+        // THE CONTENT THE LISTENER RETURNED. A LISTENER THAT MODIFIES THE RECORD RELOADS IT ITSELF (NOTHING FIRES THEN), SO THE
+        // IMAGE LOADED LAST IS THE ONE THE RETURNED RECORD WAS BUILT FROM
+        final Binary stored = buffer != null ? buffer : content;
+        content = ListenerRewrittenBinary.of(database.getSerializer().serializeForRead(database, loaded).getNotReusable(),
+            stored.copyOfContent());
         buffer = content;
         // THE SERIALIZER HANDS THE BUFFER BACK AT 0 OR AT 1 DEPENDING ON THE BRANCH IT TOOK: NORMALISE IT SO THE
         // POSTCONDITION OF THIS METHOD HOLDS ON EVERY PATH

@@ -122,9 +122,9 @@ class FullTextSearchPlanningTest {
       final String limited = plan("SELECT FROM Doc WHERE " + A + " OR " + B + " ORDER BY $score DESC LIMIT 10");
       assertThat(limited).contains("MERGE BY $score DESC").doesNotContain("ORDER BY $score").doesNotContain("DISTINCT");
       assertThat(limited.split("best 10 needed", -1)).hasSize(3);
-      // a residual filter can reject rows a limit counted: the branches are merged, but not limited
-      assertThat(plan("SELECT FROM Doc WHERE (" + A + " OR " + B + ") AND n % 2 = 0 ORDER BY $score DESC LIMIT 10"))
-          .contains("MERGE BY $score DESC").doesNotContain(" needed)");
+      // a residual filter can reject rows a limit counted: each branch starts from the LIMIT and goes on past it in order
+      assertThat(plan("SELECT FROM Doc WHERE (" + A + " OR " + B + ") AND n % 2 = 0 ORDER BY $score DESC LIMIT 10").split(
+          "best 10 needed", -1)).hasSize(3);
     }
 
     @ParameterizedTest
@@ -842,7 +842,6 @@ class FullTextSearchPlanningTest {
           "\\(best 10 needed\\)", -1)).hasSize(3);
 
       for (final String query : new String[] { "SELECT FROM Doc WHERE " + SEARCH,
-          "SELECT FROM Doc WHERE " + SEARCH + " AND n > 5 LIMIT 10",
           "SELECT FROM Doc WHERE " + SEARCH + " OR n < 10 LIMIT 10",
           "SELECT FROM Doc WHERE " + SEARCH + " ORDER BY n LIMIT 10",
           "SELECT FROM Doc WHERE " + SEARCH + " ORDER BY $score ASC LIMIT 10",
@@ -855,6 +854,8 @@ class FullTextSearchPlanningTest {
           "SELECT FROM Doc WHERE " + SEARCH + " UNWIND tags LIMIT 10",
           "SELECT FROM bucket:Doc_0 WHERE " + SEARCH + " LIMIT 10" })
         assertThat(plan(query)).as(query).doesNotContain(" needed)");
+      // A residual filter keeps the limit as where the search starts: the rows it rejects are replaced from past it, in order
+      assertThat(plan("SELECT FROM Doc WHERE " + SEARCH + " AND n > 5 LIMIT 10")).contains("(best 10 needed)");
 
       // A bucket target keeps only that bucket's rows: the limit counts after the bucket filter, not before
       final List<RID> ordered = rids("SELECT FROM Doc WHERE " + SEARCH + " ORDER BY $score DESC");
@@ -918,9 +919,9 @@ class FullTextSearchPlanningTest {
       assertThat(plan(again)).contains("(best 10 needed)");
       assertSamePrefix(rows(again), complete, true);
 
-      // A residual filter keeps the complete search (no pushdown): same rows, same scores
+      // A residual filter keeps the limit as where the search starts: same rows, same scores as the complete search
       final String residual = "SELECT @rid AS rid, $score AS score FROM Doc WHERE " + SEARCH + " AND n >= 0 LIMIT 10";
-      assertThat(plan(residual)).doesNotContain(" needed)");
+      assertThat(plan(residual)).contains("(best 10 needed)");
       assertSamePrefix(rows(residual), complete, false);
     }
 

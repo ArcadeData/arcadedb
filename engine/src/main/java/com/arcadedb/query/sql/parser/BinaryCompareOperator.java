@@ -28,10 +28,40 @@ import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 public interface BinaryCompareOperator {
   boolean execute(DatabaseInternal database, Object left, Object right);
 
+  /**
+   * {@link #execute(DatabaseInternal, Object, Object)}, converting a string on the right through {@code rightConversion}, the memo
+   * of an execution whose right operand is the same string on every record (issue #12713). An operator that converts nothing
+   * answers as {@link #execute(DatabaseInternal, Object, Object)} does.
+   *
+   * @param rightConversion the memo of the right operand, or null to convert it as it is
+   */
+  default boolean execute(final DatabaseInternal database, final Object left, final Object right,
+      final ConstantOperandConversion rightConversion) {
+    return execute(database, left, right);
+  }
+
   BinaryCompareOperator copy();
 
   default boolean isRangeOperator() {
     return false;
+  }
+
+  /**
+   * The operator that answers {@code b op' a} exactly when this one answers {@code a op b} ({@code <} for {@code >}, {@code =} for
+   * itself), or {@code null} when the operator has no such mirror. A comparison written with the literal on the left is evaluated
+   * as its mirror, with the operand that carries the type on the left, as the conversion of the other operand expects (issue #12921).
+   */
+  default BinaryCompareOperator mirrored() {
+    return null;
+  }
+
+  /**
+   * Whether {@link #mirrored()} answers {@code right op' left} as this operator answers {@code left op right} for these two values,
+   * on top of the conversion it fixes. True for an operator that reads both operands alike; false for one that reads one side in a
+   * way of its own, such as the multi-value left operand of {@code <=>}, which has to stay where it was written.
+   */
+  default boolean isMirrorableWith(final Object left, final Object right) {
+    return true;
   }
 
   /**

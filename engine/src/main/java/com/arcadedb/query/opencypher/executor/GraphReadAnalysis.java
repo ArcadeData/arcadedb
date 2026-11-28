@@ -29,6 +29,7 @@ import com.arcadedb.query.opencypher.ast.ClauseEntry;
 import com.arcadedb.query.opencypher.ast.CollectExpression;
 import com.arcadedb.query.opencypher.ast.CountExpression;
 import com.arcadedb.query.opencypher.ast.CreateClause;
+import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.ast.DeleteClause;
 import com.arcadedb.query.opencypher.ast.ExistsExpression;
 import com.arcadedb.query.opencypher.ast.Expression;
@@ -58,6 +59,7 @@ import com.arcadedb.query.opencypher.ast.SetClause;
 import com.arcadedb.query.opencypher.ast.ShortestPathExpression;
 import com.arcadedb.query.opencypher.ast.StringMatchExpression;
 import com.arcadedb.query.opencypher.ast.TernaryLogicalExpression;
+import com.arcadedb.query.opencypher.ast.UnionStatement;
 import com.arcadedb.query.opencypher.ast.UnwindClause;
 import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.executor.steps.CallStep;
@@ -144,7 +146,31 @@ final class GraphReadAnalysis {
   static boolean graphReadFollows(final List<ClauseEntry> clausesInOrder, final int clauseIndex) {
     if (clauseIndex < 0)
       return false;
-    for (int i = clauseIndex + 1; i < clausesInOrder.size(); i++) {
+    return clausesReadGraph(clausesInOrder, clauseIndex + 1);
+  }
+
+  /**
+   * Tells whether the body of a {@code CALL { }} subquery reads the graph, on the terms of {@link #graphReadFollows}: a MATCH,
+   * a MERGE, a procedure call, a nested subquery, or an expression that goes back to the graph, in any branch of a UNION. A body
+   * that kept no clause order cannot be inspected and counts as a read (issue #13653).
+   */
+  static boolean subqueryBodyReadsGraph(final CypherStatement body) {
+    if (body == null)
+      return false;
+    if (body instanceof UnionStatement union) {
+      for (final CypherStatement branch : union.getQueries())
+        if (subqueryBodyReadsGraph(branch))
+          return true;
+      return false;
+    }
+    final List<ClauseEntry> clauses = body.getClausesInOrder();
+    if (clauses == null || clauses.isEmpty())
+      return true;
+    return clausesReadGraph(clauses, 0);
+  }
+
+  private static boolean clausesReadGraph(final List<ClauseEntry> clausesInOrder, final int fromIndex) {
+    for (int i = fromIndex; i < clausesInOrder.size(); i++) {
       final ClauseEntry laterClause = clausesInOrder.get(i);
       switch (laterClause.getType()) {
       case MATCH:

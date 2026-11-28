@@ -18,15 +18,17 @@
  */
 package com.arcadedb.function.map;
 
+import com.arcadedb.database.Document;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 /**
- * map.groupBy(list, key) - Group list of maps by a key value.
+ * map.groupBy(list, key) - Map each value of the key to the last element (map, node or relationship) that holds it,
+ * as APOC does. Elements without the key are skipped. {@code map.groupByMulti} keeps every element per key.
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -48,34 +50,44 @@ public class MapGroupBy extends AbstractMapFunction {
 
   @Override
   public String getDescription() {
-    return "Group a list of maps by a key property into a map of lists";
+    return "Group a list of maps, nodes or relationships by a key property into a map of the last element per key value";
   }
 
   @Override
-  @SuppressWarnings("unchecked")
   public Object execute(final Object[] args, final CommandContext context) {
-    if (!(args[0] instanceof List)) {
-      throw new IllegalArgumentException("map.groupBy() first argument must be a list");
+    final List<Object> list = elements(args, getName());
+    final Map<String, Object> result = new LinkedHashMap<>();
+    if (args[1] == null)
+      return result;
+
+    final String key = args[1].toString();
+    for (final Object element : list) {
+      final Object groupKey = groupKey(element, key);
+      if (groupKey != null)
+        result.put(groupKey.toString(), element);
     }
-
-    final String key = args[1] != null ? args[1].toString() : null;
-    if (key == null) {
-      throw new IllegalArgumentException("map.groupBy() key cannot be null");
-    }
-
-    final List<?> list = (List<?>) args[0];
-    final Map<Object, List<Object>> result = new LinkedHashMap<>();
-
-    for (final Object item : list) {
-      if (item instanceof Map) {
-        final Map<String, Object> map = (Map<String, Object>) item;
-        final Object groupKey = map.get(key);
-        final String keyStr = groupKey != null ? groupKey.toString() : "null";
-
-        result.computeIfAbsent(keyStr, k -> new ArrayList<>()).add(item);
-      }
-    }
-
     return result;
+  }
+
+  /**
+   * The list argument of map.groupBy and map.groupByMulti. A list stored as a primitive array is a list too (issue #11582).
+   */
+  static List<Object> elements(final Object[] args, final String functionName) {
+    final List<Object> list = CypherFunctionHelper.asListOrNull(args[0]);
+    if (list == null)
+      throw new IllegalArgumentException(functionName + "() first argument must be a list");
+    return list;
+  }
+
+  /**
+   * The value an element is grouped by: the map entry or the node/relationship property, null for anything else.
+   */
+  @SuppressWarnings("unchecked")
+  static Object groupKey(final Object element, final String key) {
+    if (element instanceof Map)
+      return ((Map<String, Object>) element).get(key);
+    if (element instanceof Document document)
+      return document.get(key);
+    return null;
   }
 }

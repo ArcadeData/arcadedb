@@ -33,12 +33,23 @@ public class NeOperator extends SimpleNode implements BinaryCompareOperator {
   }
 
   @Override
+  public boolean execute(final DatabaseInternal database, final Object left, final Object right,
+      final ConstantOperandConversion rightConversion) {
+    return !QueryOperatorEquals.equals(left, right, rightConversion);
+  }
+
+  @Override
   public String toString() {
     return "!=";
   }
 
   @Override
   public NeOperator copy() {
+    return this;
+  }
+
+  @Override
+  public NeOperator mirrored() {
     return this;
   }
 

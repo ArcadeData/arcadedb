@@ -46,11 +46,15 @@ import java.nio.channels.WritableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.FileAlreadyExistsException;
+import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayDeque;
 import java.util.Arrays;
 import java.util.Deque;
@@ -356,6 +360,49 @@ public class FileUtils {
     // A DRIVE ROOT IS EXACTLY THREE CHARACTERS: A LETTER, A COLON AND THE SEPARATOR. "C:/data/" IS NOT ONE, AND ITS
     // TRAILING SEPARATOR IS THE ORDINARY KIND
     return path.length() == 3 && path.charAt(1) == ':' && Character.isLetter(path.charAt(0));
+  }
+
+  /**
+   * Sums the sizes of the regular files under {@code directory}, reading each size from the attributes the walk already
+   * fetched. Background work (columnar segment replacement, WAL segments) creates and removes files there all the time, so a
+   * file or directory that disappears between being listed and being measured counts as 0 bytes instead of failing the sum
+   * (issue #12825). A missing {@code directory} measures 0. Any other I/O error is thrown.
+   */
+  public static long getDirectorySize(final Path directory) throws IOException {
+    final DirectorySizeVisitor visitor = new DirectorySizeVisitor();
+    Files.walkFileTree(directory, visitor);
+    return visitor.getTotal();
+  }
+
+  static class DirectorySizeVisitor extends SimpleFileVisitor<Path> {
+    private long total;
+
+    @Override
+    public FileVisitResult visitFile(final Path file, final BasicFileAttributes attrs) throws IOException {
+      if (attrs.isRegularFile())
+        total += attrs.size();
+      return FileVisitResult.CONTINUE;
+    }
+
+    @Override
+    public FileVisitResult visitFileFailed(final Path file, final IOException exc) throws IOException {
+      // REMOVED AFTER BEING LISTED: ITS ATTRIBUTES, OR THE DIRECTORY ITSELF, CANNOT BE OPENED ANY MORE
+      if (exc instanceof NoSuchFileException)
+        return FileVisitResult.CONTINUE;
+      throw exc;
+    }
+
+    @Override
+    public FileVisitResult postVisitDirectory(final Path dir, final IOException exc) throws IOException {
+      // THE DIRECTORY WAS REMOVED WHILE ITS ENTRIES WERE BEING READ
+      if (exc == null || exc instanceof NoSuchFileException)
+        return FileVisitResult.CONTINUE;
+      throw exc;
+    }
+
+    long getTotal() {
+      return total;
+    }
   }
 
   public static void deleteRecursively(final File rootFile) {
@@ -758,8 +805,9 @@ public class FileUtils {
    *
    * @param dir the directory to force; ignored when {@code null}
    *
-   * @return {@code true} when the directory was fsync'd, {@code false} when it could not be or fsync is off. Returned
-   * for the test that asserts the fsync actually happens on the platforms that support it - no caller acts on it
+   * @return {@code true} when the directory was fsync'd, {@code false} when it could not be or fsync is off
+   * ({@link #directoryForceSkipped()} tells the two apart). {@code FileManager} keeps a file's directory obligation owed
+   * after a failed force
    */
   public static boolean forceDirectory(final Path dir) {
     if (dir == null || NO_DIRECTORY_SYNC_ON_THIS_PLATFORM || !GlobalConfiguration.FILE_SYNC.getValueAsBoolean())
@@ -777,6 +825,14 @@ public class FileUtils {
       reportNoDirectorySync(dir);
       return false;
     }
+  }
+
+  /**
+   * Whether {@link #forceDirectory} skips every directory without trying: on a platform with no directory fsync, or while
+   * {@link GlobalConfiguration#FILE_SYNC} is off. Its {@code false} then is not a failure, and nothing is left to retry.
+   */
+  public static boolean directoryForceSkipped() {
+    return NO_DIRECTORY_SYNC_ON_THIS_PLATFORM || !GlobalConfiguration.FILE_SYNC.getValueAsBoolean();
   }
 
   /**

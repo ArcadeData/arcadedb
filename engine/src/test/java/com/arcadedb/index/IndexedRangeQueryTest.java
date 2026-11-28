@@ -1421,6 +1421,10 @@ class IndexedRangeQueryTest {
       STORED.put("STRING", "abc");
       STORED.put("DATE", LocalDate.of(2020, 1, 1));
       STORED.put("DATETIME", LocalDateTime.of(2020, 1, 1, 0, 0));
+      // Whole-value keys (issue #12792). A singleton list, so that the SQL coercion of a scalar into the list it is compared with
+      // (li = 7 against [7]) is on the grid
+      STORED.put("LIST", List.of(7));
+      STORED.put("MAP", Map.of("a", 7));
 
       OPERANDS.put("String", "zzz");
       OPERANDS.put("NumericString", "5");
@@ -1439,18 +1443,21 @@ class IndexedRangeQueryTest {
     /**
      * The operand kinds each property type cannot hold. For an equality or an IN they match no row, and the index has to answer so, as the
      * scan does. For a range the scan orders some of them across kinds by what they convert to (a LocalDate against a DECIMAL by its epoch
-     * number, a Boolean against it as 1), a leniency the index cannot reproduce because its keys have one order, one kind: there the index
-     * may decline (no rows) but must neither throw nor answer a row the scan does not.
+     * number), a leniency the index cannot reproduce because its keys have one order, one kind: there the index may decline (no rows) but
+     * must neither throw nor answer a row the scan does not. A Boolean is no number on either path, and a numeric string against a DATETIME
+     * is the epoch count the scan reads it as on both (issue #12936): neither is listed, so the index has to agree.
      */
     private static final Map<String, List<String>> FOREIGN = Map.of(
         "BOOLEAN", List.of("LocalDate", "LocalDateTime", "List", "Map"),
-        "INTEGER", List.of("Boolean", "LocalDate", "LocalDateTime", "List", "Map"),
-        "LONG", List.of("Boolean", "LocalDate", "LocalDateTime", "List", "Map"),
-        "DOUBLE", List.of("Boolean", "LocalDate", "LocalDateTime", "List", "Map"),
-        "DECIMAL", List.of("Boolean", "LocalDate", "LocalDateTime", "List", "Map"),
+        "INTEGER", List.of("LocalDate", "LocalDateTime", "List", "Map"),
+        "LONG", List.of("LocalDate", "LocalDateTime", "List", "Map"),
+        "DOUBLE", List.of("LocalDate", "LocalDateTime", "List", "Map"),
+        "DECIMAL", List.of("LocalDate", "LocalDateTime", "List", "Map"),
         "STRING", List.of("List", "Map"),
-        "DATE", List.of("Boolean", "List", "Map", "NumericString"),
-        "DATETIME", List.of("Boolean", "List", "Map", "NumericString"));
+        "DATE", List.of("List", "Map"),
+        "DATETIME", List.of("List", "Map"),
+        "LIST", List.of("String", "NumericString", "Integer", "Long", "Double", "BigDecimal", "Boolean", "LocalDate", "LocalDateTime", "Map"),
+        "MAP", List.of("String", "NumericString", "Integer", "Long", "Double", "BigDecimal", "Boolean", "LocalDate", "LocalDateTime", "List"));
 
     /** SQL shapes, {@code :x} the operand and {@code :v} what the property holds, so an IN can hold one element that matches. */
     private static final List<String> SQL_EQUALITIES = List.of("p = :x", "p IN [:x]", "p IN [:x, :v]", "p IN :x");
@@ -1530,7 +1537,9 @@ class IndexedRangeQueryTest {
           database.command("sql", "CREATE PROPERTY " + type + ".id INTEGER").close();
           database.command("sql", "CREATE PROPERTY " + type + ".p " + property).close();
         }
-        database.command("sql", "CREATE INDEX ON I_" + property + " (p) " + indexKind).close();
+        // A HASH index refuses a LIST or MAP key: the whole-value types are indexed by an LSM tree only
+        final boolean hashOfWholeValue = indexKind.endsWith("_HASH") && (property.equals("LIST") || property.equals("MAP"));
+        database.command("sql", "CREATE INDEX ON I_" + property + " (p) " + (hashOfWholeValue ? "UNIQUE" : indexKind)).close();
         database.transaction(() -> {
           for (final String prefix : new String[] { "I_", "N_" })
             database.newVertex(prefix + property).set("id", 1).set("p", stored.getValue()).save();

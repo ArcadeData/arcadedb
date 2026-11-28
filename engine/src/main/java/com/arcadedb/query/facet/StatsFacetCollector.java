@@ -42,7 +42,8 @@ import java.util.function.LongConsumer;
  * values, as {@code count(p)}, {@code min(p)}, {@code max(p)}, {@code sum(p)} and {@code avg(p)} give them, value and Java type: min and
  * max in the type a row of the property holds (an {@code Integer} for INTEGER, a {@code Float} for FLOAT, the temporal a row of a date
  * property reads back as), sum and average as those functions build them ({@link NumericSum}, {@link SQLFunctionAverage#average}): an
- * INTEGER sum widening to {@code Long}, a {@code long} overflow to {@code BigDecimal}, a FLOAT sum in float arithmetic. Over dates the
+ * INTEGER sum widening to {@code Long}, a {@code long} overflow to {@code BigDecimal}, a FLOAT or DOUBLE sum the exact sum rounded once
+ * (#12696). Over dates the
  * sum and average are null (SQL refuses to sum dates), and so they are over no value.
  * <p>
  * A LONG or DOUBLE column visits {@code matches AND live} ({@link PositionBitmap#forEachAnd}); a segment with no matched live row is
@@ -57,7 +58,7 @@ import java.util.function.LongConsumer;
  * ({@link NumericSum#merge}). What SQL refuses makes the facet {@code unavailable}: a value that is no number and no date
  * ({@value #NOT_A_NUMBER_OR_DATE}), numbers and dates in one facet ({@value #MIXED_KINDS}).
  * <p>
- * Memory: the accumulators are reserved ({@value #STATE_BYTES} bytes, an upper bound of the sum, a widened decimal total and the
+ * Memory: the accumulators are reserved ({@link #STATE_BYTES} bytes, an upper bound of the sum, a widened decimal total and the
  * returned extremes) from {@link FacetMemoryBudget} at the first bucket, before they are allocated; a refusal makes the facet
  * {@code unavailable} ({@code memory budget}) and resets every accumulator. Not thread safe: driven by one query thread.
  */
@@ -67,8 +68,11 @@ public final class StatsFacetCollector implements FacetCollector {
   static final String NOT_A_NUMBER_OR_DATE = "not a number or a date";
   /** The reason of a facet that met numbers and dates: SQL's {@code min()} cannot compare them. */
   static final String MIXED_KINDS          = "numbers and dates mixed";
-  /** The heap of the accumulators: the {@link NumericSum}, a {@code BigDecimal} total, the boxed or temporal min and max. */
-  static final long   STATE_BYTES          = 256;
+  /**
+   * The heap of the accumulators: the {@link NumericSum} with the digits of a floating-point total at their largest, a
+   * {@code BigDecimal} total, the boxed or temporal min and max.
+   */
+  static final long   STATE_BYTES          = 256 + NumericSum.MAX_DIGITS_HEAP_BYTES;
 
   // how a column value feeds the sum
   private static final byte NONE   = 0;
@@ -440,9 +444,12 @@ public final class StatsFacetCollector implements FacetCollector {
     if (current == null)
       return candidate;
     if (current instanceof Number left && candidate instanceof Number right) {
-      final Number[] cast = Type.castComparableNumber(left, right);
-      current = cast[0];
-      candidate = cast[1];
+      // a pair the cast leaves as it is skips it: the cast allocates a pair for every value folded (#13009)
+      if (!Type.castComparableNumberIsIdentity(left, right)) {
+        final Number[] cast = Type.castComparableNumber(left, right);
+        current = cast[0];
+        candidate = cast[1];
+      }
     } else if (current.getClass() != candidate.getClass() && !(DateUtils.isDate(current) && DateUtils.isDate(candidate)))
       throw new IllegalArgumentException("Cannot compare a " + current.getClass().getSimpleName() + " with a " + candidate.getClass()
           .getSimpleName());

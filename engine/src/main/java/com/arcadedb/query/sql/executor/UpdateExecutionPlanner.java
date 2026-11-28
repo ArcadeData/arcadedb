@@ -19,6 +19,8 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSemanticException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
 import com.arcadedb.query.sql.parser.Batch;
 import com.arcadedb.query.sql.parser.Bucket;
@@ -145,10 +147,12 @@ public class UpdateExecutionPlanner {
 
   private void handleSave(final UpdateExecutionPlan result, final Bucket bucket, final CommandContext context) {
     if (bucket != null) {
-      final String bucketName =
-          bucket.getBucketName() != null ?
-              bucket.getBucketName() :
-              context.getDatabase().getSchema().getBucketById(bucket.getBucketNumber()).getName();
+      // a name, an id or an input parameter (bucket::name, bucket:?) is resolved as the read side of the statement resolves it (#12480)
+      String bucketName = bucket.resolveName(context.getInputParameters());
+      if (bucketName == null && bucket.getBucketNumber() != null)
+        bucketName = context.getDatabase().getSchema().getBucketById(bucket.getBucketNumber()).getName();
+      if (bucketName == null)
+        throw new SchemaException("Bucket '" + bucket + "' does not exist");
       result.chain(new SaveElementStep(context, new Identifier(bucketName), false));
     } else
       result.chain(new SaveElementStep(context, null, false));
@@ -215,10 +219,37 @@ public class UpdateExecutionPlanner {
         case UpdateOperations.TYPE_PUT:
         case UpdateOperations.TYPE_INCREMENT:
         case UpdateOperations.TYPE_ADD:
-          throw new CommandExecutionException("Cannot execute with UPDATE PUT/ADD/INCREMENT new executor: " + op);
+          throw unsupportedOperation(op, "UPDATE");
         }
       }
     }
+  }
+
+  /**
+   * The refusal of {@code ADD}, {@code PUT} and {@code INCREMENT}, which the grammar accepts and no executor implements. The
+   * statement is well-formed and the engine refuses its form on purpose, so it is a semantic refusal (HTTP 400) naming the
+   * {@code SET} form that does the same (issue #12795, where it answered 500 as a {@link CommandExecutionException}).
+   *
+   * @param statement the statement name, for the message
+   */
+  static CommandSemanticException unsupportedOperation(final UpdateOperations op, final String statement) {
+    final String operation;
+    final String alternative;
+    switch (op.getType()) {
+    case UpdateOperations.TYPE_ADD -> {
+      operation = "ADD";
+      alternative = "append to a list with SET, for example `SET tags = tags || 'x'`";
+    }
+    case UpdateOperations.TYPE_PUT -> {
+      operation = "PUT";
+      alternative = "set a map entry with SET, for example `SET m.k2 = 2`";
+    }
+    default -> {
+      operation = "INCREMENT";
+      alternative = "increment with SET, for example `SET n = n + 1`";
+    }
+    }
+    return new CommandSemanticException(statement + " ... " + operation + " is not supported (`" + op + "`): " + alternative);
   }
 
   /**

@@ -286,4 +286,145 @@ class ForwardedRequestIdContextTest {
     assertThat(ForwardedRequestIdContext.clientKey()).isNull();
     assertThat(ForwardedRequestIdContext.requestId()).isEqualTo("req-8347");
   }
+
+  // ---------------------------------------------------------------------------------------------------------------
+  // The leader's answer to a write this request forwarded and the leader committed
+  // ---------------------------------------------------------------------------------------------------------------
+
+  /** A thread no HTTP handler armed keeps nothing: it would hold a body of any size until it served a request. */
+  @Test
+  void anUnarmedThreadKeepsNoLeaderAnswer() {
+    ForwardedRequestIdContext.publishCommittedWriteAnswer("{\"result\":[]}");
+
+    assertThat(ForwardedRequestIdContext.takeCommittedWriteAnswer()).isNull();
+  }
+
+  @Test
+  void anArmedRequestThatForwardedOneWriteHandsItsAnswerBackOnce() {
+    ForwardedRequestIdContext.armCommittedWriteAnswer();
+    ForwardedRequestIdContext.publishCommittedWriteAnswer("{\"result\":[{\"k\":1}]}");
+
+    assertThat(ForwardedRequestIdContext.takeCommittedWriteAnswer()).isEqualTo("{\"result\":[{\"k\":1}]}");
+    assertThat(ForwardedRequestIdContext.takeCommittedWriteAnswer()).as("consumed").isNull();
+  }
+
+  /** With several forwards the latest answer covers a part of the request, so none is a safe answer to it. */
+  @Test
+  void aRequestThatForwardedSeveralWritesHasNoSingleAnswer() {
+    ForwardedRequestIdContext.armCommittedWriteAnswer();
+    ForwardedRequestIdContext.publishCommittedWriteAnswer("first");
+    ForwardedRequestIdContext.publishCommittedWriteAnswer("second");
+
+    assertThat(ForwardedRequestIdContext.takeCommittedWriteAnswer()).isNull();
+  }
+
+  @Test
+  void aRequestThatForwardedNoWriteHasNoAnswer() {
+    ForwardedRequestIdContext.armCommittedWriteAnswer();
+
+    assertThat(ForwardedRequestIdContext.takeCommittedWriteAnswer()).isNull();
+  }
+
+  /**
+   * Issue #12889: a forward the leader never answered, after one it did, is a write of the request that did not run: the first
+   * answer is the answer to a part of the request, and the failure of the second is the one the client has to be told.
+   */
+  @Test
+  void aForwardThatFailedAfterAnAnsweredOneLeavesNoAnswer() {
+    ForwardedRequestIdContext.armCommittedWriteAnswer();
+    ForwardedRequestIdContext.writeForwardStarted();
+    ForwardedRequestIdContext.publishCommittedWriteAnswer("first");
+    ForwardedRequestIdContext.writeForwardEnded();
+    ForwardedRequestIdContext.writeForwardStarted();
+    ForwardedRequestIdContext.writeForwardEnded();
+
+    assertThat(ForwardedRequestIdContext.takeCommittedWriteAnswer()).isNull();
+  }
+
+  /** A first attempt the leader refused and a second one it answered: the request wrote once, and that answer is its own. */
+  @Test
+  void aRefusedForwardBeforeTheAnsweredOneKeepsTheAnswer() {
+    ForwardedRequestIdContext.armCommittedWriteAnswer();
+    ForwardedRequestIdContext.writeForwardStarted();
+    ForwardedRequestIdContext.writeForwardEnded();
+    ForwardedRequestIdContext.writeForwardStarted();
+    ForwardedRequestIdContext.publishCommittedWriteAnswer("answer");
+    ForwardedRequestIdContext.writeForwardEnded();
+
+    assertThat(ForwardedRequestIdContext.takeCommittedWriteAnswer()).isEqualTo("answer");
+  }
+
+  /** What fails after the leader answered, on this node, is not a forward that failed: the answer stands. */
+  @Test
+  void aFailureAfterTheLeaderAnsweredKeepsTheAnswer() {
+    ForwardedRequestIdContext.armCommittedWriteAnswer();
+    ForwardedRequestIdContext.writeForwardStarted();
+    ForwardedRequestIdContext.publishCommittedWriteAnswer("answer");
+    // the forward then fails past the answer (the wait for the local apply, the parsing of the rows): it ends all the same
+    ForwardedRequestIdContext.writeForwardEnded();
+
+    assertThat(ForwardedRequestIdContext.takeCommittedWriteAnswer()).isEqualTo("answer");
+  }
+
+  /**
+   * A command this node executed itself ran here: its effects are not in the leader's answer to a write it issued, so that answer
+   * is not the answer to the request, wherever in the request the local execution came.
+   */
+  @Test
+  void aRequestThatExecutedACommandLocallyHasNoAnswer() {
+    ForwardedRequestIdContext.armCommittedWriteAnswer();
+    ForwardedRequestIdContext.markExecutedLocally();
+    ForwardedRequestIdContext.publishCommittedWriteAnswer("answer");
+    assertThat(ForwardedRequestIdContext.takeCommittedWriteAnswer()).isNull();
+
+    ForwardedRequestIdContext.armCommittedWriteAnswer();
+    ForwardedRequestIdContext.publishCommittedWriteAnswer("answer");
+    ForwardedRequestIdContext.markExecutedLocally();
+    assertThat(ForwardedRequestIdContext.takeCommittedWriteAnswer()).isNull();
+  }
+
+  /** The next request on the pooled thread starts clean: the local execution of the previous one is not held against it. */
+  @Test
+  void armingForgetsWhatThePreviousRequestDid() {
+    ForwardedRequestIdContext.armCommittedWriteAnswer();
+    ForwardedRequestIdContext.markExecutedLocally();
+    ForwardedRequestIdContext.writeForwardStarted();
+
+    ForwardedRequestIdContext.armCommittedWriteAnswer();
+    ForwardedRequestIdContext.writeForwardStarted();
+    ForwardedRequestIdContext.publishCommittedWriteAnswer("answer");
+    ForwardedRequestIdContext.writeForwardEnded();
+
+    assertThat(ForwardedRequestIdContext.takeCommittedWriteAnswer()).isEqualTo("answer");
+  }
+
+  /** A thread no handler armed tracks no forward either: the ends of one are no-ops and the next arming starts from nothing. */
+  @Test
+  void anUnarmedThreadTracksNoForward() {
+    ForwardedRequestIdContext.writeForwardStarted();
+    ForwardedRequestIdContext.writeForwardEnded();
+    ForwardedRequestIdContext.armCommittedWriteAnswer();
+    ForwardedRequestIdContext.publishCommittedWriteAnswer("answer");
+
+    assertThat(ForwardedRequestIdContext.takeCommittedWriteAnswer()).isEqualTo("answer");
+  }
+
+  /** The pooled thread's next request must not inherit the answer of the previous one: it would be answered with it. */
+  @Test
+  void clearingAndRearmingDropTheAnswerOfThePreviousRequest() {
+    ForwardedRequestIdContext.armCommittedWriteAnswer();
+    ForwardedRequestIdContext.publishCommittedWriteAnswer("previous");
+    ForwardedRequestIdContext.clear();
+    assertThat(ForwardedRequestIdContext.takeCommittedWriteAnswer()).isNull();
+
+    ForwardedRequestIdContext.armCommittedWriteAnswer();
+    ForwardedRequestIdContext.publishCommittedWriteAnswer("previous");
+    ForwardedRequestIdContext.armCommittedWriteAnswer();
+    assertThat(ForwardedRequestIdContext.takeCommittedWriteAnswer()).isNull();
+
+    ForwardedRequestIdContext.armCommittedWriteAnswer();
+    ForwardedRequestIdContext.publishCommittedWriteAnswer("previous");
+    ForwardedRequestIdContext.set("req-next");
+    assertThat(ForwardedRequestIdContext.takeCommittedWriteAnswer()).isNull();
+  }
 }

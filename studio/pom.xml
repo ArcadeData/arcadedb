@@ -126,4 +126,41 @@
         </plugins>
     </build>
 
+    <profiles>
+        <!-- CycloneDX SBOM of the npm packages bundled in the Studio jar (dev dependencies excluded), written to
+             target/studio.cdx.json from package-lock.json by .github/scripts/npm-lock-to-cdx.py. The package
+             module nests it into each distribution SBOM that ships Studio: the Maven SBOM sees only
+             arcadedb-studio.jar, so without it the release SBOM would not list the JavaScript libraries the
+             browser actually runs. Release builds only (-Pdeploy); needs python3 on the PATH, works offline. -->
+        <profile>
+            <id>deploy</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <version>${exec-maven-plugin.version}</version>
+                        <executions>
+                            <execution>
+                                <id>studio-sbom</id>
+                                <phase>package</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>python3</executable>
+                                    <arguments>
+                                        <argument>${project.basedir}/../.github/scripts/npm-lock-to-cdx.py</argument>
+                                        <argument>${project.basedir}/package-lock.json</argument>
+                                        <argument>${project.build.directory}/studio.cdx.json</argument>
+                                    </arguments>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+
 </project>

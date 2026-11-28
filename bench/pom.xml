@@ -30,7 +30,10 @@
     </parent>
 
     <properties>
+        <!-- Nothing here is published to Maven Central, so no SBOM is built for it. -->
+        <cyclonedx.skip>true</cyclonedx.skip>
         <allowIncompleteProjects>true</allowIncompleteProjects>
+        <postgresql.version>42.7.15</postgresql.version>
     </properties>
 
     <artifactId>arcadedb-bench</artifactId>
@@ -75,6 +78,11 @@
 
     <dependencies>
         <dependency>
+            <groupId>org.hdrhistogram</groupId>
+            <artifactId>HdrHistogram</artifactId>
+            <version>2.2.2</version>
+        </dependency>
+        <dependency>
             <groupId>com.arcadedb</groupId>
             <artifactId>arcadedb-network</artifactId>
             <version>${project.parent.version}</version>
@@ -100,6 +108,17 @@
             <groupId>org.testcontainers</groupId>
             <artifactId>testcontainers</artifactId>
             <version>${testcontainers.version}</version>
+        </dependency>
+        <dependency>
+            <!-- the wire-protocol workloads drive the server over Bolt and PostgreSQL; shaded into the bench jar -->
+            <groupId>org.neo4j.driver</groupId>
+            <artifactId>neo4j-java-driver</artifactId>
+            <version>${neo4j-driver.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <version>${postgresql.version}</version>
         </dependency>
         <dependency>
             <groupId>ch.qos.logback</groupId>

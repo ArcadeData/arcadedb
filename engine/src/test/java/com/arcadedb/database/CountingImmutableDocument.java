@@ -25,7 +25,7 @@ import java.util.Set;
 
 /**
  * A lazily loaded {@link ImmutableDocument} that counts the reads that walk the record header: {@link #get(String)},
- * {@link #getIfPresent(String, Object)}, {@link #getPropertyNames()} and {@link #toMap(boolean)} each deserialize from the first byte
+ * {@link #getIfPresent(String, Object)}, {@link #getPropertyNames()}, {@link #toMap(boolean)} and {@link #toMapReportingDamage(String[])} each deserialize from the first byte
  * of the header, so their sum is how many passes over the record a consumer paid (issue #10098).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -63,6 +63,12 @@ public class CountingImmutableDocument extends ImmutableDocument {
   public Map<String, Object> toMap(final boolean includeMetadata) {
     ++maps;
     return super.toMap(includeMetadata);
+  }
+
+  @Override
+  public Map<String, Object> toMapReportingDamage(final String[] damage) {
+    ++maps;
+    return super.toMapReportingDamage(damage);
   }
 
   @Override

@@ -144,11 +144,17 @@ final class CountStarShapeDetector {
 
     // The edge types of the alternatives, each family once: a type whose super-type is listed too is already counted by it.
     // Only for the plan's sake: the provider and the edge lists count a union of the types, so an edge whose type reaches
-    // two listed families (an edge type may have several super-types) is counted once either way
+    // two listed families (an edge type may have several super-types) is counted once either way. A name may be an alias: the
+    // type and its alias are one family, so one name is kept per type (issue #12968)
     final List<String> declared = new ArrayList<>(rel.getTypes().size());
-    for (final String name : rel.getTypes())
-      if (schema.getTypeOrNull(name) instanceof EdgeType && !declared.contains(name))
+    final List<DocumentType> declaredTypes = new ArrayList<>(rel.getTypes().size());
+    for (final String name : rel.getTypes()) {
+      final DocumentType type = schema.getTypeOrNull(name);
+      if (type instanceof EdgeType && !declaredTypes.contains(type)) {
         declared.add(name);
+        declaredTypes.add(type);
+      }
+    }
     final List<String> types = new ArrayList<>(declared.size());
     for (final String name : declared)
       if (!isSubTypeOfAnother(schema, name, declared))
@@ -159,9 +165,15 @@ final class CountStarShapeDetector {
     return new EdgeCountOp(types.toArray(new String[0]), undirected);
   }
 
+  /**
+   * Whether the type {@code name} resolves to is a sub-type of the type another of the {@code names} resolves to. The types are
+   * compared, not the names: {@code isSubTypeOf} answers for an alias as for the type's name, so a type and its own alias would
+   * each be taken for a sub-type of the other and both dropped (issue #12968).
+   */
   private static boolean isSubTypeOfAnother(final Schema schema, final String name, final List<String> names) {
+    final DocumentType type = schema.getType(name);
     for (final String other : names)
-      if (!other.equals(name) && schema.getType(name).isSubTypeOf(other))
+      if (type != schema.getType(other) && type.isSubTypeOf(other))
         return true;
     return false;
   }
@@ -403,12 +415,13 @@ final class CountStarShapeDetector {
       final String[] nodeLabels, final String[] edgeTypes, final Vertex.DIRECTION[] directions,
       final VertexPredicate[] nodePredicates, final CommandContext context) {
     final PathPattern keyed = HopEdgeTrackingAnalyzer.withWhereEqualities(List.of(pathPattern), where).getFirst();
-    final UniqueKeyAnchor first = plan.stepBuilder.matchSteps.uniqueKeyAnchorOf(keyed.getNode(0), context);
+    final UniqueKeyAnchor first = plan.stepBuilder.matchSteps.uniqueKeyAnchorOf(keyed.getNode(0), pathPattern.getNode(0), context);
     if (first != null)
       return new PropagateChainOp(nodeLabels, edgeTypes, directions, first, nodePredicates);
     if (IncomingEdgeLookup.isAnyUnidirectional(db.getSchema(), edgeTypes))
       return null;
-    final UniqueKeyAnchor last = plan.stepBuilder.matchSteps.uniqueKeyAnchorOf(keyed.getNode(edgeTypes.length), context);
+    final UniqueKeyAnchor last = plan.stepBuilder.matchSteps.uniqueKeyAnchorOf(keyed.getNode(edgeTypes.length),
+        pathPattern.getNode(edgeTypes.length), context);
     if (last == null)
       return null;
     return new PropagateChainOp(reversed(nodeLabels), reversed(edgeTypes), reversedDirections(directions), last,
@@ -597,7 +610,7 @@ final class CountStarShapeDetector {
    * Rather than teach the operator to answer 0 for those, they are left to the ordinary pipeline, which is the only
    * thing here that knows what each of them means - and which is what answered them before this existed.
    */
-  private static RID boundVertexRid(final Database db, final Object bound) {
+  static RID boundVertexRid(final Database db, final Object bound) {
     if (!(bound instanceof Identifiable identifiable))
       return null;
 
@@ -608,7 +621,7 @@ final class CountStarShapeDetector {
   }
 
   /** What a bound name holds: a row carries its element inside a {@link Result}. */
-  private static Object boundElement(final Object value) {
+  static Object boundElement(final Object value) {
     return value instanceof Result result ? result.getElement().orElse(null) : value;
   }
 
@@ -699,9 +712,21 @@ final class CountStarShapeDetector {
     // guard. An inline property map is a per-vertex filter on the central node (issue #9595), written on
     // one occurrence of a mandatory clause: in an OPTIONAL clause it is a condition of that arm alone, which
     // a filter on the central node does not express.
+    // A label on the central node inside an OPTIONAL clause is a condition of that arm alone, so it is not taken as the
+    // type to enumerate: it is checked against the mandatory label after this loop (issue #12726).
     NodePattern centralWithProperties = null;
+    boolean centralBound = false;
+    boolean optionalLabeled = false;
     for (final MatchClause mc : statement.getMatchClauses()) {
       if (!mc.hasPathPatterns()) continue;
+      // The degree product scores an OPTIONAL arm as max(1, degree) per central vertex, which stands for the rows only
+      // when a mandatory clause bound the central node BEFORE it. A leading OPTIONAL clause binds the central node
+      // itself and the mandatory clause after it keeps only what it reached, so it is no optional arm (issue #12726).
+      // Every clause of a star holds the central variable (the arm loop below declines one that does not).
+      if (mc.isOptional() && !centralBound)
+        return null;
+      if (!mc.isOptional())
+        centralBound = true;
       for (final PathPattern pp : mc.getPathPatterns())
         for (int i = 0; i <= pp.getRelationshipCount(); i++) {
           final NodePattern node = pp.getNode(i);
@@ -716,6 +741,10 @@ final class CountStarShapeDetector {
           }
           if (!node.hasLabels())
             continue;
+          if (mc.isOptional()) {
+            optionalLabeled = true;
+            continue;
+          }
           if (!hasPushDownRepresentableLabel(node))
             return null;
           if (labelsConflict(centralLabel, node.getLabels().get(0)))
@@ -723,6 +752,10 @@ final class CountStarShapeDetector {
           centralLabel = node.getLabels().get(0);
         }
     }
+    // A label written on the central node inside an OPTIONAL clause never removes a row, so it may only repeat the
+    // label a mandatory occurrence already enforces (issue #12726)
+    if (optionalLabeled && !optionalLabelsRepeat(centralVar, centralLabel))
+      return null;
 
     // The WHERE of each clause may hold conjuncts that read one node of the star: a mandatory clause filters the
     // central node or the node a mandatory arm reaches, an OPTIONAL clause only what its own arms reach, because there
@@ -1609,6 +1642,27 @@ final class CountStarShapeDetector {
       return true;
     final String previous = labels.putIfAbsent(variable, label);
     return previous == null || previous.equals(label);
+  }
+
+  /**
+   * Whether every label written on the central variable inside an OPTIONAL clause is exactly the single label its
+   * mandatory occurrences enforce, so that it filters nothing the enumeration of that label does not (issue #12726).
+   */
+  private boolean optionalLabelsRepeat(final String centralVar, final String centralLabel) {
+    if (centralLabel == null)
+      return false;
+    for (final MatchClause mc : statement.getMatchClauses()) {
+      if (!mc.isOptional() || !mc.hasPathPatterns())
+        continue;
+      for (final PathPattern pp : mc.getPathPatterns())
+        for (int i = 0; i <= pp.getRelationshipCount(); i++) {
+          final NodePattern node = pp.getNode(i);
+          if (centralVar.equals(node.getVariable()) && node.hasLabels()
+              && (!hasPushDownRepresentableLabel(node) || !centralLabel.equals(node.getLabels().get(0))))
+            return false;
+        }
+    }
+    return true;
   }
 
   /** Whether two labels written on the same variable name different types, which no single label can stand for. */

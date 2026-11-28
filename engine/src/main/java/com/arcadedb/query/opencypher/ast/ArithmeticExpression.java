@@ -18,15 +18,20 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
+import com.arcadedb.database.Document;
 import com.arcadedb.exception.ArithmeticErrorException;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.TypeMismatchException;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.executor.CypherValues;
 import com.arcadedb.query.opencypher.temporal.*;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 
+import java.time.DateTimeException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -176,13 +181,9 @@ public class ArithmeticExpression implements Expression {
 
     // String concatenation for + operator
     if (operator == Operator.ADD && (leftValue instanceof String || rightValue instanceof String)) {
-      // A map has no string form a query can rely on: Neo4j refuses to concatenate one, and ArcadeDB used to answer
-      // the Java Map.toString() form, which prints the internal keys of a point (srid included) in a shape no point
-      // constructor or toString() accepts (issue #12397).
-      final Object other = leftValue instanceof String ? rightValue : leftValue;
-      if (other instanceof Map<?, ?> map)
-        throw new TypeMismatchException(
-            "Type mismatch: expected Float, Integer, String or List<T> but was " + (CypherValues.isPointShaped(map) ? "Point" : "Map"));
+      final String refusedType = notConcatenableTypeName(leftValue instanceof String ? rightValue : leftValue);
+      if (refusedType != null)
+        throw new TypeMismatchException("Type mismatch: expected Float, Integer, String or List<T> but was " + refusedType);
       return leftValue.toString() + rightValue.toString();
     }
 
@@ -263,6 +264,30 @@ public class ArithmeticExpression implements Expression {
   }
 
   /**
+   * The Neo4j name of the type of an operand that {@code +} must not concatenate with a STRING, or {@code null} when the
+   * operand concatenates as its string form. Neo4j concatenates a STRING only with a storable value (a number, a boolean, a
+   * string, a temporal value); a node, a relationship, a path, a map and a point are refused with a type error.
+   * <p>
+   * ArcadeDB used to answer the Java {@code toString()} of these: the {@code Map.toString()} form, which prints the internal
+   * keys of a point (srid included) in a shape no point constructor accepts (issue #12397), and the record form of a node,
+   * relationship or path ({@code #1:0[name=Alice]}), which leaks the internal RID and the storage spelling (issue #12622).
+   * A plain document is a map of properties to the language, so it is refused as a map.
+   */
+  private static String notConcatenableTypeName(final Object operand) {
+    if (operand instanceof Vertex)
+      return "Node";
+    if (operand instanceof Edge)
+      return "Relationship";
+    if (CypherFunctionHelper.isPathValue(operand))
+      return "Path";
+    if (operand instanceof Map<?, ?> map)
+      return CypherValues.isPointShaped(map) ? "Point" : "Map";
+    if (operand instanceof Document)
+      return "Map";
+    return null;
+  }
+
+  /**
    * GQL / Cypher 25 string-or-list concatenation operator {@code ||}. Unlike {@code +}, it does NOT implicitly
    * coerce operands: concatenating a STRING with a non-STRING (or a LIST with a non-LIST) is a type error in Neo4j
    * (the OpenCypher reference implementation), issue #5298. Both operands must be STRING, or both must be LIST;
@@ -291,10 +316,25 @@ public class ArithmeticExpression implements Expression {
   /**
    * Evaluate temporal arithmetic with pre-evaluated operands.
    * Can be called from ExpressionEvaluator with already-resolved values.
+   * <p>
+   * A date or datetime moved out of the java.time range is an {@link ArithmeticErrorException}, a client error like every other
+   * overflow, not the raw {@code DateTimeException} of {@code plusMonths()} (issue #12706).
+   * <p>
+   * A native temporal operand (a {@code java.time} value a driver sent as a parameter, a stored value, an element of a list
+   * parameter, a {@code java.util.Date}) is the Cypher temporal its literal is: a Bolt {@code DateTime} arrives as a
+   * {@code ZonedDateTime}, which used to be refused although the literal of the same value was accepted (issue #13569).
    *
    * @return the result, or null if not a temporal arithmetic operation
    */
   public static Object evaluateTemporalArithmetic(final Object leftValue, final Object rightValue, final Operator op) {
+    try {
+      return applyTemporalArithmetic(TemporalUtil.fromCoreJavaType(leftValue), TemporalUtil.fromCoreJavaType(rightValue), op);
+    } catch (final DateTimeException | ArithmeticException e) {
+      throw new ArithmeticErrorException("Temporal overflow: " + e.getMessage(), e);
+    }
+  }
+
+  private static Object applyTemporalArithmetic(final Object leftValue, final Object rightValue, final Operator op) {
     // Duration + Duration or Duration - Duration
     if (leftValue instanceof CypherDuration ld && rightValue instanceof CypherDuration rd) {
       if (op == Operator.ADD)
@@ -319,29 +359,9 @@ public class ArithmeticExpression implements Expression {
     // Instant ± duration is only defined for + and -; * / % are a type error and must fall through (issue #9338).
     // + is also defined with the duration on the left, since duration + instant is the same operation.
     if (op == Operator.ADD && leftValue instanceof CypherDuration && isInstant(rightValue))
-      return evaluateTemporalArithmetic(rightValue, leftValue, op);
+      return applyTemporalArithmetic(rightValue, leftValue, op);
     if (op != Operator.ADD && op != Operator.SUBTRACT)
       return null;
-
-    // java.time.LocalDate (from ArcadeDB storage) ± Duration
-    if (leftValue instanceof LocalDate ld && rightValue instanceof CypherDuration dur) {
-      // For dates, full days from the seconds component must be carried over
-      final long extraDays = dur.getSeconds() / 86400;
-      final long totalDays = dur.getDays() + extraDays;
-      final LocalDate d = ld.plusMonths(op == Operator.ADD ? dur.getMonths() : -dur.getMonths())
-          .plusDays(op == Operator.ADD ? totalDays : -totalDays);
-      return new CypherDate(d);
-    }
-
-    // java.time.LocalDateTime (from ArcadeDB storage) ± Duration
-    if (leftValue instanceof LocalDateTime ldt && rightValue instanceof CypherDuration dur) {
-      LocalDateTime dt = ldt
-          .plusMonths(op == Operator.ADD ? dur.getMonths() : -dur.getMonths())
-          .plusDays(op == Operator.ADD ? dur.getDays() : -dur.getDays())
-          .plusSeconds(op == Operator.ADD ? dur.getSeconds() : -dur.getSeconds())
-          .plusNanos(op == Operator.ADD ? dur.getNanosAdjustment() : -dur.getNanosAdjustment());
-      return new CypherLocalDateTime(dt);
-    }
 
     // Date ± Duration
     if (leftValue instanceof CypherDate cd && rightValue instanceof CypherDuration dur) {
@@ -392,8 +412,7 @@ public class ArithmeticExpression implements Expression {
 
   private static boolean isInstant(final Object value) {
     return value instanceof CypherDate || value instanceof CypherDateTime || value instanceof CypherLocalDateTime
-        || value instanceof CypherLocalTime || value instanceof CypherTime || value instanceof LocalDate
-        || value instanceof LocalDateTime;
+        || value instanceof CypherLocalTime || value instanceof CypherTime;
   }
 
   /**

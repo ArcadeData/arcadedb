@@ -20,9 +20,12 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.PartialResultTimeoutException;
+import com.arcadedb.exception.QueryTerminatedException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.RunningQueryRegistry;
+
+import java.util.concurrent.TimeUnit;
 
 /**
  * Cooperative abort check for a loop whose length is a property of the data rather than of the statement.
@@ -57,6 +60,9 @@ public final class WorkGuard {
    * millisecond for any realistic inner-loop body.
    */
   private static final int CHECK_INTERVAL_MASK = 1023;
+
+  /** Longest single park of {@link #sleep(long)}: how late a terminated statement or a reached deadline is noticed by a wait. */
+  private static final long SLEEP_SLICE_NANOS = TimeUnit.MILLISECONDS.toNanos(100);
 
   /**
    * Shared instance for the default configuration - no deadline, no interrupt check and no statement that can be
@@ -148,6 +154,26 @@ public final class WorkGuard {
   }
 
   /**
+   * This bound for work that runs on a thread of a pool: it names the same work and reads the same deadline and the same
+   * statement, but leaves the interrupt flag of the thread alone. A pooled worker's flag belongs to whoever cancels its task,
+   * and consuming it here would hide the cancellation from the pool.
+   */
+  public WorkGuard withoutInterrupt() {
+    return interruptible ? new WorkGuard(what, context, deadline, false, yieldPartialResults, runningQuery) : this;
+  }
+
+  /**
+   * Whether {@code t} is one of the aborts {@link #check()} raises (deadline, termination, interrupt), as opposed to a failure
+   * of the work itself. A layer that wraps the failures of work run on other threads uses it to let an abort through unchanged,
+   * so the caller sees the abort and not a wrapper around it. An interrupt is raised as a plain {@link CommandExecutionException},
+   * which is why that type is accepted here: only a guard that is interruptible raises it, and the guards read on pool threads
+   * are not (see {@link #withoutInterrupt()}).
+   */
+  public static boolean isAbort(final Throwable t) {
+    return t instanceof TimeoutException || t instanceof QueryTerminatedException || t instanceof CommandExecutionException;
+  }
+
+  /**
    * Milliseconds left before the deadline, {@link Long#MAX_VALUE} when there is none and 0 once it has passed. For a
    * caller that has to WAIT rather than loop: it sizes each timed wait so the deadline is never slept through, and calls
    * {@link #check()} between two waits (issue #9896).
@@ -156,6 +182,42 @@ public final class WorkGuard {
     if (deadline == Long.MAX_VALUE)
       return Long.MAX_VALUE;
     return Math.max(0L, deadline - System.currentTimeMillis());
+  }
+
+  /**
+   * Waits {@code millis} like {@link Thread#sleep(long)}, but in short slices that each end in a {@link #check()}, so the
+   * wait stops soon after the statement is terminated or the command deadline passes instead of running to the end of the
+   * duration it was asked for. A slice is never longer than what is left of the deadline, so the deadline is not slept
+   * through either. A guard that has nothing to check (no deadline, no statement that can be terminated, no interrupt check)
+   * waits in one piece, as {@link Thread#sleep(long)} does.
+   * <p>
+   * A value that is not positive is no wait at all. A thread interrupt is not consumed here: it ends the wait with the
+   * {@link InterruptedException} the caller already handles, and {@link #check()} consumes it only for a guard that was asked
+   * to (see {@link #forCommand(CommandContext, String)}).
+   *
+   * @throws InterruptedException if the thread is interrupted while it waits
+   */
+  public void sleep(final long millis) throws InterruptedException {
+    if (millis <= 0)
+      return;
+
+    // Saturates at Long.MAX_VALUE, so a value of any size is a wait that never runs out rather than a negative one
+    final long totalNanos = TimeUnit.MILLISECONDS.toNanos(millis);
+
+    if (runningQuery == null && !interruptible && deadline == Long.MAX_VALUE) {
+      TimeUnit.NANOSECONDS.sleep(totalNanos);
+      return;
+    }
+
+    final long begin = System.nanoTime();
+    long remainingNanos = totalNanos;
+    while (remainingNanos > 0) {
+      check();
+      final long sliceNanos = Math.min(remainingNanos, Math.min(SLEEP_SLICE_NANOS,
+          TimeUnit.MILLISECONDS.toNanos(Math.max(1L, millisToDeadline()))));
+      TimeUnit.NANOSECONDS.sleep(sliceNanos);
+      remainingNanos = totalNanos - (System.nanoTime() - begin);
+    }
   }
 
   /**

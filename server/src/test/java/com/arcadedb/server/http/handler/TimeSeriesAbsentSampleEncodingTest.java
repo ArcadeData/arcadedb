@@ -54,7 +54,7 @@ class TimeSeriesAbsentSampleEncodingTest {
   private static JSONArray encode(final MultiColumnAggregationResult result) {
     final JSONArray values = new JSONArray();
     for (int r = 0; r < 3; r++)
-      AbstractServerHttpHandler.putSampleValue(values, result.getValue(BUCKET, r));
+      AbstractServerHttpHandler.putSampleValue(values, result.getWireValue(BUCKET, r));
     return values;
   }
 

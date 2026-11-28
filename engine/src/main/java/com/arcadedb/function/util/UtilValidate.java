@@ -18,6 +18,7 @@
  */
 package com.arcadedb.function.util;
 
+import com.arcadedb.exception.ProcedureCallFailedException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.utility.StringUtils;
@@ -67,8 +68,13 @@ public class UtilValidate extends AbstractUtilFunction {
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     if (isTrue(args[0]))
-      throw new IllegalArgumentException(message(args[1], args.length > 2 ? args[2] : null));
+      throw new ProcedureCallFailedException(isFunctionForm(), "apoc." + getName(), message(args[1], args.length > 2 ? args[2] : null));
     return true;
+  }
+
+  /** Whether this is APOC's function form, {@code apoc.util.validatePredicate}, whose failures Neo4j words as a function's. */
+  protected boolean isFunctionForm() {
+    return false;
   }
 
   private static boolean isTrue(final Object predicate) {

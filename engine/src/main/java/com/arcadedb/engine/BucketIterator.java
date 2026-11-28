@@ -62,7 +62,6 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
   private final        LocalBucket      bucket;
   final                Record[]         nextBatch     = new Record[PREFETCH_SIZE];
   private              int              prefetchIndex = 0;
-  final                long             limit;
   private final        boolean          forwardDirection;
   int      nextPageNumber;
   // READ ONLY AT ABSOLUTE POSITIONS, ACROSS CALLS TOO: THE PAGE CACHE'S SHARED VIEW SERVES IT, NO VIEW PER PAGE (#10820)
@@ -76,7 +75,6 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
   short    recordCountInCurrentPage;
   int      totalPages;
   int      currentRecordInPage;
-  long     browsed     = 0;
   private int  writeIndex     = 0;
   // RECORDS RESOLVED BY THE CURRENT fetchNext(), REPORTED TO THE readRecord STATISTIC ONCE PER BATCH
   private long recordsRead    = 0;
@@ -147,7 +145,6 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
       this.totalPages = toPage;
     }
 
-    limit = database.getResultSetLimit();
     maxBatchBytes = database.getConfiguration().getValueAsLong(GlobalConfiguration.QUERY_BATCH_MAX_BYTES);
 
     if (forwardDirection) {
@@ -234,8 +231,6 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
 
   @Override
   public boolean hasNext() {
-    if (limit > -1 && browsed >= limit)
-      return false;
     start();
     return prefetchIndex < writeIndex && nextBatch[prefetchIndex] != null;
   }
@@ -253,7 +248,6 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
     if (prefetchIndex >= writeIndex || nextBatch[prefetchIndex] == null)
       throw new IllegalStateException();
 
-    ++browsed;
     final Record record = nextBatch[prefetchIndex];
     nextBatch[prefetchIndex] = null; // EARLY CLEANSE FOR GC
     prefetchIndex++;
@@ -494,6 +488,10 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
   private void fetchNext() {
     if (prefetchIndex < writeIndex)
       return;
+
+    // AN ITERATOR CAN BE KEPT OPEN FOR LONG BETWEEN TWO READS: THE GRANT IS ASKED AGAIN FOR EVERY BATCH, NOT ONLY WHEN IT IS CREATED.
+    // ONE LOOKUP OF THE BOUND USER PER BATCH OF UP TO PREFETCH_SIZE RECORDS
+    database.checkPermissionsOnFile(bucket.fileId, SecurityDatabaseUser.ACCESS.READ_RECORD);
 
     // THE BATCH BEFORE IS HANDED OVER: ITS BYTES GO BACK TO THE POOL, SO THAT THIS BATCH SEES WHAT IS REALLY LEFT
     releaseReadAhead();

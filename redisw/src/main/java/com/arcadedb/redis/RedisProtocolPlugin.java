@@ -23,7 +23,6 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.network.DefaultServerSocketFactory;
-import com.arcadedb.server.network.ServerSocketFactory;
 
 public class RedisProtocolPlugin implements ServerPlugin {
   private ArcadeDBServer       server;
@@ -38,12 +37,12 @@ public class RedisProtocolPlugin implements ServerPlugin {
 
   @Override
   public void startService() {
-    final ServerSocketFactory socketFactory = configuration.getValueAsBoolean(GlobalConfiguration.REDIS_TLS) ?
-        new RedisSslServerSocketFactory(configuration) :
-        new DefaultServerSocketFactory();
+    final RedisSslHelper sslHelper = configuration.getValueAsBoolean(GlobalConfiguration.REDIS_TLS) ?
+        new RedisSslHelper(configuration) :
+        null;
 
-    listener = new RedisNetworkListener(server, socketFactory, configuration.getValueAsString(GlobalConfiguration.REDIS_HOST),
-        configuration.getValueAsString(GlobalConfiguration.REDIS_PORT));
+    listener = new RedisNetworkListener(server, new DefaultServerSocketFactory(), sslHelper,
+        configuration.getValueAsString(GlobalConfiguration.REDIS_HOST), configuration.getValueAsString(GlobalConfiguration.REDIS_PORT));
   }
 
   @Override

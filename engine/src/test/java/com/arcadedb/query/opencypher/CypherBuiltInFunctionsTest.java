@@ -32,6 +32,8 @@ import com.arcadedb.function.procedure.Procedure;
 import com.arcadedb.function.procedure.ProcedureRegistry;
 import com.arcadedb.function.vector.VectorCreateFunction;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.VirtualEdge;
+import com.arcadedb.graph.VirtualVertex;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.function.CypherFunctionRegistry;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
@@ -47,8 +49,13 @@ import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -700,6 +707,35 @@ class CypherBuiltInFunctionsTest extends TestHelper {
   }
 
   @Test
+  void dateFormatPointInTimeIgnoresUnit() {
+    final StatelessFunction fn = CypherFunctionRegistry.get("date.format");
+    final long millis = 1705314600000L;
+    final Object[] points = { new Date(millis), Instant.ofEpochMilli(millis),
+        ZonedDateTime.ofInstant(Instant.ofEpochMilli(millis), ZoneId.systemDefault()),
+        LocalDateTime.ofInstant(Instant.ofEpochMilli(millis), ZoneId.systemDefault()) };
+    final String expected = (String) fn.execute(new Object[] { millis, "ms", "yyyy-MM-dd" }, null);
+    for (final Object point : points) {
+      assertThat(fn.execute(new Object[] { point, "ms", "yyyy-MM-dd" }, null)).isEqualTo(expected);
+      assertThat(fn.execute(new Object[] { point, "s", "yyyy-MM-dd" }, null)).isEqualTo(expected);
+      assertThat(fn.execute(new Object[] { point, "d", "yyyy-MM-dd" }, null)).isEqualTo(expected);
+      assertThatThrownBy(() -> fn.execute(new Object[] { point, "bogus", "yyyy-MM-dd" }, null)).isInstanceOf(RuntimeException.class);
+    }
+  }
+
+  @Test
+  void dateFormatNumericCountIsStillScaled() {
+    final StatelessFunction fn = CypherFunctionRegistry.get("date.format");
+    final String expected = (String) fn.execute(new Object[] { 1705314600000L, "ms", "yyyy-MM-dd" }, null);
+    assertThat(fn.execute(new Object[] { 1705314600L, "s", "yyyy-MM-dd" }, null)).isEqualTo(expected);
+  }
+
+  @Test
+  void dateFormatNumericOverflowIsAnError() {
+    final StatelessFunction fn = CypherFunctionRegistry.get("date.format");
+    assertThatThrownBy(() -> fn.execute(new Object[] { Long.MAX_VALUE, "d", "yyyy-MM-dd" }, null)).isInstanceOf(ArithmeticException.class);
+  }
+
+  @Test
   void dateField() {
     final StatelessFunction fn = CypherFunctionRegistry.get("date.field");
     // Test extracting year from a timestamp
@@ -778,10 +814,10 @@ class CypherBuiltInFunctionsTest extends TestHelper {
     final StatelessFunction decompress = CypherFunctionRegistry.get("util.decompress");
 
     final String original = "Hello, World! This is a test string for compression.";
-    final String compressed = (String) compress.execute(new Object[] { original, "gzip" }, null);
-    assertThat(compressed).isNotNull();
+    final byte[] compressed = (byte[]) compress.execute(new Object[] { original, Map.of("compression", "GZIP") }, null);
+    assertThat(compressed).isNotEmpty();
 
-    final String decompressed = (String) decompress.execute(new Object[] { compressed, "gzip" }, null);
+    final String decompressed = (String) decompress.execute(new Object[] { compressed, Map.of("compression", "GZIP") }, null);
     assertThat(decompressed).isEqualTo(original);
   }
 
@@ -1115,8 +1151,8 @@ class CypherBuiltInFunctionsTest extends TestHelper {
   void pathSlice() {
     final StatelessFunction fn = CypherFunctionRegistry.get("path.slice");
 
-    // slice [1, 2): one relationship, two nodes
-    final TraversalPath sliced = (TraversalPath) fn.execute(new Object[] { buildPath(3), 1, 2 }, null);
+    // Issue #12109: offset 1, length 1 (APOC's arguments, not an end index): one relationship, two nodes
+    final TraversalPath sliced = (TraversalPath) fn.execute(new Object[] { buildPath(3), 1, 1 }, null);
     assertThat(sliced).isNotNull();
     assertThat(names(sliced.getEdges())).containsExactly("r1");
     assertThat(names(sliced.getVertices())).containsExactly("n1", "n2");
@@ -1138,10 +1174,10 @@ class CypherBuiltInFunctionsTest extends TestHelper {
 
   @Test
   void pathSliceEmptyRangeReturnsEmptyPath() {
-    // Issue #4707: from == to is an empty slice and must return a no-edge path, not null.
+    // Issue #4707: a zero-length slice must return a no-edge path, not null.
     final StatelessFunction fn = CypherFunctionRegistry.get("path.slice");
 
-    final TraversalPath emptyRange = (TraversalPath) fn.execute(new Object[] { buildPath(3), 1, 1 }, null);
+    final TraversalPath emptyRange = (TraversalPath) fn.execute(new Object[] { buildPath(3), 1, 0 }, null);
     assertThat(emptyRange).isNotNull();
     assertThat(emptyRange.getEdges()).isEmpty();
     assertThat(names(emptyRange.getVertices())).containsExactly("n1");
@@ -1185,29 +1221,31 @@ class CypherBuiltInFunctionsTest extends TestHelper {
   }
 
   @Test
-  @SuppressWarnings("unchecked")
   void createVNode() {
     final StatelessFunction fn = CypherFunctionRegistry.get("create.vNode");
-    final Map<String, Object> vNode = (Map<String, Object>) fn.execute(
+    // Issue #12109: a virtual node, not a map of _type/_id/_labels
+    final VirtualVertex vNode = (VirtualVertex) fn.execute(
         new Object[] { List.of("Person", "Employee"), Map.of("name", "John", "age", 30) }, null);
 
     assertThat(vNode).isNotNull();
-    assertThat(vNode.get("_type")).isEqualTo("vNode");
-    assertThat(vNode.get("_labels")).isEqualTo(List.of("Person", "Employee"));
+    assertThat(vNode.getLabels()).containsExactly("Employee", "Person");
     assertThat(vNode.get("name")).isEqualTo("John");
     assertThat(vNode.get("age")).isEqualTo(30);
+    assertThat(vNode.getVirtualId()).isNegative();
   }
 
   @Test
-  @SuppressWarnings("unchecked")
   void createVRelationship() {
     final StatelessFunction fn = CypherFunctionRegistry.get("create.vRelationship");
-    final Map<String, Object> vRel = (Map<String, Object>) fn.execute(
-        new Object[] { "node1", "KNOWS", "node2", Map.of("since", 2020) }, null);
+    final VirtualVertex from = (VirtualVertex) CypherFunctionRegistry.get("create.vNode").execute(new Object[] { List.of("A") }, null);
+    final VirtualVertex to = (VirtualVertex) CypherFunctionRegistry.get("create.vNode").execute(new Object[] { List.of("B") }, null);
+    // Issue #12109: APOC's argument order (from, type, properties, to)
+    final VirtualEdge vRel = (VirtualEdge) fn.execute(new Object[] { from, "KNOWS", Map.of("since", 2020), to }, null);
 
     assertThat(vRel).isNotNull();
-    assertThat(vRel.get("_type")).isEqualTo("vRelationship");
-    assertThat(vRel.get("_relType")).isEqualTo("KNOWS");
+    assertThat(vRel.getTypeName()).isEqualTo("KNOWS");
+    assertThat(vRel.getOutVertex()).isSameAs(from);
+    assertThat(vRel.getInVertex()).isSameAs(to);
     assertThat(vRel.get("since")).isEqualTo(2020);
   }
 
@@ -1349,7 +1387,8 @@ class CypherBuiltInFunctionsTest extends TestHelper {
     assertThat(proc).isNotNull();
     assertThat(proc.getName()).isEqualTo("meta.graph");
     assertThat(proc.getMinArgs()).isEqualTo(0);
-    assertThat(proc.getMaxArgs()).isEqualTo(0);
+    // the optional APOC config map (issue #12109)
+    assertThat(proc.getMaxArgs()).isEqualTo(1);
     assertThat(proc.getYieldFields()).contains("nodes", "relationships");
   }
 
@@ -1359,7 +1398,7 @@ class CypherBuiltInFunctionsTest extends TestHelper {
     assertThat(proc).isNotNull();
     assertThat(proc.getName()).isEqualTo("meta.schema");
     assertThat(proc.getMinArgs()).isEqualTo(0);
-    assertThat(proc.getMaxArgs()).isEqualTo(0);
+    assertThat(proc.getMaxArgs()).isEqualTo(1);
     assertThat(proc.getYieldFields()).contains("value");
   }
 
@@ -1370,7 +1409,7 @@ class CypherBuiltInFunctionsTest extends TestHelper {
     assertThat(proc.getName()).isEqualTo("meta.stats");
     assertThat(proc.getMinArgs()).isEqualTo(0);
     assertThat(proc.getMaxArgs()).isEqualTo(0);
-    assertThat(proc.getYieldFields()).contains("value");
+    assertThat(proc.getYieldFields()).contains("value", "nodeCount", "relCount", "labels", "relTypes", "stats");
   }
 
   @Test
@@ -1379,8 +1418,9 @@ class CypherBuiltInFunctionsTest extends TestHelper {
     assertThat(proc).isNotNull();
     assertThat(proc.getName()).isEqualTo("meta.nodetypeproperties");
     assertThat(proc.getMinArgs()).isEqualTo(0);
-    assertThat(proc.getMaxArgs()).isEqualTo(0);
-    assertThat(proc.getYieldFields()).contains("nodeType", "propertyName", "propertyTypes", "mandatory");
+    assertThat(proc.getMaxArgs()).isEqualTo(1);
+    assertThat(proc.getYieldFields()).contains("nodeType", "nodeLabels", "propertyName", "propertyTypes", "mandatory",
+        "propertyObservations", "totalObservations");
   }
 
   @Test
@@ -1389,8 +1429,9 @@ class CypherBuiltInFunctionsTest extends TestHelper {
     assertThat(proc).isNotNull();
     assertThat(proc.getName()).isEqualTo("meta.reltypeproperties");
     assertThat(proc.getMinArgs()).isEqualTo(0);
-    assertThat(proc.getMaxArgs()).isEqualTo(0);
-    assertThat(proc.getYieldFields()).contains("relType", "propertyName", "propertyTypes", "mandatory");
+    assertThat(proc.getMaxArgs()).isEqualTo(1);
+    assertThat(proc.getYieldFields()).contains("relType", "sourceNodeLabels", "targetNodeLabels", "propertyName",
+        "propertyTypes", "mandatory", "propertyObservations", "totalObservations");
   }
 
   // ===================== FORMAT FUNCTION TESTS =====================

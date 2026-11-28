@@ -43,6 +43,8 @@
     </description>
 
     <properties>
+        <!-- Nothing here is published to Maven Central, so no SBOM is built for it. -->
+        <cyclonedx.skip>true</cyclonedx.skip>
         <!-- This module ships nothing; do not deploy or install its near-empty jar. -->
         <maven.deploy.skip>true</maven.deploy.skip>
         <maven.install.skip>true</maven.install.skip>

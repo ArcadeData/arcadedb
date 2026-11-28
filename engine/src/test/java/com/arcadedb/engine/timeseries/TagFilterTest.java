@@ -612,7 +612,7 @@ class TagFilterTest {
       final Set<String> before = distinctTagValues(engine, "host");
 
       // nowMs far past the newest sample so every block is older than the tier's cutoff, and a granularity coarse
-      // enough against the 1ms sample spacing that the density heuristic selects the blocks rather than skipping them.
+      // enough against the 1ms sample spacing that samples share a (tag values, bucket), which is what selects a block.
       engine.applyDownsampling(List.of(new DownsamplingTier(1_000L, 60_000L)), BASE_TS + 10_000_000L);
 
       assertThat(distinctTagValues(engine, "host"))

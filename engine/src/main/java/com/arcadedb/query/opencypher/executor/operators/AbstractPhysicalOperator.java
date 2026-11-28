@@ -20,10 +20,8 @@ package com.arcadedb.query.opencypher.executor.operators;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.schema.DocumentType;
-import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityHelper;
 
-import java.util.List;
 import java.util.Locale;
 
 /**
@@ -109,16 +107,7 @@ public abstract class AbstractPhysicalOperator implements PhysicalOperator {
    */
   protected static void requireReadable(final CommandContext context, final String name) {
     final DatabaseInternal database = context.getDatabase();
-    final DocumentType type = database.getSchema().getTypeOrNull(name);
-    if (type == null)
-      return;
-
-    final List<Integer> bucketIds = type.getBucketIds(true);
-    if (bucketIds.isEmpty())
-      database.checkPermissionsOnType(name, SecurityDatabaseUser.ACCESS.READ_RECORD);
-    else
-      for (int i = 0; i < bucketIds.size(); i++)
-        database.checkPermissionsOnFile(bucketIds.get(i), SecurityDatabaseUser.ACCESS.READ_RECORD);
+    SecurityHelper.checkReadOnTypeAndSubTypes(database, database.getSchema().getTypeOrNull(name));
   }
 
   /**
