@@ -580,6 +580,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private volatile Runnable afterPagesParsedForTest;
   // Run by a storeVectorsInGraph build between publishing the on-heap graph and swapping in the on-disk one (issue #12380)
   private volatile Runnable beforeOnDiskGraphSwapForTest;
+  // Run by a search before it takes the database and index read locks, after it has read the counts it bounds its allow-list with, so
+  // a test can commit in between (issue #13262)
+  private volatile Runnable beforeSearchLocksForTest;
   // Run by the load of a persisted graph between its "nothing was deleted" check and the walk that derives the ordinal map, so a
   // test can commit a re-embed in between (issue #13343)
   private volatile Runnable beforeOrdinalWalkForTest;
@@ -10317,6 +10320,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   private <T> T underSearchLocks(final String failure, final ImmutableGraphIndex fromMemory, final Callable<T> search) {
     failIfFileRetired(fromMemory);
+    final Runnable beforeLocks = beforeSearchLocksForTest;
+    if (beforeLocks != null)
+      beforeLocks.run();
     final T answered = getDatabase().executeInReadLock(() -> {
       lock.readLock().lock();
       try {
@@ -10404,6 +10410,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
     return cause == null ? new ConcurrentModificationException(message) : new ConcurrentModificationException(message, cause);
   }
 
+  /**
+   * The most rows a search can ask of this index: {@code requested} bounded by the candidates it can address, the persisted vectors
+   * plus the delta buffer plus the rows of the calling transaction (issue #5924). Read under the index read lock it is exact, because
+   * a commit applies its vectors under the write lock. Read without it, as the allow-list's bound is, a commit can land afterwards, and
+   * a search run with the stale value answers only the nearest rows it names, cutting the farthest live ones off an exhaustive
+   * answer (issue #13262).
+   */
+  private int addressableRows(final int requested, final TransactionVectorOverlay overlay) {
+    return Math.min(requested, Math.max(vectorIndex().size(), 0) + deltaVectors.size() + pendingCount(overlay));
+  }
+
   private List<Pair<RID, Float>> searchNeighbors(final float[] queryVector, final int requestedK, final int efSearch,
       final Set<RID> allowList, final WorkGuard guard) {
     // Track search metrics
@@ -10457,9 +10474,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // of trusting the caller's raw value. Several call sites below treat k as an eager allocation size
       // - the ArrayList results buffers, and mergeWithDeltaScan's own `new PriorityQueue<>(k, ...)` - so a
       // caller-controlled k near Integer.MAX_VALUE (reachable once an overflowing Cypher/SQL argument
-      // saturates instead of wrapping) would otherwise attempt a multi-GB allocation. A stale read of
-      // vectorIndex.size()/deltaVectors.size() here only makes the clamp slightly conservative, never
-      // unsafe, so it deliberately isn't taken under the read lock below.
+      // saturates instead of wrapping) would otherwise attempt a multi-GB allocation.
+      //
+      // Issue #13262: this value is read before the read lock and is only the bound of the allow-list's copy below. A commit can land
+      // between here and the lock, so as the k of the search it was short of the live count, and an exhaustive search (k at or above
+      // the live count) answered the nearest k rows and silently left the farthest live ones out. The search takes its k again under
+      // the read lock, where no writer can move the counts. The bound of the allow-list's copy may then be lower than the live count
+      // (the count grew since): allowListShare keeps a list with more members here than the bound as it is instead of copying it,
+      // so a lower bound costs a copy, never a row of the answer.
       // The overlay's rows count toward the addressable candidates too: without them a search inside a transaction
       // that wrote the only rows there are would clamp k to zero and return nothing.
       //
@@ -10469,15 +10491,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // Integer.MAX_VALUE, not a k one larger than the live count. Subtracting would cost a pass over the
       // superseded set on every search to tighten an allocation by a handful of entries, and an under-estimate
       // here would drop rows the caller asked for.
-      final int k = Math.min(requestedK, Math.max(vectorIndex().size(), 0) + deltaVectors.size() + pendingCount(overlay));
+      final int rowsBound = addressableRows(requestedK, overlay);
 
       // The members of the allow-list in this bucket (issue #11765), taken before the read lock: a list with none answers here
       // with nothing, where an empty one would be no filter at all
-      final Set<RID> allowedRIDs = allowListShare(allowList, k, GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY, guard);
+      final Set<RID> allowedRIDs = allowListShare(allowList, rowsBound, GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY, guard);
       if (allowedRIDs != null && allowedRIDs.isEmpty() && !allowList.isEmpty())
         return Collections.emptyList();
 
       return underSearchLocks("Error performing vector search", fromMemory, () -> {
+        // The counts of this index cannot change under the read lock, so the k of the search is exact here (issue #13262)
+        final int k = addressableRows(requestedK, overlay);
         if (graphIndex == null || vectorIndex().size() == 0) {
           // No graph yet — still return delta-only results if available, and the calling transaction's own
           // uncommitted rows are such results too (issue #7378): an empty index written to inside one transaction
@@ -11804,18 +11828,20 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final TransactionVectorOverlay overlay = transactionOverlay();
 
       // Issue #5924: see findNeighborsFromVector's matching clamp - k drives the same eager
-      // ArrayList/PriorityQueue allocation sizes below, so it needs the same bound.
-      final int k = Math.min(requestedK, Math.max(vectorIndex().size(), 0) + deltaVectors.size() + pendingCount(overlay));
+      // ArrayList/PriorityQueue allocation sizes below, so it needs the same bound. Read before the read lock it only bounds the
+      // allow-list's copy: the k of the search is taken again under the lock (issue #13262).
+      final int rowsBound = addressableRows(requestedK, overlay);
 
       // The members of the allow-list in this bucket (issue #11765); see searchNeighbors. The setting is the one the pre-filter
       // plan below is gated by
-      final Set<RID> allowedRIDs = allowListShare(allowList, k, rerank ?
+      final Set<RID> allowedRIDs = allowListShare(allowList, rowsBound, rerank ?
           GlobalConfiguration.VECTOR_INDEX_PREFILTER_MAX_SELECTIVITY :
           GlobalConfiguration.VECTOR_INDEX_PREFILTER_APPROXIMATE_MAX_SELECTIVITY, guard);
       if (allowedRIDs != null && allowedRIDs.isEmpty() && !allowList.isEmpty())
         return Collections.emptyList();
 
       final List<Pair<RID, Float>> answered = underSearchLocks("Error performing PQ approximate search", fromMemory, () -> {
+        final int k = addressableRows(requestedK, overlay);
         if (graphIndex == null || vectorIndex().size() == 0) {
           // No graph yet - still return delta-only results if available.
           //
@@ -11987,7 +12013,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       // Reached only when the guard above refused the graph/PQ pair - every other path returns from inside the
       // block. Outside the locks on purpose: this can rebuild, which takes the write lock.
-      return findNeighborsFromVector(queryVector, k, efSearch, allowedRIDs, guard);
+      return findNeighborsFromVector(queryVector, requestedK, efSearch, allowedRIDs, guard);
     } finally {
       if (!handedOffToExactSearch) {
         // Track search latency (convert nanos to ms for consistency)
@@ -15184,6 +15210,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   void setBeforeOnDiskGraphSwapForTest(final Runnable hook) {
     beforeOnDiskGraphSwapForTest = hook;
+  }
+
+  void setBeforeSearchLocksForTest(final Runnable hook) {
+    beforeSearchLocksForTest = hook;
   }
 
   /** Whether the resident graph has a node for {@code vectorId}. */
