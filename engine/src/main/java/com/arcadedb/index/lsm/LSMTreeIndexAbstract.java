@@ -935,22 +935,38 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
       if (key == null)
         return -1;
 
-      if (binaryKeyTypes[keyIndex] == BinaryTypes.TYPE_STRING) {
-        // OPTIMIZATION: SPECIAL CASE, LAZY EVALUATE BYTE PER BYTE THE STRING
-        result = comparator.compareBytes((byte[]) key, currentPageBuffer);
-      } else {
-        // Keys are serialized in clear (see writeKeys): read them back without decryption. The bytes are read with the
-        // STORAGE type and the resulting value compared under the DECLARED one, which is what makes the compressed RID
-        // encoding order-preserving: only the number of bytes changes, never the value the comparator sees.
-        final Object keyValue = serializer.deserializeValue(database, currentPageBuffer, storageKeyTypes[keyIndex], null, false);
-        result = comparator.compare(key, binaryKeyTypes[keyIndex], keyValue, binaryKeyTypes[keyIndex]);
-      }
-
+      result = compareKeyComponent(key, keyIndex, currentPageBuffer);
       if (result != 0)
         break;
     }
 
     return result;
+  }
+
+  /**
+   * Compares one non-null component of a search key with the non-null stored component the buffer is positioned on, and
+   * leaves the buffer past it. Every comparison of a page search goes through here (one per bisection step, plus the walk
+   * of a run of equal keys), so the common key types never box the stored value (#13021).
+   */
+  private int compareKeyComponent(final Object key, final int keyIndex, final Binary currentPageBuffer) {
+    final byte keyType = binaryKeyTypes[keyIndex];
+    if (keyType == BinaryTypes.TYPE_STRING)
+      // OPTIMIZATION: SPECIAL CASE, LAZY EVALUATE BYTE PER BYTE THE STRING
+      return comparator.compareBytes((byte[]) key, currentPageBuffer);
+
+    // OPTIMIZATION: A LONG/INTEGER KEY IS READ AS A PRIMITIVE, NOT BOXED PER COMPARISON. THIS IS EXACTLY WHAT THE GENERIC
+    // PATH BELOW COMPUTES FOR THESE TYPES (THE SAME VARINT, COMPARED BY VALUE); ANY OTHER KEY CLASS KEEPS THE GENERIC
+    // PATH AND ITS WIDENING RULES
+    if (keyType == BinaryTypes.TYPE_LONG && storageKeyTypes[keyIndex] == BinaryTypes.TYPE_LONG && key instanceof Long longKey)
+      return Long.compare(longKey, currentPageBuffer.getNumber());
+    if (keyType == BinaryTypes.TYPE_INT && storageKeyTypes[keyIndex] == BinaryTypes.TYPE_INT && key instanceof Integer intKey)
+      return Integer.compare(intKey, (int) currentPageBuffer.getNumber());
+
+    // Keys are serialized in clear (see writeKeys): read them back without decryption. The bytes are read with the
+    // STORAGE type and the resulting value compared under the DECLARED one, which is what makes the compressed RID
+    // encoding order-preserving: only the number of bytes changes, never the value the comparator sees.
+    final Object keyValue = serializer.deserializeValue(database, currentPageBuffer, storageKeyTypes[keyIndex], null, false);
+    return comparator.compare(key, keyType, keyValue, keyType);
   }
 
   protected int getHeaderSize(final int pageNum) {
@@ -1421,16 +1437,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
           break;
         }
 
-        final byte keyType = binaryKeyTypes[keyIndex];
-        if (keyType == BinaryTypes.TYPE_STRING) {
-          // OPTIMIZATION: SPECIAL CASE, LAZY EVALUATE BYTE PER BYTE THE STRING
-          result = comparator.compareBytes((byte[]) keys[keyIndex], currentPageBuffer);
-        } else {
-          // Keys are serialized in clear (see writeKeys): read them back without decryption.
-          final Object key = serializer.deserializeValue(database, currentPageBuffer, storageKeyTypes[keyIndex], null, false);
-          result = comparator.compare(keys[keyIndex], keyType, key, keyType);
-        }
-
+        result = compareKeyComponent(keys[keyIndex], keyIndex, currentPageBuffer);
         if (result != 0)
           break;
       }
