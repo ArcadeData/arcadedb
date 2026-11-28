@@ -22,9 +22,11 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 
-import java.io.ByteArrayInputStream;
-import java.io.DataInputStream;
+import java.io.EOFException;
 import java.io.IOException;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
+import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -80,8 +82,80 @@ public class PackStreamReader {
    */
   private static final Object OPEN_FRAME = new Object();
 
-  private final DataInputStream in;
-  private int                   bytesRead = 0;
+  // The reassembled message, read in place rather than through a DataInputStream over a ByteArrayInputStream, which paid
+  // a synchronized read() and a copy into a scratch buffer for every number: a bulk write of 500 rows of 1024 floats
+  // decodes half a million of them per message (issue #12641).
+  private final byte[] data;
+  private final Input  in = new Input();
+
+  private static final VarHandle SHORT_BE = MethodHandles.byteArrayViewVarHandle(short[].class, ByteOrder.BIG_ENDIAN);
+  private static final VarHandle INT_BE   = MethodHandles.byteArrayViewVarHandle(int[].class, ByteOrder.BIG_ENDIAN);
+  private static final VarHandle LONG_BE  = MethodHandles.byteArrayViewVarHandle(long[].class, ByteOrder.BIG_ENDIAN);
+
+  /** The read position in {@link #data}, with the big-endian reads of {@link java.io.DataInputStream} and its EOF. */
+  private final class Input {
+    private int position;
+
+    private void require(final int bytes) throws EOFException {
+      if (data.length - position < bytes)
+        throw new EOFException();
+    }
+
+    int available() {
+      return data.length - position;
+    }
+
+    byte readByte() throws EOFException {
+      require(1);
+      return data[position++];
+    }
+
+    int readUnsignedByte() throws EOFException {
+      return readByte() & 0xFF;
+    }
+
+    short readShort() throws EOFException {
+      require(2);
+      final short value = (short) SHORT_BE.get(data, position);
+      position += 2;
+      return value;
+    }
+
+    int readUnsignedShort() throws EOFException {
+      return readShort() & 0xFFFF;
+    }
+
+    int readInt() throws EOFException {
+      require(4);
+      final int value = (int) INT_BE.get(data, position);
+      position += 4;
+      return value;
+    }
+
+    long readLong() throws EOFException {
+      require(8);
+      final long value = (long) LONG_BE.get(data, position);
+      position += 8;
+      return value;
+    }
+
+    double readDouble() throws EOFException {
+      return Double.longBitsToDouble(readLong());
+    }
+
+    void readFully(final byte[] target) throws EOFException {
+      require(target.length);
+      System.arraycopy(data, position, target, 0, target.length);
+      position += target.length;
+    }
+
+    String readUtf8(final int length) throws EOFException {
+      require(length);
+      final String value = new String(data, position, length, StandardCharsets.UTF_8);
+      position += length;
+      return value;
+    }
+  }
 
   // Bounds on client-supplied, unauthenticated size fields (issue #5918): every *_32 length/size is read off the
   // wire and used directly to size an allocation, before the BOLT handshake or authentication ever runs.
@@ -142,35 +216,7 @@ public class PackStreamReader {
    * from {@link GlobalConfiguration}, so unit tests can exercise a bound without mutating global server config.
    */
   public PackStreamReader(final byte[] data, final int maxValueLength, final int maxElements, final int maxDepth) {
-    this.in = new DataInputStream(new ByteArrayInputStream(data));
-    this.maxValueLength = maxValueLength;
-    this.maxElements = maxElements;
-    this.maxDepth = maxDepth;
-  }
-
-  /**
-   * Not used in production (only the {@link #PackStreamReader(byte[])} constructor is, against an already fully
-   * reassembled message). {@link #checkValueLength}/{@link #checkElementCount} bound a declared length/size
-   * against {@code in.available()}, which is exact only when {@code in} is backed by a fully-buffered source
-   * (e.g. {@link ByteArrayInputStream}): wiring this constructor to a live socket/stream would make
-   * {@code available()} reflect only currently-buffered bytes, not the true remaining message size, weakening
-   * that bound to a false sense of safety rather than the exact one it provides today.
-   */
-  public PackStreamReader(final DataInputStream in) {
-    this(in, new ContextConfiguration());
-  }
-
-  public PackStreamReader(final DataInputStream in, final ContextConfiguration configuration) {
-    this(in, sanitizedLimit(configuration, GlobalConfiguration.BOLT_PACKSTREAM_MAX_VALUE_LENGTH),
-        sanitizedLimit(configuration, GlobalConfiguration.BOLT_PACKSTREAM_MAX_ELEMENTS),
-        sanitizedLimit(configuration, GlobalConfiguration.BOLT_PACKSTREAM_MAX_DEPTH));
-  }
-
-  /**
-   * As {@link #PackStreamReader(DataInputStream)}, with the client-supplied-size bounds passed explicitly.
-   */
-  public PackStreamReader(final DataInputStream in, final int maxValueLength, final int maxElements, final int maxDepth) {
-    this.in = in;
+    this.data = data;
     this.maxValueLength = maxValueLength;
     this.maxElements = maxElements;
     this.maxDepth = maxDepth;
@@ -393,9 +439,7 @@ public class PackStreamReader {
    * Read marker byte.
    */
   private int readMarker() throws IOException {
-    final int b = in.readUnsignedByte();
-    bytesRead++;
-    return b;
+    return in.readUnsignedByte();
   }
 
   /**
@@ -451,9 +495,7 @@ public class PackStreamReader {
    * Read a string of given byte length.
    */
   private String readStringBytes(final int length) throws IOException {
-    final byte[] bytes = new byte[length];
-    in.readFully(bytes);
-    return new String(bytes, StandardCharsets.UTF_8);
+    return in.readUtf8(length);
   }
 
   /**
@@ -477,17 +519,20 @@ public class PackStreamReader {
   }
 
   private static final class ListFrame extends Frame {
+    private static final int PRESIZE_LIMIT = 1024;
+
     private final List<Object> list;
     private int                remaining;
 
     /**
-     * The backing list is deliberately NOT pre-sized from {@code size}: that count is client-supplied and read
-     * off the wire before authentication, so pre-sizing turns a declared count into an allocation before any
-     * element behind it has been seen (issue #6800). Growing from the elements actually read costs a few
-     * amortised array copies on a large legitimate list and makes the declared count unable to allocate at all.
+     * The backing list is pre-sized from {@code size} only up to {@link #PRESIZE_LIMIT} elements: that count is
+     * client-supplied and read off the wire before authentication, so pre-sizing it whole turns a declared count into
+     * an allocation before any element behind it has been seen (issue #6800). Up to the limit a declared list costs at
+     * most a few KB per nesting level, and a list that size - an embedding of 1024 floats - is read without growing
+     * its array from 10 slots by half fourteen times; a longer one grows from the elements actually read (issue #12641).
      */
     ListFrame(final int size) {
-      this.list = new ArrayList<>();
+      this.list = new ArrayList<>(Math.min(size, PRESIZE_LIMIT));
       this.remaining = size;
     }
 
