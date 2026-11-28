@@ -1027,6 +1027,12 @@ public class BoltNetworkExecutor extends Thread {
       // A write in READ access mode is refused before it runs, as Neo4j refuses it (issue #11392): session.executeRead used
       // to write. An EXPLAIN executes nothing, so it is not a write whatever it explains
       if (readAccessMode && Boolean.TRUE.equals(writeQuery) && !explainMode) {
+        // A namespaced function or a procedure nothing answers counts as a possible write, since it can be a user-defined
+        // function (issue #6418), but it is no write: it is reported as the unknown name it is, a SyntaxError or a
+        // ProcedureNotFound as outside READ mode and as Neo4j answers it, by the failure handling below (issue #13564). Only
+        // on this way out, and from the cached parse: a statement whose names all resolve is refused as before
+        OpenCypherQueryEngine.checkCalledNamesResolve(
+            ((DatabaseInternal) database).getCypherStatementCache().getParameterized(query).statement(), database);
         stream.close(this, "RUN failure");
         sendFailure(BoltErrorCodes.ACCESS_MODE_ERROR, "Writing in read access mode not allowed");
         state = State.FAILED;

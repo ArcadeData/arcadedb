@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.executor;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.UnknownProcedureException;
 import com.arcadedb.function.CypherBuiltinFunctions;
 import com.arcadedb.function.CypherFunctionRegistry;
 import com.arcadedb.function.StatelessFunction;
@@ -120,6 +121,12 @@ import com.arcadedb.function.vector.VectorNormFunction;
 import com.arcadedb.function.vector.VectorSimilarityCosineFunction;
 import com.arcadedb.function.vector.VectorSimilarityEuclideanFunction;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.opencypher.ast.CallClause;
+import com.arcadedb.query.opencypher.ast.ClauseEntry;
+import com.arcadedb.query.opencypher.ast.ConditionalStatement;
+import com.arcadedb.query.opencypher.ast.CypherStatement;
+import com.arcadedb.query.opencypher.ast.SubqueryClause;
+import com.arcadedb.query.opencypher.ast.UnionStatement;
 import com.arcadedb.query.opencypher.parser.FunctionValidator;
 import com.arcadedb.query.sql.executor.SQLFunction;
 
@@ -374,6 +381,62 @@ public class CypherFunctionFactory {
       if (!hasFunction(name) && !CustomFunctionAdapter.exists(database.getSchema(), name))
         throw FunctionValidator.unknownFunction(name);
     }
+  }
+
+  /**
+   * Refuses a statement whose {@code CALL} names a procedure that nothing answers, as {@code CallStep} refuses it once a row
+   * reaches the call: Neo4j's {@code ProcedureNotFound}, naming it as written. Asked where a statement is about to be refused
+   * as a write, and only there: a dotted {@code CALL} target no registry answers counts as a possible write, because it can
+   * be a {@code DEFINE FUNCTION} whose body writes (issue #6418), so a name that is simply unknown used to be answered "not
+   * idempotent" by {@code Database.query()} and "Writing in read access mode not allowed" by Bolt, hiding the mistake behind
+   * a write the statement does not make (issue #13564). A name that resolves keeps the refusal.
+   * <p>
+   * Reads the calls that decide the classification: the statement's own, the ones of its {@code CALL { ... }} subqueries and
+   * of the branches of a UNION or a conditional query. The resolution is the chain of {@code CallStep.executeCall}: a
+   * registered procedure, a registered function, a user-defined function of {@code database}, then the SQL function the name
+   * spells in full or behind the {@code sql.} prefix.
+   */
+  public void checkCalledProceduresResolve(final CypherStatement statement, final Database database) {
+    if (statement instanceof UnionStatement union) {
+      final List<CypherStatement> queries = union.getQueries();
+      for (int i = 0; i < queries.size(); i++)
+        checkCalledProceduresResolve(queries.get(i), database);
+      return;
+    }
+    if (statement instanceof ConditionalStatement conditional) {
+      final List<CypherStatement> branches = conditional.getAllBranches();
+      for (int i = 0; i < branches.size(); i++)
+        checkCalledProceduresResolve(branches.get(i), database);
+      return;
+    }
+
+    final List<CallClause> calls = statement.getCallClauses();
+    for (int i = 0; i < calls.size(); i++) {
+      final CallClause call = calls.get(i);
+      if (!answersCall(call, database))
+        throw new UnknownProcedureException(call.getProcedureName(), "Unknown procedure/function: " + call.getProcedureName());
+    }
+
+    final List<ClauseEntry> clauses = statement.getClausesInOrder();
+    for (int i = 0; i < clauses.size(); i++) {
+      final ClauseEntry entry = clauses.get(i);
+      if (entry.getType() != ClauseEntry.ClauseType.SUBQUERY)
+        continue;
+      final CypherStatement inner = entry.<SubqueryClause>getTypedClause().getInnerStatement();
+      if (inner != null)
+        checkCalledProceduresResolve(inner, database);
+    }
+  }
+
+  private boolean answersCall(final CallClause call, final Database database) {
+    if (call.resolveProcedure() != null)
+      return true;
+    final String name = call.getProcedureName();
+    if (CypherFunctionRegistry.get(name) != null || CustomFunctionAdapter.exists(database.getSchema(), name))
+      return true;
+    return sqlFunctionFactory.hasFunction(name.regionMatches(true, 0, SQL_PREFIX, 0, SQL_PREFIX.length()) ?
+        name.substring(SQL_PREFIX.length()) :
+        name);
   }
 
   private StatelessFunction getOrCreateCustomFunctionAdapter(final String functionName) {

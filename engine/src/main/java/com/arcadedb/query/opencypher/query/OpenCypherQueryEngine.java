@@ -292,8 +292,12 @@ public class OpenCypherQueryEngine implements QueryEngine {
       // does execute it, so a write under PROFILE is refused here exactly like the bare write (issue #9313); Studio and the
       // command path (database.command) are where a profiled write is legitimate (issue #4366). The EXPLAIN of a statement
       // whose planning evaluates a function that is not confirmed to be a built-in one is refused as the bare statement is.
-      if (!statement.isReadOnly() && !isPlanOnly(explain, statement))
+      if (!statement.isReadOnly() && !isPlanOnly(explain, statement)) {
+        // A CALL of a name nothing answers is what makes some statements a possible write: the name is reported, as it is
+        // where the statement is allowed to write, in place of a write it does not make (issue #13564)
+        CYPHER_FUNCTION_FACTORY.checkCalledProceduresResolve(statement, database);
         throw new QueryNotIdempotentException("Query '" + query + "' is not idempotent");
+      }
 
       // SHOW/TERMINATE TRANSACTIONS read no data and are answered by the server's registry, not by a plan (issue #9689)
       if (!explain && statement instanceof CypherAdminStatement admin && admin.isTransactionsCommand())
@@ -328,6 +332,18 @@ public class OpenCypherQueryEngine implements QueryEngine {
    */
   private static boolean isPlanOnly(final boolean explain, final CypherStatement statement) {
     return explain && !statement.hasUnconfirmedFunctionCall();
+  }
+
+  /**
+   * Refuses a statement that calls a namespaced function or a procedure nothing answers, with the error the execution answers:
+   * an unknown function (a syntax error, issue #11115) or an unknown procedure. For a caller that is about to refuse the
+   * statement as a write without executing it, such as Bolt in READ access mode: a dotted name no built-in answers counts as a
+   * possible write, since it can be a user-defined function (issue #6418), and the refusal would name a write where the mistake
+   * is the name (issue #13564). A statement whose names all resolve passes, whatever it writes.
+   */
+  public static void checkCalledNamesResolve(final ParsedQuery parsed, final Database database) {
+    CYPHER_FUNCTION_FACTORY.checkNamespacedFunctionsResolve(parsed.namespacedFunctionCalls(), database);
+    CYPHER_FUNCTION_FACTORY.checkCalledProceduresResolve(parsed.statement(), database);
   }
 
   /**
