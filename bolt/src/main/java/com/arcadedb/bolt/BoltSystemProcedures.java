@@ -102,7 +102,25 @@ final class BoltSystemProcedures {
    * @return the normalized form used by every anchored match
    */
   static String normalize(final String query) {
-    return WHITESPACE.matcher(stripLeadingComments(query.trim()).toLowerCase(Locale.ROOT)).replaceAll(" ");
+    return WHITESPACE.matcher(stripCommentsAfterCall(stripLeadingComments(query.trim())).toLowerCase(Locale.ROOT)).replaceAll(" ");
+  }
+
+  /**
+   * Drops the comments between {@code CALL} and the procedure name, a hint such as {@code OGM READ_ONLY} for instance: Neo4j reads
+   * them as the blanks they are, and Neo4j-OGM tags every statement it takes for read-only that way (issue #13583).
+   * Done on the raw text for the reason {@link #stripLeadingComments} is, and only for a statement that opens with {@code CALL}, so a
+   * comment elsewhere in a statement is the engine's to read.
+   */
+  private static String stripCommentsAfterCall(final String text) {
+    if (text.length() <= 4 || !text.regionMatches(true, 0, "call", 0, 4))
+      return text;
+    final char next = text.charAt(4);
+    if (!Character.isWhitespace(next) && next != '/')
+      return text;
+    final String rest = text.substring(4).trim();
+    if (!rest.startsWith("//") && !rest.startsWith("/*"))
+      return text;
+    return "call " + stripLeadingComments(rest);
   }
 
   /**
@@ -177,7 +195,7 @@ final class BoltSystemProcedures {
    * elsewhere in a larger statement out (issue #8908). The tail check is a deny-list on a family with no engine
    * fallback: quoted literals are blanked and a keyword after {@code $} or {@code .} is not a clause, so parameters
    * and property names do not trip it. An {@code EXPLAIN} or
-   * {@code PROFILE} prefix, or a comment between {@code CALL} and the name, reaches the engine.
+   * {@code PROFILE} prefix reaches the engine.
    */
   static boolean isSystemCall(final String normalized, final String procedureName) {
     final int end = endOfCallName(normalized, procedureName);
