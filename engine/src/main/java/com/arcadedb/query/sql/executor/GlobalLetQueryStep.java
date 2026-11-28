@@ -80,8 +80,17 @@ public class GlobalLetQueryStep extends AbstractExecutionStep {
   @Override
   public String prettyPrint(final int depth, final int indent) {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    return spaces + "+ LET (once)\n" + spaces + "  " + varName + " = \n" + box(spaces + "    ",
-        this.subExecutionPlan.prettyPrint(0, indent));
+    return header(spaces) + " \n" + box(spaces + "    ", this.subExecutionPlan.prettyPrint(0, indent));
+  }
+
+  /** The steps of the sub-plan are nodes under this step, each described by its own: only the header lines are this step's. */
+  @Override
+  public String getOwnDescription() {
+    return header("");
+  }
+
+  private String header(final String spaces) {
+    return spaces + "+ LET (once)\n" + spaces + "  " + varName + " =";
   }
 
   @Override

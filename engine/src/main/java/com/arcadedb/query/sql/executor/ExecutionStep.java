@@ -36,6 +36,18 @@ public interface ExecutionStep {
 
   String getDescription();
 
+  /**
+   * The description of this step alone, which is what {@link #toResult()} publishes as the node's {@code description}.
+   * <p>
+   * {@link #getDescription()} is the whole text of the step, and for a step that runs a sub-plan that includes the
+   * rendering of every step of the sub-plan. {@link #toResult()} shows those steps as nodes under this one, each with a
+   * description of its own, so the text here covers this step only and every step is described once, by its own node.
+   * A step that renders a sub-plan in its {@code prettyPrint()} overrides this to answer its own lines only.
+   */
+  default String getOwnDescription() {
+    return getDescription();
+  }
+
   List<ExecutionStep> getSubSteps();
 
   /**
@@ -146,7 +158,7 @@ public interface ExecutionStep {
       }
     result.setProperty("totalCost", totalCost);
 
-    result.setProperty("description", getDescription());
+    result.setProperty("description", getOwnDescription());
     return result;
   }
 

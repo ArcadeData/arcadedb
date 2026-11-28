@@ -216,6 +216,12 @@ public class ParallelExecStep extends AbstractExecutionStep {
 
   }
 
+  /** The steps of the branches are nodes under this step, each described by its own: only the header line is this step's. */
+  @Override
+  public String getOwnDescription() {
+    return head(0, 0, subExecutionPlans.size());
+  }
+
   private String head(final int depth, final int indent, final int nItems) {
     final String ind = ExecutionStepInternal.getIndent(depth, indent);
     return ind + "+ PARALLEL";
