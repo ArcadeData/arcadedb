@@ -21,6 +21,8 @@ package com.arcadedb.remote;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -305,5 +307,93 @@ class RemoteGraphBatchTest {
     RemoteGraphBatch.appendJsonValue(sb, json);
 
     assertThat(sb.toString()).isEqualTo("{\"embedding\":[0.1,0.2],\"label\":\"a\"}");
+  }
+
+  // A property name starting with '@' is reserved by the batch encoding: the batch refuses it on the client, before
+  // anything is buffered, instead of writing a line the server would read differently from what the caller meant.
+  @ParameterizedTest
+  @ValueSource(strings = { "@class", "@type", "@id", "@from", "@to" })
+  void createVertexRefusesReservedPropertyName(final String name) {
+    final RemoteGraphBatch batch = newBatch();
+
+    assertThatThrownBy(() -> batch.createVertex("Person", "name", "Alice", name, "Other"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Invalid property name '" + name + "'");
+
+    // The refused vertex left no trace: the next one is still the first of the batch.
+    assertThat(batch.createVertex("Person", "name", "Bob")).isEqualTo("v0");
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = { "@class", "@type", "@id", "@from", "@to" })
+  void createEdgeRefusesReservedPropertyName(final String name) {
+    final RemoteGraphBatch batch = newBatch();
+
+    assertThatThrownBy(() -> batch.createEdge("KNOWS", "#3:0", "#3:1", "since", 2020, name, "Other"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Invalid property name '" + name + "'");
+
+    // The refused edge left no trace: the batch has no edges, so it still accepts vertices.
+    assertThat(batch.createVertex("Person", "name", "Bob")).isEqualTo("v0");
+  }
+
+  @Test
+  void createVertexRefusesAnyPropertyNameStartingWithAt() {
+    final RemoteGraphBatch batch = newBatch();
+
+    assertThatThrownBy(() -> batch.createVertex("Person", "@rid", "#3:0"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Invalid property name '@rid'");
+  }
+
+  @Test
+  void createVertexRefusesNullPropertyName() {
+    final RemoteGraphBatch batch = newBatch();
+
+    assertThatThrownBy(() -> batch.createVertex("Person", null, "Alice"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Property name must be a string");
+  }
+
+  @Test
+  void createVertexRefusesNonStringPropertyName() {
+    final RemoteGraphBatch batch = newBatch();
+
+    assertThatThrownBy(() -> batch.createVertex("Person", 42, "Alice"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Property name must be a string");
+  }
+
+  @Test
+  void createVertexRefusesOddNumberOfPropertyArguments() {
+    final RemoteGraphBatch batch = newBatch();
+
+    assertThatThrownBy(() -> batch.createVertex("Person", "name", "Alice", "age"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("key-value pairs");
+
+    assertThat(batch.createVertex("Person", "name", "Bob")).isEqualTo("v0");
+  }
+
+  @Test
+  void appendPropertiesRefusesReservedPropertyName() {
+    final StringBuilder sb = new StringBuilder();
+
+    assertThatThrownBy(() -> RemoteGraphBatch.appendProperties(sb, new Object[] { "name", "Alice", "@class", "Other" }))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Invalid property name '@class'");
+  }
+
+  @Test
+  void propertyNamesThatDoNotStartWithAtAreAccepted() {
+    final RemoteGraphBatch batch = newBatch();
+
+    assertThat(batch.createVertex("Person", "name", "Alice", "class", "Other", "type", "x", "id", 1, "from", "a", "to", "b",
+        "email@example", "a@b", "", "empty")).isEqualTo("v0");
+    batch.createEdge("KNOWS", "v0", "v0", "class", "x", "from", 1);
+
+    final StringBuilder sb = new StringBuilder();
+    RemoteGraphBatch.appendProperties(sb, new Object[] { "class", "x", "a@b", 1 });
+    assertThat(sb.toString()).isEqualTo(",\"class\":\"x\",\"a@b\":1");
   }
 }

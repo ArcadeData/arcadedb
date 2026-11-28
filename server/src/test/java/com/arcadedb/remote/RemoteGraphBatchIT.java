@@ -30,6 +30,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Integration tests for {@link RemoteGraphBatch}.
@@ -520,5 +521,47 @@ class RemoteGraphBatchIT extends BaseGraphServerTest {
     }
 
     database.close();
+  }
+
+  /**
+   * A property name that starts with '@' is refused on the client, before the record is buffered: the refused
+   * record is not sent, the batch stays usable, and every other record of the load lands in the type it was
+   * created for.
+   */
+  @Test
+  void refusedPropertyNameLeavesTheLoadIntact() {
+    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(), DATABASE_NAME, "root",
+        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+
+    database.command("sql", "CREATE VERTEX TYPE Member IF NOT EXISTS");
+    database.command("sql", "CREATE VERTEX TYPE Other IF NOT EXISTS");
+    database.command("sql", "CREATE EDGE TYPE LINKS IF NOT EXISTS");
+
+    try (final RemoteGraphBatch batch = database.batch().build()) {
+      final String first = batch.createVertex("Member", "name", "Alice");
+
+      assertThatThrownBy(() -> batch.createVertex("Member", "name", "Mallory", "@class", "Other"))
+          .isInstanceOf(IllegalArgumentException.class);
+
+      final String second = batch.createVertex("Member", "name", "Bob");
+      assertThat(second).isEqualTo("v1");
+
+      assertThatThrownBy(() -> batch.createEdge("LINKS", first, second, "@to", first))
+          .isInstanceOf(IllegalArgumentException.class);
+
+      batch.createEdge("LINKS", first, second, "weight", 1);
+    }
+
+    assertThat(count(database, "Member")).isEqualTo(2L);
+    assertThat(count(database, "Other")).isEqualTo(0L);
+    assertThat(count(database, "LINKS")).isEqualTo(1L);
+
+    database.close();
+  }
+
+  private static long count(final RemoteDatabase database, final String type) {
+    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS cnt FROM " + type)) {
+      return ((Number) rs.nextIfAvailable().getProperty("cnt")).longValue();
+    }
   }
 }

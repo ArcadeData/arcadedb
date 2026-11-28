@@ -153,11 +153,14 @@ public class RemoteGraphBatch implements AutoCloseable {
    * @param typeName   vertex type name (must exist in schema)
    * @param properties optional key-value pairs (e.g. "name", "Alice", "age", 30)
    * @return temporary ID string for referencing this vertex in edges
+   *
+   * @throws IllegalArgumentException if a property name is not a string or starts with '@'; nothing is buffered
    */
   public String createVertex(final String typeName, final Object... properties) {
     checkOpen();
     if (hasEdges)
       throw new IllegalStateException("Cannot add vertices after edges have been added");
+    checkProperties(properties);
 
     final String tempId = "v" + vertexCounter++;
 
@@ -185,9 +188,12 @@ public class RemoteGraphBatch implements AutoCloseable {
    * @param from         source vertex reference (temp ID or RID string)
    * @param to           destination vertex reference (temp ID or RID string)
    * @param properties   optional key-value pairs
+   *
+   * @throws IllegalArgumentException if a property name is not a string or starts with '@'; nothing is buffered
    */
   public void createEdge(final String edgeTypeName, final String from, final String to, final Object... properties) {
     checkOpen();
+    checkProperties(properties);
     hasEdges = true;
 
     final String resolvedFrom = resolveRef(from);
@@ -398,6 +404,34 @@ public class RemoteGraphBatch implements AutoCloseable {
   // Array.get() boxing), but those are comparatively rare property shapes, not the per-record
   // scalar hot path this was originally written for.
 
+  /**
+   * Validates the key-value pairs of a record before anything is written to the buffer, so a record that is refused
+   * leaves the batch exactly as it was and the caller can go on with the next one.
+   */
+  static void checkProperties(final Object[] properties) {
+    if (properties == null || properties.length == 0)
+      return;
+    if (properties.length % 2 != 0)
+      throw new IllegalArgumentException("Properties must be key-value pairs (even number of arguments)");
+
+    for (int i = 0; i < properties.length; i += 2)
+      checkPropertyName(properties[i]);
+  }
+
+  /**
+   * A property name is a string that does not start with '@': that prefix belongs to the keys the batch encoding
+   * uses for the record itself ({@code @type}, {@code @class}, {@code @id}, {@code @from}, {@code @to}), and the
+   * server refuses any other name that starts with it.
+   */
+  private static String checkPropertyName(final Object name) {
+    if (!(name instanceof final String text))
+      throw new IllegalArgumentException(
+          "Property name must be a string, found " + (name == null ? "null" : name.getClass().getSimpleName()));
+    if (!text.isEmpty() && text.charAt(0) == '@')
+      throw new IllegalArgumentException("Invalid property name '" + text + "': a property name cannot start with '@'");
+    return text;
+  }
+
   static void appendProperties(final StringBuilder sb, final Object[] properties) {
     if (properties == null || properties.length == 0)
       return;
@@ -406,7 +440,7 @@ public class RemoteGraphBatch implements AutoCloseable {
 
     for (int i = 0; i < properties.length; i += 2) {
       sb.append(',');
-      appendJsonString(sb, (String) properties[i]);
+      appendJsonString(sb, checkPropertyName(properties[i]));
       sb.append(':');
       appendJsonValue(sb, properties[i + 1]);
     }
