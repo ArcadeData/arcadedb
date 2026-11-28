@@ -132,20 +132,11 @@ final class BooleanExpressionBuilder {
   }
 
   /**
-   * Returns true when the given pattern expression is the whole single argument of a function-style
-   * {@code exists(pattern)} predicate, wrapping parentheses aside. Such a pattern is a boolean existence check, not a
-   * projected path, so it is permitted in contexts (RETURN, WITH, LET, a SET value) where a bare pattern is rejected.
-   * A pattern that is only a part of the argument ({@code exists([(n)-->()])}, {@code exists(coalesce((n)-->()))}) is
-   * not: {@code exists()} then tests the value of the surrounding expression, and lowering the call to the pattern
-   * predicate would silently drop that expression (issue #13466).
-   */
-  static boolean isArgumentOfExistsFunction(final Cypher25Parser.PatternExpressionContext pattern) {
-    return existsFunctionOf(pattern) != null;
-  }
-
-  /**
    * The function-style {@code exists()} call the given pattern expression is the whole single argument of, wrapping
-   * parentheses aside, or null when there is none.
+   * parentheses aside, or null when there is none. Such a pattern is a boolean existence check, not a projected path. A
+   * pattern that is only a part of the argument ({@code exists([(n)-->()])}, {@code exists(coalesce((n)-->()))}) is not:
+   * {@code exists()} then tests the value of the surrounding expression, and lowering the call to the pattern predicate
+   * would silently drop that expression (issue #13466).
    */
   static Cypher25Parser.FunctionInvocationContext existsFunctionOf(final Cypher25Parser.PatternExpressionContext pattern) {
     ParserRuleContext node = pattern;
@@ -160,9 +151,11 @@ final class BooleanExpressionBuilder {
   }
 
   /**
-   * Recursively finds a pattern expression that is NOT the whole argument of a function-style {@code exists(pattern)}
-   * predicate: a bare pattern that would project a path. A pattern that is the argument of {@code exists()} is a boolean
-   * check, so it is skipped and the search goes on: every pattern of the expression is looked at, not only the first.
+   * Recursively finds a pattern expression that does not stand in a boolean position: a bare pattern that would project a
+   * path. A pattern that is the whole argument of a function-style {@code exists(pattern)}, an operand of NOT, AND, OR or
+   * XOR, a CASE WHEN condition or the WHERE of a comprehension or list predicate tests whether the pattern exists (the
+   * positions of {@link #rejectNonBooleanPatternExpressions}, issue #13616), so it is skipped and the search goes on: every
+   * pattern of the expression is looked at, not only the first.
    * The subquery expressions {@code EXISTS}, {@code COUNT} and {@code COLLECT} are skipped, as
    * {@link #rejectNonBooleanPatternExpressions} does: the patterns of their body are checked when the body is built.
    */
@@ -171,7 +164,7 @@ final class BooleanExpressionBuilder {
         || node instanceof Cypher25Parser.CollectExpressionContext)
       return null;
     if (node instanceof Cypher25Parser.PatternExpressionContext pattern)
-      return isArgumentOfExistsFunction(pattern) ? null : pattern;
+      return nonBooleanHolderOf(pattern) == null ? null : pattern;
     for (int i = 0; i < node.getChildCount(); i++) {
       final Cypher25Parser.PatternExpressionContext found = findBarePatternExpression(node.getChild(i));
       if (found != null)
@@ -236,18 +229,28 @@ final class BooleanExpressionBuilder {
       rejectNonBooleanPatternExpressions(node.getChild(i));
   }
 
-  private static void rejectUnlessBoolean(final Cypher25Parser.PatternExpressionContext pattern) {
+  /**
+   * Null when {@code pattern} stands in a boolean position (see {@link #rejectNonBooleanPatternExpressions}); otherwise the
+   * outermost node the pattern passes its value through unchanged, whose parent is what uses the pattern as a value.
+   */
+  private static ParserRuleContext nonBooleanHolderOf(final Cypher25Parser.PatternExpressionContext pattern) {
     ParserRuleContext node = pattern;
     while (true) {
       final ParserRuleContext parent = node.getParent();
       if (node instanceof Cypher25Parser.ExpressionContext expression && isBooleanSlot(parent, expression))
-        return;
+        return null;
       if (isBooleanOperator(parent))
-        return;
+        return null;
       if (!isBooleanPassThrough(parent))
-        break;
+        return node;
       node = parent;
     }
+  }
+
+  private static void rejectUnlessBoolean(final Cypher25Parser.PatternExpressionContext pattern) {
+    final ParserRuleContext node = nonBooleanHolderOf(pattern);
+    if (node == null)
+      return;
     final String text = CypherASTBuilder.getOriginalText(pattern);
     final Cypher25Parser.FunctionInvocationContext function =
         node.getParent() instanceof Cypher25Parser.FunctionArgumentContext argument ? functionOf(argument) : null;
@@ -565,7 +568,9 @@ final class BooleanExpressionBuilder {
       if (compCtx instanceof Cypher25Parser.LabelComparisonContext) {
         final Cypher25Parser.LabelComparisonContext labelCtx = (Cypher25Parser.LabelComparisonContext) compCtx;
         TypePredicateBuilder.rejectDirectedPredicate(labelCtx.labelExpression());
-        return parseLabelCheckExpression(leftExpr, labelCtx.labelExpression(), ctx.getText());
+        // c:Chunk IS NULL, c:Chunk IN [true]: the label predicate is the left operand of a second predicate (issue #13452)
+        return expressionBuilder.applyLabelPredicateComparison(parseLabelCheckExpression(leftExpr, labelCtx.labelExpression(),
+            CypherExpressionBuilder.labelPredicateText(ctx.expression6(), labelCtx)), labelCtx);
       }
 
       // TypeComparison: <expr> IS [NOT] TYPED <type>  or  <expr> :: <type>  (issue #3365 section 3.3)

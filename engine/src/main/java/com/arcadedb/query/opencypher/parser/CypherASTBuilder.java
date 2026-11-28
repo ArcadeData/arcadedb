@@ -860,7 +860,8 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     // Always process explicit return items (handles both "WITH expr" and "WITH *, expr AS alias")
     for (final Cypher25Parser.ReturnItemContext itemCtx : body.returnItems().returnItem()) {
       // Bare pattern expressions (e.g., (n)-[]->()) are not allowed in WITH projections; the argument of a
-      // function-style exists(pattern) is a boolean check, as in RETURN (issues #4993, #13466)
+      // function-style exists(pattern) is a boolean check, as in RETURN (issues #4993, #13466), and so is an operand of
+      // NOT, AND, OR or XOR or a CASE WHEN condition (issue #13616)
       if (BooleanExpressionBuilder.findBarePatternExpression(itemCtx.expression()) != null)
         throw new CommandParsingException("UnexpectedSyntax: Pattern expressions are not allowed in WITH projections");
       final Expression expr = expressionBuilder.parseExpression(itemCtx.expression());
@@ -1004,6 +1005,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       // A pattern nested inside a function-style exists(pattern) predicate is allowed: it evaluates
       // to a boolean, not a projected path (issue #4993).
       // Every pattern of the item is checked, not only the first one (issue #13466).
+      // So is a pattern in any other boolean position: an operand of NOT, AND, OR or XOR, a CASE WHEN condition (#13616).
       if (BooleanExpressionBuilder.findBarePatternExpression(itemCtx.expression()) != null)
         throw new CommandParsingException("UnexpectedSyntax: Pattern expressions are not allowed in RETURN projections");
       final Expression expr = expressionBuilder.parseExpression(itemCtx.expression());

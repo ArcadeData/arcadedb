@@ -566,7 +566,14 @@ comparisonExpression6
    | IS NOT? NULL                                     # NullComparison
    | (IS NOT? (TYPED | COLONCOLON) | COLONCOLON) type # TypeComparison
    | IS NOT? normalForm? NORMALIZED                   # NormalFormComparison
-   | labelExpression                                  # LabelComparison
+   | labelExpression labelPredicateComparison?        # LabelComparison
+   ;
+
+// A label predicate is a boolean, so it may be the left operand of a null or list predicate: c:Chunk IS NULL,
+// c:Chunk IN [true]. Only there: expression7 still takes a single comparison after any other operand.
+labelPredicateComparison
+   : IS NOT? NULL
+   | IN expression6
    ;
 
 normalForm
