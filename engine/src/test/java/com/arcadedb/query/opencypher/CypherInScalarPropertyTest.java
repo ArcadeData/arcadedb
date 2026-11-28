@@ -115,6 +115,13 @@ class CypherInScalarPropertyTest extends TestHelper {
       assertThat(keys(indexed, list)).as(rightSide).containsExactly("a", "b");
       assertThat(keys(indexed.replace(":Idx", ":Plain"), list)).as(rightSide).containsExactly("a", "b");
     }
+
+    // x IN null is null on both paths: no row, no error
+    final Map<String, Object> nullKey = new HashMap<>();
+    nullKey.put("k", null);
+    final Map<String, Object> nullPart = Map.of("m", nullKey);
+    assertThat(keys("MATCH (b:Idx) WHERE b.k IN $m.k RETURN b.k AS k", nullPart)).isEmpty();
+    assertThat(keys("MATCH (b:Plain) WHERE b.k IN $m.k RETURN b.k AS k", nullPart)).isEmpty();
   }
 
   @Test
