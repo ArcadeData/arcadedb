@@ -28,6 +28,7 @@ import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.InvalidPropertyTypeException;
 import com.arcadedb.exception.LockTimeoutException;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.ProcedureCallFailedException;
 import com.arcadedb.exception.QueryAdmissionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TypeMismatchException;
@@ -106,6 +107,50 @@ class BoltErrorClassificationTest {
         new InvalidPropertyTypeException("TypeError: InvalidPropertyType - ..."));
     assertThat(BoltNetworkExecutor.classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR))
         .isEqualTo(BoltErrorCodes.TRANSIENT_CONFLICT_ERROR);
+  }
+
+  /**
+   * Issue #13560. A fired {@code apoc.util.validate} guard is Neo4j's ProcedureCallFailed with the text Neo4j with APOC words,
+   * which {@code @neo4j/graphql} decodes; any other bad argument stays an ArgumentError.
+   */
+  @Test
+  void aFiredValidateGuardClassifiesAsAFailedProcedureCall() {
+    final Throwable guard = new ProcedureCallFailedException(false, "apoc.util.validate", "@neo4j/graphql/FORBIDDEN");
+    final Throwable wrapped = new RuntimeException("Error executing Cypher command", guard);
+
+    for (final Throwable error : new Throwable[] { guard, wrapped }) {
+      final String code = BoltNetworkExecutor.classifyExecutionError(error, BoltErrorCodes.DATABASE_ERROR);
+      assertThat(code).isEqualTo(BoltErrorCodes.PROCEDURE_CALL_FAILED_ERROR);
+      assertThat(BoltNetworkExecutor.procedureCallFailedText(code, "the engine's text", error)).isEqualTo(
+          "Failed to invoke procedure `apoc.util.validate`: Caused by: java.lang.RuntimeException: @neo4j/graphql/FORBIDDEN");
+    }
+
+    final Throwable function = new ProcedureCallFailedException(true, "apoc.util.validatePredicate", "@neo4j/graphql/UNAUTHENTICATED");
+    assertThat(BoltNetworkExecutor.procedureCallFailedText(BoltErrorCodes.PROCEDURE_CALL_FAILED_ERROR, "the engine's text", function))
+        .isEqualTo(
+            "Failed to invoke function `apoc.util.validatePredicate`: Caused by: java.lang.RuntimeException: @neo4j/graphql/UNAUTHENTICATED");
+
+    assertThat(BoltNetworkExecutor.classifyExecutionError(new IllegalArgumentException("bad argument"), BoltErrorCodes.DATABASE_ERROR))
+        .isEqualTo(BoltErrorCodes.ARGUMENT_ERROR);
+  }
+
+  /**
+   * Issue #13560. The text follows the code: a chain that carries a fired guard under a failure classified as something else keeps
+   * that failure's text, so a FAILURE never pairs another title with "Failed to invoke procedure ...".
+   */
+  @Test
+  void theFailedCallTextIsSentOnlyWithTheFailedCallCode() {
+    final Throwable guard = new ProcedureCallFailedException(false, "apoc.util.validate", "msg");
+    final Throwable conflict = new ConcurrentModificationException("retry", guard);
+
+    final String code = BoltNetworkExecutor.classifyExecutionError(conflict, BoltErrorCodes.TRANSACTION_ERROR);
+    assertThat(code).isEqualTo(BoltErrorCodes.TRANSIENT_CONFLICT_ERROR);
+    assertThat(BoltNetworkExecutor.procedureCallFailedText(code, "retry", conflict)).isEqualTo("retry");
+    assertThat(BoltNetworkExecutor.procedureCallFailedText(BoltErrorCodes.TRANSACTION_ERROR, "the engine's text", guard))
+        .isEqualTo("the engine's text");
+    // the code without the guard in the chain: nothing to word, the text stays
+    assertThat(BoltNetworkExecutor.procedureCallFailedText(BoltErrorCodes.PROCEDURE_CALL_FAILED_ERROR, "the engine's text",
+        new IllegalArgumentException("bad argument"))).isEqualTo("the engine's text");
   }
 
   @Test

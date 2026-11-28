@@ -1278,6 +1278,57 @@ class PostgresTypeTest {
   }
 
   @Test
+  void deserializeBinaryArrayRejectsAnElementLongerThanTheRestOfTheValue() {
+    // one element that declares 64MB while the value ends right after its length prefix: refused before a buffer is sized for it
+    ByteBuffer buf = ByteBuffer.allocate(32).order(ByteOrder.BIG_ENDIAN);
+    buf.putInt(1);                 // ndim
+    buf.putInt(0);                 // hasnull
+    buf.putInt(25);                // elemOid: text
+    buf.putInt(1);                 // dim size
+    buf.putInt(1);                 // lb
+    buf.putInt(64 * 1024 * 1024);  // element length, no element bytes behind it
+    byte[] data = Arrays.copyOf(buf.array(), buf.position());
+    assertThatThrownBy(() -> PostgresType.deserialize(PostgresType.ARRAY_TEXT.code, 1, data))
+        .isInstanceOf(PostgresProtocolException.class)
+        .hasMessageContaining("Invalid array element length");
+  }
+
+  @Test
+  void deserializeBinaryArrayRejectsAnElementLengthBelowTheNullMarker() {
+    // -1 is the null element; any other negative length is not a length at all
+    ByteBuffer buf = ByteBuffer.allocate(32).order(ByteOrder.BIG_ENDIAN);
+    buf.putInt(1);                 // ndim
+    buf.putInt(0);                 // hasnull
+    buf.putInt(25);                // elemOid: text
+    buf.putInt(1);                 // dim size
+    buf.putInt(1);                 // lb
+    buf.putInt(-2);                // element length
+    byte[] data = Arrays.copyOf(buf.array(), buf.position());
+    assertThatThrownBy(() -> PostgresType.deserialize(PostgresType.ARRAY_TEXT.code, 1, data))
+        .isInstanceOf(PostgresProtocolException.class)
+        .hasMessageContaining("Invalid array element length");
+  }
+
+  @Test
+  void deserializeBinaryArrayKeepsAnElementThatFillsTheRestOfTheValueAndANullElement() {
+    ByteBuffer buf = ByteBuffer.allocate(64).order(ByteOrder.BIG_ENDIAN);
+    buf.putInt(1);                 // ndim
+    buf.putInt(1);                 // hasnull
+    buf.putInt(25);                // elemOid: text
+    buf.putInt(3);                 // dim size
+    buf.putInt(1);                 // lb
+    buf.putInt(-1);                // null element
+    buf.putInt(0);                 // empty element
+    final byte[] last = "tail".getBytes();
+    buf.putInt(last.length);       // the last element ends exactly where the value ends
+    buf.put(last);
+    byte[] data = Arrays.copyOf(buf.array(), buf.position());
+    @SuppressWarnings("unchecked")
+    final List<Object> elements = (List<Object>) PostgresType.deserialize(PostgresType.ARRAY_TEXT.code, 1, data);
+    assertThat(elements).containsExactly(null, "", "tail");
+  }
+
+  @Test
   void deserializeBinaryArrayRejectsOverflowAcrossDimensions() {
     // Two dimensions of ~65000 each: product overflows Integer.MAX_VALUE. Must be rejected
     // instead of silently wrapping to a small loop count (the original bug class).
@@ -1627,7 +1678,18 @@ class PostgresTypeTest {
     int length = buffer.getInt();
     byte[] data = new byte[length];
     buffer.getByteBuffer().get(data);
-    assertThat(new String(data)).isEqualTo("{true,false}");
+    assertThat(new String(data)).isEqualTo("{t,f}");
+  }
+
+  @Test
+  void serializeAsTextBooleanArrayWritesTheNullElementAndOnlyBoolArraysUseTf() {
+    // issue #12994: PostgreSQL writes a bool[] as {t,f} (a NULL element stays NULL); a Boolean inside text[] or json[] keeps its own text
+    assertThat(PostgresType.ARRAY_BOOLEAN.toText(PostgresType.ARRAY_BOOLEAN, Arrays.asList(true, null, false))).isEqualTo("{t,NULL,f}");
+    assertThat(PostgresType.ARRAY_TEXT.toText(PostgresType.ARRAY_TEXT, Arrays.asList(true, false))).isEqualTo("{true,false}");
+    assertThat(PostgresType.ARRAY_JSON.toText(PostgresType.ARRAY_JSON, Arrays.asList(true, false))).isEqualTo("{true,false}");
+    // and what is written is read back
+    final String text = PostgresType.ARRAY_BOOLEAN.toText(PostgresType.ARRAY_BOOLEAN, Arrays.asList(true, null, false));
+    assertThat((List<Object>) PostgresType.deserialize(PostgresType.ARRAY_BOOLEAN.code, 0, text.getBytes())).containsExactly(true, null, false);
   }
 
   @Test
@@ -1778,7 +1840,7 @@ class PostgresTypeTest {
     int length = buffer.getInt();
     byte[] data = new byte[length];
     buffer.getByteBuffer().get(data);
-    assertThat(new String(data)).isEqualTo("{true,false}");
+    assertThat(new String(data)).isEqualTo("{t,f}");
   }
 
   @Test
@@ -2429,6 +2491,37 @@ class PostgresTypeTest {
         .isInstanceOf(PostgresProtocolException.class);
     assertThatThrownBy(() -> PostgresType.deserialize(PostgresType.BYTEA.code, 0, "\\xzz".getBytes()))
         .isInstanceOf(PostgresProtocolException.class);
+  }
+
+  // Regression: #11838
+  @Test
+  void uuidParameterAcceptsEverySpellingPostgresAccepts() {
+    final String canonical = "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11";
+    // the spellings PostgreSQL's uuid input documents, hyphens after any group of four digits included
+    for (final String spelling : new String[] { "A0EEBC99-9C0B-4EF8-BB6D-6BB9BD380A11", "{a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11}",
+        "a0eebc999c0b4ef8bb6d6bb9bd380a11", "a0ee-bc99-9c0b-4ef8-bb6d-6bb9-bd38-0a11", "{a0eebc99-9c0b4ef8-bb6d6bb9-bd380a11}",
+        canonical })
+      assertThat(PostgresType.deserialize(2950, 0, spelling.getBytes(StandardCharsets.UTF_8))).as(spelling).isEqualTo(canonical);
+  }
+
+  // Regression: #11838
+  @Test
+  void uuidParameterRejectsWhatPostgresRejects() {
+    for (final String spelling : new String[] { "{a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11}",
+        "{a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11}}", "{{a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11}", "a0eeb-c99-9c0b-4ef8-bb6d-6bb9bd380a11",
+        "a0eebc99--9c0b-4ef8-bb6d-6bb9bd380a11", "-a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11-",
+        "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a1", "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a111", "g0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+        " a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a1\u0663", "", "{}" })
+      assertThatThrownBy(() -> PostgresType.deserialize(2950, 0, spelling.getBytes(StandardCharsets.UTF_8))).as(spelling)
+          .isInstanceOf(PostgresProtocolException.class);
+  }
+
+  // Regression: #11838
+  @Test
+  void uuidParameterReadsTheSixteenBytesOfTheBinaryFormat() {
+    final ByteBuffer bytes = ByteBuffer.allocate(16).putLong(0xa0eebc999c0b4ef8L).putLong(0xbb6d6bb9bd380a11L);
+    assertThat(PostgresType.deserialize(2950, 1, bytes.array())).isEqualTo("a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11");
+    assertThatThrownBy(() -> PostgresType.deserialize(2950, 1, new byte[15])).isInstanceOf(PostgresProtocolException.class);
   }
 
   @Test

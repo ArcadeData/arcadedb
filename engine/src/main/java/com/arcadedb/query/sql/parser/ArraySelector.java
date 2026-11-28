@@ -144,6 +144,10 @@ public class ArraySelector extends SimpleNode {
   }
 
   public void setValue(final List target, final int idx, final Object value, final CommandContext context) {
+    // a negative index reads null and REMOVE takes nothing out at one, so nothing is written at one either: it used to answer an
+    // IndexOutOfBoundsException (issue #12914). An index past the end still grows the list up to it
+    if (idx < 0)
+      return;
     final int originalSize = target.size();
     for (int i = originalSize; i <= idx; i++) {
       if (i >= originalSize) {

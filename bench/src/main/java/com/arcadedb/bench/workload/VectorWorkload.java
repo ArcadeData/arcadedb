@@ -69,7 +69,8 @@ public class VectorWorkload implements Workload {
   static int vectors(final Scale scale) {
     return switch (scale) {
       case XS -> 2_000;
-      case S -> 20_000;
+      // the smallest round size whose build takes over 5 s on the JVM (20k took 1.0 s, 200k 15.4 s)
+      case S -> 80_000;
       case M -> 200_000;
       case L -> 1_000_000;
     };
@@ -78,8 +79,7 @@ public class VectorWorkload implements Workload {
   static int queryCount(final Scale scale) {
     return switch (scale) {
       case XS -> 50;
-      case S -> 200;
-      case M, L -> 1_000;
+      case S, M, L -> 1_000;
     };
   }
 

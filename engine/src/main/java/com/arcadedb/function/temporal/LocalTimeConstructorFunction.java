@@ -30,7 +30,6 @@ import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.time.DateTimeException;
-import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
@@ -95,16 +94,16 @@ public class LocalTimeConstructorFunction implements StatelessFunction {
         throw new CommandSemanticException("localtime() " + e.getMessage());
       }
     }
-    if (args[0] instanceof CypherLocalTime)
-      return args[0];
-    if (args[0] instanceof CypherTime)
-      return new CypherLocalTime(((CypherTime) args[0]).getValue().toLocalTime());
-    if (args[0] instanceof CypherLocalDateTime)
-      return new CypherLocalTime(((CypherLocalDateTime) args[0]).getValue().toLocalTime());
-    if (args[0] instanceof CypherDateTime)
-      return new CypherLocalTime(((CypherDateTime) args[0]).getValue().toLocalTime());
-    if (args[0] instanceof LocalDateTime)
-      return new CypherLocalTime(((LocalDateTime) args[0]).toLocalTime());
+    // A native temporal (a parameter a driver sent, a value read off a map or a list) is the Cypher temporal its literal is (issue #13569)
+    final Object temporal = TemporalUtil.fromCoreJavaType(args[0]);
+    if (temporal instanceof CypherLocalTime)
+      return temporal;
+    if (temporal instanceof CypherTime)
+      return new CypherLocalTime(((CypherTime) temporal).getValue().toLocalTime());
+    if (temporal instanceof CypherLocalDateTime)
+      return new CypherLocalTime(((CypherLocalDateTime) temporal).getValue().toLocalTime());
+    if (temporal instanceof CypherDateTime)
+      return new CypherLocalTime(((CypherDateTime) temporal).getValue().toLocalTime());
     throw new CommandSemanticException("localtime() expects a string, map, or temporal argument");
   }
 }

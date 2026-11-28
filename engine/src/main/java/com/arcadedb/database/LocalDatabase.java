@@ -133,14 +133,17 @@ import com.arcadedb.utility.VectorApiSupport;
 import java.io.File;
 import java.io.IOException;
 import java.io.RandomAccessFile;
-import java.io.UncheckedIOException;
 import java.nio.BufferUnderflowException;
 import java.nio.channels.ClosedByInterruptException;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
+import java.nio.file.DirectoryIteratorException;
+import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
@@ -165,7 +168,6 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Consumer;
 import java.util.function.UnaryOperator;
 import java.util.logging.Level;
-import java.util.stream.Stream;
 
 /**
  * Local implementation of {@link Database}. It is based on files opened on the local file system.
@@ -499,16 +501,58 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       if (afterDropCloseHook != null)
         afterDropCloseHook.accept(this);
 
+      final File databaseDirectory = new File(databasePath);
       executeInWriteLock(() -> {
-        FileUtils.deleteRecursively(new File(databasePath));
+        FileUtils.deleteRecursively(databaseDirectory);
         return null;
       });
+
+      // THE DELETE ONLY LOGS WHAT IT COULD NOT REMOVE (ISSUE #12865): A DROP THAT LEFT FILES BEHIND MUST NOT REPORT SUCCESS, OR THE
+      // CALLER IS TOLD THE DATABASE IS GONE WHILE create() OF THE PATH IS REFUSED AS "ALREADY EXISTS" AND open() BRINGS THE DATA
+      // BACK. CHECKED WHILE THE PATH IS STILL HELD IN THE REGISTRY, SO NO create() CAN PUT NEW FILES THERE IN BETWEEN. AN EMPTY
+      // DIRECTORY LEFT BEHIND (A MOUNT POINT, A PARENT THAT REFUSES THE UNLINK) HOLDS NO DATABASE AND IS NOT A FAILURE
+      checkDatabaseDirectoryIsGone(databaseDirectory.toPath());
     } finally {
       // WHATEVER BECAME OF THE DELETE: NOTHING IS LEFT TO KEEP THE PATH FOR. A DROP THAT LOST THE CLOSING CAS TO A CONCURRENT
       // close() HAS NOTHING TO UNREGISTER, THAT CLOSE DID IT
       if (registrationKept)
         unregisterClosedInstance();
     }
+  }
+
+  /**
+   * Throws when the directory of the database is still there with any entry in it, or cannot be inspected: only a directory
+   * that is gone (NoSuchFileException) or empty holds no database. File.exists() and File.list() are not enough, because they
+   * answer "absent" or null for a directory they are not allowed to look at (an unreadable directory, an ancestor without
+   * search permission), where the delete removed nothing either.
+   */
+  private void checkDatabaseDirectoryIsGone(final Path databaseDirectory) {
+    final List<String> leftOver = new ArrayList<>();
+    try (final DirectoryStream<Path> entries = Files.newDirectoryStream(databaseDirectory)) {
+      for (final Path entry : entries)
+        leftOver.add(entry.getFileName().toString());
+    } catch (final NoSuchFileException e) {
+      return;
+    } catch (final IOException | DirectoryIteratorException e) {
+      throw new DatabaseOperationException(
+          "Database '" + databasePath + "' was closed but its files could not be deleted: its directory cannot be inspected (" + e
+              + ")", e);
+    }
+
+    if (leftOver.isEmpty())
+      return;
+
+    Collections.sort(leftOver);
+    final int listed = Math.min(leftOver.size(), 10);
+    final StringBuilder buffer = new StringBuilder();
+    for (int i = 0; i < listed; i++) {
+      if (i > 0)
+        buffer.append(", ");
+      buffer.append(leftOver.get(i));
+    }
+    if (leftOver.size() > listed)
+      buffer.append(" and ").append(leftOver.size() - listed).append(" more");
+    throw new DatabaseOperationException("Database '" + databasePath + "' was closed but its files could not be deleted: " + buffer);
   }
 
   /**
@@ -829,19 +873,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     return executeInReadLock(() -> {
       checkDatabaseIsOpen();
       try {
-        final Path dir = Path.of(databasePath);
-        if (!Files.exists(dir))
-          return 0L;
-        try (Stream<Path> stream = Files.walk(dir)) {
-          return stream.filter(Files::isRegularFile).mapToLong(p -> {
-            try {
-              return Files.size(p);
-            } catch (IOException e) {
-              throw new UncheckedIOException(e);
-            }
-          }).sum();
-        }
-      } catch (Exception e) {
+        return FileUtils.getDirectorySize(Path.of(databasePath));
+      } catch (final IOException e) {
         throw new DatabaseOperationException("Error calculating database size", e);
       }
     });
@@ -2036,7 +2069,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       checkPermissionsOnFile(record.getIdentity().getBucketId(), SecurityDatabaseUser.ACCESS.UPDATE_RECORD);
 
     try {
-      if (record instanceof MutableDocument document) {
+      // A vertex whose edge-list head was set and whose properties were never decoded holds them exactly as they were stored: there is
+      // nothing to validate or to check for lost content, and decoding them (a 1,024-float embedding among them) is what this skips
+      if (record instanceof MutableDocument document && !isEdgeListHeadOnlyWrite(record)) {
         // #10955: NEVER SAVE BACK A RECORD THAT LOST A PROPERTY IT COULD NOT DECODE
         document.checkContentIsComplete();
         document.validate();
@@ -2079,6 +2114,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     // Known positively, not from the absence of an assignment: a list or map changed in place assigns no property either, and it
     // is content all the same.
     final boolean structural = isEdgeListWriteOnly(record);
+    // read before addUpdatedRecord() below, which clears the flag it is told by
+    final boolean headOnly = isEdgeListHeadOnlyWrite(record);
     if (!writeNow && isTransactionActive()) {
       // MARK THE RECORD FOR UPDATE IN TX AND DEFER THE SERIALIZATION AT COMMIT TIME. THIS SPEEDS UP CASES WHEN THE
       // SAME RECORDS ARE UPDATE MULTIPLE TIME INSIDE
@@ -2093,10 +2130,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         // after-update events from firing for a write that never happened.
         // #8066: remembered before queueing, so a refused update takes back only what THIS call queued
         final boolean alreadyQueued = tx.isUpdateQueued(record.getIdentity());
+        // The index entries follow the stored properties of a head-only write only while no other instance of the record is queued:
+        // one that is carries what an earlier save brought the indexes to, and this write replaces it with the stored content
+        final boolean indexesAlreadyFollow = headOnly && (!alreadyQueued || tx.isQueuedInstance(record));
         if (!tx.addUpdatedRecord(record))
           return false;
 
-        if (record instanceof Document document) {
+        // No property of a head-only write differs from what the indexes hold, so no index entry does either
+        if (record instanceof Document document && !indexesAlreadyFollow) {
           // UPDATE THE INDEX IN MEMORY BEFORE UPDATING THE PAGE
           final List<IndexInternal> indexes = indexer.getInvolvedIndexes(document);
           if (!indexes.isEmpty()) {
@@ -2242,6 +2283,19 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       tx.setRollbackOnly("a before-update listener refused the update of record " + record.getIdentity()
           + ", which the transaction had already updated, and the transaction has no savepoint to take it back to");
     return false;
+  }
+
+  /**
+   * Whether the update sets an edge-list head of a vertex that never decoded its properties: they are the stored ones, so validating
+   * them, diffing the indexes on them and serializing them again would all find nothing. What {@code GraphEngine.writeEdgeListHead}
+   * writes for the first edge of a direction, on a vertex it just took from {@code modify()}.
+   * <p>
+   * A {@code reload()} or a statement taken back ({@code restoreContent}) also leaves the properties undecoded, over content the last
+   * save did not bring the indexes to: both mark the record assigned after its save, and such a write is no head-only one.
+   */
+  private static boolean isEdgeListHeadOnlyWrite(final Record record) {
+    return record instanceof MutableVertex vertex && vertex.areEdgeListHeadsAssigned() && !vertex.arePropertiesLoaded()
+        && !((MutableDocument) vertex).isAssignedAfterSave();
   }
 
   /**
@@ -2875,6 +2929,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         if (!createdNewTx) {
           // A level the block opened itself and left open is not the caller's: take it back, keep the caller's (#10135)
           rollbackLevelsAbove(callerLevels);
+          // The caller may be no retry loop of ours, but its own code or a client: a block that committed part of its work
+          // does not reach it as a retryable conflict either (#13251)
+          if (TransactionContext.isPartiallyCommitted(txAtStart, commitCountAtStart))
+            throw TransactionContext.notReplayable(e, "Transaction block", txAtStart, commitCountAtStart);
           throw e;
         }
 
@@ -2884,21 +2942,26 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         // from the same state as this one (#10135)
         rollbackLevelsAbove(callerLevels);
 
+        // Decided before the error callback runs, so the callback is told the failure the caller is (#13251)
+        final boolean partiallyCommitted = TransactionContext.isPartiallyCommitted(txAtStart, commitCountAtStart);
+        final ArcadeDBException failure = partiallyCommitted ? TransactionContext.notReplayable(e, "Transaction block", txAtStart, commitCountAtStart) : e;
+
         if (error != null)
-          error.call(e);
+          error.call(failure);
 
         // #7916: a block that already published part of its work cannot be re-run - the rollback above could not
         // take that part back, and a second pass would apply it twice and then report clean success. The commit
         // came from a statement with an explicit batch boundary (UPDATE/DELETE/MOVE VERTEX ... BATCH n), which
         // re-begins straight after, so isTransactionActive() alone cannot see it. The conflict goes to the
-        // caller, who is the only one who knows how to compensate for the half that stands.
-        if (TransactionContext.isPartiallyCommitted(txAtStart, commitCountAtStart)) {
+        // caller, who is the only one who knows how to compensate for the half that stands. Not as the retryable conflict
+        // it is, which every layer above would retry anyway (#13251)
+        if (partiallyCommitted) {
           LogManager.instance().log(this, Level.WARNING,
               "Transaction block on database '%s' committed part of its work before failing (a statement with a BATCH "
                   + "boundary, a Cypher CALL IN TRANSACTIONS, or a write forwarded to the leader): NOT retrying, because replaying it would apply the "
                   + "already durable half a second time. Propagating %s to the caller",
               null, name, e.getClass().getSimpleName());
-          throw e;
+          throw failure;
         }
 
         // #9995: a refusal this node repeats until something outside it changes - a follower refusing leader-only work
@@ -5235,7 +5298,13 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       // ISSUE #4511: RELEASE THE FILE LOCK AND CLOSE THE I/O RESOURCES ACQUIRED BEFORE THE FAILURE, OTHERWISE THE
       // DATABASE STAYS PERMANENTLY UNOPENABLE WITHIN THIS JVM (AND THE LOCK FILE CANNOT BE REMOVED ON WINDOWS).
-      releaseResourcesOnOpenFailure(null);
+      try {
+        releaseResourcesOnOpenFailure(null);
+      } catch (final Error cleanupError) {
+        // THE ERROR PROPAGATES, BUT NOT AT THE COST OF THE REASON THE OPEN FAILED
+        cleanupError.addSuppressed(e);
+        throw cleanupError;
+      }
 
       if (e instanceof DatabaseOperationException exception)
         throw exception;
@@ -5270,9 +5339,36 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * @param primaryError the Error that failed the open, or null when an Exception did. With one, a step's failure of
    *                     any kind is attached to it as suppressed and the next step still runs: a second Error thrown
    *                     from here (an OutOfMemoryError is likely to strike again right away) would otherwise replace
-   *                     the original and skip the steps after it, leaving database.lck locked.
+   *                     the original and skip the steps after it, leaving database.lck locked. Without one, the first
+   *                     Error a step raises is thrown once every step has run, with the later failures suppressed in it.
    */
   private void releaseResourcesOnOpenFailure(final Error primaryError) {
+    Error pending = primaryError;
+
+    // THE TRANSACTION CONTEXT openInternal() REGISTERED FOR THIS THREAD, FIRST, WHILE THE MANAGERS IT MAY HOLD LOCKS IN ARE STILL
+    // THERE: IT BELONGS TO AN INSTANCE THAT NEVER OPENED. LEFT BEHIND, IT PINNED THAT INSTANCE FOR AS LONG AS THE THREAD LIVES AND
+    // FAILED THE THREAD'S FIRST USE OF A DATABASE OF THE SAME PATH OPENED LATER, BY ANY THREAD ("Invalid transactional context
+    // (different db)"). NO LIVE INSTANCE OF THE PATH CAN OWN A CONTEXT OF THIS THREAD: THE FACTORY BUILDS THIS INSTANCE UNDER THE
+    // PATH'S MONITOR AND ONLY WHEN NO ACTIVE INSTANCE OF THE PATH IS REGISTERED, AND A CLOSED INSTANCE TOOK ITS CONTEXTS WITH IT
+    // (removeAllContexts). EACH TRANSACTION IS ROLLED BACK ON ITS OWN: ONE THAT FAILS MUST NOT KEEP THE OUTER ONES' LOCKS HELD
+    try {
+      final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.removeContext(databasePath);
+      if (context != null)
+        for (int i = context.transactions.size() - 1; i > -1; --i) {
+          try {
+            final TransactionContext tx = context.transactions.get(i);
+            if (tx.isActive())
+              tx.rollback();
+          } catch (final Throwable e) {
+            pending = onOpenFailureReleaseError(pending, e, "Error on rolling back a transaction after a failed open of database '%s'",
+                name);
+          }
+        }
+    } catch (final Throwable e) {
+      pending = onOpenFailureReleaseError(pending, e, "Error on clearing the transaction context after a failed open of database '%s'",
+          name);
+    }
+
     try {
       if (columnarIndexManager != null) {
         // a failed open is no clean close: nothing is flushed, the projections opened by the schema load only release their files
@@ -5280,7 +5376,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         columnarIndexManager.close();
       }
     } catch (final Throwable e) {
-      onOpenFailureReleaseError(primaryError, e, "Error on closing the columnar indexes after a failed open of database '%s'", name);
+      pending = onOpenFailureReleaseError(pending, e, "Error on closing the columnar indexes after a failed open of database '%s'", name);
     }
 
     try {
@@ -5299,14 +5395,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         }
       }
     } catch (final Throwable e) {
-      onOpenFailureReleaseError(primaryError, e, "Error on releasing lock file '%s' after a failed open", lockFile);
+      pending = onOpenFailureReleaseError(pending, e, "Error on releasing lock file '%s' after a failed open", lockFile);
     }
 
     try {
       if (fileManager != null)
         fileManager.close();
     } catch (final Throwable e) {
-      onOpenFailureReleaseError(primaryError, e, "Error on closing file manager after a failed open of database '%s'", name);
+      pending = onOpenFailureReleaseError(pending, e, "Error on closing file manager after a failed open of database '%s'", name);
     }
 
     try {
@@ -5318,23 +5414,32 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         // data files. This instance may not even own a WAL pool; it never owns the right to delete one.
         transactionManager.close(false, true);
     } catch (final Throwable e) {
-      onOpenFailureReleaseError(primaryError, e, "Error on closing transaction manager after a failed open of database '%s'",
+      pending = onOpenFailureReleaseError(pending, e, "Error on closing transaction manager after a failed open of database '%s'",
           name);
     }
+
+    if (pending != primaryError)
+      // AN ERROR OF THE EXCEPTION PATH: IT STILL PROPAGATES, BUT ONLY NOW THAT EVERY STEP RAN (ISSUE #4511: database.lck RELEASED)
+      throw pending;
   }
 
   /**
-   * One step of {@link #releaseResourcesOnOpenFailure(Error)} failed. Without a primary Error the behaviour is the one
-   * the Exception path always had: an Exception is logged and the next step runs, an Error propagates.
+   * One step of {@link #releaseResourcesOnOpenFailure(Error)} failed. With an Error already pending (the one that failed the
+   * open, or the first one a step raised) the failure is attached to it as suppressed. Otherwise an Exception is logged and an
+   * Error becomes the pending one, thrown once the last step has run.
+   *
+   * @return the Error pending after this failure, or null when there is none
    */
-  private void onOpenFailureReleaseError(final Error primaryError, final Throwable failure, final String message,
+  private Error onOpenFailureReleaseError(final Error pending, final Throwable failure, final String message,
       final Object argument) {
-    if (primaryError != null)
-      primaryError.addSuppressed(failure);
-    else if (failure instanceof Error error)
-      throw error;
-    else
-      LogManager.instance().log(this, Level.WARNING, message, failure, argument);
+    if (pending != null) {
+      pending.addSuppressed(failure);
+      return pending;
+    }
+    if (failure instanceof Error error)
+      return error;
+    LogManager.instance().log(this, Level.WARNING, message, failure, argument);
+    return null;
   }
 
   /**

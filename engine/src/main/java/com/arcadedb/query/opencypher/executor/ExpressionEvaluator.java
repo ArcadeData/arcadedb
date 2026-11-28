@@ -38,8 +38,10 @@ import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.VariableOverlayResult;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -49,6 +51,8 @@ import java.util.Map;
  * Handles variables, property access, and function calls.
  */
 public class ExpressionEvaluator {
+  private static final BigDecimal MAX_INT = BigDecimal.valueOf(Integer.MAX_VALUE);
+
   /**
    * Aggregation overrides are stored thread-locally so that all
    * {@code ExpressionEvaluator} instances - including the shared static one
@@ -239,12 +243,10 @@ public class ExpressionEvaluator {
       return expression.evaluate(result, context); // fallback for arrays
 
     final List<Object> resultList = new ArrayList<>();
+    // One row per evaluation, rebound per element, as ListComprehensionExpression does (issue #12723)
+    final VariableOverlayResult iterResult = new VariableOverlayResult(result, expression.getVariable());
     for (final Object item : iterable) {
-      final ResultInternal iterResult = new ResultInternal();
-      if (result != null)
-        for (final String prop : result.getPropertyNames())
-          iterResult.setProperty(prop, result.getProperty(prop));
-      iterResult.setProperty(expression.getVariable(), item);
+      iterResult.bind(item);
 
       if (expression.getWhereExpression() != null) {
         final Object filterValue = evaluate(expression.getWhereExpression(), iterResult, context);
@@ -299,24 +301,33 @@ public class ExpressionEvaluator {
 
   /**
    * Evaluates a SKIP or LIMIT expression to an integer value.
-   * Supports integer literals, parameters, and function calls like toInteger(ceil(1.7)).
+   * Supports integer literals, parameters, and function calls like toInteger(ceil(1.7)). A value past the int range is clamped
+   * to {@link Integer#MAX_VALUE}: no result holds that many rows, so such a LIMIT keeps every row and such a SKIP drops them all
+   * (issue #12757). Anything but a number, a string included, is not an integer.
    */
   public int evaluateSkipLimit(final Expression expr, final Result result, final CommandContext context) {
     final Object value = evaluate(expr, result, context);
-    if (value instanceof Number) {
-      final Number num = (Number) value;
+    if (value instanceof Number num) {
       if (num instanceof Float || num instanceof Double) {
         final double d = num.doubleValue();
         if (d != Math.floor(d) || Double.isInfinite(d))
           throw new CommandParsingException("InvalidArgumentType: SKIP/LIMIT value must be an integer, got: Float(" + d + ")");
       }
-      final int intVal = num.intValue();
-      if (intVal < 0)
-        throw new CommandParsingException("NegativeIntegerArgument: SKIP/LIMIT value must not be negative, got: " + intVal);
-      return intVal;
+      if (num instanceof BigInteger || num instanceof BigDecimal) {
+        // longValue() keeps the low 64 bits of these: the sign and the size are read before any narrowing. The messages print the
+        // value as it is held, never with toPlainString(): that one writes a digit per unit of exponent, gigabytes for -1E+2000000000
+        final BigDecimal exact = num instanceof BigInteger big ? new BigDecimal(big) : (BigDecimal) num;
+        if (exact.signum() < 0)
+          throw new CommandParsingException("NegativeIntegerArgument: SKIP/LIMIT value must not be negative, got: " + exact);
+        if (exact.stripTrailingZeros().scale() > 0)
+          throw new CommandParsingException("InvalidArgumentType: SKIP/LIMIT value must be an integer, got: Decimal(" + exact + ")");
+        return exact.compareTo(MAX_INT) > 0 ? Integer.MAX_VALUE : exact.intValue();
+      }
+      final long longVal = num.longValue();
+      if (longVal < 0)
+        throw new CommandParsingException("NegativeIntegerArgument: SKIP/LIMIT value must not be negative, got: " + longVal);
+      return longVal > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) longVal;
     }
-    if (value instanceof String)
-      return Integer.parseInt((String) value);
     throw new CommandParsingException("InvalidArgumentType: SKIP/LIMIT value must be an integer, got: " + (value != null ? value.getClass().getSimpleName() : "null"));
   }
 }

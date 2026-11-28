@@ -1,0 +1,12 @@
+name: sign-after-tag
+on: [ workflow_dispatch ]
+jobs:
+  docker-and-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Push
+        run: docker buildx imagetools create -t arcadedata/arcadedb:1 arcadedata/arcadedb:2
+      - name: Tag
+        run: git push origin "$RELEASE_VERSION"
+      - name: Sign
+        run: cosign sign --yes img

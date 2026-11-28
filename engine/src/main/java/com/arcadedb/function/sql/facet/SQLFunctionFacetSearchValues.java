@@ -24,6 +24,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.index.IndexInternal;
@@ -180,8 +181,9 @@ public class SQLFunctionFacetSearchValues extends SQLFunctionAbstract {
       bucketIds[n] = bucket.getFileId();
       bucketNames[n++] = bucket.getName();
     }
+    // the caller named a property no COLUMNAR index covers: its mistake, not a server fault (issue #12847)
     if (!indexed)
-      throw new CommandExecutionException(NAME + ": no COLUMNAR index on " + type.getName() + "." + property);
+      throw new InvalidArgumentException(NAME + ": no COLUMNAR index on " + type.getName() + "." + property);
     if (type.getName().indexOf('`') >= 0 || column.property().indexOf('`') >= 0)
       throw new CommandExecutionException(NAME + ": the name of " + type.getName() + "." + column.property() + " cannot be quoted");
     if (n == 0 && firstDenied >= 0)

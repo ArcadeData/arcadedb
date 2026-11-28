@@ -109,6 +109,56 @@ public final class GrpcErrorMapper {
    */
   static final String CONCEALED_DESCRIPTION = ArcadeDBServer.CONCEALED_ERROR_MESSAGE;
 
+  /**
+   * The most bytes the error description takes on the wire (issue #12567). It travels as the {@code grpc-message} entry,
+   * UTF-8 then percent-encoded, and a client refuses metadata over its limit (8 KB by default in grpc-java) with a transport
+   * failure instead of the error. 6 KB leaves room for the other trailers.
+   */
+  static final int MAX_ENCODED_DESCRIPTION = 6 * 1024;
+
+  private static final String TRUNCATED_MARK = "... (truncated)";
+
+  /**
+   * The description, cut at a whole code point so its encoded {@code grpc-message} fits {@link #MAX_ENCODED_DESCRIPTION},
+   * with the cut marked. The cut is at the end, so the exception's own words at the front survive.
+   */
+  static String boundDescription(final String description) {
+    // A char takes at most 9 encoded bytes (3 UTF-8 bytes, each escaped as %XX), so a short text needs no measuring
+    if (description == null || description.length() * 9 <= MAX_ENCODED_DESCRIPTION)
+      return description;
+
+    final int budget = MAX_ENCODED_DESCRIPTION - TRUNCATED_MARK.length();
+    final int length = description.length();
+    int size = 0;
+    int cut = -1;
+    for (int i = 0; i < length; ) {
+      final int codePoint = description.codePointAt(i);
+      final int cost = encodedSize(codePoint);
+      if (cut < 0 && size + cost > budget)
+        cut = i;
+      size += cost;
+      if (size > MAX_ENCODED_DESCRIPTION)
+        return description.substring(0, cut) + TRUNCATED_MARK;
+      i += Character.charCount(codePoint);
+    }
+    return description;
+  }
+
+  /**
+   * The bytes one code point takes in {@code grpc-message}: its UTF-8 bytes, each escaped as {@code %XX} unless it is
+   * printable ASCII other than {@code %} and {@code ~}, as grpc-java's status message marshaller does. A lone surrogate is
+   * counted as the widest 3-byte sequence, never less than what it is encoded to.
+   */
+  private static int encodedSize(final int codePoint) {
+    if (codePoint < 0x80)
+      return codePoint < ' ' || codePoint >= '~' || codePoint == '%' ? 3 : 1;
+    if (codePoint < 0x800)
+      return 6;
+    if (codePoint < 0x10000)
+      return 9;
+    return 12;
+  }
+
   private GrpcErrorMapper() {
   }
 
@@ -183,7 +233,9 @@ public final class GrpcErrorMapper {
    * "token name already issued"), which are bounded and carry nothing the caller did not send. The exceptions that
    * reach here carry ENGINE text: a {@link DuplicatedKeyException}'s message embeds the index name and the
    * offending key VALUE - actual stored data - and a {@link DatabaseOperationInProgressException}'s names a
-   * database. Classified is not the same as safe to echo, so do not "fix" one of these to match the other.
+   * database. Classified is not the same as safe to echo, so do not "fix" one of these to match the other. An engine
+   * exception no arm of the admin service names is answered by the admin service THROUGH this method (issue #12550), and
+   * is concealed here for the same reason: it is engine text there too.
    * <p>
    * What survives concealment is what a client can act on without reading prose: the status CODE, the
    * {@link #EXCEPTION_CLASS_KEY} trailer, the duplicated-key index trailer - which goes to a DRIVER rebuilding a typed
@@ -277,7 +329,7 @@ public final class GrpcErrorMapper {
     // DETAIL FROM AN EXCEPTION, AND IT IS THE ONLY THING THAT MAKES A FOLLOWER'S REFUSAL ACTIONABLE
     final String description = redirect != null ? prefixed + ". " + redirect : prefixed;
 
-    return code.toStatus().withDescription(description).withCause(cause).asRuntimeException(trailers);
+    return code.toStatus().withDescription(boundDescription(description)).withCause(cause).asRuntimeException(trailers);
   }
 
   /**

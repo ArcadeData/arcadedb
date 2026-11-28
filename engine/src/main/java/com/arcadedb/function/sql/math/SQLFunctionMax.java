@@ -95,7 +95,7 @@ public class SQLFunctionMax extends SQLAggregatedFunction {
       // FIRST TIME
       context = max;
     else {
-      if (context instanceof Number number && max instanceof Number number1) {
+      if (context instanceof Number number && max instanceof Number number1 && !Type.castComparableNumberIsIdentity(number, number1)) {
         final Number[] casted = Type.castComparableNumber(number, number1);
         context = casted[0];
         max = casted[1];
@@ -125,5 +125,11 @@ public class SQLFunctionMax extends SQLAggregatedFunction {
   @Override
   public Object getResult() {
     return context;
+  }
+
+  /** Pure over its rows and arguments (issue #6190): a statement that holds the call keeps its execution plan. */
+  @Override
+  public boolean isDeterministic() {
+    return true;
   }
 }

@@ -21,6 +21,7 @@ package com.arcadedb.bolt;
 import com.arcadedb.bolt.packstream.PackStreamReader;
 import com.arcadedb.bolt.packstream.PackStreamWriter;
 import com.arcadedb.bolt.structure.BoltStructureMapper;
+import com.arcadedb.function.geo.CypherPointFunction;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
 
 import org.junit.jupiter.api.Test;
@@ -68,6 +69,52 @@ class PackStreamTypeInputTest {
     final Map<?, ?> m = (Map<?, ?>) out;
     assertThat(m.get("crs")).isEqualTo("wgs-84-3d");
     assertThat(((Number) m.get("z")).doubleValue()).isEqualTo(100.0);
+  }
+
+  /**
+   * Issue #13570: a WGS-84 Point decodes to the very map point() builds, alias keys included, so the two are equal.
+   */
+  @Test
+  void decodesWgs84PointAsPointFunctionBuildsIt() throws Exception {
+    final CypherPointFunction point = new CypherPointFunction();
+
+    final Object geo2d = decode(SIG_POINT_2D, 4326L, 8.5, 47.5);
+    assertThat(geo2d).isEqualTo(point.execute(new Object[] { Map.of("latitude", 47.5, "longitude", 8.5) }, null));
+    assertThat(((Map<?, ?>) geo2d).keySet()).map(Object::toString)
+        .containsExactly("longitude", "latitude", "x", "y", "crs", "srid");
+
+    final Object geo3d = decode(SIG_POINT_3D, 4979L, 8.5, 47.5, 27.0);
+    assertThat(geo3d).isEqualTo(point.execute(new Object[] { Map.of("latitude", 47.5, "longitude", 8.5, "height", 27.0) }, null));
+    assertThat(((Map<?, ?>) geo3d).keySet()).map(Object::toString)
+        .containsExactly("longitude", "latitude", "x", "y", "z", "height", "crs", "srid");
+
+    // the longitude is wrapped as point() wraps it
+    assertThat(decode(SIG_POINT_2D, 4326L, 181.0, 47.5)).isEqualTo(
+        point.execute(new Object[] { Map.of("latitude", 47.5, "longitude", 181.0) }, null));
+  }
+
+  @Test
+  void decodesCartesianPointAsPointFunctionBuildsIt() throws Exception {
+    final CypherPointFunction point = new CypherPointFunction();
+    assertThat(decode(SIG_POINT_2D, 7203L, 10.0, 20.0)).isEqualTo(point.execute(new Object[] { Map.of("x", 10, "y", 20) }, null));
+    assertThat(decode(SIG_POINT_3D, 9157L, 10.0, 20.0, 30.0)).isEqualTo(
+        point.execute(new Object[] { Map.of("x", 10, "y", 20, "z", 30) }, null));
+  }
+
+  /**
+   * What point() refuses still decodes to the map it always did: a latitude out of range, and an srid of the other dimension.
+   */
+  @Test
+  void aPointThatPointFunctionRefusesKeepsItsPlainForm() throws Exception {
+    final Map<?, ?> outOfRange = (Map<?, ?>) decode(SIG_POINT_2D, 4326L, 8.5, 100.0);
+    assertThat(outOfRange.keySet()).map(Object::toString).containsExactlyInAnyOrder("x", "y", "crs", "srid");
+    assertThat(outOfRange.get("y")).isEqualTo(100.0);
+    assertThat(outOfRange.get("srid")).isEqualTo(4326);
+
+    final Map<?, ?> otherDimension = (Map<?, ?>) decode(SIG_POINT_3D, 4326L, 8.5, 47.5, 27.0);
+    assertThat(otherDimension.keySet()).map(Object::toString).containsExactlyInAnyOrder("x", "y", "z", "crs", "srid");
+    assertThat(otherDimension.get("srid")).isEqualTo(4326);
+    assertThat(otherDimension.get("crs")).isEqualTo("wgs-84");
   }
 
   @Test

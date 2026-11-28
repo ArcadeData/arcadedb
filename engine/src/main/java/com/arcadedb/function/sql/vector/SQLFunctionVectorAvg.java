@@ -18,28 +18,23 @@
  */
 package com.arcadedb.function.sql.vector;
 
-import com.arcadedb.utility.VectorApiSupport;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
-
-import io.github.jbellis.jvector.vector.VectorUtil;
-import io.github.jbellis.jvector.vector.VectorizationProvider;
-import io.github.jbellis.jvector.vector.types.VectorFloat;
 
 /**
  * Aggregate function that computes element-wise average of vectors (centroid).
  * Returns a vector where each component is the average of corresponding components across all input vectors.
  * <p>
- * Uses JVector's SIMD-optimized VectorUtil.scale() for the final averaging operation,
- * providing up to 2-3x performance improvement for large vectors on Java 20+ with Vector API enabled.
+ * The sum is accumulated in double and narrowed once, so the average neither drifts over many rows nor overflows when only the
+ * sum is out of the float range (issue #12852).
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorAvg extends SQLFunctionVectorAbstract {
   public static final String NAME = "vector.avg";
 
-  private float[] sumVector;
+  private double[] sumVector;
   private long    count;
   private int     dimensions;
 
@@ -76,7 +71,7 @@ public class SQLFunctionVectorAvg extends SQLFunctionVectorAbstract {
     // Initialize on first call
     if (sumVector == null) {
       dimensions = v.length;
-      sumVector = new float[dimensions];
+      sumVector = new double[dimensions];
       count = 0;
     } else if (sumVector.length != v.length) {
       throw new CommandSQLParsingException("All vectors must have the same dimension");
@@ -96,30 +91,12 @@ public class SQLFunctionVectorAvg extends SQLFunctionVectorAbstract {
     if (sumVector == null || count == 0)
       return null;
 
-    // Use JVector's SIMD-optimized scaling for averaging (2-3x faster with Vector API)
-    try {
-      final VectorizationProvider vp = VectorApiSupport.jvectorProvider();
-
-      // Create result as copy of sum vector
-      final float[] avgVector = sumVector.clone();
-      final VectorFloat<?> avgVec = vp.getVectorTypeSupport().createFloatVector(avgVector);
-
-      // Scale by 1/count to get average
-      VectorUtil.scale(avgVec, 1.0f / count);
-
-      // Extract result
-      for (int i = 0; i < avgVector.length; i++) {
-        avgVector[i] = avgVec.get(i);
-      }
-      return avgVector;
-    } catch (final Exception e) {
-      // Fallback to scalar implementation
-      final float[] avgVector = new float[sumVector.length];
-      for (int i = 0; i < sumVector.length; i++) {
-        avgVector[i] = sumVector[i] / count;
-      }
-      return avgVector;
-    }
+    // The sum is kept in double (issue #12852): a float running sum stops growing next to its addends, and overflows for an
+    // average that fits a float. Narrowed once, here.
+    final float[] avgVector = new float[sumVector.length];
+    for (int i = 0; i < sumVector.length; i++)
+      avgVector[i] = (float) (sumVector[i] / count);
+    return avgVector;
   }
 
   public String getSyntax() {

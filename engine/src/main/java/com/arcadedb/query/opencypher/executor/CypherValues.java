@@ -23,6 +23,7 @@ import com.arcadedb.exception.InvalidPropertyTypeException;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 
+import java.math.BigInteger;
 import java.util.List;
 import java.util.Map;
 import java.util.StringJoiner;
@@ -54,17 +55,28 @@ public final class CypherValues {
    * through {@code InlineProperties.matchesResolvedValue} (issue #9693), because a false negative there creates a
    * duplicate. That is why the two zeros are told apart here although a MATCH and the index call them one value (issue
    * #9303): writing 0.0 over a stored -0.0 changes what the record holds ({@code 1/v} flips sign), so calling them equal
-   * would silently drop the write (issue #9618).
+   * would silently drop the write (issue #9618). The same goes for the numeric kind: an INTEGER 1 and a FLOAT 1.0 are two
+   * values in Cypher ({@code n.x / 2} is 0 for one and 0.5 for the other), so a write that changes the kind is a write
+   * (issue #12981); only the widths of one kind are told as one value.
    */
   public static boolean equalValues(final Object a, final Object b) {
     if (a == null)
       return b == null;
     if (a.equals(b))
       return true;
-    if (a instanceof Number numberA && b instanceof Number numberB)
+    if (a instanceof Number numberA && b instanceof Number numberB && isWholeKind(numberA) == isWholeKind(numberB))
       return numberA.longValue() == numberB.longValue()
           && Double.compare(numberA.doubleValue(), numberB.doubleValue()) == 0;
     return false;
+  }
+
+  /**
+   * Whether the number is an INTEGER of some width, as opposed to a FLOAT or a decimal: the two kinds Cypher tells apart.
+   * A {@code BigInteger} is an integer too, as {@code InlineProperties} counts it.
+   */
+  private static boolean isWholeKind(final Number number) {
+    return number instanceof Long || number instanceof Integer || number instanceof Short || number instanceof Byte
+        || number instanceof BigInteger;
   }
 
   /**

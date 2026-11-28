@@ -30,7 +30,6 @@ import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.time.DateTimeException;
-import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
@@ -95,18 +94,16 @@ public class LocalDateTimeConstructorFunction implements StatelessFunction {
         throw new CommandSemanticException("localdatetime() " + e.getMessage());
       }
     }
-    if (args[0] instanceof CypherLocalDateTime)
-      return args[0];
-    if (args[0] instanceof CypherDateTime)
-      return new CypherLocalDateTime(((CypherDateTime) args[0]).getValue().toLocalDateTime());
-    if (args[0] instanceof CypherDate)
-      return new CypherLocalDateTime(((CypherDate) args[0]).getValue().atStartOfDay());
-    if (args[0] instanceof LocalDateTime)
-      return new CypherLocalDateTime((LocalDateTime) args[0]);
-    if (args[0] instanceof LocalDate)
-      return new CypherLocalDateTime(((LocalDate) args[0]).atStartOfDay());
-    if (args[0] instanceof CypherTime)
-      return new CypherLocalDateTime(LocalDateTime.of(((CypherDate) CypherFunctionHelper.getStatementTime(context).get("date")).getValue(), ((CypherTime) args[0]).getValue().toLocalTime()));
+    // A native temporal (a parameter a driver sent, a value read off a map or a list) is the Cypher temporal its literal is (issue #13569)
+    final Object temporal = TemporalUtil.fromCoreJavaType(args[0]);
+    if (temporal instanceof CypherLocalDateTime)
+      return temporal;
+    if (temporal instanceof CypherDateTime)
+      return new CypherLocalDateTime(((CypherDateTime) temporal).getValue().toLocalDateTime());
+    if (temporal instanceof CypherDate)
+      return new CypherLocalDateTime(((CypherDate) temporal).getValue().atStartOfDay());
+    if (temporal instanceof CypherTime)
+      return new CypherLocalDateTime(LocalDateTime.of(((CypherDate) CypherFunctionHelper.getStatementTime(context).get("date")).getValue(), ((CypherTime) temporal).getValue().toLocalTime()));
     throw new CommandSemanticException("localdatetime() expects a string, map, or temporal argument");
   }
 }

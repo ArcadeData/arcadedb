@@ -32,6 +32,11 @@ public class EdgeTraversal {
   private      String      leftCluster;
   private      Rid         leftRid;
   private      WhereClause leftFilter;
+  // what the pattern as a whole gives the alias this edge reaches when it is walked forward: the type, bucket and RID are merged over
+  // every occurrence of the alias, not only the one this edge's item was written with
+  private      String      rightClass;
+  private      String      rightCluster;
+  private      Rid         rightRid;
 
   /** Set by the planner when this edge is part of a GAV-fused chain. */
   GraphTraversalProvider gavProvider;
@@ -71,6 +76,30 @@ public class EdgeTraversal {
 
   public WhereClause getLeftFilter() {
     return leftFilter;
+  }
+
+  public String getRightClass() {
+    return rightClass;
+  }
+
+  public void setRightClass(final String rightClass) {
+    this.rightClass = rightClass;
+  }
+
+  public String getRightCluster() {
+    return rightCluster;
+  }
+
+  public void setRightCluster(final String rightCluster) {
+    this.rightCluster = rightCluster;
+  }
+
+  public Rid getRightRid() {
+    return rightRid;
+  }
+
+  public void setRightRid(final Rid rightRid) {
+    this.rightRid = rightRid;
   }
 
   @Override

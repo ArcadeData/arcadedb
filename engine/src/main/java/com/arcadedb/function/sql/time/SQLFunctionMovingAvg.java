@@ -90,12 +90,17 @@ public class SQLFunctionMovingAvg extends SQLAggregatedFunction {
     return null;
   }
 
+  /**
+   * The window is a whole number of rows, at least 1: a window of 0 or less, a fraction, or an options map without {@code window} was
+   * read as a window of 1 (the raw series) or truncated, so a window the caller computed wrong came back as unaveraged data
+   * (issue #12755).
+   */
   private int parseWindow(final Object arg) {
-    if (arg instanceof Map<?, ?> rawMap) {
-      final FunctionOptions opts = new FunctionOptions(NAME, rawMap, OPTIONS);
-      return opts.getInt("window", -1);
-    }
-    return requireIntArgument(arg, "window_size");
+    final Object window = arg instanceof Map<?, ?> rawMap ? new FunctionOptions(NAME, rawMap, OPTIONS).get("window") : arg;
+    final int size = requireWholeIntArgument(window, "window_size");
+    if (size < 1)
+      throw new IllegalArgumentException(getName() + "() requires a <window_size> of at least 1, but received " + size);
+    return size;
   }
 
   @Override
@@ -109,7 +114,7 @@ public class SQLFunctionMovingAvg extends SQLAggregatedFunction {
       return new ArrayList<>();
 
     final int n = size;
-    final int w = Math.max(1, windowSize);
+    final int w = windowSize;
     final List<Double> result = new ArrayList<>(n);
 
     if (w == 1) {

@@ -698,6 +698,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
 
   public synchronized ServerSecurityUser createUser(final JSONObject userConfiguration) {
     final String name = userConfiguration.getString("name");
+    UserNameCheck.requireStorableName(name);
     if (users.containsKey(name))
       // A conflict, not a security failure (issue #10073): UserAlreadyExistsException does not extend
       // ServerSecurityException, so it is answered 409 and not the 403 a non-root caller gets. The same type
@@ -859,6 +860,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * every caller that is not that method wants the cluster-aware {@link #dropUser} instead.
    */
   public boolean dropUserLocally(final String userName) {
+    refuseDroppingRoot(userName);
     synchronized (this) {
       if (!users.containsKey(userName))
         return false;
@@ -901,13 +903,16 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * which the caller is told the request changed nothing rather than that it succeeded.
    */
   public void createUserClusterWide(final JSONObject userConfiguration) {
+    final String name = userConfiguration.getString("name");
+    // Before the replication below: the entry it submits is applied by every peer, which does not check the name again
+    UserNameCheck.requireStorableName(name);
+
     final HAServerPlugin ha = server != null ? server.getHA() : null;
     if (ha == null) {
       createUser(userConfiguration);
       return;
     }
 
-    final String name = userConfiguration.getString("name");
     for (int attempt = 1; ; attempt++) {
       final boolean applied;
       synchronized (this) {
@@ -1055,6 +1060,8 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * @return true if the user existed and the removal was applied/replicated, false if there was no such user
    */
   public boolean dropUserClusterWide(final String userName) {
+    refuseDroppingRoot(userName);
+
     final HAServerPlugin ha = server != null ? server.getHA() : null;
     if (ha == null)
       return dropUserLocally(userName);
@@ -1080,6 +1087,22 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     // apply the replicated user list on their state machine thread, which must never block on a session lock.
     invalidateHttpSessions(userName);
     return true;
+  }
+
+  /**
+   * Refuses the drop of {@value ServerSecurityUser#ROOT_USER}, on every route that drops a user (issue #12813).
+   * <p>
+   * The server administrator is defined by that name ({@link ServerSecurityUser#isServerAdministrator(String)}): no other user
+   * can run a server command, whatever its grants. So a server whose root is gone cannot be administered any more, and one where
+   * root was the only user (the default) answers 401 on every protocol until the users file is edited by hand. {@code DELETE
+   * /api/v1/server/users} always refused it; the {@code drop user} server command (HTTP and gRPC) and the openCypher
+   * {@code DROP USER} did not, because the rule lived in that one handler instead of here, where they all meet.
+   * <p>
+   * An {@link IllegalArgumentException}, the caller's mistake on every protocol (HTTP 400), as the handler answered it.
+   */
+  private static void refuseDroppingRoot(final String userName) {
+    if (ServerSecurityUser.ROOT_USER.equals(userName))
+      throw new IllegalArgumentException("Cannot delete the root user");
   }
 
   /**

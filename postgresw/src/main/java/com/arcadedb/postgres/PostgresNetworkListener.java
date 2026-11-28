@@ -22,6 +22,7 @@ import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
+import com.arcadedb.server.network.AcceptFailureHandler;
 import com.arcadedb.server.network.MultiAddressServerSocket;
 import com.arcadedb.server.network.PreAuthConnectionGate;
 import com.arcadedb.server.network.ServerSocketFactory;
@@ -35,6 +36,7 @@ public class PostgresNetworkListener extends Thread {
   private final    ServerSocketFactory    socketFactory;
   /** Bounds how many accepted connections can sit un-authenticated at once (issue #6412). */
   private final    PreAuthConnectionGate  preAuthGate;
+  private final    AcceptFailureHandler   failureHandler = new AcceptFailureHandler("PSQL");
   private volatile MultiAddressServerSocket serverSocket;
   private volatile boolean                active          = true;
   private final    int                    protocolVersion = -1;
@@ -64,7 +66,16 @@ public class PostgresNetworkListener extends Thread {
     try {
       while (active) {
         try {
-          final Socket socket = serverSocket.accept();
+          final Socket socket;
+          try {
+            socket = serverSocket.accept();
+          } catch (final Throwable e) {
+            // The socket itself failed, which it keeps doing at once on every call for as long as the cause lasts: retried at
+            // a bounded rate rather than in a hot loop
+            if (active)
+              failureHandler.handleAcceptFailure(this, "Error accepting client connections", e);
+            continue;
+          }
 
           // One thread and one file descriptor are committed here, before the client has proved anything: past
           // the cap the socket is closed straight away rather than being given either (issue #6412). The refusal
@@ -87,22 +98,30 @@ public class PostgresNetworkListener extends Thread {
             // CREATE A NEW PROTOCOL INSTANCE
             // TODO: OPEN A DATABASE
             final PostgresNetworkExecutor connection = new PostgresNetworkExecutor(server, socket, null, ticket, sslHelper);
-            connection.start();
-          } catch (final Exception e) {
-            // The executor never started, so nothing will hand the permit back for it.
-            ticket.release();
+            startConnection(connection);
+          } catch (final Throwable e) {
+            // The executor never started, so nothing will hand the permit back for it or close its socket.
+            ticket.abandon();
             throw e;
           }
 
-        } catch (final Exception e) {
+        } catch (final Throwable e) {
+          // An error is no more a reason to stop accepting than an exception is: nothing starts this thread again
           if (active)
-            LogManager.instance().log(this, Level.WARNING, "Error on client connection", e);
+            failureHandler.handle(this, "Error on client connection", e);
         }
       }
     } finally {
       if (serverSocket != null)
         serverSocket.close();
     }
+  }
+
+  /**
+   * Starts the thread that serves an accepted connection.
+   */
+  void startConnection(final PostgresNetworkExecutor connection) {
+    connection.start();
   }
 
   public void close() {

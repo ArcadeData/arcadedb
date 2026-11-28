@@ -197,32 +197,35 @@ class CypherSetFromEntityIssue6832Test {
   }
 
   /**
-   * SET is a simultaneous assignment: every read observes the pre-clause state (#5190). The entity right-hand side is
-   * a read like any other, so an earlier item of the same clause must not be visible to it.
+   * An entity right-hand side is a read like any other: it sees what the earlier items of the clause wrote (issue #12832),
+   * and the properties are copied when the item is evaluated, so a later item of the clause does not reach the copy.
    */
   @Test
-  void replaceFromNodeReadsThePreClauseStateOfTheSource() {
+  void replaceFromNodeReadsTheSourceAsTheEarlierItemsLeftIt() {
     database.transaction(() -> database.command("opencypher", "CREATE (:A {id: 1}), (:B {id: 2, name: 'old'})"));
 
     database.transaction(() -> database.command("opencypher",
         "MATCH (a:A), (b:B) SET b.name = 'new', a = b"));
 
     final ResultSet rs = database.query("opencypher", "MATCH (a:A) RETURN a.name AS name");
-    assertThat(rs.next().<String>getProperty("name")).isEqualTo("old");
+    assertThat(rs.next().<String>getProperty("name")).isEqualTo("new");
 
     final ResultSet source = database.query("opencypher", "MATCH (b:B) RETURN b.name AS name");
     assertThat(source.next().<String>getProperty("name")).isEqualTo("new");
   }
 
   @Test
-  void mergeFromNodeReadsThePreClauseStateOfTheSource() {
+  void mergeFromNodeIsNotReachedByALaterItem() {
     database.transaction(() -> database.command("opencypher", "CREATE (:A {id: 1}), (:B {id: 2, name: 'old'})"));
 
     database.transaction(() -> database.command("opencypher",
-        "MATCH (a:A), (b:B) SET b.name = 'new', a += b"));
+        "MATCH (a:A), (b:B) SET a += b, b.name = 'new'"));
 
     final ResultSet rs = database.query("opencypher", "MATCH (a:A) RETURN a.name AS name");
     assertThat(rs.next().<String>getProperty("name")).isEqualTo("old");
+
+    final ResultSet source = database.query("opencypher", "MATCH (b:B) RETURN b.name AS name");
+    assertThat(source.next().<String>getProperty("name")).isEqualTo("new");
   }
 
   /** The same protection on the merge form: "+=" reads a copy of the source, so self-merge cannot lose anything. */

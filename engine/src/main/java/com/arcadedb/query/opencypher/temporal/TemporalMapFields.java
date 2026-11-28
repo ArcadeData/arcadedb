@@ -261,7 +261,7 @@ public final class TemporalMapFields {
    * base, which then defaulted to January 1 of the current year.
    */
   public static LocalDate dateOf(final Object value) {
-    return switch (value) {
+    return switch (TemporalUtil.fromCoreJavaType(value)) {
       case CypherDate d -> d.getValue();
       case CypherLocalDateTime ldt -> ldt.getValue().toLocalDate();
       case CypherDateTime dt -> dt.getValue().toLocalDate();
@@ -276,7 +276,7 @@ public final class TemporalMapFields {
    * or a datetime. Anything else is refused.
    */
   public static LocalTime timeOf(final Object value) {
-    return switch (value) {
+    return switch (TemporalUtil.fromCoreJavaType(value)) {
       case CypherLocalTime lt -> lt.getValue();
       case CypherTime t -> t.getValue().toLocalTime();
       case CypherLocalDateTime ldt -> ldt.getValue().toLocalTime();
@@ -291,7 +291,7 @@ public final class TemporalMapFields {
    * that have both. Anything else is refused.
    */
   public static LocalDateTime dateTimeOf(final Object value) {
-    return switch (value) {
+    return switch (TemporalUtil.fromCoreJavaType(value)) {
       case CypherLocalDateTime ldt -> ldt.getValue();
       case CypherDateTime dt -> dt.getValue().toLocalDateTime();
       case CypherDate ignored -> throw new IllegalArgumentException("Cannot get the time of: " + value);
