@@ -813,12 +813,17 @@ final class VariableScopeValidator {
         innerScope.add(pce.getPathVariable());
       if (path != null) {
         VariableBindingValidator.addBoundVarsFromPattern(path, innerScope);
-        for (final NodePattern node : path.getNodes())
+        // The inline WHERE of a node or relationship stays on the pattern here (a MATCH hoists it into the clause WHERE)
+        for (final NodePattern node : path.getNodes()) {
           if (node.getProperties() != null)
             checkPropertyValuesScope(node.getProperties(), innerScope);
-        for (final RelationshipPattern rel : path.getRelationships())
+          checkBooleanExpressionScope(node.getWhereExpression(), innerScope);
+        }
+        for (final RelationshipPattern rel : path.getRelationships()) {
           if (rel.getProperties() != null)
             checkPropertyValuesScope(rel.getProperties(), innerScope);
+          checkBooleanExpressionScope(rel.getWhereExpression(), innerScope);
+        }
         checkGroupWhereScope(path, innerScope);
       }
       checkExpressionScope(pce.getWhereExpression(), innerScope);
