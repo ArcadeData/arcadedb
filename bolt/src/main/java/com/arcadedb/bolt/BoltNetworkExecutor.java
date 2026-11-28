@@ -45,6 +45,7 @@ import com.arcadedb.exception.CauseChain;
 import com.arcadedb.exception.CommandParameterMissingException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSemanticException;
+import com.arcadedb.exception.ConstraintDropFailedException;
 import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.exception.DatabaseNotFoundException;
@@ -52,6 +53,7 @@ import com.arcadedb.exception.EquivalentIndexException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.ExternalResourceException;
 import com.arcadedb.exception.ImplicitTransactionRequiredException;
+import com.arcadedb.exception.IndexDropFailedException;
 import com.arcadedb.exception.InvalidPropertyTypeException;
 import com.arcadedb.exception.ObjectInUseException;
 import com.arcadedb.exception.ProcedureCallFailedException;
@@ -2567,7 +2569,8 @@ public class BoltNetworkExecutor extends Thread {
       case NOT_FOUND -> BoltErrorCodes.ENTITY_NOT_FOUND_ERROR;
       // The caller named a type, bucket or property the schema does not define: a statement that parsed but means
       // nothing against this database, which is what Neo4j's SemanticError says.
-      case SCHEMA -> BoltErrorCodes.SEMANTIC_ERROR;
+      // A failed DROP INDEX or DROP CONSTRAINT is Neo4j's DatabaseError.Schema.*DropFailed instead (issue #13686).
+      case SCHEMA -> schemaCode(error);
       case SECURITY -> BoltErrorCodes.FORBIDDEN_ERROR;
       case VALIDATION -> BoltErrorCodes.ARGUMENT_ERROR;
       // the innermost parsing failure of the chain: an analyzer that wraps the one it hit must not relabel it (issue #11785)
@@ -2585,6 +2588,18 @@ public class BoltNetworkExecutor extends Thread {
       case DATABASE_NOT_FOUND -> BoltErrorCodes.DATABASE_NOT_FOUND_ERROR;
       case SERVER -> defaultCode;
     };
+  }
+
+  /**
+   * The code of a {@code SCHEMA} failure: a failed drop of an index or of a constraint is the DatabaseError Neo4j answers it with
+   * (issue #13686), anything else the SemanticError of a statement that means nothing against the schema.
+   */
+  private static String schemaCode(final Throwable error) {
+    if (CauseChain.contains(error, IndexDropFailedException.class))
+      return BoltErrorCodes.INDEX_DROP_FAILED_ERROR;
+    if (CauseChain.contains(error, ConstraintDropFailedException.class))
+      return BoltErrorCodes.CONSTRAINT_DROP_FAILED_ERROR;
+    return BoltErrorCodes.SEMANTIC_ERROR;
   }
 
   /**

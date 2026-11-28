@@ -40,6 +40,11 @@ public final class BoltErrorCodes {
   public static final String INDEX_ALREADY_EXISTS_ERROR       = "Neo.ClientError.Schema.IndexWithNameAlreadyExists";
   public static final String CONSTRAINT_ALREADY_EXISTS_ERROR  = "Neo.ClientError.Schema.ConstraintWithNameAlreadyExists";
   public static final String SCHEMA_RULE_ALREADY_EXISTS_ERROR = "Neo.ClientError.Schema.EquivalentSchemaRuleAlreadyExists";
+  // A DROP INDEX / DROP CONSTRAINT that failed, of a name nothing holds among them (issue #13686): the DatabaseError titles Neo4j
+  // answers them with, which clients catch as such (langchain-neo4j drops the index it is about to create inside an
+  // "except DatabaseError"). Every other schema error stays the SemanticError of a statement the schema cannot answer
+  public static final String INDEX_DROP_FAILED_ERROR      = "Neo.DatabaseError.Schema.IndexDropFailed";
+  public static final String CONSTRAINT_DROP_FAILED_ERROR = "Neo.DatabaseError.Schema.ConstraintDropFailed";
   // A statement that parses and is semantically valid but references a $parameter the client never bound.
   // Neo4j gives this its own title, and drivers/tools key off it to tell "your query is wrong" apart from
   // "you forgot to send a value", so it must not collapse into SyntaxError.

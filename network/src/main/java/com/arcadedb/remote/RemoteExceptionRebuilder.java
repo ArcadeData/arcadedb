@@ -30,6 +30,7 @@ import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.ConfigurationException;
+import com.arcadedb.exception.ConstraintDropFailedException;
 import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.DatabaseIsReadOnlyException;
 import com.arcadedb.exception.DatabaseIsReopeningException;
@@ -44,6 +45,7 @@ import com.arcadedb.exception.EquivalentIndexException;
 import com.arcadedb.exception.ExternalResourceException;
 import com.arcadedb.exception.GraphBatchInProgressException;
 import com.arcadedb.exception.HeapLimitExceededException;
+import com.arcadedb.exception.IndexDropFailedException;
 import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.exception.InvalidDatabaseInstanceException;
 import com.arcadedb.exception.InvalidPropertyTypeException;
@@ -189,6 +191,9 @@ public final class RemoteExceptionRebuilder {
       // THE HTTP DRIVER REBUILDS IT WITH THE REASON IN exceptionArgs (ISSUE #10872); WITHOUT ONE IT IS 'UNAVAILABLE'
       Map.entry(DatabaseNotAvailableException.class.getName(), DatabaseNotAvailableException::new),
       Map.entry(SchemaException.class.getName(), SchemaException::new),
+      // A CYPHER DROP OF AN INDEX OR A CONSTRAINT THAT FAILED (ISSUE #13686): STILL A SchemaException
+      Map.entry(IndexDropFailedException.class.getName(), IndexDropFailedException::new),
+      Map.entry(ConstraintDropFailedException.class.getName(), ConstraintDropFailedException::new),
       Map.entry(ValidationException.class.getName(), ValidationException::new),
       Map.entry(RecordVetoedException.class.getName(), RecordVetoedException::new),
       Map.entry(SecurityException.class.getName(), SecurityException::new),

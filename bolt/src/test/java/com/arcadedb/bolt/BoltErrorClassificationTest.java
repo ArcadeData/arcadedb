@@ -24,12 +24,15 @@ import com.arcadedb.exception.CommandParameterMissingException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.exception.ConstraintDropFailedException;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.IndexDropFailedException;
 import com.arcadedb.exception.InvalidPropertyTypeException;
 import com.arcadedb.exception.LockTimeoutException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.ProcedureCallFailedException;
 import com.arcadedb.exception.QueryAdmissionException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TypeMismatchException;
 
@@ -43,6 +46,22 @@ import static org.assertj.core.api.Assertions.assertThat;
  * while all other errors keep their default (non-retryable) code.
  */
 class BoltErrorClassificationTest {
+
+  /**
+   * Issue #13686: a failed Cypher drop of an index or a constraint is the DatabaseError.Schema code Neo4j answers it with, under
+   * the query engine's wrapper too, while every other schema error stays a SemanticError.
+   */
+  @Test
+  void aFailedDropOfAnIndexOrAConstraintIsNeo4jsDropFailed() {
+    assertThat(BoltNetworkExecutor.classifyExecutionError(
+        new RuntimeException("Error executing Cypher command", new IndexDropFailedException("no such index")),
+        BoltErrorCodes.DATABASE_ERROR)).isEqualTo(BoltErrorCodes.INDEX_DROP_FAILED_ERROR);
+    assertThat(BoltNetworkExecutor.classifyExecutionError(
+        new RuntimeException("Error executing Cypher command", new ConstraintDropFailedException("no such constraint")),
+        BoltErrorCodes.DATABASE_ERROR)).isEqualTo(BoltErrorCodes.CONSTRAINT_DROP_FAILED_ERROR);
+    assertThat(BoltNetworkExecutor.classifyExecutionError(new SchemaException("Type 'Nope' was not found"),
+        BoltErrorCodes.DATABASE_ERROR)).isEqualTo(BoltErrorCodes.SEMANTIC_ERROR);
+  }
 
   @Test
   void concurrentModificationClassifiesAsTransient() {
