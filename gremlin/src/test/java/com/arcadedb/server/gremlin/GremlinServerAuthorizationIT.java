@@ -19,6 +19,7 @@
 package com.arcadedb.server.gremlin;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.gremlin.io.ArcadeIoRegistry;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -26,6 +27,7 @@ import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.security.ServerSecurity;
 import org.apache.tinkerpop.gremlin.driver.Client;
 import org.apache.tinkerpop.gremlin.driver.Cluster;
+import org.apache.tinkerpop.gremlin.driver.RequestOptions;
 import org.apache.tinkerpop.gremlin.driver.remote.DriverRemoteConnection;
 import org.apache.tinkerpop.gremlin.process.traversal.AnonymousTraversalSource;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
@@ -50,6 +52,11 @@ class GremlinServerAuthorizationIT extends AbstractGremlinServerIT {
   private static final String LIMITED_PASSWORD  = "limitedPassword1";
   private static final String READONLY_USER     = "readonlyGremlinUser";
   private static final String READONLY_PASSWORD = "readonlyPassword1";
+  private static final String OTHER_USER        = "otherDatabaseGremlinUser";
+  private static final String OTHER_PASSWORD    = "otherDatabasePassword1";
+  private static final String OTHER_DATABASE    = "gremlinOtherDatabase";
+  // THE ANSWER OF THE REQUEST CHECK, AS OPPOSED TO AN ERROR RAISED WHILE THE SCRIPT RUNS
+  private static final String AUTHORIZATION_REFUSAL = "is not authorized to access database";
 
   @Test
   void zeroGrantUserCannotReadDatabase() {
@@ -107,6 +114,87 @@ class GremlinServerAuthorizationIT extends AbstractGremlinServerIT {
       assertThat(thrown)
           .as("A zero-grant credential must not be able to read via a bare Gremlin script")
           .isNotNull();
+    } finally {
+      cluster.close();
+    }
+  }
+
+  @Test
+  void zeroGrantUserCannotReadViaGremlinLangScriptWithoutAlias() {
+    seedVictimData();
+    createZeroGrantUser();
+
+    final Cluster cluster = createCluster(LIMITED_USER, LIMITED_PASSWORD);
+    try {
+      final Client client = cluster.connect();
+      // gremlin-lang is the one script language open to every user. With no alias the script runs on 'g', the default
+      // database: the request is refused for a user with no grant on it, before the script is evaluated.
+      final Throwable thrown = catchThrowable(
+          () -> client.submit("g.V().hasLabel('Victim').values('secret')", gremlinLang()).all().get());
+      assertThat(thrown).as("A zero-grant credential must be refused by the request check")
+          .hasStackTraceContaining(AUTHORIZATION_REFUSAL);
+    } finally {
+      cluster.close();
+    }
+  }
+
+  @Test
+  void indexedLookupsOfAZeroGrantUserAreRefusedByTheRequestCheck() {
+    seedVictimData();
+    createVictimIndex();
+    createZeroGrantUser();
+
+    final Cluster cluster = createCluster(LIMITED_USER, LIMITED_PASSWORD);
+    try {
+      final Client client = cluster.connect();
+      final Throwable first = catchThrowable(
+          () -> client.submit("g.V().has('Victim','secret','topsecret').count()", gremlinLang()).all().get());
+      final Throwable second = catchThrowable(
+          () -> client.submit("g.V().has('Victim','secret','othervalue').count()", gremlinLang()).all().get());
+
+      assertThat(first).as("First lookup").hasStackTraceContaining(AUTHORIZATION_REFUSAL);
+      assertThat(second).as("Second lookup").hasStackTraceContaining(AUTHORIZATION_REFUSAL);
+    } finally {
+      cluster.close();
+    }
+  }
+
+  @Test
+  void userGrantedAnotherDatabaseReachesItOnlyThroughAnAlias() throws Exception {
+    seedVictimData();
+    createOtherDatabaseUser();
+
+    final Cluster cluster = createCluster(OTHER_USER, OTHER_PASSWORD);
+    try {
+      final Client client = cluster.connect();
+
+      // No alias: 'g' is the default database, which this user has no grant on
+      assertThat(catchThrowable(() -> client.submit("g.V().hasLabel('Victim').count()", gremlinLang()).all().get()))
+          .as("A script with no alias runs on the default database").hasStackTraceContaining(AUTHORIZATION_REFUSAL);
+
+      // An alias naming the default database is refused too
+      assertThat(catchThrowable(() -> client.alias(getDatabaseName()).submit("g.V().hasLabel('Victim').count()", gremlinLang()).all().get()))
+          .as("An alias naming the default database").hasStackTraceContaining(AUTHORIZATION_REFUSAL);
+
+      // A traversal bound to the granted database keeps working
+      final GraphTraversalSource g = AnonymousTraversalSource.traversal()
+          .withRemote(DriverRemoteConnection.using(cluster, OTHER_DATABASE));
+      assertThat(g.V().hasLabel("Other").count().next()).as("A traversal bound to the granted database").isEqualTo(1L);
+    } finally {
+      cluster.close();
+    }
+  }
+
+  @Test
+  void authorizedUserStillReadsViaGremlinLangScript() throws Exception {
+    seedVictimData();
+
+    final Cluster cluster = createCluster("root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+    try {
+      final Client client = cluster.connect();
+      assertThat(client.submit("g.V().hasLabel('Victim').count()", gremlinLang()).all().get().get(0).getLong()).isEqualTo(1L);
+      // An explicit alias of the default traversal source keeps working
+      assertThat(client.alias("g").submit("g.V().hasLabel('Victim').count()", gremlinLang()).all().get().get(0).getLong()).isEqualTo(1L);
     } finally {
       cluster.close();
     }
@@ -187,6 +275,31 @@ class GremlinServerAuthorizationIT extends AbstractGremlinServerIT {
     db.command("sqlscript", "CREATE VERTEX TYPE Victim IF NOT EXISTS;\nINSERT INTO Victim SET secret = 'topsecret';");
   }
 
+  private void createVictimIndex() {
+    final Database db = getServerDatabase(0, getDatabaseName());
+    db.command("sqlscript", "CREATE PROPERTY Victim.secret IF NOT EXISTS STRING;\nCREATE INDEX IF NOT EXISTS ON Victim (secret) NOTUNIQUE;");
+  }
+
+  private static RequestOptions gremlinLang() {
+    return RequestOptions.build().language("gremlin-lang").create();
+  }
+
+  /** A user whose only grant is on a database other than the default one, with read access to every type of it. */
+  private void createOtherDatabaseUser() {
+    final Database other = getServer(0).getOrCreateDatabase(OTHER_DATABASE);
+    other.command("sqlscript", "CREATE VERTEX TYPE Other IF NOT EXISTS;\nINSERT INTO Other SET name = 'other';");
+
+    final ServerSecurity security = getServer(0).getSecurity();
+    security.saveGroup(OTHER_DATABASE, "gremlinOtherReaders", new JSONObject()
+        .put("access", new JSONArray())
+        .put("types", new JSONObject().put("*", new JSONObject().put("access", new JSONArray().put("readRecord")))));
+    if (security.getUser(OTHER_USER) == null)
+      security.createUser(new JSONObject()
+          .put("name", OTHER_USER)
+          .put("password", security.encodePassword(OTHER_PASSWORD))
+          .put("databases", new JSONObject().put(OTHER_DATABASE, new JSONArray().put("gremlinOtherReaders"))));
+  }
+
   private void createZeroGrantUser() {
     final ServerSecurity security = getServer(0).getSecurity();
     if (security.getUser(LIMITED_USER) == null)
@@ -214,6 +327,12 @@ class GremlinServerAuthorizationIT extends AbstractGremlinServerIT {
           security.dropUser(LIMITED_USER);
         if (security.getUser(READONLY_USER) != null)
           security.dropUser(READONLY_USER);
+        if (security.getUser(OTHER_USER) != null)
+          security.dropUser(OTHER_USER);
+      }
+      if (getServer(0).existsDatabase(OTHER_DATABASE)) {
+        ((DatabaseInternal) getServer(0).getDatabaseForOperator(OTHER_DATABASE)).getEmbedded().drop();
+        getServer(0).removeDatabase(OTHER_DATABASE);
       }
     } catch (final Exception e) {
       // IGNORE: server may already be stopped
