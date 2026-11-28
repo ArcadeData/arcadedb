@@ -555,7 +555,7 @@ public class OrderByStep extends AbstractExecutionStep {
        * Compares two values for sorting.
        * In Cypher, null is considered the largest value: nulls sort last in ASC, first in DESC.
        * NaN sorts between null and all other values.
-       * Type ordering: Map < Node < Relationship < List < Path < Temporal < String < Boolean < Number
+       * Type ordering: Map < Node < Relationship < List < Path < Point < Temporal < String < Boolean < Number
        */
       @SuppressWarnings({"unchecked", "rawtypes"})
       private int compareValues(final Object v1, final Object v2) {
@@ -588,8 +588,9 @@ public class OrderByStep extends AbstractExecutionStep {
           return Integer.compare(l1.size(), l2.size());
         }
 
-        // Maps by size, keys, then values, as min() and max() order them: their toString() put {a: 10} before {a: 9}
-        if (v1 instanceof Map<?, ?> m1 && v2 instanceof Map<?, ?> m2)
+        // Maps by size, keys, then values, as min() and max() order them: their toString() put {a: 10} before {a: 9}. Points are
+        // maps too, of their own type: a point and a map are ordered by type below, two points by this same rule (issue #11949)
+        if (v1 instanceof Map<?, ?> m1 && v2 instanceof Map<?, ?> m2 && typeRank(m1) == typeRank(m2))
           return CypherFunctionHelper.compareMaps(m1, m2, this::compareValues);
 
         // Compare booleans: false < true

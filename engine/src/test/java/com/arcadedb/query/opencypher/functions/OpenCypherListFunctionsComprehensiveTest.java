@@ -281,8 +281,8 @@ class OpenCypherListFunctionsComprehensiveTest extends TestHelper {
 
   @Test
   void collMinBasic() {
-    // coll.min uses cypherTypeRank: Map=0, Vertex=1, Edge=2, List=3, other=4, temporals=5-10, String=11, Boolean=12, Number=13
-    // So String 'a' (rank 11) < Boolean true (rank 12) < Number 1 (rank 13)
+    // coll.min uses cypherTypeRank: Map=0, Vertex=1, Edge=2, List=3, other=4, Point=5, temporals=6-11, String=12, Boolean=13,
+    // Number=14. So String 'a' (rank 12) < Boolean true (rank 13) < Number 1 (rank 14)
     final ResultSet result = database.command("opencypher",
         "RETURN coll.min([true, 'a', 1, 5.4]) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
