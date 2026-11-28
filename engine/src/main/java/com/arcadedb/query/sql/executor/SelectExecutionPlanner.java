@@ -29,7 +29,9 @@ import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.CommandSemanticException;
+import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexCursor;
@@ -451,8 +453,12 @@ public class SelectExecutionPlanner {
 
     optimizeQuery(info, context);
 
-    if (emptyReason == null && handleHardwiredOptimizations(selectExecutionPlan, context))
+    if (emptyReason == null && handleHardwiredOptimizations(selectExecutionPlan, context)) {
+      // the statement passed the cache gate above, so a hardwired count(*), max() or min() is cached too: otherwise each of its
+      // executions pays a cache lookup that always misses on top of the planning (issue #13059)
+      cachePlan(selectExecutionPlan, context, useCache, planningEpoch);
       return selectExecutionPlan;
+    }
 
     handleGlobalLet(selectExecutionPlan, info, context);
 
@@ -501,13 +507,15 @@ public class SelectExecutionPlanner {
       chainTimeout(selectExecutionPlan, info, context);
     }
 
-    if (useCache && !context.isProfiling() && statement.executionPlanCanBeCached() && !planDependsOnInputParameters
-        && selectExecutionPlan.canBeCached())
+    cachePlan(selectExecutionPlan, context, useCache, planningEpoch);
+    return selectExecutionPlan;
+  }
+
+  private void cachePlan(final SelectExecutionPlan plan, final CommandContext context, final boolean useCache, final long planningEpoch) {
+    if (useCache && !context.isProfiling() && statement.executionPlanCanBeCached() && !planDependsOnInputParameters && plan.canBeCached())
       // The planningEpoch re-check happens atomically inside put(), under the same lock as invalidate(), so a DDL
       // racing this call can never be missed the way two separately-locked calls could (#6671).
-      db.getExecutionPlanCache().put(statement.getOriginalStatement(), selectExecutionPlan, planningEpoch);
-
-    return selectExecutionPlan;
+      context.getDatabase().getExecutionPlanCache().put(statement.getOriginalStatement(), plan, planningEpoch);
   }
 
   /**
@@ -908,6 +916,8 @@ public class SelectExecutionPlanner {
       // Check if the target is specified via a positional/named parameter (e.g., SELECT max(p) FROM ?)
       final InputParameter inputParam = info.target.getItem().getInputParam();
       if (inputParam != null) {
+        // the type comes from this execution's parameter: the plan must not answer an execution bound to another type
+        planDependsOnInputParameters = true;
         final Object paramValue = inputParam.getValue(context.getInputParameters());
         if (paramValue instanceof String string)
           targetClass = new Identifier(string);
@@ -2125,9 +2135,9 @@ public class SelectExecutionPlanner {
         }
 
       } else
-        throw new UnsupportedOperationException();
+        throw new CommandSemanticException("Unsupported target '" + target + "'");
     } else {
-      throw new UnsupportedOperationException();
+      throw new CommandSemanticException("Unsupported target '" + target + "'");
     }
   }
 
@@ -2203,19 +2213,31 @@ public class SelectExecutionPlanner {
   /**
    * An element of a bound collection target as a record. A RID string, as a remote driver binds one, names its record here as a
    * single bound RID string does (issue #11767). Any other element, including a string that only looks like a RID and does not
-   * parse (such as "#1:2-3"), refuses the collection as a target.
+   * parse (such as "#1:2-3"), refuses the collection as a target: the caller bound a value of the wrong kind, a client error
+   * (issue #12795).
    */
   static Identifiable collectionTargetElement(final Object element, final Object collection, final CommandContext context) {
     if (element instanceof String string && RID.is(string)) {
       try {
         return context.getDatabase().newRID(string);
       } catch (final NumberFormatException e) {
-        throw new CommandExecutionException("Cannot use collection as target: " + collection, e);
+        throw new TypeMismatchException("Cannot use collection as target: " + InvalidArgumentException.quote(collection), e);
       }
     }
     if (element instanceof Identifiable identifiable)
       return identifiable;
-    throw new CommandExecutionException("Cannot use collection as target: " + collection);
+    throw new TypeMismatchException("Cannot use collection as target: " + InvalidArgumentException.quote(collection)
+        + ", its elements must be records or RIDs");
+  }
+
+  /**
+   * The refusal of a parameter bound as a target to a value no target can be: the caller's mistake, a client error (issue #12795,
+   * where it answered 500).
+   */
+  static TypeMismatchException invalidParameterTarget(final InputParameter inputParam, final Object value) {
+    return new TypeMismatchException(
+        "Invalid target: the parameter " + inputParam + " is " + InvalidArgumentException.quote(value) + " (" + value.getClass()
+            .getSimpleName() + "), a target parameter must be a type name, a RID, a record or a collection of RIDs or records");
   }
 
   private void handleInputParamAsTarget(final SelectExecutionPlan result, final Set<String> filterClusters,
@@ -2281,7 +2303,7 @@ public class SelectExecutionPlanner {
         result.chain(new EmptyStep(context));//nothing to return
       }
     } else {
-      throw new CommandExecutionException("Invalid target: " + paramValue);
+      throw invalidParameterTarget(inputParam, paramValue);
     }
   }
 
@@ -2465,7 +2487,8 @@ public class SelectExecutionPlanner {
       if (item instanceof Identifiable identifiable && identifiable.getIdentity() != null)
         rids.add(identifiable.getIdentity());
       else
-        throw new CommandExecutionException(
+        // The caller's mistake, like every other target that names no record (issue #12904): not a server fault
+        throw new CommandSemanticException(
             "Function '" + functionCall.getName().getStringValue() + "' used as target did not return a record or RID, but: " + item);
     }
 
@@ -4901,13 +4924,26 @@ public class SelectExecutionPlanner {
     // Each branch then ends with the step that gives its rows their best $score (issue #11618)
     final boolean rescore = info.flattenedWhereClause.size() > 1 && !mergeByScore && rescoresTheBranches(typez, info, context);
 
+    // An OR with a branch no index answers is one scan of the type with the whole WHERE: the branch needs the scan anyway, and
+    // planning it as a union would read the type again for every such branch, plus an index search for each of the others,
+    // only to deduplicate what the one scan returns once. Only when the scan reproduces what every index of the other branches
+    // answers, which is what a key index (LSM_TREE, HASH) guarantees, see withoutKeyIndexes(): a FULL_TEXT index matches by the
+    // analyzer's tokens, which the scan's own evaluation of the condition does not, so such a branch stays planned on its own
+    final List<IndexSearchDescriptor> branchIndexes =
+        info.flattenedWhereClause.size() > 1 ? plainBranchIndexes(typez, info, context) : null;
+    if (branchIndexes != null && scanAnswersEveryBranch(branchIndexes))
+      return false;
+
+    int branchNo = 0;
     for (AndBlock block : info.flattenedWhereClause) {
+      final int thisBranch = branchNo++;
       List<BinaryCondition> indexedFunctionConditions = block.getIndexedFunctionConditions(typez, context);
 
       indexedFunctionConditions = filterIndexedFunctionsWithoutIndex(indexedFunctionConditions, info.target, context);
 
       if (indexedFunctionConditions == null || indexedFunctionConditions.isEmpty()) {
-        IndexSearchDescriptor bestIndex = findBestIndexFor(context, plannableIndexes(typez.getAllIndexes(true)), block, typez);
+        IndexSearchDescriptor bestIndex = branchIndexes != null ? branchIndexes.get(thisBranch)
+            : findBestIndexFor(context, plannableIndexes(typez.getAllIndexes(true)), block, typez);
         if (bestIndex != null) {
 
           final FetchFromIndexStep step = new FetchFromIndexStep(bestIndex.index, bestIndex.keyCondition,
@@ -5082,6 +5118,39 @@ public class SelectExecutionPlanner {
     } else {
       return false;
     }
+  }
+
+  /**
+   * The best index search of every branch of the WHERE's OR, in branch order (null for a branch no index answers), or null when a
+   * branch calls an indexed function, which the per-branch planning handles itself.
+   */
+  private List<IndexSearchDescriptor> plainBranchIndexes(final DocumentType type, final QueryPlanningInfo info,
+      final CommandContext context) {
+    final List<TypeIndex> indexes = plannableIndexes(type.getAllIndexes(true));
+    final List<IndexSearchDescriptor> result = new ArrayList<>(info.flattenedWhereClause.size());
+    for (final AndBlock block : info.flattenedWhereClause) {
+      final List<BinaryCondition> indexedFunctionConditions = filterIndexedFunctionsWithoutIndex(
+          block.getIndexedFunctionConditions(type, context), info.target, context);
+      if (indexedFunctionConditions != null && !indexedFunctionConditions.isEmpty())
+        return null;
+      result.add(indexes.isEmpty() ? null : findBestIndexFor(context, indexes, block, type));
+    }
+    return result;
+  }
+
+  /**
+   * Whether one scan of the type filtered by the whole WHERE answers the OR whose branches {@link #plainBranchIndexes} planned: a
+   * branch no index answers needs the scan anyway, and every index search of the other branches is through a key index, whose
+   * answer the scan's evaluation of the condition reproduces exactly.
+   */
+  private static boolean scanAnswersEveryBranch(final List<IndexSearchDescriptor> branchIndexes) {
+    boolean unindexedBranch = false;
+    for (final IndexSearchDescriptor descriptor : branchIndexes)
+      if (descriptor == null)
+        unindexedBranch = true;
+      else if (!isKeyIndex(descriptor.index))
+        return false;
+    return unindexedBranch;
   }
 
   /**
@@ -5883,10 +5952,10 @@ public class SelectExecutionPlanner {
    *   the two are the same function, and a comparison with a null operand is unknown and stays unknown under NOT;</li>
    *   <li>{@code NOT (NOT (id < 3))} is {@code id < 3}, in the same three-valued logic;</li>
    *   <li>{@code 5 = id} is {@code id = 5} and {@code :lo < id} is {@code id > :lo}, and {@code NOT (id >= 3)} is {@code id < 3}, but
-   *   only when the value has the property's type. A comparison converts its right operand to the type of its left one, so with a
-   *   value of another type the spellings compare differently: {@code '10' > id} compares text where {@code id < '10'} compares
-   *   numbers, {@code 9 = s} reads the text "09" as 9 where {@code s = 9} looks for the key "9", and a value the comparison
-   *   cannot convert makes a range and its complement both false.</li>
+   *   only when the value has the property's type. The scan evaluates the reversed form as its mirror, so {@code '10' > id} and
+   *   {@code id < '10'} select the same records (issue #12921), but an index lookup of a value of another kind may decline where the
+   *   scan answers (see {@code IndexedRangeQueryTest}), and a value the comparison cannot convert makes a range and its complement
+   *   both false, so such a value keeps the scan.</li>
    * </ul>
    */
   private static BooleanExpression indexKeyForm(final BooleanExpression exp, final IndexSearchInfo info, final DocumentType clazz) {
@@ -5932,16 +6001,12 @@ public class SelectExecutionPlanner {
     return keyForm;
   }
 
-  /** {@code a op b} reads {@code b mirror a}, or null for an operator this planner does not turn round. */
+  /**
+   * {@code a op b} reads {@code b mirror a}, the mirror the comparison itself evaluates the reversed form with (issue #12921), or null
+   * for an operator an index does not answer: only {@code =} and the ranges.
+   */
   private static BinaryCompareOperator mirrorOf(final BinaryCompareOperator operator) {
-    return switch (operator) {
-      case EqualsCompareOperator equals -> equals;
-      case LtOperator ignored -> new GtOperator();
-      case GtOperator ignored -> new LtOperator();
-      case LeOperator ignored -> new GeOperator();
-      case GeOperator ignored -> new LeOperator();
-      default -> null;
-    };
+    return operator instanceof EqualsCompareOperator || operator.isRangeOperator() ? operator.mirrored() : null;
   }
 
   /** The operator of {@code NOT (a op b)} written without the NOT, when it is one an index answers, else null. */
@@ -6137,16 +6202,17 @@ public class SelectExecutionPlanner {
     if (indexes.isEmpty())
       return null;
 
-    List<IndexSearchDescriptor> indexSearchDescriptors =
-        info.flattenedWhereClause.stream()
-            .map(x -> findBestIndexFor(context, indexes, x, typez))
-            .collect(Collectors.toList());
-
     // Fix for issue #2695: If any OR branch cannot be optimized with an index,
     // we must fall back to a full scan. Otherwise, those branches would be silently
     // ignored, causing incomplete query results (e.g., DELETE only deleting some records).
-    if (indexSearchDescriptors.contains(null))
-      return null; // some blocks could not be managed with an index, fall back to full scan
+    // The search stops at the first such branch: the branches after it are not planned for nothing (issue #12976)
+    List<IndexSearchDescriptor> indexSearchDescriptors = new ArrayList<>(info.flattenedWhereClause.size());
+    for (final AndBlock block : info.flattenedWhereClause) {
+      final IndexSearchDescriptor descriptor = findBestIndexFor(context, indexes, block, typez);
+      if (descriptor == null)
+        return null; // some blocks could not be managed with an index, fall back to full scan
+      indexSearchDescriptors.add(descriptor);
+    }
 
     // A keyset page (WHERE e = ? AND k > :after ORDER BY k LIMIT n) can cost less walking k's index in order (issue #11700)
     if (allowDeferredLetFilter && indexSearchDescriptors.size() == 1) {
@@ -6448,7 +6514,8 @@ public class SelectExecutionPlanner {
       }
     } else {
       // Defensive, and not reachable through a SELECT today: handleTypeAsTargetWithIndexedFunction() runs first at
-      // both call sites and claims every multi-block WHERE, so an OR reaches its own per-branch planning - which
+      // both call sites and claims every multi-block WHERE whose branches all have an index or call an indexed function (an OR with a
+      // branch no index answers reaches the scan below), so an OR reaches its own per-branch planning - which
       // chains the LET into each sub-plan correctly, because that sub-plan is not empty by then. Kept because this
       // branch chains residual filters of its own, and one reading a per-record LET would be evaluated with the
       // variable unset, which is a wrong answer rather than a lost optimisation.
@@ -6902,12 +6969,13 @@ public class SelectExecutionPlanner {
   }
 
   /** Whether a scan filtered by the condition answers exactly what {@code index} does, see {@link #withoutKeyIndexes()}. */
-  private static boolean isKeyIndex(final TypeIndex index) {
+  private static boolean isKeyIndex(final Index index) {
     try {
       final Schema.INDEX_TYPE type = index.getType();
       return type != null && type.isExactKeyLookup();
     } catch (final IndexException e) {
-      // The index went away meanwhile: answering true removes it from the candidates, where it does not belong anyway
+      // The index went away meanwhile: answering true removes it from the candidates, where it does not belong anyway, and lets
+      // an OR with an unindexed branch be answered by the scan, which does not need it
       return true;
     }
   }

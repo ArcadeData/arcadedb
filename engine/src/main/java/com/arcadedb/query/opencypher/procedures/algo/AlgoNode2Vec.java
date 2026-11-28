@@ -123,7 +123,7 @@ public class AlgoNode2Vec extends AbstractAlgoProcedure {
     final double q = config != null && config.get("q") instanceof Number n ? n.doubleValue() : 1.0;
     final long seed = config != null && config.get("seed") instanceof Number n ? n.longValue() : -1L;
     final String[] relTypes = config != null ? extractRelTypes(config.get("relTypes"), context) : null;
-    final Vertex.DIRECTION dir = parseDirection(config != null ? (String) config.get("direction") : null);
+    final Vertex.DIRECTION dir = extractDirection(config != null ? config.get("direction") : null, Vertex.DIRECTION.BOTH);
 
     final Database db = context.getDatabase();
     final GraphData graph = loadGraph(db, null, relTypes, context);

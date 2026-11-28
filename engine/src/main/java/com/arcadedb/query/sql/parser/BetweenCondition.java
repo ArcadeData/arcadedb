@@ -47,20 +47,43 @@ public class BetweenCondition extends BooleanExpression {
    */
   private          byte   lowerLiteralState = ConstantOperandConversion.UNKNOWN;
   private          byte   upperLiteralState = ConstantOperandConversion.UNKNOWN;
+  /**
+   * Each bound, evaluated once per execution when it is a call over constants that answers one value for the execution, such as
+   * {@code date('2024-06-01', 'yyyy-MM-dd')} (issue #13523). Built at first use.
+   */
+  private transient volatile ConstantCallOperand lowerOperand;
+  private transient volatile ConstantCallOperand upperOperand;
 
   public BetweenCondition() {
   }
 
   @Override
   public Boolean evaluate(final Identifiable currentRecord, final CommandContext context) {
-    return evaluate(first.execute(currentRecord, context), second.execute(currentRecord, context), third.execute(currentRecord, context),
-        context);
+    return evaluate(first.execute(currentRecord, context), boundOperand(true).execute(currentRecord, context),
+        boundOperand(false).execute(currentRecord, context), context);
   }
 
   @Override
   public Boolean evaluate(final Result currentRecord, final CommandContext context) {
-    return evaluate(first.execute(currentRecord, context), second.execute(currentRecord, context), third.execute(currentRecord, context),
-        context);
+    return evaluate(first.execute(currentRecord, context), boundOperand(true).execute(currentRecord, context),
+        boundOperand(false).execute(currentRecord, context), context);
+  }
+
+  /**
+   * The operand a bound is evaluated through: once per execution when it is a call over constants (issue #13523).
+   *
+   * @param lower true for the lower bound, false for the upper one
+   */
+  ConstantCallOperand boundOperand(final boolean lower) {
+    final ConstantCallOperand current = lower ? lowerOperand : upperOperand;
+    final ConstantCallOperand operand = ConstantCallOperand.of(current, lower ? second : third);
+    if (operand != current) {
+      if (lower)
+        lowerOperand = operand;
+      else
+        upperOperand = operand;
+    }
+    return operand;
   }
 
   /**

@@ -55,6 +55,7 @@ WRAPPER="$SCRIPTS/check-maven-wrapper.py"
 PROMPTMUT="$SCRIPTS/check-claude-prompt-mutations.py"
 PINCOMMENTS="$SCRIPTS/check-action-pin-comments.py"
 CHAOSSUMMARY="$SCRIPTS/chaos-run-summary.sh"
+SBOMFIELDS="$SCRIPTS/check-sbom-fields.py"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -3039,6 +3040,1281 @@ if grep -qF "cancel-in-progress: \${{ github.event_name == 'pull_request' }}" .g
 else
     fail "merge_group runs are never cancelled in progress (#9850)" "cancel-in-progress is not limited to pull_request"
 fi
+
+# The release SBOMs must carry the fields BSI TR-03183-2 and the NTIA minimum elements ask for. A
+# generator upgrade or a pom change that silently drops hashes, licenses or the supplier would
+# otherwise ship an SBOM that consumers reject; each fixture breaks exactly one field.
+echo
+echo "check-sbom-fields.py"
+
+SBOMFIX="$SCRIPTS/tests/fixtures/sbom"
+expect "a complete CycloneDX 1.6 SBOM passes" 0 "" \
+    "$SBOMFIELDS" "$SBOMFIX/good.cdx.json"
+expect "a component without hashes fails" 1 "missing hashes" \
+    "$SBOMFIELDS" "$SBOMFIX/missing-hash.cdx.json"
+expect "a SBOM without a supplier fails" 1 "missing supplier" \
+    "$SBOMFIELDS" "$SBOMFIX/missing-supplier.cdx.json"
+expect "a component without licenses fails" 1 "missing licenses" \
+    "$SBOMFIELDS" "$SBOMFIX/missing-license.cdx.json"
+expect "one bad file among good ones fails the run" 1 "missing-hash.cdx.json" \
+    "$SBOMFIELDS" "$SBOMFIX/good.cdx.json" "$SBOMFIX/missing-hash.cdx.json"
+
+# Variants of the good fixture, generated so each breaks one thing.
+python3 - "$SBOMFIX/good.cdx.json" "$work" <<'PY'
+import copy, json, sys
+good = json.load(open(sys.argv[1]))
+out = sys.argv[2]
+def write(name, mutate):
+    bom = copy.deepcopy(good)
+    mutate(bom)
+    json.dump(bom, open(f"{out}/sbom-{name}.json", "w"))
+write("spec14", lambda b: b.update(specVersion="1.4"))
+write("spec110", lambda b: b.update(specVersion="1.10"))
+write("no-timestamp", lambda b: b["metadata"].pop("timestamp"))
+write("no-deps", lambda b: b.update(dependencies=[]))
+write("no-tool", lambda b: b["metadata"].pop("tools"))
+write("empty-license", lambda b: b["components"][1].update(licenses=[{}]))
+write("nested-no-hash", lambda b: b["components"][0].update(components=[{"type": "library", "name": "x", "version": "1", "purl": "pkg:maven/x/x@1", "hashes": [], "licenses": [{"expression": "MIT"}]}]))
+write("supplier-string", lambda b: b["metadata"].update(supplier="Arcade Data Ltd"))
+write("metadata-list", lambda b: b.update(metadata=[]))
+write("hashes-string", lambda b: b["components"][0].update(hashes="abc"))
+write("components-dict", lambda b: b.update(components={}))
+write("component-string", lambda b: b.update(components=["x"]))
+def only_publisher(name):
+    def m(b):
+        b["metadata"].pop("supplier", None)
+        b["metadata"].pop("manufacturer", None)
+        b["metadata"].setdefault("component", {})["publisher"] = name
+    return m
+write("publisher-only", only_publisher("Arcade Data Ltd"))
+write("publisher-other", only_publisher("Someone Else"))
+write("tools-components-int", lambda b: b["metadata"].update(tools={"components": 1}))
+write("tools-int", lambda b: b["metadata"].update(tools=1))
+write("deps-null", lambda b: b.update(dependencies=[None]))
+write("deps-no-ref", lambda b: b.update(dependencies=[{"dependsOn": []}]))
+write("deps-bad-dependson", lambda b: b.update(dependencies=[{"ref": "x", "dependsOn": [1]}]))
+write("deps-leaf", lambda b: b.update(dependencies=[{"ref": "x"}]))
+write("hash-short", lambda b: [c.update(hashes=[{"alg": "SHA-512", "content": "a"}]) for c in b["components"]])
+write("hash-256-as-512", lambda b: [c.update(hashes=[{"alg": "SHA-512", "content": "a" * 64}]) for c in b["components"]])
+write("hash-256", lambda b: [c.update(hashes=[{"alg": "SHA-256", "content": "ab" * 32}]) for c in b["components"]])
+def other_supplier_arcade_manufacturer(b):
+    b["metadata"]["supplier"] = {"name": "Third Party"}
+    b["metadata"]["manufacturer"] = {"name": "Arcade Data Ltd"}
+    b["metadata"].setdefault("component", {}).pop("supplier", None)
+    b["metadata"]["component"].pop("publisher", None)
+write("supplier-other-manufacturer-arcade", other_supplier_arcade_manufacturer)
+PY
+echo '{ not json' >"$work/sbom-broken.json"
+expect "specVersion 1.4 fails" 1 "missing specVersion" "$SBOMFIELDS" "$work/sbom-spec14.json"
+expect "specVersion 1.10 passes (numeric, not string, comparison)" 0 "" "$SBOMFIELDS" "$work/sbom-spec110.json"
+expect "a missing timestamp fails" 1 "missing timestamp" "$SBOMFIELDS" "$work/sbom-no-timestamp.json"
+expect "empty dependencies fail" 1 "missing dependencies" "$SBOMFIELDS" "$work/sbom-no-deps.json"
+expect "no author and no tool fails" 1 "missing author/tool" "$SBOMFIELDS" "$work/sbom-no-tool.json"
+expect "malformed JSON fails" 1 "unreadable" "$SBOMFIELDS" "$work/sbom-broken.json"
+expect "licenses [{}] fails" 1 "missing licenses" "$SBOMFIELDS" "$work/sbom-empty-license.json"
+expect "a nested component without a hash fails" 1 "missing hashes" "$SBOMFIELDS" "$work/sbom-nested-no-hash.json"
+expect "supplier as a string is malformed, not a traceback" 1 "malformed metadata.supplier" "$SBOMFIELDS" "$work/sbom-supplier-string.json"
+expect "metadata as a list is malformed" 1 "malformed metadata" "$SBOMFIELDS" "$work/sbom-metadata-list.json"
+expect "hashes as a string is malformed" 1 "malformed components[0].hashes" "$SBOMFIELDS" "$work/sbom-hashes-string.json"
+expect "metadata.component.publisher alone satisfies the supplier" 0 "" "$SBOMFIELDS" "$work/sbom-publisher-only.json"
+expect "a publisher that is not Arcade Data Ltd fails" 1 "missing supplier Arcade Data Ltd" "$SBOMFIELDS" "$work/sbom-publisher-other.json"
+expect "--module allows a missing timestamp" 0 "" "$SBOMFIELDS" --module "$work/sbom-no-timestamp.json"
+expect "--module still checks the other fields" 1 "missing dependencies" "$SBOMFIELDS" --module "$work/sbom-no-deps.json"
+expect "components as a dict is malformed" 1 "malformed components" "$SBOMFIELDS" "$work/sbom-components-dict.json"
+expect "a component that is not an object is malformed" 1 "malformed components[0]" "$SBOMFIELDS" "$work/sbom-component-string.json"
+expect "no argument exits 2" 2 "Usage" "$SBOMFIELDS"
+expect "metadata.tools.components that is not an array is malformed, not a traceback" 1 "malformed metadata.tools.components" \
+    "$SBOMFIELDS" "$work/sbom-tools-components-int.json"
+expect "a malformed tool collection does not stop the BOMs after it" 1 "$work/sbom-publisher-other.json: metadata: missing supplier" \
+    "$SBOMFIELDS" "$work/sbom-tools-components-int.json" "$work/sbom-publisher-other.json"
+expect "metadata.tools that is neither an array nor an object is malformed" 1 "malformed metadata.tools" "$SBOMFIELDS" "$work/sbom-tools-int.json"
+expect "a dependency record that is not an object is malformed" 1 "malformed dependencies[0]" "$SBOMFIELDS" "$work/sbom-deps-null.json"
+expect "a dependency record without a ref is malformed" 1 "malformed dependencies[0].ref" "$SBOMFIELDS" "$work/sbom-deps-no-ref.json"
+expect "a dependsOn that is not an array of strings is malformed" 1 "malformed dependencies[0].dependsOn" "$SBOMFIELDS" "$work/sbom-deps-bad-dependson.json"
+expect "a leaf dependency record without dependsOn passes" 0 "" "$SBOMFIELDS" "$work/sbom-deps-leaf.json"
+expect "a hash whose content is not a digest of its algorithm fails" 1 "missing hashes" "$SBOMFIELDS" "$work/sbom-hash-short.json"
+expect "a SHA-256-long digest declared as SHA-512 fails" 1 "missing hashes" "$SBOMFIELDS" "$work/sbom-hash-256-as-512.json"
+expect "a 64-hex-digit SHA-256 passes" 0 "" "$SBOMFIELDS" "$work/sbom-hash-256.json"
+expect "a matching manufacturer satisfies the supplier although metadata.supplier names someone else" 0 "" \
+    "$SBOMFIELDS" "$work/sbom-supplier-other-manufacturer-arcade.json"
+
+# The distribution SBOMs are built from the package module's BOM: filtered to the jars one assembly
+# puts under lib/, with Studio's npm tree nested under an `arcadedb-studio` application component,
+# and stamped with the timestamp and supplier a release-level SBOM needs. A merge that drops the npm
+# tree, lists a jar the archive does not ship or misses one it does would publish an SBOM that
+# describes some other distribution.
+echo
+echo "merge-sbom.py"
+
+MERGE="$SCRIPTS/merge-sbom.py"
+MERGEJVM="$SBOMFIX/merge-jvm.cdx.json"
+MERGESTUDIO="$SBOMFIX/merge-studio.cdx.json"
+RELEASE_ARGS=(--supplier "Arcade Data Ltd" --supplier-url https://arcadedb.com --timestamp)
+
+# Asserts a property of a merged SBOM with a Python expression over `bom` (or a block that sets `ok`);
+# prints the BOM when false.
+bom_expect() {
+    local description="$1" file="$2" expression="$3"
+    local output status=0
+    output="$(python3 -c '
+import json, sys
+bom = json.load(open(sys.argv[1]))
+def comps(cs):
+    for c in cs or []:
+        yield c
+        yield from comps(c.get("components"))
+refs = [c.get("bom-ref") for c in comps(bom.get("components"))]
+top = {c["name"]: c for c in bom.get("components") or [] if c.get("type") == "library"}
+apps = [c for c in bom.get("components") or [] if c.get("type") == "application"]
+deps = {d["ref"]: d.get("dependsOn") or [] for d in bom.get("dependencies") or []}
+try:
+    ok = eval(compile(sys.argv[2], "<assertion>", "eval"))
+except SyntaxError:  # a statement block that sets ok
+    scope = dict(globals())
+    exec(sys.argv[2], scope)
+    ok = scope["ok"]
+sys.exit(0 if ok else 1)
+' "$file" "$expression" 2>&1)" || status=$?
+    if [[ $status -eq 0 ]]; then
+        pass "$description"
+    else
+        fail "$description" "$output$(echo; head -c 4000 "$file")"
+    fi
+}
+
+merged="$work/merge-full.cdx.json"
+expect "merges the Studio npm tree into the JVM BOM" 0 "" \
+    "$MERGE" --root "$MERGEJVM" --nested "$MERGESTUDIO" --name arcadedb-studio "${RELEASE_ARGS[@]}" --out "$merged"
+bom_expect "Studio's components are children of an arcadedb-studio application" "$merged" \
+    '[a["name"] for a in apps] == ["arcadedb-studio"] and sorted(c["name"] for c in apps[0]["components"]) == ["bootstrap", "jquery"]'
+bom_expect "the Studio application takes its version from the root BOM" "$merged" \
+    '[a["version"] for a in apps] == ["26.12.1"]'
+bom_expect "no bom-ref appears twice" "$merged" 'len(refs) == len(set(refs))'
+bom_expect "Studio's dependency graph hangs off the application component" "$merged" \
+    'sorted(deps.get("pkg:npm/arcadedb-studio@26.12.1", [])) == ["bootstrap@5.3.9", "jquery@4.1.0"]'
+bom_expect "the Studio jar depends on the application it bundles" "$merged" \
+    '"pkg:npm/arcadedb-studio@26.12.1" in deps["pkg:maven/com.arcadedb/arcadedb-studio@26.12.1?type=jar"]'
+bom_expect "the root metadata component is kept" "$merged" 'bom["metadata"]["component"]["name"] == "arcadedb-package"'
+bom_expect "the supplier is Arcade Data Ltd with its URL" "$merged" \
+    'bom["metadata"]["supplier"] == {"name": "Arcade Data Ltd", "url": ["https://arcadedb.com"]}'
+bom_expect "a derived BOM gets its own serial number" "$merged" \
+    'bom["serialNumber"].startswith("urn:uuid:") and bom["serialNumber"] != "urn:uuid:11111111-1111-4111-8111-111111111111"'
+expect "the merged BOM passes the strict release check" 0 "" "$SBOMFIELDS" "$merged"
+bom_expect "the npm BOM's tools join the root's" "$merged" \
+    'sorted(t["name"] for t in bom["metadata"]["tools"]["components"]) == ["cyclonedx-maven-plugin", "cyclonedx-npm"]'
+
+SOURCE_DATE_EPOCH=1764151200 "$MERGE" --root "$MERGEJVM" --nested "$MERGESTUDIO" --name arcadedb-studio \
+    "${RELEASE_ARGS[@]}" --out "$work/merge-epoch.cdx.json" || true
+bom_expect "--timestamp honours SOURCE_DATE_EPOCH" "$work/merge-epoch.cdx.json" \
+    'bom["metadata"]["timestamp"] == "2025-11-26T10:00:00Z"'
+SOURCE_DATE_EPOCH=1764151200 "$MERGE" --root "$MERGEJVM" --nested "$MERGESTUDIO" --name arcadedb-studio \
+    "${RELEASE_ARGS[@]}" --out "$work/merge-epoch2.cdx.json" || true
+if cmp -s "$work/merge-epoch.cdx.json" "$work/merge-epoch2.cdx.json"; then
+    pass "a merge under SOURCE_DATE_EPOCH is reproducible"
+else
+    fail "a merge under SOURCE_DATE_EPOCH is reproducible" "$(diff "$work/merge-epoch.cdx.json" "$work/merge-epoch2.cdx.json")"
+fi
+
+"$MERGE" --root "$MERGEJVM" --nested "$MERGESTUDIO" --name arcadedb-studio --out "$work/merge-plain.cdx.json" || true
+expect "without --timestamp the root's missing timestamp stays missing" 1 "missing timestamp" \
+    "$SBOMFIELDS" "$work/merge-plain.cdx.json"
+
+# The studio BOM repeating a bom-ref the root already has must not produce a second component.
+python3 - "$MERGESTUDIO" "$work/merge-studio-dup.cdx.json" <<'PY'
+import json, sys
+bom = json.load(open(sys.argv[1]))
+bom["components"].append(dict(bom["components"][0]))
+json.dump(bom, open(sys.argv[2], "w"))
+PY
+"$MERGE" --root "$MERGEJVM" --nested "$work/merge-studio-dup.cdx.json" --name arcadedb-studio "${RELEASE_ARGS[@]}" \
+    --out "$work/merge-dedup.cdx.json" || true
+bom_expect "a repeated bom-ref is de-duplicated" "$work/merge-dedup.cdx.json" 'len(refs) == len(set(refs))'
+
+# --lib-dir: the BOM lists exactly the jars an assembly ships, matched by file name and hash.
+mkdir -p "$work/lib-full" "$work/lib-base"
+printf 'engine-jar\n' >"$work/lib-full/arcadedb-engine-26.12.1.jar"
+printf 'studio-jar\n' >"$work/lib-full/arcadedb-studio-26.12.1.jar"
+printf 'gremlin-jar\n' >"$work/lib-full/arcadedb-gremlin-26.12.1-shaded.jar"
+printf 'engine-jar\n' >"$work/lib-base/arcadedb-engine-26.12.1.jar"
+expect "filters to the full assembly's lib/" 0 "" \
+    "$MERGE" --root "$MERGEJVM" --nested "$MERGESTUDIO" --name arcadedb-studio --lib-dir "$work/lib-full" \
+    "${RELEASE_ARGS[@]}" --out "$work/merge-lib-full.cdx.json"
+bom_expect "the full BOM keeps every shipped jar and nests Studio" "$work/merge-lib-full.cdx.json" \
+    'sorted(top) == ["arcadedb-engine", "arcadedb-gremlin", "arcadedb-studio"] and [a["name"] for a in apps] == ["arcadedb-studio"]'
+expect "filters to the base assembly's lib/" 0 "" \
+    "$MERGE" --root "$MERGEJVM" --nested "$MERGESTUDIO" --name arcadedb-studio --lib-dir "$work/lib-base" \
+    "${RELEASE_ARGS[@]}" --out "$work/merge-lib-base.cdx.json"
+bom_expect "the base BOM drops unshipped jars and does not nest Studio" "$work/merge-lib-base.cdx.json" \
+    '[c["name"] for c in bom["components"]] == ["arcadedb-engine"]'
+bom_expect "the base BOM's dependencies name only kept components" "$work/merge-lib-base.cdx.json" \
+    'set(deps) | {r for v in deps.values() for r in v} <= set(refs) | {bom["metadata"]["component"]["bom-ref"]}'
+expect "the filtered base BOM passes the strict release check" 0 "" "$SBOMFIELDS" "$work/merge-lib-base.cdx.json"
+
+mkdir -p "$work/lib-extra"
+cp "$work/lib-base/"*.jar "$work/lib-extra/"
+printf 'x\n' >"$work/lib-extra/stranger-1.0.jar"
+expect "a shipped jar missing from the BOM fails" 1 "stranger-1.0.jar" \
+    "$MERGE" --root "$MERGEJVM" --lib-dir "$work/lib-extra" --out "$work/merge-extra.cdx.json"
+mkdir -p "$work/lib-stale"
+printf 'not the engine\n' >"$work/lib-stale/arcadedb-engine-26.12.1.jar"
+expect "a shipped jar whose hash differs from the BOM fails" 1 "hash" \
+    "$MERGE" --root "$MERGEJVM" --lib-dir "$work/lib-stale" --out "$work/merge-stale.cdx.json"
+mkdir -p "$work/lib-empty"
+expect "an empty lib dir fails rather than writing an empty BOM" 1 "lib-empty: no jar" \
+    "$MERGE" --root "$MERGEJVM" --lib-dir "$work/lib-empty" --out "$work/merge-empty.cdx.json"
+expect "a missing lib dir fails too" 1 "no jar" \
+    "$MERGE" --root "$MERGEJVM" --lib-dir "$work/lib-empty-missing" --out "$work/merge-empty.cdx.json"
+
+# Orphans are found by reachability from the root, not by "has no incoming edge": with root -> studio -> engine ->
+# gremlin -> engine and the studio jar not shipped, engine and gremlin both keep an incoming edge yet neither is
+# reachable. The first of them in document order gets the root edge, and the other stays reachable through it.
+python3 - "$MERGEJVM" "$work/merge-jvm-cycle.json" <<'PY'
+import json, sys
+bom = json.load(open(sys.argv[1]))
+ref = {c["name"]: c["bom-ref"] for c in bom["components"]}
+root = bom["metadata"]["component"]["bom-ref"]
+bom["dependencies"] = [
+    {"ref": root, "dependsOn": [ref["arcadedb-studio"]]},
+    {"ref": ref["arcadedb-studio"], "dependsOn": [ref["arcadedb-engine"]]},
+    {"ref": ref["arcadedb-engine"], "dependsOn": [ref["arcadedb-gremlin"]]},
+    {"ref": ref["arcadedb-gremlin"], "dependsOn": [ref["arcadedb-engine"]]},
+]
+json.dump(bom, open(sys.argv[2], "w"))
+PY
+mkdir -p "$work/lib-cycle"
+cp "$work/lib-full/arcadedb-engine-26.12.1.jar" "$work/lib-full/arcadedb-gremlin-26.12.1-shaded.jar" "$work/lib-cycle/"
+"$MERGE" --root "$work/merge-jvm-cycle.json" --lib-dir "$work/lib-cycle" "${RELEASE_ARGS[@]}" \
+    --out "$work/merge-cycle.cdx.json" || true
+bom_expect "a retained cycle cut off from the root by a filtered jar is re-attached to the root" "$work/merge-cycle.cdx.json" '
+root = bom["metadata"]["component"]["bom-ref"]
+seen, todo = set(), [root]
+while todo:
+    r = todo.pop()
+    if r not in seen:
+        seen.add(r)
+        todo.extend(deps.get(r, []))
+ok = set(refs) <= seen and deps[root] == [top["arcadedb-engine"]["bom-ref"]]'
+
+# The hash check must not fail open: a component with no usable hash cannot vouch for the jar shipped
+# under its name, and a SHA-512-only component (what a newer generator may write) must still be checked.
+python3 - "$MERGEJVM" "$work" <<'PY'
+import hashlib, json, sys
+bom = json.load(open(sys.argv[1]))
+engine = bom["components"][0]
+assert engine["name"] == "arcadedb-engine"
+engine["hashes"] = []
+json.dump(bom, open(f"{sys.argv[2]}/merge-jvm-hashless.json", "w"))
+engine["hashes"] = [{"alg": "SHA-512", "content": hashlib.sha512(b"engine-jar\n").hexdigest()}]
+json.dump(bom, open(f"{sys.argv[2]}/merge-jvm-sha512.json", "w"))
+engine["hashes"] = [{"alg": "SHA-512", "content": hashlib.sha512(b"something else\n").hexdigest()},
+                    {"alg": "SHA-256", "content": hashlib.sha256(b"engine-jar\n").hexdigest()}]
+json.dump(bom, open(f"{sys.argv[2]}/merge-jvm-sha512-wrong.json", "w"))
+PY
+expect "a shipped jar whose component has no SHA-256/SHA-512 fails" 1 "no SHA-256 or SHA-512" \
+    "$MERGE" --root "$work/merge-jvm-hashless.json" --lib-dir "$work/lib-base" --out "$work/merge-hashless.cdx.json"
+expect "a SHA-512-only component is checked against the jar and passes when it matches" 0 "" \
+    "$MERGE" --root "$work/merge-jvm-sha512.json" --lib-dir "$work/lib-base" --out "$work/merge-sha512.cdx.json"
+expect "SHA-512 is preferred: a wrong SHA-512 fails even next to a matching SHA-256" 1 "hash" \
+    "$MERGE" --root "$work/merge-jvm-sha512-wrong.json" --lib-dir "$work/lib-base" --out "$work/merge-sha512-wrong.cdx.json"
+expect "merge-sbom.py without --root exits 2" 2 "usage" "$MERGE" --out "$work/x.json"
+
+# A shaded jar is one file in lib/ but carries third-party code (TinkerPop, Groovy, Netty...). Unless
+# that code is nested under the jar's component, a scanner sees arcadedb-gremlin-shaded.jar and none of
+# the libraries a CVE would name. The source is the module's own SBOM, minus what the module's
+# shade artifactSet leaves out.
+mkdir -p "$work/modules/gremlin/target"
+cp "$SBOMFIX/shade-gremlin.cdx.json" "$work/modules/gremlin/target/arcadedb-gremlin-26.12.1-cyclonedx.json"
+cp "$SBOMFIX/shade-gremlin-pom.xml" "$work/modules/gremlin/pom.xml"
+expect "nests a shaded jar's contents from its module SBOM" 0 "" \
+    "$MERGE" --root "$MERGEJVM" --module-boms "$work/modules/*/target/*-cyclonedx.json" "${RELEASE_ARGS[@]}" \
+    --out "$work/merge-shaded.cdx.json"
+bom_expect "the shaded jar carries what its module shades in, minus the artifactSet excludes" "$work/merge-shaded.cdx.json" \
+    'sorted(c["name"] for c in top["arcadedb-gremlin"].get("components", [])) == ["gremlin-core", "groovy"]'
+bom_expect "jars that are not shaded get no nested components" "$work/merge-shaded.cdx.json" \
+    'not top["arcadedb-engine"].get("components") and not top["arcadedb-studio"].get("components")'
+bom_expect "nested shaded components keep their purl and get a bom-ref of their own" "$work/merge-shaded.cdx.json" \
+    'len(refs) == len(set(refs)) and [c["purl"] for c in top["arcadedb-gremlin"]["components"] if c["name"] == "groovy"] == ["pkg:maven/org.apache.groovy/groovy@4.0.27?type=jar"]'
+bom_expect "the shaded jar depends on its direct shaded-in dependency, which keeps its own edges" "$work/merge-shaded.cdx.json" \
+    'any("gremlin-core" in r for r in deps[top["arcadedb-gremlin"]["bom-ref"]]) and any("groovy" in r for r in deps[next(c["bom-ref"] for c in top["arcadedb-gremlin"]["components"] if c["name"] == "gremlin-core")])'
+expect "the shaded-nested BOM passes the strict release check" 0 "" "$SBOMFIELDS" "$work/merge-shaded.cdx.json"
+expect "a shaded jar whose module SBOM is missing fails" 1 "arcadedb-gremlin" \
+    "$MERGE" --root "$MERGEJVM" --module-boms "$work/modules/*/target/nothing-*.json" --out "$work/merge-noshade.cdx.json"
+
+# maven-shade reads a 3-token pattern as groupId:artifactId:classifier (any type), not ...:type, so
+# `org.apache.groovy:groovy:indy` must exclude the indy-classified groovy jar. And a shaded-in library
+# reached only through an excluded artifact (jline via the engine here) must stay attached to the jar
+# rather than float in the graph with no incoming edge.
+mkdir -p "$work/modules3/gremlin/target"
+python3 - "$SBOMFIX/shade-gremlin.cdx.json" "$SBOMFIX/shade-gremlin-pom.xml" "$work/modules3/gremlin" <<'PY'
+import json, sys
+bom = json.load(open(sys.argv[1]))
+groovy = next(c for c in bom["components"] if c["name"] == "groovy")
+indy = "pkg:maven/org.apache.groovy/groovy@4.0.27?classifier=indy&type=jar"
+old = groovy["bom-ref"]
+groovy["bom-ref"] = groovy["purl"] = indy
+engine = next(c for c in bom["components"] if c["name"] == "arcadedb-engine")
+jline = dict(engine, **{"group": "org.jline", "name": "jline", "version": "3.30.0",
+                         "bom-ref": "pkg:maven/org.jline/jline@3.30.0?type=jar",
+                         "purl": "pkg:maven/org.jline/jline@3.30.0?type=jar"})
+bom["components"].append(jline)
+for d in bom["dependencies"]:
+    d["dependsOn"] = [indy if r == old else r for r in d["dependsOn"]]
+    if d["ref"] == engine["bom-ref"]:
+        d["dependsOn"].append(jline["bom-ref"])
+bom["dependencies"].append({"ref": jline["bom-ref"], "dependsOn": []})
+json.dump(bom, open(f"{sys.argv[3]}/target/arcadedb-gremlin-26.12.1-cyclonedx.json", "w"))
+pom = open(sys.argv[2]).read().replace("<exclude>org.apache.lucene:*</exclude>",
+                                       "<exclude>org.apache.groovy:groovy:indy</exclude>")
+open(f"{sys.argv[3]}/pom.xml", "w").write(pom)
+PY
+"$MERGE" --root "$MERGEJVM" --module-boms "$work/modules3/*/target/*-cyclonedx.json" --out "$work/merge-shade3.cdx.json" || true
+bom_expect "a 3-token shade exclude is groupId:artifactId:classifier" "$work/merge-shade3.cdx.json" \
+    'sorted(c["name"] for c in top["arcadedb-gremlin"].get("components", [])) == ["gremlin-core", "jline"]'
+bom_expect "a shaded-in library orphaned by an excluded artifact hangs off the shaded jar" "$work/merge-shade3.cdx.json" \
+    'any(r.endswith("org.jline/jline@3.30.0?type=jar") for r in deps[top["arcadedb-gremlin"]["bom-ref"]])'
+
+# A jar can carry other artifacts no module SBOM names: ratis-thirdparty inside the ha-raft uber-jar
+# embeds Netty, and a Critical there was visible to an image scan but not to a scan of our SBOM. Every
+# META-INF/maven/<g>/<a>/pom.properties inside a shipped jar that is not the jar itself and not already
+# in the document becomes a nested component of that jar, licensed from the local Maven repository.
+mkdir -p "$work/lib-emb" "$work/m2"
+python3 - "$MERGEJVM" "$work" <<'PY'
+import hashlib, json, sys, zipfile
+from pathlib import Path
+work = Path(sys.argv[2])
+def jar(name, coordinates):
+    path = work / "lib-emb" / name
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("org/example/Some.class", b"\xca\xfe\xba\xbe")
+        for g, a, v in coordinates:
+            z.writestr(f"META-INF/maven/{g}/{a}/pom.properties",
+                       f"#Generated by Maven\nartifactId={a}\ngroupId={g}\nversion={v}\n")
+    return hashlib.sha512(path.read_bytes()).hexdigest()
+digests = {
+    "arcadedb-engine": jar("arcadedb-engine-26.12.1.jar", [("com.arcadedb", "arcadedb-engine", "26.12.1")]),
+    "arcadedb-gremlin": jar("arcadedb-gremlin-26.12.1-shaded.jar", [
+        ("com.arcadedb", "arcadedb-gremlin", "26.12.1"),          # the jar itself
+        ("com.arcadedb", "arcadedb-engine", "26.12.1"),           # already a top-level component
+        ("org.apache.tinkerpop", "gremlin-core", "3.7.4"),        # already nested from the module SBOM
+        ("io.netty", "netty-handler", "4.1.136.Final"),           # new, no pom in the repo
+        ("org.example", "licensed", "1.0"),                       # new, license through its parent pom
+        ("org.example", "custom", "1.0"),                         # license name with no SPDX id
+        ("org.example", "byurl", "1.0"),                          # unknown name, MIT url
+        ("org.example", "conflict", "1.0")]),                     # MIT name, Apache url: ambiguous
+    "arcadedb-studio": jar("arcadedb-studio-26.12.1.jar", [
+        ("com.arcadedb", "arcadedb-studio", "26.12.1"),
+        ("io.netty", "netty-handler", "4.1.136.Final")]),         # embedded twice: listed once
+}
+bom = json.load(open(sys.argv[1]))
+for c in bom["components"]:
+    c["hashes"] = [{"alg": "SHA-512", "content": digests[c["name"]]}]
+json.dump(bom, open(work / "merge-jvm-emb.json", "w"))
+repo = work / "m2"
+def pom(g, a, v, body):
+    d = repo / g.replace(".", "/") / a / v
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{a}-{v}.pom").write_text(f"""<?xml version="1.0"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion>
+{body}<artifactId>{a}</artifactId><version>{v}</version></project>
+""")
+pom("org.example", "licensed", "1.0",
+    "<parent><groupId>org.example</groupId><artifactId>mid</artifactId><version>2</version></parent>")
+pom("org.example", "mid", "2",
+    "<parent><groupId>org.example</groupId><artifactId>top</artifactId><version>3</version></parent><groupId>org.example</groupId>")
+def licensed(a, name, url):
+    pom("org.example", a, "1.0", f"<groupId>org.example</groupId><licenses><license><name>{name}</name>"
+        f"<url>{url}</url></license></licenses>")
+licensed("custom", "Some Custom License", "https://example.org/custom")
+licensed("byurl", "The License", "https://opensource.org/licenses/MIT")
+licensed("conflict", "MIT License", "https://www.apache.org/licenses/LICENSE-2.0")
+pom("org.example", "top", "3",
+    "<groupId>org.example</groupId><licenses><license><name>The Apache Software License, Version 2.0</name>"
+    "<url>https://www.apache.org/licenses/LICENSE-2.0.txt</url></license></licenses>")
+PY
+expect "adds the artifacts embedded in shipped jars" 0 "" \
+    "$MERGE" --root "$work/merge-jvm-emb.json" --lib-dir "$work/lib-emb" \
+    --module-boms "$work/modules/*/target/*-cyclonedx.json" --maven-repo "$work/m2" "${RELEASE_ARGS[@]}" \
+    --out "$work/merge-emb.cdx.json"
+EMB_PY='
+def all_comps():
+    return list(comps(bom["components"]))
+def base(c):
+    return (c.get("purl") or "").partition("?")[0]
+def count(purl_base):
+    return sum(1 for c in all_comps() if base(c) == purl_base)
+def nested(jar, name):
+    return [c for c in top[jar].get("components", []) if c["name"] == name]
+def prop(c, key):
+    return [p["value"] for p in c.get("properties", []) if p["name"] == key]
+'
+bom_expect "an embedded coordinate is added once, under the first jar that carries it" "$work/merge-emb.cdx.json" \
+    "$EMB_PY"'
+netty = nested("arcadedb-gremlin", "netty-handler")
+ok = (count("pkg:maven/io.netty/netty-handler@4.1.136.Final") == 1 and len(netty) == 1
+      and netty[0]["purl"] == "pkg:maven/io.netty/netty-handler@4.1.136.Final?type=jar"
+      and netty[0]["group"] == "io.netty" and netty[0]["version"] == "4.1.136.Final" and netty[0]["type"] == "library")'
+bom_expect "an embedded component carries both arcadedb:embedded properties" "$work/merge-emb.cdx.json" \
+    "$EMB_PY"'
+netty = nested("arcadedb-gremlin", "netty-handler")[0]
+ok = prop(netty, "arcadedb:embedded") == ["true"] and prop(netty, "arcadedb:embedded-in") == ["arcadedb-gremlin-26.12.1-shaded.jar,arcadedb-studio-26.12.1.jar"]'
+bom_expect "the jar depends on what it embeds" "$work/merge-emb.cdx.json" \
+    "$EMB_PY"'
+ok = nested("arcadedb-gremlin", "netty-handler")[0]["bom-ref"] in deps[top["arcadedb-gremlin"]["bom-ref"]]'
+bom_expect "every jar that carries an embedded coordinate depends on its one component" "$work/merge-emb.cdx.json" \
+    "$EMB_PY"'
+ok = nested("arcadedb-gremlin", "netty-handler")[0]["bom-ref"] in deps[top["arcadedb-studio"]["bom-ref"]]'
+bom_expect "embedded components are in coordinate order, whatever the zip entry order" "$work/merge-emb.cdx.json" \
+    "$EMB_PY"'
+emb = [(c["group"], c["name"], c["version"]) for c in top["arcadedb-gremlin"]["components"] if prop(c, "arcadedb:embedded")]
+ok = emb == sorted(emb) and len(emb) == 5'
+bom_expect "a jar's own coordinate is not added as embedded" "$work/merge-emb.cdx.json" \
+    "$EMB_PY"'
+ok = (not nested("arcadedb-gremlin", "arcadedb-gremlin") and not nested("arcadedb-engine", "arcadedb-engine")
+      and not nested("arcadedb-studio", "arcadedb-studio"))'
+bom_expect "a coordinate already in the document is not duplicated" "$work/merge-emb.cdx.json" \
+    "$EMB_PY"'
+ok = (count("pkg:maven/com.arcadedb/arcadedb-engine@26.12.1") == 1
+      and count("pkg:maven/org.apache.tinkerpop/gremlin-core@3.7.4") == 1)'
+bom_expect "an embedded license is resolved through the parent poms, as an SPDX id" "$work/merge-emb.cdx.json" \
+    "$EMB_PY"'
+ok = nested("arcadedb-gremlin", "licensed")[0].get("licenses") == [{"license": {"id": "Apache-2.0", "url": "https://www.apache.org/licenses/LICENSE-2.0.txt"}}]'
+bom_expect "a pom license maps to an SPDX id by name or by url, and keeps its name otherwise" "$work/merge-emb.cdx.json" \
+    "$EMB_PY"'
+lic = lambda a: nested("arcadedb-gremlin", a)[0]["licenses"][0]["license"]
+ok = (lic("custom") == {"name": "Some Custom License", "url": "https://example.org/custom"}
+      and lic("byurl") == {"id": "MIT", "url": "https://opensource.org/licenses/MIT"}
+      and lic("conflict") == {"name": "MIT License", "url": "https://www.apache.org/licenses/LICENSE-2.0"})'
+bom_expect "an unresolvable embedded license is left out, not made up" "$work/merge-emb.cdx.json" \
+    "$EMB_PY"'
+ok = not nested("arcadedb-gremlin", "netty-handler")[0].get("licenses")'
+expect "the checker passes an embedded component without hash or license" 0 "" "$SBOMFIELDS" "$work/merge-emb.cdx.json"
+expect "...and says how many embedded components have no license" 0 "1 embedded component(s) without a license" \
+    "$SBOMFIELDS" "$work/merge-emb.cdx.json"
+python3 - "$work/merge-emb.cdx.json" "$work/merge-emb-unmarked.cdx.json" <<'PY' || true
+import json, sys
+bom = json.load(open(sys.argv[1]))
+for jar in bom["components"]:
+    for c in jar.get("components", []):
+        if c["name"] == "netty-handler":
+            c["properties"] = [p for p in c["properties"] if p["name"] != "arcadedb:embedded"]
+json.dump(bom, open(sys.argv[2], "w"))
+PY
+expect "the checker still fails the same component once it is not marked embedded" 1 "netty-handler@4.1.136.Final?type=jar: missing hashes" \
+    "$SBOMFIELDS" "$work/merge-emb-unmarked.cdx.json"
+python3 - "$work/merge-emb.cdx.json" "$work/merge-emb-toplevel.cdx.json" <<'PY' || true
+import json, sys
+bom = json.load(open(sys.argv[1]))
+jar = next(c for c in bom["components"] if c["name"] == "arcadedb-gremlin")
+netty = next(c for c in jar["components"] if c["name"] == "netty-handler")
+jar["components"].remove(netty)
+bom["components"].append(netty)
+json.dump(bom, open(sys.argv[2], "w"))
+PY
+expect "the embedded exemption needs a library parent: a top-level marked component without a hash fails" 1 \
+    "netty-handler@4.1.136.Final?type=jar: missing hashes" "$SBOMFIELDS" "$work/merge-emb-toplevel.cdx.json"
+
+# Studio's SBOM comes from its package-lock.json: every package npm installs without --omit dev, with
+# the lockfile's integrity as its hash and its declared license. A generator that let a dev package
+# through, mis-decoded the base64 integrity or mangled a scoped name would describe a different
+# Studio; one that made a license up would hide exactly the package a licence review must look at.
+echo
+echo "npm-lock-to-cdx.py"
+
+NPMCDX="$SCRIPTS/npm-lock-to-cdx.py"
+NPMLOCK="$SBOMFIX/npm-lock/package-lock.json"
+expect "converts a lockfile" 0 "" "$NPMCDX" "$NPMLOCK" "$work/npm.cdx.json"
+bom_expect "dev packages are left out, every shipped one is in" "$work/npm.cdx.json" \
+    'sorted((c["name"], c["version"]) for c in bom["components"]) == [("@popperjs/core", "2.11.8"), ("fonts", "7.0.0"), ("left", "1.0.0"), ("right", "1.0.0"), ("right", "2.0.0")]'
+bom_expect "a scoped package's purl encodes the @" "$work/npm.cdx.json" \
+    '[c["purl"] for c in bom["components"] if c["name"] == "@popperjs/core"] == ["pkg:npm/%40popperjs/core@2.11.8"]'
+bom_expect "the sha512 integrity becomes a hex SHA-512 hash" "$work/npm.cdx.json" \
+    '[c["hashes"] for c in bom["components"] if c["name"] == "@popperjs/core"] == [[{"alg": "SHA-512", "content": "2c048c0ff9b66c56fbe0fe12e167f595032e6c0000dd13706f0da0ea6478f8f9a57f5a0d5d78cbb05f105bd1a77d6607589ae0ea7c7146ac1e9e46193baed03b"}]]'
+bom_expect "a single license is an SPDX id, a compound one an expression" "$work/npm.cdx.json" \
+    '{c["name"]: c["licenses"] for c in bom["components"] if c["name"] in ("left", "fonts")} == {"left": [{"license": {"id": "ISC"}}], "fonts": [{"expression": "(CC-BY-4.0 AND OFL-1.1 AND MIT)"}]}'
+bom_expect "the root depends on its direct dependencies" "$work/npm.cdx.json" \
+    'sorted(deps[bom["metadata"]["component"]["bom-ref"]]) == sorted(c["bom-ref"] for c in bom["components"] if c["name"] in ("@popperjs/core", "left", "fonts"))'
+bom_expect "a dependency resolves to the nested node_modules copy first" "$work/npm.cdx.json" \
+    'deps[next(c["bom-ref"] for c in bom["components"] if c["name"] == "left")] == [next(c["bom-ref"] for c in bom["components"] if c["name"] == "right" and c["version"] == "2.0.0")]'
+bom_expect "the root component is the lockfile's package" "$work/npm.cdx.json" \
+    'bom["metadata"]["component"]["name"] == "studio-fixture" and bom["metadata"]["component"]["version"] == "1.2.3" and bom["specVersion"] == "1.6"'
+"$MERGE" --root "$MERGEJVM" --nested "$work/npm.cdx.json" --name arcadedb-studio "${RELEASE_ARGS[@]}" \
+    --out "$work/npm-merged.cdx.json" || true
+expect "a generated Studio BOM nested into the JVM BOM passes the strict release check" 0 "" \
+    "$SBOMFIELDS" "$work/npm-merged.cdx.json"
+
+python3 - "$NPMLOCK" "$work/npm-nolicense.json" <<'PY'
+import json, sys
+lock = json.load(open(sys.argv[1]))
+del lock["packages"]["node_modules/left"]["license"]
+del lock["packages"]["node_modules/fonts"]["license"]
+json.dump(lock, open(sys.argv[2], "w"))
+PY
+expect "a shipped package without a license fails, naming it" 1 "node_modules/left" \
+    "$NPMCDX" "$work/npm-nolicense.json" "$work/npm-nolicense.cdx.json"
+expect "...and names every such package" 1 "node_modules/fonts" \
+    "$NPMCDX" "$work/npm-nolicense.json" "$work/npm-nolicense.cdx.json"
+if [[ -e $work/npm-nolicense.cdx.json ]]; then
+    fail "a failed conversion writes no BOM"
+else
+    pass "a failed conversion writes no BOM"
+fi
+expect "a document without a packages map (lockfile v1) is refused" 1 "lockfileVersion" \
+    "$NPMCDX" "$SBOMFIX/merge-jvm.cdx.json" "$work/npm-v1.cdx.json"
+expect "npm-lock-to-cdx.py without arguments exits 2" 2 "Usage" "$NPMCDX"
+
+# Policy shared with check-sbom-fields.py: only SHA-512 and SHA-256 count, so a sha384- or sha1-only package fails here,
+# by name, instead of producing a BOM the release check rejects with a bare `hashes`.
+python3 - "$NPMLOCK" "$work" <<'PY'
+import base64, hashlib, json, sys
+lock = json.load(open(sys.argv[1]))
+def write(name, mutate):
+    l = json.loads(json.dumps(lock))
+    mutate(l["packages"])
+    json.dump(l, open(f"{sys.argv[2]}/npm-{name}.json", "w"))
+b64 = lambda alg, data: base64.b64encode(hashlib.new(alg, data).digest()).decode()
+write("sha384", lambda p: p["node_modules/left"].update(integrity="sha384-" + b64("sha384", b"left")))
+write("sha1", lambda p: p["node_modules/left"].update(integrity="sha1-" + b64("sha1", b"left")))
+write("sha384-and-512", lambda p: p["node_modules/left"].update(
+    integrity="sha384-" + b64("sha384", b"left") + " sha512-" + b64("sha512", b"left")))
+write("proprietary", lambda p: p["node_modules/left"].update(license="Proprietary"))
+PY
+expect "a sha384-only package fails, naming it" 1 "node_modules/left: no sha512 or sha256 integrity" \
+    "$NPMCDX" "$work/npm-sha384.json" "$work/npm-sha384.cdx.json"
+expect "a sha1-only package fails, naming it" 1 "node_modules/left: no sha512 or sha256 integrity" \
+    "$NPMCDX" "$work/npm-sha1.json" "$work/npm-sha1.cdx.json"
+"$NPMCDX" "$work/npm-sha384-and-512.json" "$work/npm-sha384-and-512.cdx.json" || true
+bom_expect "of sha384 and sha512, only the SHA-512 hash is emitted" "$work/npm-sha384-and-512.cdx.json" \
+    '[h["alg"] for c in bom["components"] if c["name"] == "left" for h in c["hashes"]] == ["SHA-512"]'
+"$NPMCDX" "$work/npm-proprietary.json" "$work/npm-proprietary.cdx.json" || true
+bom_expect "a license that is not a known SPDX id is a license name, not an id" "$work/npm-proprietary.cdx.json" \
+    '[c["licenses"] for c in bom["components"] if c["name"] == "left"] == [[{"license": {"name": "Proprietary"}}]]'
+mkdir -p "$work/npm-out-is-a-dir.cdx.json"
+expect "an output path that cannot be written fails, naming the destination" 1 "$work/npm-out-is-a-dir.cdx.json: cannot write the SBOM" \
+    "$NPMCDX" "$NPMLOCK" "$work/npm-out-is-a-dir.cdx.json"
+
+# A `link: true` entry is a symlink in node_modules, not a package: what ships is its target entry.
+python3 - "$NPMLOCK" "$work/npm-link.json" <<'PY'
+import base64, hashlib, json, sys
+lock = json.load(open(sys.argv[1]))
+packages = lock["packages"]
+packages[""]["dependencies"]["linked"] = "file:../lib/linked"
+packages["node_modules/linked"] = {"resolved": "../lib/linked", "link": True}
+packages["../lib/linked"] = {"name": "linked", "version": "0.1.0", "license": "MIT",
+                             "integrity": "sha512-" + base64.b64encode(hashlib.sha512(b"linked").digest()).decode()}
+json.dump(lock, open(sys.argv[2], "w"))
+PY
+"$NPMCDX" "$work/npm-link.json" "$work/npm-link.cdx.json" || true
+bom_expect "a link entry is skipped and its target ships once" "$work/npm-link.cdx.json" \
+    '[(c["bom-ref"], c["name"]) for c in bom["components"] if "linked" in c["bom-ref"]] == [("../lib/linked", "linked")]'
+bom_expect "a dependency on a link resolves to the link's target" "$work/npm-link.cdx.json" \
+    '"../lib/linked" in deps[bom["metadata"]["component"]["bom-ref"]]'
+
+# check-vex.sh: the document the release gate trusts must be well-formed, and a not_affected needs its reasons.
+CHECKVEX="$SCRIPTS/check-vex.sh"
+VEXFILE="$SCRIPTS/../../vex/arcadedb.openvex.json"
+expect "the shipped VEX document passes" 0 "OK" "$CHECKVEX" "$VEXFILE"
+expect "check-vex.sh without arguments exits 2" 2 "Usage" "$CHECKVEX"
+vex_variant() {
+    jq "$1" "$VEXFILE" > "$work/vex.json"
+}
+stmt='{"vulnerability":{"name":"CVE-2026-1"},"products":[{"@id":"pkg:maven/a/b@1"}],"status":"not_affected"'
+vex_variant ".statements = [$stmt,\"justification\":\"component_not_present\",\"impact_statement\":\"unused\"}]"
+expect "a not_affected with justification and impact_statement passes" 0 "OK" "$CHECKVEX" "$work/vex.json"
+vex_variant ".statements = [$stmt,\"impact_statement\":\"unused\"}]"
+expect "a not_affected without justification fails, naming the CVE" 1 "CVE-2026-1" "$CHECKVEX" "$work/vex.json"
+vex_variant ".statements = [$stmt,\"justification\":\"component_not_present\"}]"
+expect "a not_affected without impact_statement fails" 1 "impact_statement" "$CHECKVEX" "$work/vex.json"
+vex_variant ".statements = [$stmt}]"
+expect "a not_affected with neither fails" 1 "not_affected" "$CHECKVEX" "$work/vex.json"
+vex_variant '.statements = [{"vulnerability":{"name":"CVE-2026-2"},"products":[{"@id":"pkg:maven/a/b@1"}],"status":"under_investigation"}]'
+expect "a status other than not_affected needs no justification" 0 "OK" "$CHECKVEX" "$work/vex.json"
+vex_variant '.statements = [{}]'
+expect "an empty statement fails instead of being skipped" 1 "statement 0: needs vulnerability.name" "$CHECKVEX" "$work/vex.json"
+vex_variant '.statements = [null]'
+expect "a statement that is not an object fails" 1 "statement 0: not an object" "$CHECKVEX" "$work/vex.json"
+for partial in affect "" not_affected_x; do
+    vex_variant ".statements = [{\"vulnerability\":{\"name\":\"CVE-2026-7\"},\"products\":[{\"@id\":\"pkg:maven/a/b@1\"}],\"status\":\"$partial\"}]"
+    expect "status '$partial' is refused (exact match, not a substring)" 1 "is not one of not_affected" "$CHECKVEX" "$work/vex.json"
+done
+vex_variant '.statements = [{"vulnerability":{"name":"CVE-2026-3"},"products":[{"@id":"pkg:maven/a/b@1"}],"status":"fixed"}]'
+expect "a fixed statement is refused (grype would suppress a fixable critical with it)" 1 \
+    'statement 0 (CVE-2026-3): status "fixed" is not one of not_affected, affected, under_investigation' "$CHECKVEX" "$work/vex.json"
+vex_variant '.statements = [{"vulnerability":{"name":"CVE-2026-4"},"products":[],"status":"affected"}]'
+expect "a statement with no products fails" 1 "needs a non-empty products array" "$CHECKVEX" "$work/vex.json"
+vex_variant '.statements = [{"vulnerability":{"name":"CVE-2026-5"},"products":[{"name":"b"}],"status":"affected"}]'
+expect "a product without an @id fails" 1 "each with an @id" "$CHECKVEX" "$work/vex.json"
+vex_variant ".statements = [$stmt,\"justification\":[\"component_not_present\"],\"impact_statement\":\"unused\"}]"
+expect "a justification that is not a string fails" 1 "must be strings" "$CHECKVEX" "$work/vex.json"
+vex_variant '.["@context"] = "https://openvex.dev/ns/v0.1.0"'
+expect "a wrong @context fails" 1 "OpenVEX" "$CHECKVEX" "$work/vex.json"
+vex_variant 'del(.author)'
+expect "a missing author fails" 1 "author" "$CHECKVEX" "$work/vex.json"
+vex_variant 'del(.timestamp)'
+expect "a missing timestamp fails" 1 "timestamp" "$CHECKVEX" "$work/vex.json"
+vex_variant 'del(.version)'
+expect "a missing version fails" 1 "version" "$CHECKVEX" "$work/vex.json"
+vex_variant '.statements = {}'
+expect "statements that is not an array fails" 1 "statements" "$CHECKVEX" "$work/vex.json"
+echo '{' > "$work/vex.json"
+expect "unparseable JSON fails" 1 "OpenVEX" "$CHECKVEX" "$work/vex.json"
+# The gate copy release-scan.sh hands grype keeps only the not_affected statements.
+vex_variant ".statements = [$stmt,\"justification\":\"component_not_present\",\"impact_statement\":\"unused\"},
+    {\"vulnerability\":{\"name\":\"CVE-2026-6\"},\"products\":[{\"@id\":\"pkg:maven/a/b@1\"}],\"status\":\"under_investigation\"}]"
+expect "check-vex.sh writes the gate copy of a valid document" 0 "OK" "$CHECKVEX" "$work/vex.json" "$work/vex-gate.json"
+if [[ "$(jq -c '[.statements[] | [.vulnerability.name, .status]]' "$work/vex-gate.json")" == '[["CVE-2026-1","not_affected"]]' ]]; then
+    pass "the gate copy carries only the not_affected statements"
+else
+    fail "the gate copy carries only the not_affected statements" "$(cat "$work/vex-gate.json")"
+fi
+rm -f "$work/vex-gate.json"
+vex_variant '.statements = [{"vulnerability":{"name":"CVE-2026-3"},"products":[{"@id":"pkg:maven/a/b@1"}],"status":"fixed"}]'
+expect "an invalid document writes no gate copy" 1 "fixed" "$CHECKVEX" "$work/vex.json" "$work/vex-gate.json"
+if [[ -e "$work/vex-gate.json" ]]; then fail "an invalid document writes no gate copy (file)"; else pass "an invalid document writes no gate copy (file)"; fi
+if grep -q -- '--vex "${GATE_VEX}"' "$SCRIPTS/release-scan.sh" && grep -q 'check-vex.sh "${VEX}" "${GATE_VEX}"' "$SCRIPTS/release-scan.sh" \
+    && ! grep -q -- '--vex "${VEX}"' "$SCRIPTS/release-scan.sh"; then
+    pass "release-scan.sh hands grype only the validated not_affected copy"
+else
+    fail "release-scan.sh hands grype only the validated not_affected copy"
+fi
+
+echo
+echo "check-release-signing.py"
+
+SIGNING="$SCRIPTS/check-release-signing.py"
+SIGNFIX="$SCRIPTS/tests/fixtures/signing"
+
+expect "accepts a signed, guarded release job" 0 "" "$SIGNING" "$SIGNFIX/signed.yml"
+expect "rejects a push with no later cosign sign" 1 "unsigned-push.yml:docker:Push: (a)" "$SIGNING" "$SIGNFIX/unsigned-push.yml"
+expect "rejects a tag step that precedes the signing step" 1 "sign-after-tag.yml:docker-and-tag:Tag: (b)" "$SIGNING" "$SIGNFIX/sign-after-tag.yml"
+expect "rejects an attach_to_release job that signs without a main-only guard" 1 "unguarded-attach.yml:attest:Sign blob: (c)" "$SIGNING" "$SIGNFIX/unguarded-attach.yml"
+expect "rejects a multi-line docker buildx build --push with no sign step" 1 "buildx-push.yml:j:Build: (a)" "$SIGNING" "$SIGNFIX/buildx-push.yml"
+expect "accepts a docker buildx build --push followed by cosign sign" 0 "" "$SIGNING" "$SIGNFIX/buildx-push-signed.yml"
+expect "rejects docker/build-push-action with push: true and no sign step" 1 "action-push.yml:j:<step 1>: (a)" "$SIGNING" "$SIGNFIX/action-push.yml"
+expect "accepts docker/build-push-action with push: true followed by cosign sign" 0 "" "$SIGNING" "$SIGNFIX/action-push-signed.yml"
+expect "ignores docker/build-push-action with push: false" 0 "" "$SIGNING" "$SIGNFIX/action-nopush.yml"
+expect "rejects a ref guard placed after the signing step" 1 "guard-after.yml:j:Sign: (c)" "$SIGNING" "$SIGNFIX/guard-after.yml"
+expect "rejects a ref guard that only echoes" 1 "guard-echo.yml:j:Sign: (c)" "$SIGNING" "$SIGNFIX/guard-echo.yml"
+# A guard counts only if it fails the run off main: the predicate, a non-zero exit, and no continue-on-error.
+expect "rejects an off-main if: guard whose run does not exit non-zero" 1 "guard-if-no-exit.yml:j:Sign: (c)" "$SIGNING" "$SIGNFIX/guard-if-no-exit.yml"
+expect "rejects a run guard that only writes an ::error:: annotation" 1 "guard-annotation-only.yml:j:Sign: (c)" "$SIGNING" "$SIGNFIX/guard-annotation-only.yml"
+expect "rejects an off-main guard with continue-on-error" 1 "guard-continue-on-error.yml:j:Sign: (c)" "$SIGNING" "$SIGNFIX/guard-continue-on-error.yml"
+expect "accepts a run guard that names the ref and main and exits 2" 0 "" "$SIGNING" "$SIGNFIX/guard-run-exit.yml"
+expect "rejects an inverted if: guard (== main fires ON main)" 1 "guard-inverted.yml:j:Sign: (c)" "$SIGNING" "$SIGNFIX/guard-inverted.yml"
+expect "rejects an inverted run guard (== main)" 1 "guard-run-inverted.yml:j:Sign: (c)" "$SIGNING" "$SIGNFIX/guard-run-inverted.yml"
+expect "rejects a guard whose ref test exists only in a comment" 1 "guard-comment-only.yml:j:Sign: (c)" "$SIGNING" "$SIGNFIX/guard-comment-only.yml"
+expect "rejects an off-main if: guard whose exit exists only in a comment" 1 "guard-comment-exit.yml:j:Sign: (c)" "$SIGNING" "$SIGNFIX/guard-comment-exit.yml"
+# A signing step counts only if it runs on a release and its failure fails the job.
+expect "rejects a push whose cosign sign step is skipped by if: false" 1 "action-push-sign-skipped.yml:j:<step 1>: (a)" "$SIGNING" "$SIGNFIX/action-push-sign-skipped.yml"
+expect "rejects a push whose cosign sign step has continue-on-error" 1 "action-push-sign-continue.yml:j:<step 1>: (a)" "$SIGNING" "$SIGNFIX/action-push-sign-continue.yml"
+expect "accepts a cosign sign step gated by exactly the release gate" 0 "" "$SIGNING" "$SIGNFIX/action-push-sign-gated.yml"
+expect "labels an unnamed step by its 1-based index" 1 "unnamed.yml:j:<step 2>: (a)" "$SIGNING" "$SIGNFIX/unnamed.yml"
+expect "a missing workflow is a usage error" 2 "" "$SIGNING" "$SIGNFIX/does-not-exist.yml"
+# SIGNED_IN_LATER_JOB: native-image.yml's `docker` push is signed by `sign-native-images`, and each condition is verified.
+expect "accepts a push signed by the mapped, release-gated later job that needs it" 0 "" "$SIGNING" "$SIGNFIX/later-job-ok/native-image.yml"
+expect "rejects a mapped signing job that does not need the push job" 1 "native-image.yml:docker:Push per-arch image: (a) SIGNED_IN_LATER_JOB names \`sign-native-images\`, which does not need \`docker\`" "$SIGNING" "$SIGNFIX/later-job-no-needs/native-image.yml"
+expect "rejects a mapped signing job that does not exist" 1 "which does not exist" "$SIGNING" "$SIGNFIX/later-job-missing/native-image.yml"
+expect "rejects a mapped signing job not gated to releases" 1 "which is not gated by" "$SIGNING" "$SIGNFIX/later-job-ungated/native-image.yml"
+expect "rejects a mapped signing job whose gate merely contains the release test" 1 "which is not gated by exactly" "$SIGNING" "$SIGNFIX/later-job-always/native-image.yml"
+expect "accepts the release gate with other whitespace and line breaks" 0 "" "$SIGNING" "$SIGNFIX/later-job-spacing/native-image.yml"
+expect "accepts the release gate in another case (GitHub expressions ignore case)" 0 "" "$SIGNING" "$SIGNFIX/later-job-gate-case/native-image.yml"
+expect "rejects a mapped signing job with no cosign sign step" 1 "which has no effective \`cosign sign\` step" "$SIGNING" "$SIGNFIX/later-job-unsigned/native-image.yml"
+expect "rejects a mapped signing job whose cosign sign step is skipped by if: false" 1 "which has no effective \`cosign sign\` step" "$SIGNING" "$SIGNFIX/later-job-step-skipped/native-image.yml"
+expect "rejects a mapped signing job whose cosign sign step has continue-on-error" 1 "which has no effective \`cosign sign\` step" "$SIGNING" "$SIGNFIX/later-job-step-continue/native-image.yml"
+expect "rejects a mapped signing job with a job-level continue-on-error" 1 "which has a job-level \`continue-on-error\`" "$SIGNING" "$SIGNFIX/later-job-job-continue/native-image.yml"
+expect "the mapping applies only to the workflow it names" 1 "later-job-other-workflow.yml:docker:Push per-arch image: (a) image push with no later" "$SIGNING" "$SIGNFIX/later-job-other-workflow.yml"
+# mvn-release.yml: `docker` pushes, `sign-image` signs with no job-level gate (the workflow is release-only), `tag` tags.
+expect "accepts the release-only split: push job, ungated signing job, tag job after it" 0 "" "$SIGNING" "$SIGNFIX/release-split-ok/mvn-release.yml"
+expect "an ungated signing job is refused once the release workflow gains another trigger" 1 \
+    "mvn-release.yml:docker:Build and push Docker images: (a) SIGNED_IN_LATER_JOB names \`sign-image\` with no release gate, but mvn-release.yml has a trigger other than workflow_dispatch" \
+    "$SIGNING" "$SIGNFIX/release-split-push-trigger/mvn-release.yml"
+expect "a job-level if on the release-only signing job is refused" 1 "which must have no job-level \`if:\` in the release-only mvn-release.yml" \
+    "$SIGNING" "$SIGNFIX/release-split-gated/mvn-release.yml"
+expect "a tag job that does not need the signing job is refused" 1 \
+    "mvn-release.yml:tag:Tag and commit release version: (b) tags the release without needing \`sign-image\`, which signs the image" \
+    "$SIGNING" "$SIGNFIX/release-split-tag-unordered/mvn-release.yml"
+expect "a tag job with if: always() is refused although it needs the signing job" 1 \
+    "mvn-release.yml:tag:Tag and commit release version: (b) tags the release in a job whose \`if:\` runs it after the signing failed" \
+    "$SIGNING" "$SIGNFIX/release-split-tag-always/mvn-release.yml"
+expect "a tag job with if: !cancelled() is refused although it needs the signing job" 1 \
+    "mvn-release.yml:tag:Tag and commit release version: (b) tags the release in a job whose \`if:\` runs it after the signing failed" \
+    "$SIGNING" "$SIGNFIX/release-split-tag-not-cancelled/mvn-release.yml"
+expect "a tag job with if: Always() is refused (function names are case-insensitive)" 1 \
+    "mvn-release.yml:tag:Tag and commit release version: (b) tags the release in a job whose \`if:\` runs it after the signing failed" \
+    "$SIGNING" "$SIGNFIX/release-split-tag-always-case/mvn-release.yml"
+expect "the live release workflows pass the signing check" 0 "release signing is enforced in 2 workflow(s)" "$SIGNING"
+
+echo
+echo "release-assets.sh / verify-release.sh"
+
+# Stub gh, cosign, gpg and syft on PATH (fixtures/release/stubs): the release, the workflow runs and their artifacts are
+# directories under $STUB_DIR, so every branch runs without GitHub, Sigstore or a signing key.
+RELASSETS="$SCRIPTS/release-assets.sh"
+VERIFYREL="$SCRIPTS/verify-release.sh"
+RELSTUBS="$PWD/$SCRIPTS/tests/fixtures/release/stubs"
+RELTAG="26.12.1"
+
+# A fresh stub world: the release already carries what native-image.yml and publish-contract.yml upload, and one
+# mvn-release run on main (id 101) holds both artifacts. Run 101 FAILED overall (its `tag` job hit a merge conflict),
+# but its `attest` and `sign-image` jobs succeeded, which is all a release needs. Listed before it, each with different
+# bytes so picking one shows: a run of the same title dispatched from a branch (103), a rehearsal (102, usable in every
+# other respect), a newer run whose `attest` failed (104) and one whose image was never pushed and signed (105).
+release_world() {
+    local d="$1" v="$RELTAG"
+    rm -rf "$d"
+    mkdir -p "$d/release" "$d/runs" "$d/artifacts/101/release-dist/sbom/full" "$d/artifacts/101/release-dist/sbom/base" \
+        "$d/artifacts/101/release-image-sbom" "$d/artifacts/102/release-dist" "$d/work"
+    for f in "arcadedb-$v-linux-x86_64.tar.gz" "arcadedb-$v-linux-aarch_64.tar.gz" "arcadedb-$v-windows-x86_64.zip" \
+        "arcadedb-openapi-$v.json" "arcadedb-server-$v.proto" \
+        "arcadedb-image-$v-native-amd64.cdx.json" "arcadedb-image-$v-native-amd64.spdx.json" \
+        "arcadedb-image-$v-native-arm64.cdx.json" "arcadedb-image-$v-native-arm64.spdx.json"; do
+        echo "upstream $f" >"$d/release/$f"
+    done
+    for f in "arcadedb-$v-linux-x86_64.tar.gz" "arcadedb-$v-linux-aarch_64.tar.gz" "arcadedb-$v-windows-x86_64.zip" \
+        "arcadedb-openapi-$v.json" "arcadedb-server-$v.proto"; do
+        echo "checksum of $f" >"$d/release/$f.sha256"
+    done
+    local dist="$d/artifacts/101/release-dist"
+    for f in "arcadedb-$v.tar.gz" "arcadedb-$v-base.tar.gz" "arcadedb-$v.zip" "arcadedb-$v-base.zip"; do
+        echo "ci $f" >"$dist/$f"
+        echo "ci checksum $f" >"$dist/$f.sha256"
+    done
+    echo '{"bomFormat":"CycloneDX"}' >"$dist/sbom/full/arcadedb-$v.cdx.json"
+    echo '{"bomFormat":"CycloneDX","base":true}' >"$dist/sbom/base/arcadedb-$v-base.cdx.json"
+    echo '{"bomFormat":"CycloneDX","image":true}' >"$d/artifacts/101/release-image-sbom/arcadedb-image-$v.cdx.json"
+    echo '{"spdxVersion":"SPDX-2.3","image":true}' >"$d/artifacts/101/release-image-sbom/arcadedb-image-$v.spdx.json"
+    local id
+    for id in 102 103 104 105; do
+        rm -rf "$d/artifacts/$id"
+        cp -R "$d/artifacts/101" "$d/artifacts/$id"
+        echo "built by run $id" >"$d/artifacts/$id/release-dist/arcadedb-$v.tar.gz"
+    done
+    rm -rf "$d/artifacts/105/release-image-sbom"
+    cat >"$d/runs/mvn-release.yml.json" <<JSON
+[ {"databaseId": 105, "displayTitle": "release $v", "headBranch": "main", "conclusion": "failure"},
+  {"databaseId": 104, "displayTitle": "release $v", "headBranch": "main", "conclusion": "failure"},
+  {"databaseId": 103, "displayTitle": "release $v", "headBranch": "feature/x", "conclusion": "success"},
+  {"databaseId": 102, "displayTitle": "release $v (rehearsal)", "headBranch": "main", "conclusion": "success"},
+  {"databaseId": 99, "displayTitle": "release 26.11.1", "headBranch": "main", "conclusion": "success"},
+  {"databaseId": 101, "displayTitle": "release $v", "headBranch": "main", "conclusion": "failure"} ]
+JSON
+    local both='{"artifacts": [ {"name": "release-dist", "expired": false}, {"name": "release-image-sbom", "expired": false} ]}'
+    local attest_ok='{"jobs": [ {"name": "central", "conclusion": "success"}, {"name": "attest", "conclusion": "success"},
+        {"name": "docker", "conclusion": "success"}, {"name": "sign-image", "conclusion": "success"}, {"name": "tag", "conclusion": "failure"} ]}'
+    for id in 101 102 103; do
+        echo "$both" >"$d/runs/$id-artifacts.json"
+        echo "$attest_ok" >"$d/runs/$id-jobs.json"
+    done
+    echo "$both" >"$d/runs/104-artifacts.json"
+    echo '{"jobs": [ {"name": "central", "conclusion": "success"}, {"name": "attest", "conclusion": "failure"} ]}' >"$d/runs/104-jobs.json"
+    echo '{"artifacts": [ {"name": "release-dist", "expired": false} ]}' >"$d/runs/105-artifacts.json"
+    echo '{"jobs": [ {"name": "attest", "conclusion": "success"}, {"name": "docker", "conclusion": "failure"} ]}' >"$d/runs/105-jobs.json"
+    echo '{"id": 101, "path": ".github/workflows/mvn-release.yml", "head_branch": "main", "display_title": "release '"$v"'"}' >"$d/runs/101-run.json"
+    echo '{"id": 102, "path": ".github/workflows/mvn-release.yml", "head_branch": "main", "display_title": "release '"$v"' (rehearsal)"}' >"$d/runs/102-run.json"
+    echo '{"id": 103, "path": ".github/workflows/mvn-release.yml", "head_branch": "feature/x", "display_title": "release '"$v"'"}' >"$d/runs/103-run.json"
+    echo '{"id": 104, "path": ".github/workflows/mvn-release.yml", "head_branch": "main", "display_title": "release '"$v"'"}' >"$d/runs/104-run.json"
+    echo '{"id": 106, "path": ".github/workflows/other.yml", "head_branch": "main", "display_title": "release '"$v"'"}' >"$d/runs/106-run.json"
+    echo '[ {"databaseId": 201, "status": "completed", "conclusion": "success"} ]' >"$d/runs/native-image.yml.json"
+    echo '[ {"databaseId": 301, "status": "completed", "conclusion": "success"} ]' >"$d/runs/publish-contract.yml.json"
+    : >"$d/calls.log"
+}
+
+run_release_assets() {
+    local d="$1"
+    shift
+    env PATH="$RELSTUBS:$PATH" STUB_DIR="$d" GH_REPO=ArcadeData/arcadedb GPG_PASSPHRASE=x "$@" "$RELASSETS" "$RELTAG" "$d/work"
+}
+
+# Asserts that a line in the stub's calls.log equals (1) or does not equal (0) the given text.
+expect_logged() {
+    local description="$1" want="$2" line="$3" log="$4"
+    if grep -Fxq -- "$line" "$log"; then got=1; else got=0; fi
+    if [[ $got -eq $want ]]; then pass "$description"; else fail "$description" "$(cat "$log")"; fi
+}
+
+# (a) asset absent -> uploaded, from the mvn-release run (not the rehearsal), with the derived files and SHA256SUMS.
+rw="$work/release-a"
+release_world "$rw"
+expect "release-assets.sh uploads the CI-built files the release does not carry" 0 "release $RELTAG complete" \
+    run_release_assets "$rw"
+expect_logged "an absent archive is uploaded" 1 "upload arcadedb-$RELTAG.tar.gz" "$rw/calls.log"
+expect_logged "an absent image SBOM is uploaded" 1 "upload arcadedb-image-$RELTAG.spdx.json" "$rw/calls.log"
+expect_logged "the distribution SBOM is converted to SPDX and uploaded" 1 "upload arcadedb-$RELTAG-base.spdx.json" "$rw/calls.log"
+expect_logged "the VEX document is uploaded under the release name" 1 "upload arcadedb-$RELTAG.openvex.json" "$rw/calls.log"
+expect_logged "the cosign bundle of SHA256SUMS is uploaded" 1 "upload SHA256SUMS.sigstore.json" "$rw/calls.log"
+expect_logged "the gpg signature of SHA256SUMS is uploaded" 1 "upload SHA256SUMS.asc" "$rw/calls.log"
+expect_logged "the JVM zip is not published (the release carries tar.gz only)" 0 "upload arcadedb-$RELTAG.zip" "$rw/calls.log"
+if cmp -s "$rw/release/arcadedb-$RELTAG.tar.gz" "$rw/artifacts/101/release-dist/arcadedb-$RELTAG.tar.gz"; then
+    pass "the uploaded archive is the one from the release run on main whose attest succeeded, although the run failed"
+else
+    fail "the uploaded archive is the one from the release run on main whose attest succeeded, although the run failed" "$(cat "$rw/release/arcadedb-$RELTAG.tar.gz")"
+fi
+if grep -Eq '^gh run download (102|103|104|105) ' "$rw/calls.log"; then
+    fail "a branch, rehearsal, failed-attest or image-SBOM-less run of the same title is never downloaded" "$(grep '^gh run download' "$rw/calls.log")"
+else
+    pass "a branch, rehearsal, failed-attest or image-SBOM-less run of the same title is never downloaded"
+fi
+expect_logged "the run's jobs are read to find the attest job" 1 \
+    "gh api repos/ArcadeData/arcadedb/actions/runs/104/jobs?per_page=100" "$rw/calls.log"
+sums_names="$(awk '{print $2}' "$rw/release/SHA256SUMS" | tr '\n' ' ')"
+sorted_names="$(find "$rw/release" -maxdepth 1 -type f ! -name 'SHA256SUMS*' -exec basename {} \; | LC_ALL=C sort | tr '\n' ' ')"
+if [[ "$sums_names" == "$sorted_names" ]]; then
+    pass "SHA256SUMS lists every asset but SHA256SUMS*, sorted by name"
+else
+    fail "SHA256SUMS lists every asset but SHA256SUMS*, sorted by name" "got:  $sums_names"$'\n'"want: $sorted_names"
+fi
+if (cd "$rw/release" && sha256sum -c SHA256SUMS >/dev/null 2>&1); then
+    pass "SHA256SUMS matches the assets on the release"
+else
+    fail "SHA256SUMS matches the assets on the release" "$(cat "$rw/release/SHA256SUMS")"
+fi
+
+# (b) same digest -> not uploaded again. A second run over the release (a) produced is the realistic case: a re-run,
+# or the second upstream finishing.
+: >"$rw/calls.log"
+expect "release-assets.sh succeeds again over a release it already completed" 0 "already on the release, same SHA-256" \
+    run_release_assets "$rw"
+expect_logged "an archive with the same digest is not re-uploaded" 0 "upload arcadedb-$RELTAG.tar.gz" "$rw/calls.log"
+expect_logged "SHA256SUMS is re-signed and replaced" 1 "upload SHA256SUMS" "$rw/calls.log"
+if grep -q 'SHA256SUMS\.' "$rw/release/SHA256SUMS"; then
+    fail "a previous SHA256SUMS* is not checksummed" "$(cat "$rw/release/SHA256SUMS")"
+else
+    pass "a previous SHA256SUMS* is not checksummed"
+fi
+
+# (c) different digest -> exit 1 with the error, and nothing uploaded at all.
+rw="$work/release-c"
+release_world "$rw"
+echo "replaced by hand" >"$rw/release/arcadedb-$RELTAG-base.tar.gz"
+expect "release-assets.sh refuses an asset that differs from the CI-built file" 1 \
+    "::error::arcadedb-$RELTAG-base.tar.gz on release $RELTAG differs from the CI-built file" run_release_assets "$rw"
+if grep -q '^upload ' "$rw/calls.log"; then
+    fail "a digest mismatch uploads nothing, not even the files that are absent" "$(grep '^upload ' "$rw/calls.log")"
+else
+    pass "a digest mismatch uploads nothing, not even the files that are absent"
+fi
+
+# (d) workflow_run with only one upstream finished -> exit 0, nothing uploaded, no signature.
+rw="$work/release-d"
+release_world "$rw"
+echo '[ {"databaseId": 301, "status": "in_progress", "conclusion": ""} ]' >"$rw/runs/publish-contract.yml.json"
+: >"$rw/github-output"
+expect "release-assets.sh on workflow_run waits for the other upstream" 0 "publish-contract.yml for $RELTAG is in_progress" \
+    run_release_assets "$rw" GITHUB_EVENT_NAME=workflow_run GITHUB_OUTPUT="$rw/github-output"
+if [[ -s "$rw/github-output" ]]; then
+    fail "an early exit does not report completed (the workflow would verify an incomplete release)" "$(cat "$rw/github-output")"
+else
+    pass "an early exit does not report completed (the workflow would verify an incomplete release)"
+fi
+if grep -Eq '^(upload |cosign )' "$rw/calls.log"; then
+    fail "with one upstream unfinished nothing is uploaded or signed" "$(cat "$rw/calls.log")"
+else
+    pass "with one upstream unfinished nothing is uploaded or signed"
+fi
+expect_logged "the upstream check filters on the release event and the tag" 1 \
+    "gh run list --workflow publish-contract.yml --event release --branch $RELTAG --limit 1 --json databaseId,status,conclusion" "$rw/calls.log"
+echo '[ {"databaseId": 301, "status": "completed", "conclusion": "failure"} ]' >"$rw/runs/publish-contract.yml.json"
+expect "a failed upstream is not finished either" 0 "publish-contract.yml for $RELTAG is completed/failure" \
+    run_release_assets "$rw" GITHUB_EVENT_NAME=workflow_run
+expect "a failed upstream is a warning that names it and says SHA256SUMS was not produced" 0 \
+    "::warning::publish-contract.yml for $RELTAG is completed/failure; SHA256SUMS was not produced" \
+    run_release_assets "$rw" GITHUB_EVENT_NAME=workflow_run
+echo '[ {"databaseId": 301, "status": "in_progress", "conclusion": ""} ]' >"$rw/runs/publish-contract.yml.json"
+expect "an upstream still running stays a notice" 0 "::notice::publish-contract.yml for $RELTAG is in_progress" \
+    run_release_assets "$rw" GITHUB_EVENT_NAME=workflow_run
+rm "$rw/runs/native-image.yml.json"
+expect "an upstream that never ran for the tag is not finished" 0 "native-image.yml for $RELTAG is missing" \
+    run_release_assets "$rw" GITHUB_EVENT_NAME=workflow_run
+release_world "$rw"
+echo '[ {"databaseId": 201, "status": "in_progress"' >"$rw/runs/native-image.yml.json"
+expect "an unparseable upstream run list is an error, not a pending upstream" 1 \
+    "::error::the native-image.yml run list for $RELTAG is not a JSON array" run_release_assets "$rw" GITHUB_EVENT_NAME=workflow_run
+release_world "$rw"
+touch "$rw/fail-run-list"
+expect "a failed upstream run list is an error, not a pending upstream" 1 \
+    "::error::could not list the native-image.yml runs for $RELTAG" run_release_assets "$rw" GITHUB_EVENT_NAME=workflow_run
+release_world "$rw"
+expect "release-assets.sh on workflow_run proceeds once both upstreams succeeded" 0 "release $RELTAG complete" \
+    run_release_assets "$rw" GITHUB_EVENT_NAME=workflow_run GITHUB_OUTPUT="$rw/github-output"
+if [[ "$(cat "$rw/github-output")" == "completed=true" ]]; then
+    pass "a completed run reports completed=true for the verify step"
+else
+    fail "a completed run reports completed=true for the verify step" "$(cat "$rw/github-output")"
+fi
+expect_logged "and then uploads" 1 "upload arcadedb-$RELTAG.tar.gz" "$rw/calls.log"
+: >"$rw/calls.log"
+rm "$rw/runs/native-image.yml.json"
+expect "workflow_dispatch skips the upstream check" 0 "release $RELTAG complete" \
+    run_release_assets "$rw" GITHUB_EVENT_NAME=workflow_dispatch
+
+# Artifacts unavailable. Only an EXPIRED release-dist falls back to the files on the release, and only once their
+# attestations verify; any other failure to get the artifacts fails.
+rw="$work/release-e"
+release_world "$rw"
+run_release_assets "$rw" >/dev/null 2>&1
+rm -rf "$rw/artifacts/101"
+expect "artifacts that cannot be downloaded and are not known to have expired fail" 1 \
+    "could not download the artifacts of mvn-release run 101, and they have not expired" run_release_assets "$rw"
+echo '{"artifacts": [ {"name": "release-dist", "expired": false}, {"name": "release-image-sbom", "expired": false} ]}' \
+    >"$rw/runs/101-artifacts.json"
+expect "a download failure of an artifact that has not expired fails" 1 "and they have not expired" run_release_assets "$rw"
+echo '{"artifacts": [ {"name": "release-dist", "expired": true}, {"name": "release-image-sbom", "expired": true} ]}' \
+    >"$rw/runs/101-artifacts.json"
+: >"$rw/calls.log"
+expect "with the artifacts expired, the attested files on the release are re-signed" 0 "have expired" \
+    run_release_assets "$rw"
+expect_logged "with the artifacts expired, SHA256SUMS is still replaced" 1 "upload SHA256SUMS" "$rw/calls.log"
+attested_re='^gh attestation verify .*/arcadedb-26\.12\.1(-base)?\.(tar\.gz|cdx\.json) --repo ArcadeData/arcadedb --cert-identity-regex \^https://github\\\.com/ArcadeData/arcadedb/\\\.github/workflows/mvn-release\\\.yml@refs/heads/main\$ '
+if [[ "$(grep -cE "$attested_re" "$rw/calls.log")" == 4 ]]; then
+    pass "with the artifacts expired, both JVM archives and both distribution SBOMs are checked against the mvn-release.yml@main identity"
+else
+    fail "with the artifacts expired, both JVM archives and both distribution SBOMs are checked against the mvn-release.yml@main identity" "$(cat "$rw/calls.log")"
+fi
+echo 'base\.cdx\.json' >"$rw/fail-attestation"
+: >"$rw/calls.log"
+expect "with the artifacts expired, an unattested file on the release fails" 1 \
+    "arcadedb-$RELTAG-base.cdx.json on release $RELTAG has no verified build provenance" run_release_assets "$rw"
+if grep -Eq '^(upload |cosign sign-blob)' "$rw/calls.log"; then
+    fail "an unattested file is neither signed nor followed by uploads" "$(cat "$rw/calls.log")"
+else
+    pass "an unattested file is neither signed nor followed by uploads"
+fi
+rm "$rw/fail-attestation"
+rm "$rw/release/arcadedb-image-$RELTAG.cdx.json"
+expect "with the artifacts expired, a CI-built file missing from the release fails" 1 \
+    "arcadedb-image-$RELTAG.cdx.json is missing" run_release_assets "$rw"
+
+rw="$work/release-f"
+release_world "$rw"
+cat >"$rw/runs/mvn-release.yml.json" <<JSON
+[ {"databaseId": 102, "displayTitle": "release $RELTAG (rehearsal)", "headBranch": "main"},
+  {"databaseId": 103, "displayTitle": "release $RELTAG", "headBranch": "feature/x"} ]
+JSON
+expect "a rehearsal or branch run is never a source of release files" 1 \
+    "no mvn-release.yml run on main titled 'release $RELTAG' with successful attest and sign-image jobs" run_release_assets "$rw"
+if grep -q '^upload ' "$rw/calls.log"; then
+    fail "without a release run nothing is uploaded" "$(cat "$rw/calls.log")"
+else
+    pass "without a release run nothing is uploaded"
+fi
+
+# The run selection: only the `attest` and `sign-image` jobs matter, never the run's own conclusion nor its artifact
+# records (GitHub stops listing expired artifacts, while the jobs stay).
+rw="$work/release-g"
+release_world "$rw"
+echo '{"jobs": [ {"name": "attest", "conclusion": "failure"}, {"name": "sign-image", "conclusion": "success"} ]}' >"$rw/runs/101-jobs.json"
+expect "a run whose attest job failed is not a release run" 1 "with successful attest and sign-image jobs" run_release_assets "$rw"
+echo '{"jobs": [ {"name": "attest", "conclusion": "success"}, {"name": "sign-image", "conclusion": "failure"} ]}' >"$rw/runs/101-jobs.json"
+expect "a run whose sign-image job failed is not a release run" 1 "with successful attest and sign-image jobs" run_release_assets "$rw"
+release_world "$rw"
+run_release_assets "$rw" >/dev/null 2>&1
+echo '{"artifacts": []}' >"$rw/runs/101-artifacts.json"
+rm -rf "$rw/artifacts/101"
+: >"$rw/calls.log"
+expect "a run whose artifacts are no longer listed at all is still selected and falls back to the attested release files" 0 \
+    "the artifacts of mvn-release run 101 have expired" run_release_assets "$rw"
+expect_logged "with the artifact list empty, SHA256SUMS is still replaced" 1 "upload SHA256SUMS" "$rw/calls.log"
+if [[ "$(grep -cE "$attested_re" "$rw/calls.log")" == 4 ]]; then
+    pass "with the artifact list empty, the release files are trusted only after their attestations verify"
+else
+    fail "with the artifact list empty, the release files are trusted only after their attestations verify" "$(cat "$rw/calls.log")"
+fi
+echo '{"artifacts": [ {"name": "release-image-sbom", "expired": true} ]}' >"$rw/runs/101-artifacts.json"
+expect "a release-dist record absent from a non-empty list counts as expired" 0 \
+    "the artifacts of mvn-release run 101 have expired" run_release_assets "$rw"
+expect_logged "the artifact list is filtered by name, so no page of it can hide release-dist" 1 \
+    "gh api repos/ArcadeData/arcadedb/actions/runs/101/artifacts?name=release-dist&per_page=100" "$rw/calls.log"
+rm "$rw/runs/101-artifacts.json"
+expect "after a download failure, an unreadable artifact list fails instead of falling back" 1 \
+    "could not list the artifacts of mvn-release run 101" run_release_assets "$rw"
+release_world "$rw"
+rm "$rw/runs/101-jobs.json"
+expect "an unreadable job list fails instead of skipping the run" 1 "could not list the jobs of mvn-release run 101" \
+    run_release_assets "$rw"
+
+# The dispatch input names the run; it must pass the same checks.
+release_world "$rw"
+expect "mvn_release_run_id naming the release run is used" 0 "CI-built files from mvn-release run 101" \
+    run_release_assets "$rw" MVN_RELEASE_RUN_ID=101
+expect_logged "mvn_release_run_id skips the search" 0 \
+    "gh run list --workflow mvn-release.yml --limit 200 --json databaseId,displayTitle,headBranch" "$rw/calls.log"
+release_world "$rw"
+expect "mvn_release_run_id naming a run whose attest failed is refused" 1 \
+    "mvn-release run 104 has no successful \`attest\` and \`sign-image\` jobs" run_release_assets "$rw" MVN_RELEASE_RUN_ID=104
+echo '{"id": 105, "path": ".github/workflows/mvn-release.yml", "head_branch": "main", "display_title": "release '"$RELTAG"'"}' \
+    >"$rw/runs/105-run.json"
+expect "mvn_release_run_id naming a run whose image was never signed is refused" 1 \
+    "mvn-release run 105 has no successful" run_release_assets "$rw" MVN_RELEASE_RUN_ID=105
+expect "mvn_release_run_id naming a branch run is refused" 1 \
+    "run 103 is not an mvn-release.yml run on main titled 'release $RELTAG'" run_release_assets "$rw" MVN_RELEASE_RUN_ID=103
+expect "mvn_release_run_id naming a rehearsal is refused in ArcadeData/arcadedb" 1 \
+    "run 102 is not an mvn-release.yml run on main" run_release_assets "$rw" MVN_RELEASE_RUN_ID=102
+expect "mvn_release_run_id naming another workflow's run is refused" 1 \
+    "run 106 is not an mvn-release.yml run on main" run_release_assets "$rw" MVN_RELEASE_RUN_ID=106
+expect "mvn_release_run_id naming no run is refused" 1 "mvn-release run 999 not found" \
+    run_release_assets "$rw" MVN_RELEASE_RUN_ID=999
+expect "mvn_release_run_id that is not a number is refused" 1 "is not a run id" \
+    run_release_assets "$rw" "MVN_RELEASE_RUN_ID=101 --foo"
+if grep -q '^upload ' "$rw/calls.log"; then
+    fail "a refused mvn_release_run_id uploads nothing" "$(grep '^upload ' "$rw/calls.log")"
+else
+    pass "a refused mvn_release_run_id uploads nothing"
+fi
+
+# A fork rehearses the whole chain, so there the rehearsal run is the release run; in ArcadeData/arcadedb never.
+rw="$work/release-h"
+release_world "$rw"
+cat >"$rw/runs/mvn-release.yml.json" <<JSON
+[ {"databaseId": 102, "displayTitle": "release $RELTAG (rehearsal)", "headBranch": "main", "conclusion": "success"} ]
+JSON
+expect "on a fork a rehearsal run supplies the release files" 0 "CI-built files from mvn-release run 102" \
+    run_release_assets "$rw" GH_REPO=someone/arcadedb
+expect "on a fork mvn_release_run_id may name a rehearsal" 0 "CI-built files from mvn-release run 102" \
+    run_release_assets "$rw" GH_REPO=someone/arcadedb MVN_RELEASE_RUN_ID=102
+release_world "$rw"
+cat >"$rw/runs/mvn-release.yml.json" <<JSON
+[ {"databaseId": 102, "displayTitle": "release $RELTAG (rehearsal)", "headBranch": "main", "conclusion": "success"} ]
+JSON
+expect "in ArcadeData/arcadedb a rehearsal run never supplies release files" 1 "no mvn-release.yml run on main titled" \
+    run_release_assets "$rw"
+expect "the ArcadeData/arcadedb rule ignores the case of the repository name" 1 "no mvn-release.yml run on main titled" \
+    run_release_assets "$rw" GH_REPO=arcadedata/ArcadeDB
+
+expect "release-assets.sh refuses a tag that is not a version" 2 "is not a release tag" \
+    env PATH="$RELSTUBS:$PATH" STUB_DIR="$work" "$RELASSETS" "../main" "$work/x"
+expect "release-assets.sh without arguments exits 2" 2 "Usage" "$RELASSETS"
+
+# verify-release.sh against the release (a) completed: clean, then with several independent breakages at once,
+# every one of which must be reported (not only the first).
+rw="$work/release-v"
+release_world "$rw"
+run_release_assets "$rw" >/dev/null 2>&1
+RELFPR="0123456789ABCDEF0123456789ABCDEF01234567"   # the stub gpg's signing key
+run_verify() {
+    env PATH="$RELSTUBS:$PATH" STUB_DIR="$rw" GITHUB_REPOSITORY=ArcadeData/arcadedb GPG_PUBLIC_KEY_FILE=/dev/null \
+        RELEASE_GPG_FINGERPRINT="$RELFPR" "$@" "$VERIFYREL" "$RELTAG"
+}
+expect "verify-release.sh passes a complete, signed release" 0 "every check passed" run_verify
+expect "the release key fingerprint is compared without case or spaces" 0 "every check passed" \
+    run_verify RELEASE_GPG_FINGERPRINT="0123 4567 89ab cdef 0123  4567 89AB CDEF 0123 4567"
+expect "the primary key fingerprint of a subkey signature matches too" 0 "every check passed" \
+    run_verify RELEASE_GPG_FINGERPRINT=89ABCDEF0123456789ABCDEF0123456789ABCDEF
+expect "a valid signature by another key fails" 1 \
+    "SHA256SUMS.asc is signed by $RELFPR, not by the release key FEDCBA9876543210FEDCBA9876543210FEDCBA98" \
+    run_verify RELEASE_GPG_FINGERPRINT=FEDCBA9876543210FEDCBA9876543210FEDCBA98
+expect "an unset release key fingerprint fails" 1 \
+    "set the repository variable RELEASE_GPG_FINGERPRINT to the release signing key fingerprint" \
+    run_verify RELEASE_GPG_FINGERPRINT=
+expect "a missing release key fingerprint fails" 1 "set the repository variable RELEASE_GPG_FINGERPRINT" \
+    env -u RELEASE_GPG_FINGERPRINT PATH="$RELSTUBS:$PATH" STUB_DIR="$rw" GPG_PUBLIC_KEY_FILE=/dev/null "$VERIFYREL" "$RELTAG"
+expect_logged "the signature is checked with gpg status output" 1 "gpg --batch --status-fd 1 --verify SHA256SUMS.asc SHA256SUMS" \
+    "$rw/calls.log"
+expect_logged "cosign verify-blob uses the pinned release-workflow identity" 1 \
+    'cosign verify-blob --bundle SHA256SUMS.sigstore.json --certificate-identity-regexp ^https://github\.com/ArcadeData/arcadedb/\.github/workflows/(mvn-release|native-image|release-assets|publish-contract)\.yml@refs/(heads/main|tags/[0-9][^/]*)$ --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS' \
+    "$rw/calls.log"
+expect_logged "the provenance of a native archive is verified" 1 \
+    "gh attestation verify arcadedb-$RELTAG-windows-x86_64.zip --repo ArcadeData/arcadedb --cert-identity-regex ^https://github\.com/ArcadeData/arcadedb/\.github/workflows/(mvn-release|native-image|release-assets|publish-contract)\.yml@refs/(heads/main|tags/[0-9][^/]*)$ --cert-oidc-issuer https://token.actions.githubusercontent.com" \
+    "$rw/calls.log"
+expect_logged "the per-arch native image SBOM attestation is verified" 1 \
+    "cosign verify-attestation --type cyclonedx --certificate-identity-regexp ^https://github\.com/ArcadeData/arcadedb/\.github/workflows/(mvn-release|native-image|release-assets|publish-contract)\.yml@refs/(heads/main|tags/[0-9][^/]*)$ --certificate-oidc-issuer https://token.actions.githubusercontent.com arcadedata/arcadedb:$RELTAG-native-arm64" \
+    "$rw/calls.log"
+expect_logged "the native manifest list is checked for a signature only" 0 \
+    "cosign verify-attestation --type cyclonedx --certificate-identity-regexp ^https://github\.com/ArcadeData/arcadedb/\.github/workflows/(mvn-release|native-image|release-assets|publish-contract)\.yml@refs/(heads/main|tags/[0-9][^/]*)$ --certificate-oidc-issuer https://token.actions.githubusercontent.com arcadedata/arcadedb:$RELTAG-native" \
+    "$rw/calls.log"
+for ref in "arcadedata/arcadedb:$RELTAG" "arcadedata/arcadedb:$RELTAG-native-amd64" "arcadedata/arcadedb:$RELTAG-native-arm64"; do
+    expect_logged "the SLSA provenance of image $ref is verified with the release identity" 1 \
+        "gh attestation verify oci://index.docker.io/$ref --repo ArcadeData/arcadedb --cert-identity-regex ^https://github\.com/ArcadeData/arcadedb/\.github/workflows/(mvn-release|native-image|release-assets|publish-contract)\.yml@refs/(heads/main|tags/[0-9][^/]*)$ --cert-oidc-issuer https://token.actions.githubusercontent.com" \
+        "$rw/calls.log"
+done
+if grep -q "^gh attestation verify oci://index.docker.io/arcadedata/arcadedb:$RELTAG-native " "$rw/calls.log"; then
+    fail "the native manifest list is not checked for provenance (it carries a signature only)" "$(grep oci:// "$rw/calls.log")"
+else
+    pass "the native manifest list is not checked for provenance (it carries a signature only)"
+fi
+echo "arcadedb:$RELTAG-native-arm64\$" >"$rw/fail-attestation"
+expect "an image that lost its SLSA provenance fails" 1 \
+    "arcadedata/arcadedb:$RELTAG-native-arm64 has no verified build provenance" run_verify
+rm "$rw/fail-attestation"
+mkdir -p "$rw/consumer"
+echo "stub key" >"$rw/consumer/release-key.asc"
+: >"$rw/calls.log"
+expect "a relative GPG_PUBLIC_KEY_FILE is read from the caller's directory, not the download directory" 0 "every check passed" \
+    bash -c 'cd "$1" && shift && "$@"' _ "$rw/consumer" env PATH="$RELSTUBS:$PATH" STUB_DIR="$rw" GITHUB_REPOSITORY=ArcadeData/arcadedb \
+    GPG_PUBLIC_KEY_FILE=release-key.asc RELEASE_GPG_FINGERPRINT="$RELFPR" "$PWD/$VERIFYREL" "$RELTAG"
+expect_logged "the relative key file is imported by its absolute path" 1 "gpg --batch --import $rw/consumer/release-key.asc" "$rw/calls.log"
+: >"$rw/calls.log"
+expect "a fork verifies against its own identity and namespace" 0 "every check passed" \
+    env PATH="$RELSTUBS:$PATH" STUB_DIR="$rw" GITHUB_REPOSITORY=someone/arcadedb DOCKER_NAMESPACE=someone \
+    GPG_PUBLIC_KEY_FILE=/dev/null RELEASE_GPG_FINGERPRINT="$RELFPR" "$VERIFYREL" "$RELTAG"
+if grep -q 'cosign verify .*github\\.com/someone/arcadedb/.* someone/arcadedb:'"$RELTAG"'$' "$rw/calls.log"; then
+    pass "the fork's JVM image is verified in its namespace with its identity"
+else
+    fail "the fork's JVM image is verified in its namespace with its identity" "$(cat "$rw/calls.log")"
+fi
+for ref in "someone/arcadedb:$RELTAG-native" "someone/arcadedb:$RELTAG-native-amd64" "someone/arcadedb:$RELTAG-native-arm64"; do
+    if grep -q "^cosign verify .* $ref\$" "$rw/calls.log"; then
+        pass "the fork's native image $ref is verified in its namespace"
+    else
+        fail "the fork's native image $ref is verified in its namespace" "$(cat "$rw/calls.log")"
+    fi
+done
+if grep -q 'arcadedata/arcadedb' "$rw/calls.log"; then
+    fail "a fork's verification never reaches the arcadedata namespace" "$(grep arcadedata/arcadedb "$rw/calls.log")"
+else
+    pass "a fork's verification never reaches the arcadedata namespace"
+fi
+
+echo "tampered" >>"$rw/release/arcadedb-$RELTAG-linux-x86_64.tar.gz"
+echo "late" >"$rw/release/arcadedb-late-$RELTAG.txt"
+rm "$rw/release/arcadedb-$RELTAG.openvex.json"
+echo 'verify-blob' >"$rw/fail-cosign"
+echo 'arcadedata/arcadedb:'"$RELTAG"'-native-amd64$' >>"$rw/fail-cosign"
+touch "$rw/fail-gpg"
+echo 'aarch_64|openapi' >"$rw/fail-attestation"
+for needle in \
+    "arcadedb-$RELTAG.openvex.json is missing from the release" \
+    "SHA256SUMS does not match the release assets" \
+    "arcadedb-late-$RELTAG.txt is not covered by SHA256SUMS" \
+    "the cosign signature of SHA256SUMS does not verify" \
+    "the gpg signature of SHA256SUMS does not verify" \
+    "arcadedb-$RELTAG-linux-aarch_64.tar.gz has no verified build provenance" \
+    "arcadedb-openapi-$RELTAG.json has no verified build provenance" \
+    "arcadedata/arcadedb:$RELTAG-native-amd64 has no verified signature" \
+    "arcadedata/arcadedb:$RELTAG-native-amd64 has no verified CycloneDX SBOM attestation" \
+    "9 check(s) failed"; do
+    expect "verify-release.sh reports every failure: $needle" 1 "$needle" run_verify
+done
+expect "verify-release.sh refuses a tag that is not a version" 2 "is not a release tag" "$VERIFYREL" "main"
+expect "verify-release.sh without arguments exits 2" 2 "Usage" "$VERIFYREL"
+
+echo
+echo "check-release-credentials.sh"
+
+# Real gpg (throwaway keys in a private keyring) and a stub curl (fixtures/release-credentials/stubs): the GPG checks
+# are the ones a wrong secret breaks, so they run against gpg itself; the HTTP services answer from $STUB_DIR/http.
+RELCRED="$SCRIPTS/check-release-credentials.sh"
+CREDSTUBS="$PWD/$SCRIPTS/tests/fixtures/release-credentials/stubs"
+credgpg="$work/credgpg"
+mkdir -m 700 "$credgpg"
+gen_key() {   # <uid> <expiry>: prints the fingerprint
+    gpg --homedir "$credgpg" --batch --pinentry-mode loopback --passphrase pw --quick-gen-key "$1" ed25519 sign "$2" >/dev/null 2>&1
+    gpg --homedir "$credgpg" --batch --with-colons --list-keys "$1" | awk -F: '$1 == "fpr" { print $10; exit }'
+}
+CREDFPR="$(gen_key "Release Test <release@example.com>" 3y)"
+SOONFPR="$(gen_key "Soon Expiring <soon@example.com>" 10d)"
+CREDKEY="$(gpg --homedir "$credgpg" --batch --pinentry-mode loopback --passphrase pw --armor --export-secret-keys "$CREDFPR")"
+SOONKEY="$(gpg --homedir "$credgpg" --batch --pinentry-mode loopback --passphrase pw --armor --export-secret-keys "$SOONFPR")"
+gpgconf --homedir "$credgpg" --kill gpg-agent >/dev/null 2>&1 || true
+
+docker_body() {   # <repository> <actions json array>: a token endpoint answer whose JWT grants those actions
+    local payload
+    payload="$(printf '{"access":[{"type":"repository","name":"%s","actions":%s}]}' "$1" "$2" | base64 | tr -d '\n=' | tr '/+' '_-')"
+    printf '{"token":"eyJhbGciOiJub25lIn0.%s.c2ln"}' "$payload"
+}
+
+# A fresh stub world in which every service accepts the credentials and nothing is published or tagged yet.
+cred_world() {
+    local d="$work/cred.$1"
+    rm -rf "$d"
+    mkdir -p "$d/http"
+    echo '{"published":false}' >"$d/http/central.body"
+    docker_body arcadedata/arcadedb '["pull","push"]' >"$d/http/docker.body"
+    echo "$d"
+}
+
+run_cred() {   # <stub dir> [VAR=value ...]: the check with good credentials, overridden by the arguments
+    local d="$1"
+    shift
+    env -u GITHUB_TOKEN -u SKIP_CENTRAL -u DOCKER_REPOSITORY PATH="$CREDSTUBS:$PATH" STUB_DIR="$d" \
+        GPG_PRIVATE_KEY="$CREDKEY" GPG_PASSPHRASE=pw RELEASE_GPG_FINGERPRINT="$CREDFPR" \
+        CENTRAL_USERNAME=cu CENTRAL_PASSWORD=cp DOCKER_USERNAME=du DOCKER_PASSWORD=dp GITHUB_REPOSITORY=ArcadeData/arcadedb \
+        "$@" "$RELCRED" 26.12.1
+}
+
+cw="$(cred_world good)"
+expect "check-release-credentials.sh passes when every credential works" 0 "all checks passed, 0 warning(s)" run_cred "$cw"
+if grep -qx "Authorization: Bearer $(printf 'cu:cp' | base64)" "$cw/calls.log" &&
+    grep -qx "Authorization: Basic $(printf 'du:dp' | base64)" "$cw/calls.log"; then
+    pass "check-release-credentials.sh sends the Central token as Bearer and the Docker Hub token as Basic"
+else
+    fail "check-release-credentials.sh sends the Central token as Bearer and the Docker Hub token as Basic" "$(cat "$cw/calls.log")"
+fi
+if grep -q 'scope=repository:arcadedata/arcadedb:push,pull' "$cw/calls.log" &&
+    grep -q "central.sonatype.com/api/v1/publisher/published?namespace=com.arcadedb&name=arcadedb-engine&version=26.12.1" "$cw/calls.log"; then
+    pass "check-release-credentials.sh asks Docker Hub for push on the release repository and Central about the release version"
+else
+    fail "check-release-credentials.sh asks Docker Hub for push on the release repository and Central about the release version" "$(cat "$cw/calls.log")"
+fi
+expect "check-release-credentials.sh accepts the fingerprint in lower case with spaces" 0 "all checks passed" \
+    run_cred "$(cred_world spaced)" RELEASE_GPG_FINGERPRINT="$(tr '[:upper:]' '[:lower:]' <<<"$CREDFPR" | sed 's/..../& /g')"
+
+expect "check-release-credentials.sh fails on a wrong passphrase" 1 "MAVEN_GPG_PASSPHRASE is probably not the passphrase" \
+    run_cred "$(cred_world pass)" GPG_PASSPHRASE=wrong
+expect "check-release-credentials.sh fails when the key is not RELEASE_GPG_FINGERPRINT" 1 "update them together" \
+    run_cred "$(cred_world fpr)" RELEASE_GPG_FINGERPRINT="$SOONFPR"
+expect "check-release-credentials.sh fails without RELEASE_GPG_FINGERPRINT" 1 "RELEASE_GPG_FINGERPRINT is not set" \
+    run_cred "$(cred_world nofpr)" RELEASE_GPG_FINGERPRINT=
+expect "check-release-credentials.sh fails on an empty private key" 1 "MAVEN_GPG_PRIVATE_KEY) is empty" \
+    run_cred "$(cred_world nokey)" GPG_PRIVATE_KEY=
+expect "check-release-credentials.sh fails on a private key that does not import" 1 "does not import" \
+    run_cred "$(cred_world badkey)" GPG_PRIVATE_KEY="not a key"
+expect "check-release-credentials.sh fails on a key expiring within EXPIRY_FAIL_DAYS" 1 "the signing key expires in" \
+    run_cred "$(cred_world soon)" GPG_PRIVATE_KEY="$SOONKEY" RELEASE_GPG_FINGERPRINT="$SOONFPR"
+expect "check-release-credentials.sh only warns on a key expiring within EXPIRY_WARN_DAYS" 0 "all checks passed, 1 warning(s)" \
+    run_cred "$(cred_world warnsoon)" GPG_PRIVATE_KEY="$SOONKEY" RELEASE_GPG_FINGERPRINT="$SOONFPR" EXPIRY_FAIL_DAYS=5
+
+cw="$(cred_world onekeyserver)"
+echo 404 >"$cw/http/openpgp.code"
+expect "check-release-credentials.sh only warns when one keyserver lacks the key" 0 "but not on keys.openpgp.org" run_cred "$cw"
+cw="$(cred_world nokeyserver)"
+echo 404 >"$cw/http/openpgp.code"
+echo 404 >"$cw/http/ubuntu.code"
+expect "check-release-credentials.sh fails when no keyserver has the key" 1 "on neither keyserver.ubuntu.com nor keys.openpgp.org" run_cred "$cw"
+
+cw="$(cred_world central401)"
+echo 401 >"$cw/http/central.code"
+expect "check-release-credentials.sh fails when Central rejects the token" 1 "generate a new Portal user token" run_cred "$cw"
+cw="$(cred_world published)"
+echo '{"published":true}' >"$cw/http/central.body"
+expect "check-release-credentials.sh fails when the version is already on Central" 1 "is already published on Maven Central" run_cred "$cw"
+expect "check-release-credentials.sh fails on empty Central credentials" 1 "MAVEN_CENTRAL_PASSWORD) are empty" \
+    run_cred "$(cred_world nocentral)" CENTRAL_PASSWORD=
+cw="$(cred_world skipcentral)"
+expect "check-release-credentials.sh skips Central with SKIP_CENTRAL=true" 0 "skipped - Maven Central" \
+    run_cred "$cw" SKIP_CENTRAL=true CENTRAL_USERNAME= CENTRAL_PASSWORD=
+if [[ ! -s "$cw/calls.log" ]] || grep -qE 'central.sonatype.com|keyserver.ubuntu.com|keys.openpgp.org' "$cw/calls.log"; then
+    fail "check-release-credentials.sh with SKIP_CENTRAL=true calls neither Central nor the keyservers" "$(cat "$cw/calls.log")"
+else
+    pass "check-release-credentials.sh with SKIP_CENTRAL=true calls neither Central nor the keyservers"
+fi
+cw="$(cred_world rehearsal)"
+echo 404 >"$cw/http/openpgp.code"
+echo 404 >"$cw/http/ubuntu.code"
+expect "check-release-credentials.sh with SKIP_CENTRAL=true accepts a test key on no keyserver" 0 "skipped - keyservers" \
+    run_cred "$cw" SKIP_CENTRAL=true
+
+cw="$(cred_world pullonly)"
+docker_body arcadedata/arcadedb '["pull"]' >"$cw/http/docker.body"
+expect "check-release-credentials.sh fails on a read-only Docker Hub token" 1 "cannot push to arcadedata/arcadedb (granted: pull)" run_cred "$cw"
+cw="$(cred_world otherrepo)"
+docker_body someone/arcadedb '["pull","push"]' >"$cw/http/docker.body"
+expect "check-release-credentials.sh fails when push is granted only on another repository" 1 "cannot push to arcadedata/arcadedb" run_cred "$cw"
+cw="$(cred_world docker401)"
+echo 401 >"$cw/http/docker.code"
+expect "check-release-credentials.sh fails when Docker Hub rejects the credentials" 1 "Docker Hub rejects DOCKER_USERNAME" run_cred "$cw"
+cw="$(cred_world forkns)"
+docker_body someone/arcadedb '["pull","push"]' >"$cw/http/docker.body"
+expect "check-release-credentials.sh checks push on DOCKER_REPOSITORY" 0 "can push to someone/arcadedb" run_cred "$cw" DOCKER_REPOSITORY=someone/arcadedb
+
+cw="$(cred_world tagged)"
+echo 200 >"$cw/http/github.code"
+expect "check-release-credentials.sh fails when the release tag exists" 1 "the tag 26.12.1 already exists in ArcadeData/arcadedb" run_cred "$cw"
+
+cw="$(cred_world everything)"
+echo 401 >"$cw/http/central.code"
+docker_body arcadedata/arcadedb '["pull"]' >"$cw/http/docker.body"
+echo 200 >"$cw/http/github.code"
+expect "check-release-credentials.sh reports every failure in one run" 1 "4 check(s) failed" run_cred "$cw" GPG_PASSPHRASE=wrong
+expect "check-release-credentials.sh without arguments exits 2" 2 "Usage" "$RELCRED"
 
 echo
 if [[ $failures -gt 0 ]]; then

@@ -1443,18 +1443,19 @@ class IndexedRangeQueryTest {
     /**
      * The operand kinds each property type cannot hold. For an equality or an IN they match no row, and the index has to answer so, as the
      * scan does. For a range the scan orders some of them across kinds by what they convert to (a LocalDate against a DECIMAL by its epoch
-     * number, a Boolean against it as 1), a leniency the index cannot reproduce because its keys have one order, one kind: there the index
-     * may decline (no rows) but must neither throw nor answer a row the scan does not.
+     * number), a leniency the index cannot reproduce because its keys have one order, one kind: there the index may decline (no rows) but
+     * must neither throw nor answer a row the scan does not. A Boolean is no number on either path, and a numeric string against a DATETIME
+     * is the epoch count the scan reads it as on both (issue #12936): neither is listed, so the index has to agree.
      */
     private static final Map<String, List<String>> FOREIGN = Map.of(
         "BOOLEAN", List.of("LocalDate", "LocalDateTime", "List", "Map"),
-        "INTEGER", List.of("Boolean", "LocalDate", "LocalDateTime", "List", "Map"),
-        "LONG", List.of("Boolean", "LocalDate", "LocalDateTime", "List", "Map"),
-        "DOUBLE", List.of("Boolean", "LocalDate", "LocalDateTime", "List", "Map"),
-        "DECIMAL", List.of("Boolean", "LocalDate", "LocalDateTime", "List", "Map"),
+        "INTEGER", List.of("LocalDate", "LocalDateTime", "List", "Map"),
+        "LONG", List.of("LocalDate", "LocalDateTime", "List", "Map"),
+        "DOUBLE", List.of("LocalDate", "LocalDateTime", "List", "Map"),
+        "DECIMAL", List.of("LocalDate", "LocalDateTime", "List", "Map"),
         "STRING", List.of("List", "Map"),
-        "DATE", List.of("Boolean", "List", "Map", "NumericString"),
-        "DATETIME", List.of("Boolean", "List", "Map", "NumericString"),
+        "DATE", List.of("List", "Map"),
+        "DATETIME", List.of("List", "Map"),
         "LIST", List.of("String", "NumericString", "Integer", "Long", "Double", "BigDecimal", "Boolean", "LocalDate", "LocalDateTime", "Map"),
         "MAP", List.of("String", "NumericString", "Integer", "Long", "Double", "BigDecimal", "Boolean", "LocalDate", "LocalDateTime", "List"));
 

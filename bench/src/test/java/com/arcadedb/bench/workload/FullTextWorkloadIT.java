@@ -49,7 +49,8 @@ class FullTextWorkloadIT {
   void allCasesOk() {
     final List<CaseResult> results = ITSupport.run(new FullTextWorkload(), server, new JSONObject());
     assertThat(results).extracting(CaseResult::caseName)
-        .containsExactly("build", "bm25-single-term", "bm25-multi-term", "bm25-phrase", "hybrid");
+        .containsExactly("build", "bm25-single-term", "bm25-multi-term", "bm25-phrase", "hybrid", "bm25-broad-or",
+            "bm25-broad-or-filtered");
     for (final CaseResult r : results)
       assertThat(r.status()).as(r.caseName() + ": " + r.error()).isEqualTo(CaseResult.Status.OK);
     assertThat(ITSupport.metric(results.get(0), "build_s")).isNotNull();
@@ -72,6 +73,24 @@ class FullTextWorkloadIT {
       assertThat(withHits).as("queries with at least one hit out of 50").isGreaterThanOrEqualTo(45);
     } finally {
       workload.teardown(ctx);
+    }
+  }
+
+  @Test
+  void broadQueriesReturnFiftyRows() {
+    for (final String caseName : List.of("bm25-broad-or", "bm25-broad-or-filtered")) {
+      final FullTextWorkload workload = new FullTextWorkload();
+      final WorkloadContext ctx = new WorkloadContext(server, Scale.XS, 42L, new JSONObject());
+      workload.prepare(ctx, caseName);
+      try {
+        // hitCounts fails on a short answer or on a filtered row with deleted_at set
+        assertThat(workload.hitCounts(ctx, caseName, 20)).as(caseName).containsOnly(50);
+        // the plain case must see rows with deleted_at set, or the filtered guard proves nothing
+        if ("bm25-broad-or".equals(caseName))
+          assertThat(workload.deletedRowsSeen()).as("plain rows with deleted_at set").isGreaterThan(0);
+      } finally {
+        workload.teardown(ctx);
+      }
     }
   }
 }

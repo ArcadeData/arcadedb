@@ -30,9 +30,12 @@ import com.arcadedb.engine.MaintenanceCoordinator.Operation;
 import com.arcadedb.engine.MaintenanceCoordinator.Reservation;
 import com.arcadedb.engine.OperationProgress;
 import com.arcadedb.engine.OperationProgressRegistry;
+import com.arcadedb.exception.CauseChain;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.QueryTerminatedException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.OperationType;
+import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -122,6 +125,16 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
         clazz.getMethod("setDirectory", String.class).invoke(backup, backupDirectory + context.getDatabase().getName());
         clazz.getMethod("setVerboseLevel", Integer.TYPE).invoke(backup, 0);
 
+        // A REQUEST TO STOP THIS STATEMENT IS HONOURED AT THE NEXT CHUNK THE BACKUP READS. THE ENTRY IS TAKEN HERE, ON THE
+        // CALLING THREAD: THE ARCHIVE MAY BE WRITTEN ON A THREAD OF ITS OWN (SEE OutsideCallerTransaction), WHICH HAS NO ENTRY
+        // PUBLISHED, AND THE CHECK ITSELF TOUCHES NO THREAD STATE. A STATEMENT THAT NOBODY REGISTERED - EVERY EMBEDDED CALL -
+        // HAS NOTHING TO ASK, SO THE BACKUP IS HANDED NO CHECK AND PAYS NOTHING
+        final RunningQuery runningQuery = context.getRunningQuery();
+        if (runningQuery != null) {
+          final Runnable stopCheck = () -> runningQuery.checkNotTerminated("BACKUP DATABASE");
+          clazz.getMethod("setAbortCheck", Runnable.class).invoke(backup, stopCheck);
+        }
+
         if (!settings.isEmpty()) {
           for (Map.Entry<Expression, Expression> entry : settings.entrySet()) {
             final String stringValue = entry.getValue().execute((Identifiable) null, context).toString();
@@ -186,6 +199,12 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
           rs.add(result);
           return rs;
         } catch (Exception e) {
+          // A BACKUP THAT WAS ASKED TO STOP REPORTS THAT, AS EVERY OTHER STATEMENT THAT IS STOPPED DOES, AND NOT AS A FAILURE OF
+          // THE BACKUP: ITS PARTIAL ARCHIVE IS ALREADY REMOVED, AND THE SLOT AND THE PROGRESS ENTRY ARE RELEASED BELOW
+          final QueryTerminatedException stopped = CauseChain.find(e, QueryTerminatedException.class);
+          if (stopped != null)
+            throw stopped;
+
           LogManager.instance().log(this, Level.SEVERE,
               String.format("Error on backup database '%s' to directory '%s'",
                   context.getDatabase().getName(), backupDirectory), e);

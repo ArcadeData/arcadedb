@@ -20,6 +20,7 @@ package com.arcadedb.function.util;
 
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 /**
  * util.sleep(ms) - Sleep for the specified number of milliseconds.
@@ -66,7 +67,8 @@ public class UtilSleep extends AbstractUtilFunction {
     }
 
     try {
-      Thread.sleep(milliseconds);
+      // In slices that check the command: the pause ends when the statement is terminated or the command deadline passes
+      WorkGuard.forCommandDeadline(context).sleep(milliseconds);
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
       throw new RuntimeException("Sleep interrupted", e);

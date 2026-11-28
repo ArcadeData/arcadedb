@@ -319,12 +319,16 @@ public class ArithmeticExpression implements Expression {
    * <p>
    * A date or datetime moved out of the java.time range is an {@link ArithmeticErrorException}, a client error like every other
    * overflow, not the raw {@code DateTimeException} of {@code plusMonths()} (issue #12706).
+   * <p>
+   * A native temporal operand (a {@code java.time} value a driver sent as a parameter, a stored value, an element of a list
+   * parameter, a {@code java.util.Date}) is the Cypher temporal its literal is: a Bolt {@code DateTime} arrives as a
+   * {@code ZonedDateTime}, which used to be refused although the literal of the same value was accepted (issue #13569).
    *
    * @return the result, or null if not a temporal arithmetic operation
    */
   public static Object evaluateTemporalArithmetic(final Object leftValue, final Object rightValue, final Operator op) {
     try {
-      return applyTemporalArithmetic(leftValue, rightValue, op);
+      return applyTemporalArithmetic(TemporalUtil.fromCoreJavaType(leftValue), TemporalUtil.fromCoreJavaType(rightValue), op);
     } catch (final DateTimeException | ArithmeticException e) {
       throw new ArithmeticErrorException("Temporal overflow: " + e.getMessage(), e);
     }
@@ -358,26 +362,6 @@ public class ArithmeticExpression implements Expression {
       return applyTemporalArithmetic(rightValue, leftValue, op);
     if (op != Operator.ADD && op != Operator.SUBTRACT)
       return null;
-
-    // java.time.LocalDate (from ArcadeDB storage) ± Duration
-    if (leftValue instanceof LocalDate ld && rightValue instanceof CypherDuration dur) {
-      // For dates, full days from the seconds component must be carried over
-      final long extraDays = dur.getSeconds() / 86400;
-      final long totalDays = dur.getDays() + extraDays;
-      final LocalDate d = ld.plusMonths(op == Operator.ADD ? dur.getMonths() : -dur.getMonths())
-          .plusDays(op == Operator.ADD ? totalDays : -totalDays);
-      return new CypherDate(d);
-    }
-
-    // java.time.LocalDateTime (from ArcadeDB storage) ± Duration
-    if (leftValue instanceof LocalDateTime ldt && rightValue instanceof CypherDuration dur) {
-      LocalDateTime dt = ldt
-          .plusMonths(op == Operator.ADD ? dur.getMonths() : -dur.getMonths())
-          .plusDays(op == Operator.ADD ? dur.getDays() : -dur.getDays())
-          .plusSeconds(op == Operator.ADD ? dur.getSeconds() : -dur.getSeconds())
-          .plusNanos(op == Operator.ADD ? dur.getNanosAdjustment() : -dur.getNanosAdjustment());
-      return new CypherLocalDateTime(dt);
-    }
 
     // Date ± Duration
     if (leftValue instanceof CypherDate cd && rightValue instanceof CypherDuration dur) {
@@ -428,8 +412,7 @@ public class ArithmeticExpression implements Expression {
 
   private static boolean isInstant(final Object value) {
     return value instanceof CypherDate || value instanceof CypherDateTime || value instanceof CypherLocalDateTime
-        || value instanceof CypherLocalTime || value instanceof CypherTime || value instanceof LocalDate
-        || value instanceof LocalDateTime;
+        || value instanceof CypherLocalTime || value instanceof CypherTime;
   }
 
   /**

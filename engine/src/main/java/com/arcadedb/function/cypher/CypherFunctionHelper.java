@@ -1191,17 +1191,13 @@ public final class CypherFunctionHelper {
   }
 
   /**
-   * Wrap a java.time value from ArcadeDB storage into the corresponding CypherTemporalValue.
+   * Wrap a native temporal (a java.time value from ArcadeDB storage or sent as a parameter, a java.util.Date) into the
+   * corresponding CypherTemporalValue. A {@code LocalTime}, {@code OffsetTime}, {@code OffsetDateTime} or {@code Instant} used to
+   * be refused, so {@code duration.between($t1, $t2)} failed for a time a Bolt driver sent (issue #13569).
    */
   public static CypherTemporalValue wrapTemporal(final Object val) {
-    if (val instanceof CypherTemporalValue)
-      return (CypherTemporalValue) val;
-    if (val instanceof LocalDate)
-      return new CypherDate((LocalDate) val);
-    if (val instanceof LocalDateTime)
-      return new CypherLocalDateTime((LocalDateTime) val);
-    if (val instanceof ZonedDateTime)
-      return new CypherDateTime((ZonedDateTime) val);
+    if (TemporalUtil.fromCoreJavaType(val) instanceof CypherTemporalValue temporal)
+      return temporal;
     throw new TypeMismatchException("Expected temporal value but got: " + (val == null ? "null" : val.getClass().getSimpleName()));
   }
 

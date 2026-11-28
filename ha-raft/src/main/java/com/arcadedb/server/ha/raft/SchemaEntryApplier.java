@@ -28,6 +28,10 @@ import com.arcadedb.engine.timeseries.TimeSeriesSealedInstallLock;
 import com.arcadedb.engine.timeseries.TimeSeriesSealedStore;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.WALVersionGapException;
+import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexInternal;
+import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.ContinuousAggregateImpl;
 import com.arcadedb.schema.FullSchemaLoadReason;
@@ -51,6 +55,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Lock;
 import java.util.logging.Level;
@@ -67,6 +72,19 @@ import java.util.zip.CRC32;
  */
 final class SchemaEntryApplier {
   private final ArcadeStateMachine sm;
+
+  /**
+   * Per database, the ids of the files created by the delivery-only entries of a schema change still being delivered (issue
+   * #13484). A change too large for one Raft entry names the files it creates on its FIRST chunk only
+   * ({@link RaftTransactionBroker#splitSchemaEntry}), and a recording session that ships its WAL in instalments drains the files
+   * it created so far into each instalment: in both shapes the entry that publishes the change no longer names them, and it is
+   * the one that has to know which vector graphs the change shipped. Collected here and handed to the publishing entry, which
+   * takes them out, and a drop of the database forgets them ({@link #forgetUnpublishedChange}), so the map holds at most one
+   * change per database this node holds. A sequence cut short (a leadership change, a quarantine that skips the rest) leaves
+   * its ids until the next publishing entry of the database, which is harmless: a graph is certified only on its own evidence
+   * (see {@link LSMVectorIndex#certifyGraphShippedByReplicatedCompaction}).
+   */
+  private final Map<String, Set<Integer>> filesCreatedByUnpublishedChunks = new ConcurrentHashMap<>();
 
   SchemaEntryApplier(final ArcadeStateMachine sm) {
     this.sm = sm;
@@ -161,6 +179,9 @@ final class SchemaEntryApplier {
     // standalone DDL that adds files without changing the schema version - and skipping the reload for
     // that would leave the new files unregistered in the schema.
     final boolean deliveryOnlyEntry = decoded.moreChunksFollow();
+
+    // The files the whole change creates, whichever of its entries named them (issue #13484): asked by the publishing entry below
+    final Set<Integer> filesCreatedByTheChange = filesCreatedByTheChange(decoded, deliveryOnlyEntry);
 
     final SchemaEntryRecorder schemaEntryRecorder = ArcadeStateMachine.TEST_SCHEMA_ENTRY_COUNTER;
     if (schemaEntryRecorder != null && !deliveryOnlyEntry)
@@ -327,6 +348,13 @@ final class SchemaEntryApplier {
         // The reload read the index and dictionary files again, on the apply thread (issue #11518): a copy that turns up
         // damaged here is quarantined before the next entry is applied to it, as the startup scan does for one found at open
         sm.quarantine.quarantineIfLocalCopyDamaged(decoded.databaseName(), db);
+
+        // A vector compaction shipped its graph without the manifest and the ordinal map that certify it (plain files next to
+        // it). This is the one moment the follower can certify it exactly, before a later entry writes on top of the rewrite
+        // (issue #13484): otherwise the first deletion sends every compacted piece to a rebuild from scratch on this node. After
+        // the damage check, and never on a quarantined copy: the resync replaces it, and what it holds certifies nothing
+        if (!filesCreatedByTheChange.isEmpty() && !sm.isDatabaseDiverged(decoded.databaseName()))
+          certifyGraphsShippedByCompaction(schema, filesCreatedByTheChange);
       }
 
       // Whichever path published above: the incremental refresh refuses every entry that retires a file (FILE_RETIRED), so a
@@ -370,6 +398,60 @@ final class SchemaEntryApplier {
             + "was re-instantiated on the apply thread in %d ms",
         entryIndex, decoded.databaseName(), refusal.reason().getDescription(), refusal, sizeOf(decoded.filesToAdd()),
         sizeOf(decoded.filesToRemove()), sizeOf(decoded.filesToRename()), TimeUnit.NANOSECONDS.toMillis(elapsedNanos));
+  }
+
+  /**
+   * The ids of the files the schema change {@code decoded} belongs to creates, over all of its entries (issue #13484). A
+   * delivery-only entry adds the files it names to those of its database's change in progress and answers an empty set: nothing
+   * is published yet. The publishing entry takes them out and answers them with its own.
+   */
+  // @VisibleForTesting
+  Set<Integer> filesCreatedByTheChange(final RaftLogEntryCodec.DecodedEntry decoded, final boolean deliveryOnlyEntry) {
+    final String databaseName = decoded.databaseName();
+    final Map<Integer, String> named = decoded.filesToAdd();
+    if (deliveryOnlyEntry) {
+      if (!isEmptyMap(named) && databaseName != null)
+        filesCreatedByUnpublishedChunks.computeIfAbsent(databaseName, k -> new HashSet<>()).addAll(named.keySet());
+      return Collections.emptySet();
+    }
+
+    final Set<Integer> delivered = databaseName != null ? filesCreatedByUnpublishedChunks.remove(databaseName) : null;
+    if (delivered == null)
+      return isEmptyMap(named) ? Collections.emptySet() : named.keySet();
+    if (!isEmptyMap(named))
+      delivered.addAll(named.keySet());
+    return delivered;
+  }
+
+  /**
+   * Forgets the files the delivery-only entries of a change of {@code databaseName} created, for a database being dropped, whose
+   * change will never be published (issue #13484). Without it the ids of a dropped database would stay for the life of the
+   * node, one set per name ever dropped mid-change.
+   */
+  void forgetUnpublishedChange(final String databaseName) {
+    if (databaseName != null)
+      filesCreatedByUnpublishedChunks.remove(databaseName);
+  }
+
+  /**
+   * Asks every vector index whose graph file the published change created to certify the graph that came with it (issue
+   * #13484), whether the change came in one entry or in several (see {@link #filesCreatedByTheChange}). An index whose graph
+   * file is not among them answers at once, so the cost is one look per vector index for a change that adds files. A failure
+   * here only costs the index a rebuild on first use, as before, and never fails the apply.
+   */
+  private void certifyGraphsShippedByCompaction(final LocalSchema schema, final Set<Integer> addedFileIds) {
+    try {
+      for (final Index index : schema.getIndexes())
+        if (index instanceof LSMVectorIndex vectorIndex)
+          vectorIndex.certifyGraphShippedByReplicatedCompaction(addedFileIds);
+        else if (index instanceof TypeIndex typeIndex)
+          for (final IndexInternal bucketIndex : typeIndex.getIndexesOnBuckets())
+            if (bucketIndex instanceof LSMVectorIndex vectorIndex)
+              vectorIndex.certifyGraphShippedByReplicatedCompaction(addedFileIds);
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(sm, Level.WARNING, "Could not certify the vector graphs a replicated compaction shipped: %s",
+          e.toString());
+    }
   }
 
   private static int sizeOf(final Map<?, ?> map) {

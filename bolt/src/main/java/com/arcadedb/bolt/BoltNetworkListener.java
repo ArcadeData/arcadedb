@@ -23,6 +23,7 @@ import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
+import com.arcadedb.server.network.AcceptFailureHandler;
 import com.arcadedb.server.network.MultiAddressServerSocket;
 import com.arcadedb.server.network.PreAuthConnectionGate;
 import com.arcadedb.server.network.ServerSocketFactory;
@@ -51,6 +52,7 @@ public class BoltNetworkListener extends Thread {
   private final    int                                 maxConnections;
   /** Bounds how many accepted connections can sit un-authenticated at once (issue #6412). */
   private final    PreAuthConnectionGate               preAuthGate;
+  private final    AcceptFailureHandler                failureHandler = new AcceptFailureHandler("BOLT");
 
   public BoltNetworkListener(final ArcadeDBServer server,
       final ServerSocketFactory socketFactory,
@@ -77,7 +79,16 @@ public class BoltNetworkListener extends Thread {
     try {
       while (active) {
         try {
-          final Socket socket = serverSocket.accept();
+          final Socket socket;
+          try {
+            socket = serverSocket.accept();
+          } catch (final Throwable e) {
+            // The socket itself failed, which it keeps doing at once on every call for as long as the cause lasts: retried at
+            // a bounded rate rather than in a hot loop
+            if (active)
+              failureHandler.handleAcceptFailure(this, "Error accepting BOLT connections", e);
+            continue;
+          }
 
           // Check connection limit
           if (maxConnections > 0 && activeConnections.size() >= maxConnections) {
@@ -107,32 +118,44 @@ public class BoltNetworkListener extends Thread {
             continue;
           }
 
-          socket.setPerformancePreferences(0, 2, 1);
-          socket.setTcpNoDelay(true);
-
           // Hand the raw socket to a dedicated per-connection thread. Transport (TLS) detection and the
           // blocking TLS handshake are performed on that thread, never here on the accept path, so a slow,
           // aborted or untrusted handshake can only affect its own connection and never wedges the shared
           // listener for other clients (issue #5106).
+          BoltNetworkExecutor connection = null;
           try {
-            final BoltNetworkExecutor connection = new BoltNetworkExecutor(server, socket, this, sslHelper, ticket);
+            socket.setPerformancePreferences(0, 2, 1);
+            socket.setTcpNoDelay(true);
+
+            connection = new BoltNetworkExecutor(server, socket, this, sslHelper, ticket);
             activeConnections.add(connection);
-            connection.start();
-          } catch (final Exception e) {
-            // The executor never started, so nothing will hand the permit back for it.
-            ticket.release();
+            startConnection(connection);
+          } catch (final Throwable e) {
+            // The executor never started, so nothing will hand the permit back for it, remove it from the open
+            // connections or close its socket.
+            if (connection != null)
+              activeConnections.remove(connection);
+            ticket.abandon();
             throw e;
           }
 
-        } catch (final Exception e) {
+        } catch (final Throwable e) {
+          // An error is no more a reason to stop accepting than an exception is: nothing starts this thread again
           if (active)
-            LogManager.instance().log(this, Level.WARNING, "Error accepting BOLT connection", e);
+            failureHandler.handle(this, "Error accepting BOLT connection", e);
         }
       }
     } finally {
       if (serverSocket != null)
         serverSocket.close();
     }
+  }
+
+  /**
+   * Starts the thread that serves an accepted connection.
+   */
+  void startConnection(final BoltNetworkExecutor connection) {
+    connection.start();
   }
 
   /**

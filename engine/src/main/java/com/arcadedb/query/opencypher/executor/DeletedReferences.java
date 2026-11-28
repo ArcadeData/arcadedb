@@ -19,7 +19,6 @@
 package com.arcadedb.query.opencypher.executor;
 
 import com.arcadedb.database.Document;
-import com.arcadedb.graph.Edge;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -133,10 +132,8 @@ public final class DeletedReferences {
    * identity, when it is none of them
    */
   static Object resolve(final Object value, final Deletions deletions) {
-    if (value instanceof Edge edge)
-      return deletions.isDeleted(edge) ? new DeletedEntityMarker(edge.getTypeName()) : value;
     if (value instanceof Document document)
-      return deletions.isDeleted(document) ? DeletedEntityMarker.INSTANCE : value;
+      return deletions.isDeleted(document) ? DeletedEntityMarker.of(document) : value;
     if (value instanceof List<?> list)
       return list instanceof LongRangeList || list instanceof LiveList live && live.deletions == deletions // NOPMD: by identity
           ? value

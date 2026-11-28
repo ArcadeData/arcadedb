@@ -426,4 +426,34 @@ class DateUtilsTest {
     assertThat(DateUtils.dateTimeToTimestampExact(null, CypherDuration.parse("PT1M"), ChronoUnit.MILLIS)).isNull();
     assertThatThrownBy(() -> DateUtils.toEpochMillis(CypherDuration.parse("PT1M"))).isInstanceOf(IllegalArgumentException.class);
   }
+
+  /**
+   * Issue #12936: the date-time an index range bound of a DATETIME key takes for a numeric string, the epoch count the scan's
+   * comparison reads it as, in NANOS as that comparison does. No date-time for what that comparison refuses.
+   */
+  @Test
+  void numericStringAsDateTimeReadsTheEpochCountTheScanReads() {
+    // the digit count tells the unit: 10 digits are seconds, 13 milliseconds, 16 microseconds, 19 nanoseconds
+    assertThat(DateUtils.numericStringAsDateTime(null, "1704067200", LocalDateTime.class)).isEqualTo(LocalDateTime.of(2024, 1, 1, 0, 0));
+    assertThat(DateUtils.numericStringAsDateTime(null, "1704067200123", LocalDateTime.class))
+        .isEqualTo(LocalDateTime.of(2024, 1, 1, 0, 0, 0, 123_000_000));
+    assertThat(DateUtils.numericStringAsDateTime(null, "1704067200123456", LocalDateTime.class))
+        .isEqualTo(LocalDateTime.of(2024, 1, 1, 0, 0, 0, 123_456_000));
+    assertThat(DateUtils.numericStringAsDateTime(null, "1704067200123456789", Instant.class))
+        .isEqualTo(Instant.ofEpochSecond(1704067200L, 123_456_789));
+    assertThat(DateUtils.numericStringAsDateTime(null, "10", Instant.class)).isEqualTo(Instant.ofEpochSecond(10));
+    // past 2262 the count of nanoseconds saturates, as it does for the stored value the scan compares with
+    assertThat(DateUtils.numericStringAsDateTime(null, "9999999999", Instant.class)).isEqualTo(Instant.ofEpochSecond(0, Long.MAX_VALUE));
+
+    // no epoch count: not digits, nothing, more digits than a long holds
+    assertThat(DateUtils.numericStringAsDateTime(null, "2024-01-01", LocalDateTime.class)).isNull();
+    assertThat(DateUtils.numericStringAsDateTime(null, "-10", LocalDateTime.class)).isNull();
+    assertThat(DateUtils.numericStringAsDateTime(null, "", LocalDateTime.class)).isNull();
+    assertThat(DateUtils.numericStringAsDateTime(null, "99999999999999999999", LocalDateTime.class)).isNull();
+    assertThat(DateUtils.numericStringAsDateTime(null, 10, LocalDateTime.class)).isNull();
+    // a class the scan compares no such string with, or reads it through its own conversion
+    assertThat(DateUtils.numericStringAsDateTime(null, "1704067200", ZonedDateTime.class)).isNull();
+    assertThat(DateUtils.numericStringAsDateTime(null, "1704067200", Date.class)).isNull();
+    assertThat(DateUtils.numericStringAsDateTime(null, "1704067200", LocalDate.class)).isNull();
+  }
 }

@@ -117,6 +117,7 @@ public class PageManager extends LockContext {
   private final    AtomicLong                        totalConcurrentModificationExceptions = new AtomicLong();
   private final    AtomicLong                        totalEdgeAppendMerges                 = new AtomicLong();
   private final    AtomicLong                        totalTxPageSlotMerges                 = new AtomicLong();
+  private final    AtomicLong                        totalTxPageBuffersRecycled            = new AtomicLong();
   private final    AtomicLong                        totalEdgeListHeadMerges               = new AtomicLong();
   private final    AtomicLong                        totalMergesDeclinedByCoverage         = new AtomicLong();
   private final    AtomicLong                        totalChunkChainReadRevalidations      = new AtomicLong();
@@ -370,6 +371,12 @@ public class PageManager extends LockContext {
     public long concurrentModificationExceptions;
     public long edgeAppendMerges;
     public long txPageSlotMerges;
+    /**
+     * See {@link PageManager#getMutablePage(PageId, int, boolean, boolean, byte[])}: page copies written into the array of a dropped
+     * page image. Read by name by the tests that pin the recycling; not exported by the {@code Profiler} or the metrics binder, which
+     * name the counters they surface.
+     */
+    public long txPageBuffersRecycled;
     /** See {@link PageManager#incrementEdgeListHeadMerges()}: vertices written as the merge of two edge-list head moves. */
     public long edgeListHeadMerges;
     /** See {@link PageManager#incrementMergesDeclinedByCoverage()}: commit ATTEMPTS failed on a coverage decline, not pages. */
@@ -1236,10 +1243,10 @@ public class PageManager extends LockContext {
       final long spillVolumeUsableSpace) throws IOException {
     final List<PageSnapshot.SnapshotFile> files = new ArrayList<>();
     for (final ComponentFile file : database.getFileManager().getFiles()) {
-      // A null slot is a dropped file id and a not-yet-opened one is the reserved slot of a file id that has been
-      // allocated but whose file does not exist yet: neither has content at t0, so both are correctly absent. Any
-      // OTHER unusable file would silently shrink the archive while the backup still reported success, which is the
-      // worst failure mode a backup has - so it is named in the log rather than dropped quietly.
+      // A null slot is a dropped file id, or the reserved slot of a file id that has been allocated but whose file does
+      // not exist yet (FileManager.getFiles() lists both as null): neither has content at t0, so both are correctly
+      // absent. Any OTHER unusable file would silently shrink the archive while the backup still reported success,
+      // which is the worst failure mode a backup has - so it is named in the log rather than dropped quietly.
       if (file == null)
         continue;
       if (!(file instanceof PaginatedComponentFile paginated) || !paginated.isOpen() || paginated.getPageSize() <= 0) {
@@ -1817,10 +1824,24 @@ public class PageManager extends LockContext {
 
   public MutablePage getMutablePage(final PageId pageId, final int pageSize, final boolean isNew, final boolean createIfNotExists)
       throws IOException {
+    return getMutablePage(pageId, pageSize, isNew, createIfNotExists, null);
+  }
+
+  /**
+   * As above, the copy written into {@code recycled} when it is an array of the page's length (see {@link CachedPage#useAsMutable(byte[])}).
+   * The caller must OWN {@code recycled}: nothing else may hold or read that array after the call, because the copy of the page is
+   * written into it. Counted in {@link PPageManagerStats#txPageBuffersRecycled} when it was used.
+   */
+  public MutablePage getMutablePage(final PageId pageId, final int pageSize, final boolean isNew, final boolean createIfNotExists,
+      final byte[] recycled) throws IOException {
     final CachedPage page = getCachedPage(pageId, pageSize, isNew, createIfNotExists);
-    if (page != null)
+    if (page != null) {
       // RETURN ALWAYS A VIEW OF THE PAGE. THIS PREVENT CONCURRENCY ON THE BUFFER POSITION
-      return page.useAsMutable();
+      final MutablePage mutable = page.useAsMutable(recycled);
+      if (recycled != null && mutable.getContent().array() == recycled)
+        totalTxPageBuffersRecycled.incrementAndGet();
+      return mutable;
+    }
     return null;
   }
 
@@ -2272,6 +2293,7 @@ public class PageManager extends LockContext {
     stats.concurrentModificationExceptions = totalConcurrentModificationExceptions.get();
     stats.edgeAppendMerges = totalEdgeAppendMerges.get();
     stats.txPageSlotMerges = totalTxPageSlotMerges.get();
+    stats.txPageBuffersRecycled = totalTxPageBuffersRecycled.get();
     stats.edgeListHeadMerges = totalEdgeListHeadMerges.get();
     stats.mergesDeclinedByCoverage = totalMergesDeclinedByCoverage.get();
     stats.chunkChainReadRevalidations = totalChunkChainReadRevalidations.get();
@@ -2689,11 +2711,31 @@ public class PageManager extends LockContext {
             flushSlotReserved ? updatedPages.getFirst().getPageId().getDatabase() : null);
       } else {
         // SYNCHRONOUS FLUSH
+        final PageManagerFlushThread thread = flushThread;
+        // A pending batch keeps the very ArrayList its caller passed (PagesToFlush), and the detach below removes pages
+        // from pending batches: a caller that queued a list asynchronously and passes the same instance here would
+        // see it change under this loop. Any other list type was copied by the batch, so it cannot be shared.
+        final List<MutablePage> pages = updatedPages instanceof ArrayList ? new ArrayList<>(updatedPages) : updatedPages;
         int i = 0;
-        for (final MutablePage page : updatedPages) {
-          flushPage(page);
+        for (final MutablePage page : pages) {
+          // An older copy of this page can still be in the asynchronous pipeline: committed before the database
+          // switched to synchronous flush, or by a commit that asked for async flush. Written after this page it would
+          // revert it on disk (issue #13441). The write is therefore recorded under the page's I/O lock, which makes the
+          // flush thread skip any older copy from then on, and the copies leave the pipeline only once this image is on
+          // disk and in the read cache: a write that fails leaves the pipeline exactly as it was, and no read can fall
+          // back to the file's older image in between.
+          final boolean pending = thread != null && thread.hasPendingCopy(page.pageId);
+          final boolean written = flushPage(page, pending ? thread : null);
           // ADD THE PAGE IN TO READ CACHE. FROM THIS POINT THE PAGE IS NEVER MODIFIED, SO IT CAN BE CACHED
           putPageInReadCache(new CachedPage(page, false));
+          // Only a write that reached the file supersedes the copies: one skipped for a fenced or closed database leaves
+          // them where they are, a copy with no WAL behind it included
+          if (pending && written) {
+            releaseWALOfSupersededCopies(thread.detachCopiesSupersededBy(page));
+            // Again, after the copies left the index: a read that missed the cache in between can have filled it with
+            // the older pending image, and the version-monotonic put replaces it
+            putPageInReadCache(new CachedPage(page, false));
+          }
           if (i++ == half)
             midway.run();
         }
@@ -2704,6 +2746,20 @@ public class PageManager extends LockContext {
         // was never reached, so the slot goes back rather than being held by a publication that is not going to
         // happen. Unlike its twin in publishPages this one IS reachable today - putPageInReadCache does I/O.
         releaseFlushQueueSlot(updatedPages);
+    }
+  }
+
+  /**
+   * Releases the WAL acks of the pending copies a synchronous write superseded, once that write is on disk (issue
+   * #13441): they will never be written, and the pending count they hold would otherwise keep their WAL files alive
+   * forever (the close-time ack gate, #4928). takeWALFile makes the release exactly-once against the flush thread,
+   * which may have skipped one of them already.
+   */
+  private static void releaseWALOfSupersededCopies(final List<MutablePage> superseded) {
+    for (int i = 0; i < superseded.size(); i++) {
+      final WALFile walFile = superseded.get(i).takeWALFile();
+      if (walFile != null)
+        walFile.notifyPageFlushed();
     }
   }
 
@@ -2752,6 +2808,14 @@ public class PageManager extends LockContext {
    * fenced or dropped database or file) and it was released instead.
    */
   protected boolean flushPage(final MutablePage page) throws IOException {
+    return flushPage(page, null);
+  }
+
+  /**
+   * @param recordSyncWriteIn not null for a synchronous write that found the page pending: the write is recorded there
+   *                          under the page's I/O lock, so that no pending copy lands after it (issue #13441)
+   */
+  private boolean flushPage(final MutablePage page, final PageManagerFlushThread recordSyncWriteIn) throws IOException {
     final DatabaseInternal database = (DatabaseInternal) page.getPageId().getDatabase();
 
     if (!database.isOpen() || (database.isFencedForRecovery() && isReplayedByRecovery(page))) {
@@ -2804,6 +2868,10 @@ public class PageManager extends LockContext {
       // The WAL rule under group commit (arcadedb.txWalGroupCommit): the commit published this page before flushing the WAL
       // that describes it, so the page waits for that flush - or runs it - before it reaches the data file. A page on disk
       // with no durable WAL behind it would be a partial transaction after a power loss, with nothing for recovery to replay
+      if (page.isSupersededOnDisk())
+        // Taken out by a synchronous commit (issue #13441): nothing to wait for, nothing to write
+        return false;
+
       final long walSyncTicket = page.getWALSyncTicket();
       if (walSyncTicket > 0)
         try {
@@ -2822,8 +2890,27 @@ public class PageManager extends LockContext {
       try {
         // ACQUIRE A LOCK ON THE I/O OPERATION TO AVOID PARTIAL READS/WRITES
         concurrentPageAccess(page.pageId, true, () -> {
+          // Read under the lock the synchronous write takes too (issue #13441): either this copy lands before the
+          // newer image, or it is marked by now and never lands
+          if (page.isSupersededOnDisk())
+            return;
+          if (recordSyncWriteIn == null) {
+            // A synchronous write already put a newer image there (issue #13441): a copy the flush thread held between
+            // poll and publication, out of reach of the detach. Skipped like a detached one, and released here, since
+            // no writer has it in its list: the newer image is already on disk
+            final PageManagerFlushThread thread = flushThread;
+            if (thread != null && thread.isOlderThanASyncWrite(page)) {
+              page.markSupersededOnDisk();
+              final WALFile walFile = page.takeWALFile();
+              if (walFile != null)
+                walFile.notifyPageFlushed();
+              return;
+            }
+          }
           final int written = file.write(page);
           totalPagesWrittenSize.addAndGet(written);
+          if (recordSyncWriteIn != null)
+            recordSyncWriteIn.recordSyncWrite(page);
         });
       } catch (final IllegalArgumentException | FileNotFoundException e) {
         // The two - and only two - ways PaginatedComponentFile.write() reports "the file went away under me",
@@ -2848,6 +2935,11 @@ public class PageManager extends LockContext {
         discardPageOfDroppedFile(page, file, e);
         return false;
       }
+
+      if (page.isSupersededOnDisk())
+        // A synchronous commit took this copy out of the pipeline (issue #13441), whether or not it was written above:
+        // the newer image is on disk or about to be, and its writer releases this copy's WAL ack once it is
+        return false;
 
       try {
         final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileByIdIfExists(fileId);

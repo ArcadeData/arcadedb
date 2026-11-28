@@ -67,6 +67,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.UUID;
 import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -219,6 +220,8 @@ public enum PostgresType {
       .appendOffset("+HH:mm", "+00").toFormatter();
   private static final DateTimeFormatter POSTGRES_TIMESTAMPTZ_OUTPUT = new DateTimeFormatterBuilder().appendPattern("uuuu-MM-dd ")
       .append(POSTGRES_TIMETZ_OUTPUT).toFormatter();
+  // PostgreSQL's uuid, which only a bound parameter carries here: no column is announced under it (issue #11838)
+  private static final int               UUID_CODE                   = 2950;
 
   /**
    * Renders a record, a row, a map or a path of a json column as the HTTP API does (issue #11958), vertex edge counts left out as
@@ -1522,6 +1525,10 @@ public enum PostgresType {
       } else if (element instanceof BigDecimal bd) {
         // as the scalar is written: toString() switches to scientific notation, which a numeric[] element is never written in
         sb.append(bd.toPlainString());
+      } else if (element instanceof Boolean b && pgType == ARRAY_BOOLEAN) {
+        // PostgreSQL writes a bool[] as {t,f}, as the scalar is written: a client that reads the element by its first character
+        // (lib/pq's BoolArray wants exactly one) refuses "true" (issue #12994)
+        sb.append(b ? 't' : 'f');
       } else if (element instanceof Number || element instanceof Boolean) {
         sb.append(element);
       } else if (pgType == ARRAY_BYTEA && byteaValueOf(element) != null) {
@@ -1881,6 +1888,9 @@ public enum PostgresType {
       return str;
     }
 
+    if (code == UUID_CODE)
+      return parseUuidText(str);
+
     PostgresType type = CODE_MAP.get((int) code);
     if (type == null) {
       throw new PostgresProtocolException("Type with code " + code + " not supported for deserializing");
@@ -1889,8 +1899,65 @@ public enum PostgresType {
     return type.textParser.apply(str);
   }
 
+  /**
+   * A uuid parameter (issue #11838), which psycopg binds for a {@code uuid.UUID} and pgjdbc for a {@code java.util.UUID}. ArcadeDB
+   * has no uuid type and stores one as its text, so the parameter is read as the canonical text PostgreSQL itself prints, lower
+   * case with hyphens, from exactly the spellings PostgreSQL's uuid input accepts (string_to_uuid() in
+   * src/backend/utils/adt/uuid.c, documented in "UUID Type"): 32 hex digits of either case, an optional hyphen after any group of
+   * four digits but the last ({@code a0ee-bc99-9c0b-4ef8-bb6d-6bb9-bd38-0a11} is valid), the whole optionally between a MATCHED
+   * pair of braces, and nothing else, no surrounding blank either. Parsed in place, without a copy of the text.
+   */
+  static String parseUuidText(final String value) {
+    final int length = value.length();
+    final boolean braces = length > 0 && value.charAt(0) == '{';
+    int position = braces ? 1 : 0;
+    long mostSignificant = 0;
+    long leastSignificant = 0;
+    for (int digit = 0; digit < 32; digit++) {
+      final int nibble = position < length ? hexDigit(value.charAt(position++)) : -1;
+      if (nibble < 0)
+        throw invalidUuid(value);
+      if (digit < 16)
+        mostSignificant = mostSignificant << 4 | nibble;
+      else
+        leastSignificant = leastSignificant << 4 | nibble;
+      if ((digit & 3) == 3 && digit < 31 && position < length && value.charAt(position) == '-')
+        position++;
+    }
+    if (braces) {
+      if (position >= length || value.charAt(position) != '}')
+        throw invalidUuid(value);
+      position++;
+    }
+    if (position != length)
+      throw invalidUuid(value);
+    return new UUID(mostSignificant, leastSignificant).toString();
+  }
+
+  /** An ASCII hex digit's value, or -1: PostgreSQL reads uuid digits with isxdigit(), so no other script's digits count. */
+  private static int hexDigit(final char c) {
+    if (c >= '0' && c <= '9')
+      return c - '0';
+    if (c >= 'a' && c <= 'f')
+      return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F')
+      return c - 'A' + 10;
+    return -1;
+  }
+
+  private static PostgresProtocolException invalidUuid(final String value) {
+    return new PostgresProtocolException("Invalid input syntax for type uuid: '" + value + "'");
+  }
+
   private static Object deserializeBinary(final long code, final byte[] valueAsBytes) {
     ByteBuffer buffer = ByteBuffer.wrap(valueAsBytes);
+    if (code == UUID_CODE) {
+      // the 16 bytes of the uuid, most significant first
+      if (valueAsBytes.length != 16)
+        throw new PostgresProtocolException("Invalid binary uuid of " + valueAsBytes.length + " bytes");
+      return new UUID(buffer.getLong(), buffer.getLong()).toString();
+    }
+
     PostgresType type = CODE_MAP.get((int) code);
 
     if (type == null) {
@@ -1998,6 +2065,9 @@ public enum PostgresType {
       if (elemLen == -1) {
         result.add(null);
       } else {
+        // The element is read out of the bytes this value holds: a length past them, or below the null marker, is no element
+        if (elemLen < -1 || elemLen > buffer.remaining())
+          throw new PostgresProtocolException("Invalid array element length: " + elemLen);
         final byte[] elemBytes = new byte[elemLen];
         buffer.get(elemBytes);
         result.add(deserializeBinaryElement(elemOid, elemBytes));
