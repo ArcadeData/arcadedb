@@ -1430,10 +1430,19 @@ class GroupedVectorSearchTest {
       assertThat(plain.getFirst().<Integer>getProperty("pid")).isEqualTo(42);
       assertThat(grouped.getFirst().<Integer>getProperty("pid")).isEqualTo(42);
       assertThat(grouped.getFirst().<Float>getProperty("distance")).isCloseTo(0f, within(1e-5f));
-      for (int i = 0; i < plain.size(); i++) {
-        assertThat(grouped.get(i).<Integer>getProperty("pid")).isEqualTo(plain.get(i).<Integer>getProperty("pid"));
-        assertThat(grouped.get(i).<Float>getProperty("distance")).isCloseTo(plain.get(i).<Float>getProperty("distance"),
-            within(1e-5f));
+      // What #9633 pins is that the grouped rows are ranked and reported on the stored vectors. WHICH neighbours past the
+      // exact match each path reaches is not pinned, and cannot be: both walk an approximate graph, and on the same data the
+      // grouped walk, which keeps its own candidate caps, misses a neighbour the plain walk finds in about 3 builds of 100
+      // (the 2nd nearest, with an exact plain answer). The recall of the two paths against each other is bounded over many
+      // queries by groupedRecallMatchesThePlainSearch.
+      assertThat(grouped).hasSize(plain.size());
+      float previous = Float.NEGATIVE_INFINITY;
+      for (final Result row : grouped) {
+        final float distance = row.<Float>getProperty("distance");
+        assertThat(distance).as("the distance must be the exact one")
+            .isCloseTo(exact(query, ridOfPid(row.<Integer>getProperty("pid"))), within(1e-3f));
+        assertThat(distance).isGreaterThanOrEqualTo(previous);
+        previous = distance;
       }
 
       final List<Result> bounded = query(
