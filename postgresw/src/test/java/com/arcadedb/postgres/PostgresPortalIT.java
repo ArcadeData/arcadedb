@@ -1601,6 +1601,99 @@ class PostgresPortalIT extends PostgresWireProtocolTestBase {
     }
   }
 
+  /*
+   * Issue #13380: a text that holds only comments is the empty query as well as one that holds only ';' and blanks: PostgreSQL answers both
+   * EmptyQueryResponse, and a client or a pooler pings a connection with {@code -- ping}. The simple protocol already answered it so
+   * (its statement splitter drops the comments); a Parse of it was answered with the engine's syntax error. The engine now answers
+   * such a text with an empty result (EmptyStatement) and the wire maps that to EmptyQueryResponse at Parse too. The lexer reads
+   * {@code --} as a comment only when a space follows it, so the texts here carry the space.
+   */
+  @Test
+  @DisplayName("a simple query that holds only comments is the empty query (unchanged)")
+  void aSimpleQueryOfCommentsOnlyIsTheEmptyQuery() throws Exception {
+    try (final Socket socket = connect()) {
+      final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+      final DataInputStream in = new DataInputStream(socket.getInputStream());
+      authenticate(out, in);
+
+      assertTimeoutPreemptively(Duration.ofSeconds(30), () -> {
+        for (final String text : new String[] { "-- ping", "-- ping\n", "/* x */", "/* x */;", "/* a */ /* b */ ;", "-- a\n/* b */\n-- c" }) {
+          sendSimpleQuery(out, text);
+          assertThat(messageTypesOf(readUntilReadyForQuery(in))).as("'%s'", text).containsExactly('I', 'Z');
+        }
+
+        // the connection is in step: an ordinary statement, with a comment in front of it, answers as usual
+        sendSimpleQuery(out, "-- ping\nSELECT 1 AS one");
+        assertThat(messageTypesOf(readUntilReadyForQuery(in))).containsExactly('T', 'D', 'C', 'Z');
+      });
+    }
+  }
+
+  @Test
+  @DisplayName("the extended pipeline of a statement that holds only comments answers as the empty statement does")
+  void theExtendedPipelineOfACommentOnlyStatementIsTheEmptyStatement() throws Exception {
+    try (final Socket socket = connect()) {
+      final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+      final DataInputStream in = new DataInputStream(socket.getInputStream());
+      authenticate(out, in);
+
+      assertTimeoutPreemptively(Duration.ofSeconds(30), () -> {
+        for (final String text : new String[] { "-- ping", "/* x */;", "/* a */ -- b" }) {
+          // unnamed: ParseComplete, BindComplete, NoData, EmptyQueryResponse
+          sendParse(out, "", text);
+          sendBind(out, "", "");
+          sendDescribe(out, 'P', "");
+          sendExecute(out, "");
+          sendSync(out);
+          assertThat(messageTypesOf(readUntilReadyForQuery(in))).as("'%s'", text).containsExactly('1', '2', 'n', 'I', 'Z');
+        }
+
+        // named: the statement stays registered and is executed again with no Parse in front
+        sendParse(out, "pc1", "-- ping");
+        sendDescribe(out, 'S', "pc1");
+        sendBind(out, "", "pc1");
+        sendExecute(out, "");
+        sendSync(out);
+        assertThat(messageTypesOf(readUntilReadyForQuery(in))).containsExactly('1', 't', 'n', '2', 'I', 'Z');
+        sendBind(out, "", "pc1");
+        sendExecute(out, "");
+        sendSync(out);
+        assertThat(messageTypesOf(readUntilReadyForQuery(in))).containsExactly('2', 'I', 'Z');
+      });
+    }
+  }
+
+  @Test
+  @DisplayName("a statement that holds only comments inside a transaction block leaves the block open")
+  void aCommentOnlyStatementInsideATransactionBlockLeavesItOpen() throws Exception {
+    try (final Socket socket = connect()) {
+      final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+      final DataInputStream in = new DataInputStream(socket.getInputStream());
+      authenticate(out, in);
+
+      assertTimeoutPreemptively(Duration.ofSeconds(30), () -> {
+        sendSimpleQuery(out, "BEGIN");
+        assertThat(readyForQueryStatusOf(readUntilReadyForQuery(in))).isEqualTo('T');
+
+        sendSimpleQuery(out, "-- ping");
+        final List<WireMessage> simple = readUntilReadyForQuery(in);
+        assertThat(messageTypesOf(simple)).containsExactly('I', 'Z');
+        assertThat(readyForQueryStatusOf(simple)).isEqualTo('T');
+
+        sendParse(out, "", "/* x */");
+        sendBind(out, "", "");
+        sendExecute(out, "");
+        sendSync(out);
+        final List<WireMessage> extended = readUntilReadyForQuery(in);
+        assertThat(messageTypesOf(extended)).containsExactly('1', '2', 'I', 'Z');
+        assertThat(readyForQueryStatusOf(extended)).isEqualTo('T');
+
+        sendSimpleQuery(out, "COMMIT");
+        assertThat(readyForQueryStatusOf(readUntilReadyForQuery(in))).isEqualTo('I');
+      });
+    }
+  }
+
   private Connection jdbcConnection() throws Exception {
     Class.forName("org.postgresql.Driver");
     final Properties props = new Properties();

@@ -1017,6 +1017,10 @@
       "allDeclaredFields": true
     },
     {
+      "type": "com.arcadedb.query.sql.parser.EmptyStatement",
+      "allDeclaredFields": true
+    },
+    {
       "type": "com.arcadedb.query.sql.parser.EqualsCompareOperator",
       "allDeclaredFields": true
     },
