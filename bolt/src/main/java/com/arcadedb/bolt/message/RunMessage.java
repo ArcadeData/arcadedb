@@ -23,6 +23,7 @@ import com.arcadedb.bolt.structure.BoltStructureMapper;
 
 import java.io.IOException;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
  * RUN message for executing Cypher queries.
@@ -30,6 +31,12 @@ import java.util.Map;
  * Fields: query (String), parameters (Map), extra (Map)
  */
 public class RunMessage extends BoltMessage {
+  private static final String   REDACTED          = "***";
+  // The statements of user management are short; a longer one is not scanned, which bounds the regex work on client input
+  private static final int      MAX_SECRET_STATEMENT_LENGTH = 4096;
+  // CREATE/ALTER USER ... PASSWORD: the statement carries a secret, as a literal or as the value of a parameter
+  private static final Pattern  PASSWORD_STATEMENT = Pattern.compile("(?is)\\b(?:create|alter)\\b.*?\\buser\\b.*?\\bpassword\\b");
+  private static final Pattern  PASSWORD_LITERAL   = Pattern.compile("(?is)(\\bpassword\\s+)(?:'(?:[^'\\\\]|\\\\.)*+'|\"(?:[^\"\\\\]|\\\\.)*+\")");
   private final String              query;
   private final Map<String, Object> extra;
   // Until the first getParameters() call of a parsed message these are the parameters as the request decoded them. A
@@ -89,8 +96,21 @@ public class RunMessage extends BoltMessage {
     writer.writeMap(extra);
   }
 
+  /**
+   * The statement and its parameters as they may be written to a log: a statement that sets a user's password (the literal after
+   * {@code PASSWORD}, and every parameter, since any of them may be the password) is logged without them. Like the credentials of a
+   * HELLO (issue #6801), the password of {@code CREATE USER} / {@code ALTER USER} would otherwise reach the log of an operator who
+   * turned {@code arcadedb.bolt.debug} on to troubleshoot (issue #13593).
+   */
+  public static String loggable(final String query, final Map<String, Object> parameters) {
+    if (query == null || query.length() > MAX_SECRET_STATEMENT_LENGTH || !PASSWORD_STATEMENT.matcher(query).find())
+      return "query='" + query + "', parameters=" + parameters;
+    return "query='" + PASSWORD_LITERAL.matcher(query).replaceAll("$1'" + REDACTED + "'") + "', parameters="
+        + (parameters == null || parameters.isEmpty() ? parameters : "{" + String.join(", ", parameters.keySet()) + ": " + REDACTED + "}");
+  }
+
   @Override
   public String toString() {
-    return "RUN{query='" + query + "', parameters=" + parameters + ", extra=" + extra + "}";
+    return "RUN{" + loggable(query, parameters) + ", extra=" + extra + "}";
   }
 }

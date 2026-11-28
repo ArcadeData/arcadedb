@@ -98,7 +98,7 @@ final class CypherCommandBuilder {
     if (ctx.createIndex() != null)
       return handleCreateIndex(ctx.createIndex());
     if (ctx.createUser() != null)
-      return handleCreateUser(ctx.createUser());
+      return handleCreateUser(ctx.createUser(), ctx.REPLACE() != null);
     throw new CommandParsingException("Only CREATE CONSTRAINT, CREATE INDEX and CREATE USER are currently supported");
   }
 
@@ -226,19 +226,26 @@ final class CypherCommandBuilder {
     throw new CommandParsingException("Only ALTER USER is currently supported");
   }
 
-  private CypherAdminStatement handleCreateUser(final Cypher25Parser.CreateUserContext ctx) {
+  private CypherAdminStatement handleCreateUser(final Cypher25Parser.CreateUserContext ctx, final boolean orReplace) {
     final String userName = CypherASTBuilder.stripBackticks(ctx.commandNameExpression().getText());
     final boolean ifNotExists = ctx.IF() != null && ctx.NOT() != null && ctx.EXISTS() != null;
+    // Neo4j refuses the pair: a statement cannot both replace an existing user and leave it alone
+    if (orReplace && ifNotExists)
+      throw new CommandParsingException(
+          "Failed to create the specified user '" + userName + "': cannot have both `OR REPLACE` and `IF NOT EXISTS`.");
 
     String password = null;
+    String passwordParameter = null;
     if (ctx.password() != null && !ctx.password().isEmpty()) {
-      final Cypher25Parser.PasswordContext pwdCtx = ctx.password(0);
-      password = extractPasswordValue(pwdCtx.passwordExpression());
+      final Cypher25Parser.PasswordExpressionContext pwdCtx = ctx.password(0).passwordExpression();
+      password = extractPasswordLiteral(pwdCtx);
+      passwordParameter = extractPasswordParameter(pwdCtx);
     }
-    if (password == null)
+    if (password == null && passwordParameter == null)
       throw new CommandParsingException("CREATE USER requires SET PASSWORD");
 
-    return new CypherAdminStatement(CypherAdminStatement.Kind.CREATE_USER, userName, password, ifNotExists, false);
+    return new CypherAdminStatement(CypherAdminStatement.Kind.CREATE_USER, userName, password, passwordParameter, ifNotExists,
+        orReplace, false);
   }
 
   private CypherAdminStatement handleDropUser(final Cypher25Parser.DropUserContext ctx) {
@@ -251,22 +258,30 @@ final class CypherCommandBuilder {
     final String userName = CypherASTBuilder.stripBackticks(ctx.commandNameExpression().getText());
 
     String password = null;
+    String passwordParameter = null;
     if (ctx.password() != null && !ctx.password().isEmpty()) {
-      final Cypher25Parser.PasswordContext pwdCtx = ctx.password(0);
-      password = extractPasswordValue(pwdCtx.passwordExpression());
+      final Cypher25Parser.PasswordExpressionContext pwdCtx = ctx.password(0).passwordExpression();
+      password = extractPasswordLiteral(pwdCtx);
+      passwordParameter = extractPasswordParameter(pwdCtx);
     }
-    if (password == null)
+    if (password == null && passwordParameter == null)
       throw new CommandParsingException("ALTER USER requires SET PASSWORD");
 
-    return new CypherAdminStatement(CypherAdminStatement.Kind.ALTER_USER, userName, password, false, false);
+    return new CypherAdminStatement(CypherAdminStatement.Kind.ALTER_USER, userName, password, passwordParameter, false, false,
+        false);
   }
 
-  private String extractPasswordValue(final Cypher25Parser.PasswordExpressionContext ctx) {
-    if (ctx.stringLiteral() != null) {
-      final String raw = ctx.stringLiteral().getText();
-      return CypherASTBuilder.decodeStringLiteral(raw.substring(1, raw.length() - 1));
-    }
-    throw new CommandParsingException("Password must be a string literal");
+  /** The password when it is written in the statement, null when it is a parameter. */
+  private String extractPasswordLiteral(final Cypher25Parser.PasswordExpressionContext ctx) {
+    if (ctx.stringLiteral() == null)
+      return null;
+    final String raw = ctx.stringLiteral().getText();
+    return CypherASTBuilder.decodeStringLiteral(raw.substring(1, raw.length() - 1));
+  }
+
+  /** The name of the parameter the password is read from when the statement runs, null when it is a literal. */
+  private String extractPasswordParameter(final Cypher25Parser.PasswordExpressionContext ctx) {
+    return ctx.parameter() != null ? CypherASTBuilder.stripBackticks(ctx.parameter().parameterName().getText()) : null;
   }
 
   private CypherDDLStatement handleCreateConstraint(final Cypher25Parser.CreateConstraintContext ctx) {

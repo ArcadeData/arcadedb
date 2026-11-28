@@ -38,6 +38,7 @@ import com.arcadedb.exception.ImplicitTransactionRequiredException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.GraphTraversalProviderRegistry.ViewsPassedOver;
 import com.arcadedb.log.LogManager;
@@ -1521,32 +1522,70 @@ public class OpenCypherQueryEngine implements QueryEngine {
       break;
     }
     case CREATE_USER: {
-      if (admin.isIfNotExists() && security.existsUser(admin.getUserName()))
+      final boolean exists = security.existsUser(admin.getUserName());
+      if (exists && admin.isIfNotExists())
         break;
-      security.createUser(admin.getUserName(), admin.getPassword());
+      // Resolved before anything is dropped, so a replacement that cannot be created leaves the user it was to replace
+      final String password = passwordOf(admin, parameters);
+      if (exists) {
+        if (!admin.isOrReplace())
+          throw refusal("Failed to create the specified user '" + admin.getUserName() + "': User already exists.");
+        dropRefusingTheAdministrator(security, admin.getUserName());
+      }
+      security.createUser(admin.getUserName(), password);
       break;
     }
     case DROP_USER: {
       if (!admin.isIfExists() && !security.existsUser(admin.getUserName()))
         throw missingUser(admin.getUserName());
-      try {
-        security.dropUser(admin.getUserName());
-      } catch (final IllegalArgumentException e) {
-        // A user the security manager refuses to drop (the server administrator, issue #12813): the caller's mistake, and
-        // the reason has to reach it. Left to the rewrap of command(), the message would be "Error executing Cypher command"
-        throw new CommandExecutionException(e.getMessage(), e);
-      }
+      dropRefusingTheAdministrator(security, admin.getUserName());
       break;
     }
     case ALTER_USER: {
       if (!security.existsUser(admin.getUserName()))
         throw missingUser(admin.getUserName());
-      security.setUserPassword(admin.getUserName(), admin.getPassword());
+      security.setUserPassword(admin.getUserName(), passwordOf(admin, parameters));
       break;
     }
     }
 
     return resultSet;
+  }
+
+  private static void dropRefusingTheAdministrator(final SecurityManager security, final String userName) {
+    try {
+      security.dropUser(userName);
+    } catch (final IllegalArgumentException e) {
+      // A user the security manager refuses to drop (the server administrator, issue #12813): the caller's mistake, and
+      // the reason has to reach it. Left to the rewrap of command(), the message would be "Error executing Cypher command"
+      throw new CommandExecutionException(e.getMessage(), e);
+    }
+  }
+
+  /**
+   * The password of a CREATE USER / ALTER USER: the literal of the statement, or the value of the parameter it names
+   * ({@code SET PASSWORD $pw}). A parameter that does not hold a string is the caller's mistake, answered as Neo4j answers it,
+   * and the message names the parameter only: the value is a secret and never goes into an error. One that is not bound at all
+   * never gets here: the statement is refused before it runs, like any other that mentions an unbound parameter.
+   */
+  private static String passwordOf(final CypherAdminStatement admin, final Map<String, Object> parameters) {
+    final String parameterName = admin.getPasswordParameter();
+    if (parameterName == null)
+      return admin.getPassword();
+
+    final Object value = parameters != null ? parameters.get(parameterName) : null;
+    if (!(value instanceof String password))
+      throw new TypeMismatchException("Expected password parameter $" + parameterName + " to have type String but was "
+          + (value == null ? "null" : value.getClass().getSimpleName()));
+    return password;
+  }
+
+  /**
+   * A refusal that is the caller's mistake on every protocol (Neo4j answers {@code ArgumentError}): the
+   * {@link IllegalArgumentException} under it decides the category (issue #11384), as in {@link #missingUser}.
+   */
+  private static CommandExecutionException refusal(final String message) {
+    return new CommandExecutionException(message, new IllegalArgumentException(message));
   }
 
   /**
@@ -1556,8 +1595,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
    * passes that type through as it is, and keeps the type embedded callers catch.
    */
   private static CommandExecutionException missingUser(final String userName) {
-    final String message = "User '" + userName + "' does not exist";
-    return new CommandExecutionException(message, new IllegalArgumentException(message));
+    return refusal("User '" + userName + "' does not exist");
   }
 
   /**
