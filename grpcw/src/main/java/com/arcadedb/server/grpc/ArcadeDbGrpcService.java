@@ -1759,9 +1759,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       }
       if (txCtx == null) {
         // Unknown/expired transaction id is a client-side precondition failure, not a server fault, so the
-        // client can tell a programming error apart from an INTERNAL error.
-        responseObserver.onError(Status.FAILED_PRECONDITION
-            .withDescription("Query execution failed: Invalid transaction ID").asException());
+        // client can tell a programming error apart from an INTERNAL error. Worded as every other transaction-scoped RPC
+        // words it: a client classifies the refusal of a reaped transaction by that text
+        responseObserver.onError(unknownTransactionStatus(incomingTxId).asException());
         return;
       }
 
