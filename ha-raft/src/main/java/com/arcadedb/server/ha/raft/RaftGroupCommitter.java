@@ -113,8 +113,9 @@ class RaftGroupCommitter {
   }
 
   /**
-   * @param messageSizeMax maximum size of a single replicated entry: the smaller of
-   *                       {@code arcadedb.ha.grpcMessageSizeMax} and {@code arcadedb.ha.appendBufferSize}
+   * @param messageSizeMax maximum size of the payload of a single replicated entry: the smaller of
+   *                       {@code arcadedb.ha.grpcMessageSizeMax} and {@code arcadedb.ha.appendBufferSize},
+   *                       less the framing Ratis wraps around the payload
    *                       (see {@code RaftPropertiesBuilder.maxReplicatedEntrySize}). Entries above it are
    *                       rejected synchronously in {@link #submitAndWait(byte[])} with a clear,
    *                       non-retryable {@link ReplicatedEntryTooLargeException}, instead of being
@@ -133,8 +134,9 @@ class RaftGroupCommitter {
   }
 
   /**
-   * @param messageSizeMax maximum size of a single replicated entry: the smaller of
-   *                       {@code arcadedb.ha.grpcMessageSizeMax} and {@code arcadedb.ha.appendBufferSize}
+   * @param messageSizeMax maximum size of the payload of a single replicated entry: the smaller of
+   *                       {@code arcadedb.ha.grpcMessageSizeMax} and {@code arcadedb.ha.appendBufferSize},
+   *                       less the framing Ratis wraps around the payload
    *                       (see {@code RaftPropertiesBuilder.maxReplicatedEntrySize}). Entries above it are
    *                       rejected synchronously in {@link #submitAndWait(byte[])} with a clear,
    *                       non-retryable {@link ReplicatedEntryTooLargeException}, instead of being
@@ -197,9 +199,10 @@ class RaftGroupCommitter {
 
   private CancellablePendingEntry submitAndWaitForEntry(final byte[] entry) {
     // Pre-check the entry against the maximum size the cluster can actually replicate - the SMALLER
-    // of arcadedb.ha.grpcMessageSizeMax and arcadedb.ha.appendBufferSize (see
-    // RaftPropertiesBuilder.maxReplicatedEntrySize). Dispatching an oversized entry is far worse than
-    // a rejected request:
+    // of arcadedb.ha.grpcMessageSizeMax and arcadedb.ha.appendBufferSize, less the framing Ratis wraps
+    // around the payload (see RaftPropertiesBuilder.maxReplicatedEntrySize): the log measures the
+    // WRAPPED entry, so a payload equal to the bare limit is already above it. Dispatching an
+    // oversized entry is far worse than a rejected request:
     //   - above the gRPC frame cap, Ratis leaves the client SlidingWindow CLOSED for the lifetime of
     //     this RaftClient (every subsequent flush logs "is closed" and never lands a write);
     //   - above the appender byte limit, RaftLogBase.append throws a StateMachineException whose
@@ -537,6 +540,14 @@ class RaftGroupCommitter {
           // a definite outcome, and a retryable one, unless the Ratis client re-sent the entry. Ratis rebuilds the cause
           // on the client side from its class name and message, so a conflict arrives as the same
           // ConcurrentModificationException the leader threw.
+          final ReplicatedEntryTooLargeException tooLarge = refusedAsTooLarge(reply.getException());
+          if (tooLarge != null && !messages[i].earlierAttemptMayHaveLanded) {
+            // The leader measured the entry against its own limit and turned it away before appending it: as definite
+            // as the pre-check in submitAndWait, and just as final, since the same entry is too large for it again.
+            // Not for a call the Ratis client re-sent after an attempt that may have reached another leader's log.
+            batch.get(i).future.complete(tooLarge);
+            continue;
+          }
           final NeedRetryException refused = refusedBeforeAppend(reply.getException(), messages[i]);
           if (refused != null) {
             batch.get(i).future.complete(refused);
@@ -615,6 +626,11 @@ class RaftGroupCommitter {
       } catch (final Exception e) {
         // The Ratis client turns a refusal reply into an exceptional completion rather than a failed reply
         // (RaftClientImpl.handleRaftException), so the leader's pre-append refusals (issues #6965, #11951) arrive here.
+        final ReplicatedEntryTooLargeException tooLarge = refusedAsTooLarge(e);
+        if (tooLarge != null && !messages[i].earlierAttemptMayHaveLanded) {
+          batch.get(i).future.complete(tooLarge);
+          continue;
+        }
         final NeedRetryException refused = refusedBeforeAppend(e, messages[i]);
         if (refused != null) {
           batch.get(i).future.complete(refused);
@@ -673,6 +689,15 @@ class RaftGroupCommitter {
     if (refused != null && message.earlierAttemptMayHaveLanded && CauseChain.contains(thrown, LeaderSteppingDownException.class))
       return null;
     return refused;
+  }
+
+  /**
+   * The size refusal a leader answered an entry with BEFORE appending it (see {@code ArcadeStateMachine.startTransaction}),
+   * or {@code null} when the failure is something else. Ratis carries it as the cause of a {@code StateMachineException}
+   * and rebuilds it on this side from its class name and message.
+   */
+  static ReplicatedEntryTooLargeException refusedAsTooLarge(final Throwable thrown) {
+    return CauseChain.find(thrown, ReplicatedEntryTooLargeException.class);
   }
 
   /**

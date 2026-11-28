@@ -94,7 +94,8 @@ class CompressibleTxEntrySizeTest {
     final int compressedSize = CompressionFactory.getDefault().compress(compressibleWal).length;
     final long submitGate = GlobalConfiguration.maxReplicatedRaftEntrySize(new ContextConfiguration());
 
-    assertThat(submitGate).as("stock configuration: the appender byte limit binds").isEqualTo(32L * 1024 * 1024);
+    assertThat(submitGate).as("stock configuration: the appender byte limit binds, less the framing around the payload")
+        .isEqualTo(32L * 1024 * 1024 - GlobalConfiguration.REPLICATED_ENTRY_FRAMING_BYTES);
     assertThat((long) compressedSize).as("the compressed entry is what the submit gate measures, and it fits")
         .isLessThan(submitGate);
     assertThat(compressibleWal.length).as("the raw WAL is what the applier has to materialize, and it did not fit")

@@ -57,7 +57,8 @@ class RaftPropertiesBuilder {
   }
 
   /**
-   * Maximum size, in bytes, of a SINGLE replicated Raft log entry.
+   * Maximum size, in bytes, of the payload of a SINGLE replicated Raft log entry, with the room Ratis needs to wrap it
+   * already taken out ({@link GlobalConfiguration#REPLICATED_ENTRY_FRAMING_BYTES}).
    * <p>
    * Two independent Ratis limits bound one entry and the SMALLER of the two wins:
    * <ul>
@@ -383,12 +384,12 @@ class RaftPropertiesBuilder {
     if (grpcMessageSizeMax > appendBuffer.getSize())
       LogManager.instance().log(RaftPropertiesBuilder.class, Level.INFO,
           """
-          Maximum replicated Raft entry size is %d bytes (arcadedb.ha.appendBufferSize), NOT the %d bytes \
-          of arcadedb.ha.grpcMessageSizeMax: Ratis rejects a single log entry above the appender byte limit \
-          and the leader steps down. Raise arcadedb.ha.appendBufferSize (and arcadedb.ha.writeBufferSize, \
-          which must stay >= appendBufferSize + 8 bytes) if transactions or records bigger than that must \
-          replicate.""",
-          appendBuffer.getSize(), grpcMessageSizeMax);
+          Maximum replicated Raft entry size is %d bytes (arcadedb.ha.appendBufferSize less the framing Ratis \
+          adds to every entry), NOT the %d bytes of arcadedb.ha.grpcMessageSizeMax: Ratis rejects a single log \
+          entry above the appender byte limit and the leader steps down. Raise arcadedb.ha.appendBufferSize \
+          (and arcadedb.ha.writeBufferSize, which must stay >= appendBufferSize + 8 bytes) if transactions or \
+          records bigger than that must replicate.""",
+          maxEntrySize, grpcMessageSizeMax);
 
     // Issue #8898: Ratis closes the whole division on a long JVM pause, and the in-place restart that followed did
     // not recover the follower. 0 (default) puts that close out of reach; a leader still steps down on a pause.
