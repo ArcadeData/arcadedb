@@ -94,6 +94,60 @@ class BenchMainTest {
     }
   }
 
+  private static Workload releaseExempt(final String name) {
+    return new Workload() {
+      @Override
+      public String name() {
+        return name;
+      }
+
+      @Override
+      public List<String> cases() {
+        return List.of("x1");
+      }
+
+      @Override
+      public boolean runsOn(final String trigger) {
+        return !trigger.equals("release");
+      }
+
+      @Override
+      public void prepare(final WorkloadContext ctx, final String caseName) {
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) {
+        return new Measurement(List.of());
+      }
+    };
+  }
+
+  @Test
+  void aWorkloadThatDoesNotRunOnTheTriggerIsLeftOut() throws Exception {
+    final List<Workload> registry = List.of(new Fake("alpha", List.of("a1")), releaseExempt("gamma"));
+    final ByteArrayOutputStream buf = new ByteArrayOutputStream();
+    final int code = BenchMain.run(new String[] { "run", "--workload", "all", "--scale", "XS", "--image", "img:1", "--variant", "jvm",
+        "--reps", "1", "--warmup", "0", "--skip-idle-check", "--server-cpus", "none", "--client-cpus", "none", "--trigger", "release",
+        "--out", tmp.toString() }, registry, (image, cpuset, mem, heap, settings) -> null, new PrintStream(buf, true, StandardCharsets.UTF_8));
+    assertThat(code).isZero();
+    try (final Stream<Path> files = Files.list(tmp)) {
+      final String json = Files.readString(files.filter(p -> p.toString().endsWith(".json")).toList().getFirst());
+      assertThat(json).contains("alpha").doesNotContain("gamma").doesNotContain("x1");
+    }
+  }
+
+  @Test
+  void aNamedWorkloadThatDoesNotRunOnTheTriggerIsRefused() throws Exception {
+    final ByteArrayOutputStream buf = new ByteArrayOutputStream();
+    final int code = BenchMain.run(new String[] { "run", "--workload", "gamma", "--scale", "XS", "--image", "img:1", "--variant", "jvm",
+        "--skip-idle-check", "--trigger", "release", "--out", tmp.toString() }, List.of(releaseExempt("gamma")),
+        (image, cpuset, mem, heap, settings) -> null, new PrintStream(buf, true, StandardCharsets.UTF_8));
+    assertThat(code).isEqualTo(2);
+    try (final Stream<Path> files = Files.list(tmp)) {
+      assertThat(files.toList()).isEmpty();
+    }
+  }
+
   @Test
   void runFileIsRewrittenAfterEachCase() throws Exception {
     final List<RunResult> seen = new ArrayList<>();

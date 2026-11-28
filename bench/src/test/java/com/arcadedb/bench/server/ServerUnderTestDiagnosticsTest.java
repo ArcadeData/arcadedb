@@ -39,6 +39,13 @@ class ServerUnderTestDiagnosticsTest {
   }
 
   @Test
+  void openFilesAreTheEntriesOfTheDescriptorListing() {
+    assertThat(ServerUnderTest.entriesOf("0\n1\n2\n17\n")).isEqualTo(4);
+    assertThat(ServerUnderTest.entriesOf("0\n\n1\n")).isEqualTo(2);
+    assertThat(ServerUnderTest.entriesOf("")).isZero();
+  }
+
+  @Test
   void histogramKeepsTheTopClassesWithoutTheHeaders() {
     // the shape jcmd prints: the pid line, the column header, a separator, the class rows, the total
     final StringBuilder text = new StringBuilder("1:\n num     #instances         #bytes  class name (module)\n"

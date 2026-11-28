@@ -441,19 +441,28 @@ public final class BenchMain {
       throw new IllegalArgumentException("--params is not valid JSON: " + e.getMessage());
     }
 
+    // a workload that does not run on this trigger is left out: "all" drops it silently, a named one is refused like an unknown name
     final List<Workload> selected = new ArrayList<>();
-    if (workloadName.equals("all"))
-      selected.addAll(registry);
-    else {
+    if (workloadName.equals("all")) {
       for (final Workload w : registry)
-        if (w.name().equals(workloadName))
+        if (w.runsOn(trigger))
           selected.add(w);
-      if (selected.isEmpty()) {
+    } else {
+      boolean known = false;
+      for (final Workload w : registry)
+        if (w.name().equals(workloadName)) {
+          known = true;
+          if (w.runsOn(trigger))
+            selected.add(w);
+        }
+      if (!known) {
         final List<String> names = new ArrayList<>();
         for (final Workload w : registry)
           names.add(w.name());
         throw new IllegalArgumentException("unknown workload '" + workloadName + "', valid: all, " + String.join(", ", names));
       }
+      if (selected.isEmpty())
+        throw new IllegalArgumentException("workload '" + workloadName + "' does not run on trigger '" + trigger + "'");
     }
 
     if (!o.containsKey("skip-idle-check")) {

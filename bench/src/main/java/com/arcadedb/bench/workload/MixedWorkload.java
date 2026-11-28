@@ -119,18 +119,27 @@ public class MixedWorkload implements Workload {
    * {@code <loop>_ops} (the operations each loop completed). Throws them in a {@link CaseFailedWithMetrics} when a loop failed.
    */
   static Measurement publish(final MixedPhase.Result result) throws CaseFailedWithMetrics {
-    final List<Metric> metrics = new ArrayList<>(MixedPhase.LOOPS.size() * 2 + 2);
-    for (final String loop : MixedPhase.LOOPS) {
-      final LatencyRecorder recorder = result.latencies().get(loop);
-      metrics.add(Metrics.of(loop + "_p99_ms", "ms", Metric.Better.LOWER, recorder.percentile(99) / NANOS_PER_MS));
-    }
-    metrics.add(Metrics.of("max_commit_gap_ms", "ms", Metric.Better.LOWER, result.longestCommitGapNanos() / NANOS_PER_MS));
+    final List<Metric> metrics = latencyMetrics(result, MixedPhase.LOOPS.size() + 1);
     metrics.add(Metrics.rate("ops_per_s", "ops/s", result.operations() / result.seconds()));
     for (final String loop : MixedPhase.LOOPS)
       metrics.add(Metrics.rate(loop + "_ops", "operations", result.latencies().get(loop).count()));
     if (!result.failures().isEmpty())
       throw new CaseFailedWithMetrics(String.join("; ", result.failures()), metrics);
     return new Measurement(metrics);
+  }
+
+  /**
+   * {@code <loop>_p99_ms} of each loop and {@code max_commit_gap_ms}, in a list with room for {@code extra} more metrics: what
+   * the soak publishes of its window too.
+   */
+  static List<Metric> latencyMetrics(final MixedPhase.Result result, final int extra) {
+    final List<Metric> metrics = new ArrayList<>(MixedPhase.LOOPS.size() + 1 + extra);
+    for (final String loop : MixedPhase.LOOPS) {
+      final LatencyRecorder recorder = result.latencies().get(loop);
+      metrics.add(Metrics.of(loop + "_p99_ms", "ms", Metric.Better.LOWER, recorder.percentile(99) / NANOS_PER_MS));
+    }
+    metrics.add(Metrics.of("max_commit_gap_ms", "ms", Metric.Better.LOWER, result.longestCommitGapNanos() / NANOS_PER_MS));
+    return metrics;
   }
 
   /**

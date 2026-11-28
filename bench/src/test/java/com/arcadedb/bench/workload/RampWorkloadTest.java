@@ -62,6 +62,14 @@ class RampWorkloadTest {
   }
 
   @Test
+  void registryListsSoakBeforeHa() {
+    final List<String> names = WorkloadRegistry.all().stream().map(Workload::name).toList();
+    assertThat(names).contains("soak");
+    assertThat(names.getLast()).isEqualTo("ha");
+    assertThat(names.indexOf("soak")).isEqualTo(names.size() - 2);
+  }
+
+  @Test
   void stepLengthsAreTheSpecs() {
     final RampWorkload workload = new RampWorkload();
     assertThat(workload.stepLength(Scale.XS)).isEqualTo(Duration.ofSeconds(10));

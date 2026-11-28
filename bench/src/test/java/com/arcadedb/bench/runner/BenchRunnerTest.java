@@ -31,6 +31,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -276,6 +277,55 @@ class BenchRunnerTest {
     assertThat(r.status()).isEqualTo(CaseResult.Status.FAILED);
     assertThat(r.reps()).isEqualTo(3);
     assertThat(r.warmup()).isEqualTo(1);
+  }
+
+  private static Fake sleeper(final Duration limit) {
+    return new Fake() {
+      @Override
+      public List<String> cases() {
+        return List.of("a");
+      }
+
+      @Override
+      public Optional<Duration> stepLimit() {
+        return Optional.ofNullable(limit);
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) throws Exception {
+        Thread.sleep(100);
+        return m(1);
+      }
+    };
+  }
+
+  @Test
+  void aWorkloadsStepLimitReplacesTheRunsForItsRepetitions() {
+    final List<CaseResult> results = new BenchRunner(1, 0, Duration.ofMillis(10), Duration.ofSeconds(10), Duration.ZERO)
+        .run(sleeper(Duration.ofMillis(500)), CTX, n -> true);
+    assertThat(results.get(0).status()).isEqualTo(CaseResult.Status.OK);
+  }
+
+  @Test
+  void aWorkloadWithoutAStepLimitKeepsTheRuns() {
+    final List<CaseResult> results = new BenchRunner(1, 0, Duration.ofMillis(10)).run(sleeper(null), CTX, n -> true);
+    assertThat(results.get(0).status()).isEqualTo(CaseResult.Status.TIMEOUT);
+  }
+
+  @Test
+  void theCaseCapGrowsToHoldTheDeclaredSteps() {
+    final BenchRunner runner = new BenchRunner(1, 0, Duration.ofMinutes(30), Duration.ofMinutes(30), Duration.ofMinutes(120));
+    assertThat(runner.caseLimitOf(sleeper(Duration.ofMinutes(150)))).isEqualTo(Duration.ofMinutes(180));
+    assertThat(runner.caseLimitOf(sleeper(Duration.ofMinutes(10)))).isEqualTo(Duration.ofMinutes(120));
+    assertThat(runner.caseLimitOf(sleeper(null))).isEqualTo(Duration.ofMinutes(120));
+    assertThat(runner.stepLimitOf(sleeper(Duration.ofMinutes(150)))).isEqualTo(Duration.ofMinutes(150));
+    assertThat(runner.stepLimitOf(sleeper(null))).isEqualTo(Duration.ofMinutes(30));
+  }
+
+  @Test
+  void aRunWithoutACaseCapKeepsNone() {
+    final BenchRunner runner = new BenchRunner(1, 0, Duration.ofMinutes(30), Duration.ofMinutes(30), Duration.ZERO);
+    assertThat(runner.caseLimitOf(sleeper(Duration.ofMinutes(150)))).isEqualTo(Duration.ZERO);
   }
 
   @Test

@@ -95,6 +95,8 @@ public final class ServerUnderTest implements AutoCloseable {
   private static final Duration READY_PAUSE    = Duration.ofSeconds(2);
   /** How long a {@code jcmd} inside the container may take: a wedged JVM must not hang the run. */
   private static final Duration JCMD_DEADLINE  = Duration.ofSeconds(30);
+  /** How long a short read inside the container ({@code /proc} of the server) may take before it is given up on. */
+  private static final Duration EXEC_DEADLINE  = Duration.ofSeconds(10);
 
   /** The death reason of a server whose container runs but which does not answer. */
   public static final String NOT_ANSWERING = "not answering /api/v1/ready";
@@ -429,8 +431,20 @@ public final class ServerUnderTest implements AutoCloseable {
     return -1;
   }
 
-  /** The thread count of the server process as the host sees it; -1 when it cannot be read. */
-  private int threadCount() {
+  /**
+   * The thread count of the server process: read from {@code /proc/<pid>/status} on the host, or, where the host has no such file
+   * (Docker Desktop), from {@code /proc/1/status} inside the container; -1 when neither can be read. Works for the JVM and the
+   * native image alike, and sends the server no signal.
+   */
+  public int threadCount() {
+    final int host = hostThreadCount();
+    if (host >= 0)
+      return host;
+    final String status = exec(EXEC_DEADLINE, "cat", "/proc/1/status");
+    return status != null ? threadsOf(status) : -1;
+  }
+
+  private int hostThreadCount() {
     try {
       final InspectContainerResponse.ContainerState state = docker.inspectContainerCmd(container.getContainerId()).exec().getState();
       final Long pid = state != null ? state.getPidLong() : null;
@@ -443,6 +457,32 @@ public final class ServerUnderTest implements AutoCloseable {
     } catch (final IOException | RuntimeException e) {
       return -1;
     }
+  }
+
+  /**
+   * The file descriptors the server process holds open: the entries of {@code /proc/1/fd} inside the container (the server is
+   * PID 1 in the JVM and the native image alike); -1 when they cannot be listed.
+   */
+  public int openFiles() {
+    final String listing = exec(EXEC_DEADLINE, "ls", "/proc/1/fd");
+    return listing != null ? entriesOf(listing) : -1;
+  }
+
+  /** The non-blank lines of a listing, one entry per line. */
+  static int entriesOf(final String listing) {
+    int entries = 0;
+    for (final String line : listing.split("\\R"))
+      if (!line.isBlank())
+        entries++;
+    return entries;
+  }
+
+  /** The standard output of {@code command} run inside the container; null when it fails, exits non-zero or outlives {@code deadline}. */
+  private String exec(final Duration deadline, final String... command) {
+    final Container.ExecResult result = withDeadline(() -> container.execInContainer(command), deadline, command[0]);
+    if (result == null || result.getExitCode() != 0)
+      return null;
+    return result.getStdout();
   }
 
   /**
