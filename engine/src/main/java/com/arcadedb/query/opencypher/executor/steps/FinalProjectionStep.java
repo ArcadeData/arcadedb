@@ -73,11 +73,20 @@ public class FinalProjectionStep extends AbstractExecutionStep {
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
       private boolean finished = false;
+      // The failure of an input row met after others were projected into the buffer: raised once those are consumed (issue #13683)
+      private RuntimeException pendingFailure;
 
       @Override
       public boolean hasNext() {
         if (bufferIndex < buffer.size()) {
           return true;
+        }
+
+        if (pendingFailure != null) {
+          final RuntimeException failure = pendingFailure;
+          pendingFailure = null;
+          finished = true;
+          throw failure;
         }
 
         if (finished) {
@@ -104,6 +113,24 @@ public class FinalProjectionStep extends AbstractExecutionStep {
           prevResults = prev.syncPull(context, nRecords);
         }
 
+        try {
+          fillBuffer(n);
+        } catch (final RuntimeException e) {
+          // The rows already projected are the consumer's first: the failure is raised when it reaches it, as a streaming executor does
+          // (issue #13683). A failure on the first row of the batch has nothing to hold back
+          if (buffer.isEmpty())
+            throw e;
+          pendingFailure = e;
+          return;
+        }
+
+        // A full buffer leaves the input unasked: asking it would read its next batch ahead of any demand (issue #11082)
+        if (buffer.size() < n)
+          finished = true;
+      }
+
+      /** Filters up to {@code n} rows of the previous step into the buffer. */
+      private void fillBuffer(final int n) {
         while (buffer.size() < n && prevResults.hasNext()) {
           final Result inputResult = prevResults.next();
           final long begin = context.isProfiling() ? System.nanoTime() : 0;
@@ -118,10 +145,6 @@ public class FinalProjectionStep extends AbstractExecutionStep {
               cost += System.nanoTime() - begin;
           }
         }
-
-        // A full buffer leaves the input unasked: asking it would read its next batch ahead of any demand (issue #11082)
-        if (buffer.size() < n)
-          finished = true;
       }
 
       @Override

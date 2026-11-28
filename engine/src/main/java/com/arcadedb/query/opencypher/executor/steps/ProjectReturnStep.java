@@ -90,6 +90,8 @@ public class ProjectReturnStep extends AbstractExecutionStep {
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
       private boolean finished = false;
+      // The failure of a row met after others were projected into the buffer: raised once those are consumed (issue #13683)
+      private RuntimeException pendingFailure;
       private final Set<GroupKeyValues> seenResults = distinct ? new HashSet<>() : null;
       // THE KEYS OF CONSECUTIVE ROWS: A VALUE THE ROW BEFORE HELD AS WELL IS NOT CANONICALIZED AND HASHED AGAIN (ISSUE #10254)
       private GroupKeyValues.Builder distinctKeys;
@@ -99,6 +101,13 @@ public class ProjectReturnStep extends AbstractExecutionStep {
       public boolean hasNext() {
         if (bufferIndex < buffer.size()) {
           return true;
+        }
+
+        if (pendingFailure != null) {
+          final RuntimeException failure = pendingFailure;
+          pendingFailure = null;
+          finished = true;
+          throw failure;
         }
 
         if (finished) {
@@ -127,6 +136,31 @@ public class ProjectReturnStep extends AbstractExecutionStep {
           prevResults = prev.syncPull(context, nRecords);
         }
 
+        try {
+          fillBuffer(n);
+        } catch (final RuntimeException e) {
+          // The rows projected before the failing one are the consumer's first: the failure is raised when it reaches it, as a
+          // streaming executor does (issue #13683). A failure on the first row of the batch has nothing to hold back
+          if (buffer.isEmpty())
+            throw e;
+          pendingFailure = e;
+          return;
+        }
+
+        // A full buffer leaves the input unasked: asking it would read its next batch ahead of any demand (issue #11082)
+        if (buffer.size() < n) {
+          finished = true;
+          // No more input row: the DISTINCT keys are not needed anymore, even if the consumer keeps the result set open
+          if (seenResults != null) {
+            seenResults.clear();
+            distinctKeys = null;
+            distinctLimit.release();
+          }
+        }
+      }
+
+      /** Projects up to {@code n} rows of the previous step into the buffer. */
+      private void fillBuffer(final int n) {
         // Fetch up to n results from previous step
         while (buffer.size() < n && prevResults.hasNext()) {
           final Result inputResult = prevResults.next();
@@ -168,17 +202,6 @@ public class ProjectReturnStep extends AbstractExecutionStep {
           } finally {
             if (context.isProfiling())
               cost += System.nanoTime() - begin;
-          }
-        }
-
-        // A full buffer leaves the input unasked: asking it would read its next batch ahead of any demand (issue #11082)
-        if (buffer.size() < n) {
-          finished = true;
-          // No more input row: the DISTINCT keys are not needed anymore, even if the consumer keeps the result set open
-          if (seenResults != null) {
-            seenResults.clear();
-            distinctKeys = null;
-            distinctLimit.release();
           }
         }
       }
