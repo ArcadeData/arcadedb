@@ -31,7 +31,9 @@ import com.arcadedb.query.polyglot.PolyglotEngineManager;
 import org.graalvm.polyglot.PolyglotException;
 import org.graalvm.polyglot.Value;
 
+import java.io.IOException;
 import java.util.List;
+import java.util.Map;
 import java.util.logging.Level;
 
 /**
@@ -67,9 +69,17 @@ public class ScriptTriggerExecutor implements TriggerExecutor {
       "java.time.**",                                       //
       "java.math.**");
 
-  private final String              triggerName;
-  private final String              script;
-  private       GraalPolyglotEngine scriptEngine;
+  private final     String              triggerName;
+  private final     String              script;
+  /**
+   * Serializes the runs of the script: the context is shared by every firing of the trigger, on any thread, so the
+   * bindings of a run have to be set, used and removed before another run can touch them. Reentrant, because a script
+   * that writes a record of its own type fires the trigger again on the same thread.
+   */
+  private final     Object              runLock    = new Object();
+  /** Guards the build and the close of the context, never held while a script runs, so a close does not wait for it. */
+  private final     Object              engineLock = new Object();
+  private volatile  GraalPolyglotEngine scriptEngine;
 
   public ScriptTriggerExecutor(final String triggerName, final String script) {
     this.triggerName = triggerName;
@@ -115,26 +125,12 @@ public class ScriptTriggerExecutor implements TriggerExecutor {
   @Override
   public boolean execute(final Database database, final Record record, final Record oldRecord) {
     try {
-      // Create script engine if not already initialized (lazy initialization)
-      // Uses the shared GraalVM Engine from PolyglotEngineManager for better performance
-      if (scriptEngine == null) {
-        scriptEngine = GraalPolyglotEngine.newBuilder(database, PolyglotEngineManager.getInstance().getSharedEngine())
-            .setLanguage("js")
-            .setAllowedPackages(ALLOWED_PACKAGES)
-            .build();
-      }
+      // Context variables of this run only
+      final Map<String, Object> bindings = oldRecord == null ?
+          Map.of("record", record, "$record", record) :
+          Map.of("record", record, "$record", record, "oldRecord", oldRecord, "$oldRecord", oldRecord);
 
-      // Set context variables
-      scriptEngine.setAttribute("record", record);
-      scriptEngine.setAttribute("$record", record);
-      if (oldRecord != null) {
-        scriptEngine.setAttribute("oldRecord", oldRecord);
-        scriptEngine.setAttribute("$oldRecord", oldRecord);
-      }
-
-      // Execute the script, interrupted if the statement firing the trigger is terminated (issue #9689)
-      final GraalPolyglotEngine engine = scriptEngine;
-      final Value result = engine.runTerminable(RunningQuery.current(), "the trigger", () -> engine.eval(script));
+      final Value result = run(database, bindings);
 
       // If script returns a boolean false, abort the operation
       if (result != null && result.isBoolean() && !result.asBoolean()) {
@@ -165,18 +161,7 @@ public class ScriptTriggerExecutor implements TriggerExecutor {
   @Override
   public boolean executeBeforeRead(final Database database, final RID rid) {
     try {
-      if (scriptEngine == null) {
-        scriptEngine = GraalPolyglotEngine.newBuilder(database, PolyglotEngineManager.getInstance().getSharedEngine())
-            .setLanguage("js")
-            .setAllowedPackages(ALLOWED_PACKAGES)
-            .build();
-      }
-
-      scriptEngine.setAttribute("rid", rid);
-      scriptEngine.setAttribute("$rid", rid);
-
-      final GraalPolyglotEngine engine = scriptEngine;
-      final Value result = engine.runTerminable(RunningQuery.current(), "the trigger", () -> engine.eval(script));
+      final Value result = run(database, Map.of("rid", rid, "$rid", rid));
 
       return result == null || !result.isBoolean() || result.asBoolean();
     } catch (final QueryTerminatedException e) {
@@ -194,15 +179,63 @@ public class ScriptTriggerExecutor implements TriggerExecutor {
     }
   }
 
+  /**
+   * Evaluates the script with {@code bindings} visible to it and to nobody else: they are bound, the script runs and they
+   * are taken off again (what they displaced is put back, a nested firing on the same thread relies on it) within one
+   * hold of {@link #runLock}.
+   */
+  private Value run(final Database database, final Map<String, Object> bindings) throws IOException {
+    synchronized (runLock) {
+      final GraalPolyglotEngine engine = engine(database);
+      final Map<String, Value> displaced = engine.setAttributes(bindings);
+      try {
+        // Interrupted if the statement firing the trigger is terminated (issue #9689)
+        return engine.runTerminable(RunningQuery.current(), "the trigger", () -> engine.eval(script));
+      } finally {
+        try {
+          engine.restoreAttributes(displaced);
+        } catch (final RuntimeException e) {
+          LogManager.instance().log(this, Level.WARNING, "Error removing the bindings of trigger '%s': %s", e, triggerName,
+              e.getMessage());
+        }
+      }
+    }
+  }
+
+  /**
+   * The script context, created on the first firing (lazy initialization) over the shared GraalVM Engine of
+   * {@link PolyglotEngineManager}, for better performance. Built once, whatever the number of threads firing the trigger.
+   */
+  private GraalPolyglotEngine engine(final Database database) {
+    GraalPolyglotEngine engine = scriptEngine;
+    if (engine == null) {
+      synchronized (engineLock) {
+        engine = scriptEngine;
+        if (engine == null) {
+          engine = GraalPolyglotEngine.newBuilder(database, PolyglotEngineManager.getInstance().getSharedEngine())
+              .setLanguage("js")
+              .setAllowedPackages(ALLOWED_PACKAGES)
+              .build();
+          scriptEngine = engine;
+        }
+      }
+    }
+    return engine;
+  }
+
   @Override
   public void close() {
-    if (scriptEngine != null) {
+    final GraalPolyglotEngine engine;
+    synchronized (engineLock) {
+      engine = scriptEngine;
+      scriptEngine = null;
+    }
+    if (engine != null) {
       try {
-        scriptEngine.close();
+        // Cancels a script still running on the context: closing does not wait for it
+        engine.close();
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.WARNING, "Error closing script engine for trigger '%s'", e, triggerName);
-      } finally {
-        scriptEngine = null;
       }
     }
     // Note: The shared Engine is managed by PolyglotEngineManager and should not be closed here
