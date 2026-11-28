@@ -838,4 +838,113 @@ class TimeSeriesInsertTest extends TestHelper {
           .isEqualTo("reject");
     }
   }
+
+  /**
+   * The names {@link TimeSeriesGateway#write} reports back come from the client, so the report holds a bounded number of them, each
+   * of a bounded length, while {@code dropped} keeps counting every sample. The gRPC write RPCs and the HTTP route all render this
+   * report, so the bound is pinned at the one place they converge.
+   */
+  @Nested
+  class ReportedNames {
+    private static final long T0 = 1_700_000_000_000L;
+
+    private WriteReport write(final List<Sample> samples) throws Exception {
+      return TimeSeriesGateway.write((DatabaseInternal) database, samples);
+    }
+
+    private static Sample sample(final String measurement, final long ts) {
+      return new Sample(measurement, Map.of(), Map.of("temp", 1.0), ts);
+    }
+
+    @Test
+    void reportedUnknownTypesAreCappedButEveryDropIsCounted() throws Exception {
+      final int count = TimeSeriesGateway.MAX_REPORTED_TYPES * 3;
+      final List<Sample> samples = new ArrayList<>(count);
+      for (int i = 0; i < count; i++)
+        samples.add(sample("missing" + i, T0 + i));
+
+      final WriteReport report = write(samples);
+
+      assertThat(report.unknownTypes()).hasSize(TimeSeriesGateway.MAX_REPORTED_TYPES);
+      assertThat(report.unknownTypes()).as("the first ones, in the order they were met").startsWith("missing0", "missing1");
+      assertThat(report.written()).isZero();
+      assertThat(report.dropped()).isEqualTo(count);
+    }
+
+    @Test
+    void everySampleOfAnUnknownTypeIsDroppedEvenOnceItsNameIsNoLongerReported() throws Exception {
+      database.command("sql", "CREATE TIMESERIES TYPE weather TIMESTAMP ts FIELDS (temp DOUBLE)");
+
+      // Past the cap, the same names come back and a known type follows: nothing of it may be lost or written twice
+      final int distinct = TimeSeriesGateway.MAX_REPORTED_TYPES + 40;
+      final List<Sample> samples = new ArrayList<>();
+      long ts = T0;
+      for (int round = 0; round < 3; round++)
+        for (int i = 0; i < distinct; i++)
+          samples.add(sample("missing" + i, ts++));
+      samples.add(sample("weather", ts++));
+      samples.add(sample("weather", ts));
+
+      final WriteReport report = write(samples);
+
+      assertThat(report.unknownTypes()).hasSize(TimeSeriesGateway.MAX_REPORTED_TYPES);
+      assertThat(report.written()).isEqualTo(2);
+      assertThat(report.dropped()).isEqualTo(distinct * 3);
+      assertThat(report.written() + report.dropped()).isEqualTo(samples.size());
+      try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM weather")) {
+        assertThat(rs.next().<Number>getProperty("c").longValue()).isEqualTo(2);
+      }
+    }
+
+    @Test
+    void reportedNonTimeSeriesTypesAreCappedButEveryDropIsCounted() throws Exception {
+      final int count = TimeSeriesGateway.MAX_REPORTED_TYPES + 20;
+      final List<Sample> samples = new ArrayList<>(count);
+      for (int i = 0; i < count; i++) {
+        database.getSchema().createDocumentType("plain" + i);
+        samples.add(sample("plain" + i, T0 + i));
+      }
+
+      final WriteReport report = write(samples);
+
+      assertThat(report.nonTimeSeriesTypes()).hasSize(TimeSeriesGateway.MAX_REPORTED_TYPES);
+      assertThat(report.unknownTypes()).isEmpty();
+      assertThat(report.dropped()).isEqualTo(count);
+    }
+
+    @Test
+    void aLongTypeNameIsReportedCut() throws Exception {
+      final String name = "x".repeat(100_000);
+
+      final WriteReport report = write(List.of(sample(name, T0)));
+
+      assertThat(report.dropped()).isEqualTo(1);
+      assertThat(report.unknownTypes()).singleElement().satisfies(reported -> {
+        assertThat(reported).hasSize(TimeSeriesGateway.MAX_REPORTED_NAME_LENGTH + 3);
+        assertThat(reported).startsWith("xxx").endsWith("...");
+      });
+    }
+
+    @Test
+    void aShortTypeNameIsReportedWhole() throws Exception {
+      final String name = "m".repeat(TimeSeriesGateway.MAX_REPORTED_NAME_LENGTH);
+
+      final WriteReport report = write(List.of(sample(name, T0)));
+
+      assertThat(report.unknownTypes()).containsExactly(name);
+    }
+
+    @Test
+    void aLongKeyIsReportedCut() throws Exception {
+      database.command("sql", "CREATE TIMESERIES TYPE weather TIMESTAMP ts TAGS (city STRING) FIELDS (temp DOUBLE)");
+
+      final WriteReport report = write(List.of(new Sample("weather", Map.of("k".repeat(100_000), "v"), Map.of("temp", 1.0), T0)));
+
+      assertThat(report.dropped()).isEqualTo(1);
+      assertThat(report.undeclaredKeys()).singleElement().satisfies(reported -> {
+        assertThat(reported.length()).isLessThan(TimeSeriesGateway.MAX_REPORTED_NAME_LENGTH + 30);
+        assertThat(reported).startsWith("weather.kkk").endsWith("... (tag)");
+      });
+    }
+  }
 }

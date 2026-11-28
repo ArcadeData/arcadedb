@@ -72,6 +72,21 @@ public final class TimeSeriesGateway {
    */
   public static final int MAX_REPORTED_UNREADABLE_VALUES = 100;
 
+  /**
+   * Cap on the entries each of {@link WriteReport#unknownTypes()}, {@link WriteReport#nonTimeSeriesTypes()} and
+   * {@link WriteReport#unavailableTypes()} names, for the same reason as {@link #MAX_REPORTED_UNDECLARED_KEYS}: the measurement names
+   * come from the client, so a producer sending a fresh name in every sample must not grow the report, nor the response or the
+   * summary of a long stream that renders it, without bound. {@code dropped} still counts every sample.
+   */
+  public static final int MAX_REPORTED_TYPES = 100;
+
+  /**
+   * Longest name an entry of the report keeps whole. A longer one is cut and ends with {@code ...}: the entries locate the problem,
+   * and a name this long is not one a type or a column carries, so the cap on the number of entries alone would still let each of
+   * them be as large as the request that carried it.
+   */
+  public static final int MAX_REPORTED_NAME_LENGTH = 256;
+
   private TimeSeriesGateway() {
   }
 
@@ -117,7 +132,9 @@ public final class TimeSeriesGateway {
    * <p>
    * The three type sets are kept apart on purpose: an unknown type means "create the type first", a non-TimeSeries
    * type means "only TIMESERIES types take samples", and an unavailable one means the type is right but its
-   * storage failed to load (issue #6356 follow-up). They preserve first-occurrence order.
+   * storage failed to load (issue #6356 follow-up). They preserve first-occurrence order, each is capped at
+   * {@link #MAX_REPORTED_TYPES} and a name is kept whole only up to {@link #MAX_REPORTED_NAME_LENGTH}; {@code dropped} still counts
+   * every sample.
    * <p>
    * {@code undeclaredKeys} names the keys that made a sample of an otherwise valid type be dropped under
    * {@link GlobalConfiguration#TIMESERIES_UNDECLARED_KEYS} {@code = reject} (issue #8646), each rendered as
@@ -175,16 +192,30 @@ public final class TimeSeriesGateway {
         if (!tagNames.contains(key)) {
           accepted = false;
           if (undeclared.size() < MAX_REPORTED_UNDECLARED_KEYS)
-            undeclared.add(sample.getMeasurement() + "." + key + " (tag)");
+            undeclared.add(sample.getMeasurement() + "." + reportedName(key) + " (tag)");
         }
       for (final String key : sample.getFields().keySet())
         if (!fieldNames.contains(key)) {
           accepted = false;
           if (undeclared.size() < MAX_REPORTED_UNDECLARED_KEYS)
-            undeclared.add(sample.getMeasurement() + "." + key + " (field)");
+            undeclared.add(sample.getMeasurement() + "." + reportedName(key) + " (field)");
         }
       return accepted;
     }
+  }
+
+  /**
+   * Adds the type name {@code measurement} to {@code reported} unless the report already names {@link #MAX_REPORTED_TYPES} of
+   * them, cut to {@link #MAX_REPORTED_NAME_LENGTH}. The sample is dropped and counted either way.
+   */
+  private static void addReportedType(final Set<String> reported, final String measurement) {
+    if (reported.size() < MAX_REPORTED_TYPES)
+      reported.add(reportedName(measurement));
+  }
+
+  /** {@code name} as an entry of the report keeps it: whole up to {@link #MAX_REPORTED_NAME_LENGTH}, cut and ended with {@code ...} past it. */
+  private static String reportedName(final String name) {
+    return name.length() > MAX_REPORTED_NAME_LENGTH ? name.substring(0, MAX_REPORTED_NAME_LENGTH) + "..." : name;
   }
 
   /**
@@ -236,30 +267,36 @@ public final class TimeSeriesGateway {
     final Set<String> undeclaredKeys = new LinkedHashSet<>();
     final Set<String> unreadableValues = new LinkedHashSet<>();
     final Map<String, MeasurementBatch> byMeasurement = new LinkedHashMap<>();
+    // Every measurement this call set aside, whichever the reason. The report keeps a bounded number of them, so it cannot answer
+    // "was this one met already": without this set a sample of a name past the bound would run the schema lookups again. It holds
+    // names of the samples of this call only, so the request bounds it
+    final Set<String> setAside = new HashSet<>();
     final boolean rejectUndeclared = rejectsUndeclaredKeys(database);
 
     for (final Sample sample : samples) {
       final String measurement = sample.getMeasurement();
 
-      if (unknownTypes.contains(measurement) || nonTimeSeriesTypes.contains(measurement)
-          || unavailableTypes.contains(measurement))
+      if (setAside.contains(measurement))
         continue;
 
       MeasurementBatch batch = byMeasurement.get(measurement);
       if (batch == null) {
         if (!database.getSchema().existsType(measurement)) {
-          unknownTypes.add(measurement);
+          setAside.add(measurement);
+          addReportedType(unknownTypes, measurement);
           continue;
         }
 
         final DocumentType docType = database.getSchema().getType(measurement);
         if (!(docType instanceof LocalTimeSeriesType tsType)) {
-          nonTimeSeriesTypes.add(measurement);
+          setAside.add(measurement);
+          addReportedType(nonTimeSeriesTypes, measurement);
           continue;
         }
         tsType.checkAccess(SecurityDatabaseUser.ACCESS.CREATE_RECORD);
         if (!tsType.isEngineAvailable()) {
-          unavailableTypes.add(measurement);
+          setAside.add(measurement);
+          addReportedType(unavailableTypes, measurement);
           continue;
         }
 
