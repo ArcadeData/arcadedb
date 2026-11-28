@@ -2220,9 +2220,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // The commit is a gated RPC too: its slot goes with it to the transaction's thread (issue #10140), as in
       // submitToActiveTransaction
       final QueryAdmissionGate.Handoff admission = QueryAdmissionGate.getInstance().handOff();
-      // The response carries the read-your-writes bookmark of this commit (issue #11948). Bound only, not applied: a
-      // commit reads nothing, and the statements of the transaction had the consistency applied on its thread by
-      // submitToActiveTransaction. Nothing is set on a thread here, so there is nothing for this call to clear
+      // The response carries the read-your-writes bookmark of this commit (issue #11948). Bound, not applied: a commit reads
+      // nothing, and the statements of the transaction had the consistency applied on its thread by
+      // submitToActiveTransaction. The commit itself runs on that thread, and what it is committed at is kept for the
+      // response by the clear below, which the thread that writes the response could not read from it (issue #11742)
       final GrpcReadConsistencyInterceptor.ReadConsistency readConsistency = GrpcReadConsistencyInterceptor.current();
       if (readConsistency != null)
         readConsistency.bind(txCtx.db);
@@ -2243,6 +2244,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           txCtx.db.commit();
         } finally {
           ProtocolContext.clear();
+          if (readConsistency != null)
+            readConsistency.clear();
         }
         return true;
       });
