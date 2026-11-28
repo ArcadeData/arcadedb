@@ -1983,9 +1983,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // Note: For array concat expressions (||), nested projections are handled directly
     // on the ArrayConcatExpressionElement objects in visitArrayConcat, not here.
 
-    // Alias (AS identifier)
+    // Alias (AS? identifier)
     if (ctx.identifier() != null)
-      item.alias = (Identifier) visit(ctx.identifier());
+      item.alias = optionalAsAlias(ctx.identifier(), ctx.AS());
 
     return item;
   }
@@ -2185,13 +2185,43 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     if (ctx.identifier() != null && !ctx.identifier().isEmpty()) {
       fromItem.identifier = (Identifier) visit(ctx.identifier(0));
       if (ctx.identifier().size() > 1)
-        fromItem.alias = (Identifier) visit(ctx.identifier(1));
+        fromItem.alias = optionalAsAlias(ctx.identifier(1), ctx.AS());
     }
 
     // Handle modifiers if present - chain them using modifier.next
     fromItem.modifier = buildModifierChain(ctx.modifier());
 
     return fromItem;
+  }
+
+  /**
+   * Builds the alias of an {@code AS? identifier} position (a FROM target, a projection item, an UNWIND item), refusing a
+   * clause keyword written without {@code AS} (issue #13439).
+   * <p>
+   * The {@code identifier} rule accepts WHERE, LIMIT, SKIP, OFFSET, WHILE, RETURNING and AS as names, and a lone ORDER or GROUP
+   * is a plain identifier because only "ORDER BY" and "GROUP BY" are tokens. So a clause that lost its body was read as the
+   * alias of what precedes it and the statement ran without the clause: {@code DELETE FROM person WHERE} deleted every record,
+   * {@code DELETE FROM person WHERE LIMIT 1} an arbitrary one, {@code UPDATE person SET a = 1 RETURN AFTER a WHERE} updated
+   * them all. Refused here, before anything executes, those statements are the syntax error they are in standard SQL, where
+   * these words are reserved. With AS, or quoted with backticks, they are aliases as before; the price is the statement that
+   * really meant one as a bare alias ({@code SELECT FROM person where WHERE age = 20}), which now needs either.
+   */
+  private Identifier optionalAsAlias(final SQLParser.IdentifierContext alias, final TerminalNode as) {
+    if (as == null && isBareClauseKeyword(alias.getStart()))
+      throw new CommandSQLParsingException(
+          "Syntax error: '" + alias.getText() + "' is a clause keyword and nothing valid follows it, so it would be read as an alias and the clause ignored. "
+              + "Complete the clause, or to use it as an alias write AS " + alias.getText() + " or quote it with backticks");
+    return (Identifier) visit(alias);
+  }
+
+  private static boolean isBareClauseKeyword(final Token token) {
+    return switch (token.getType()) {
+      case SQLParser.WHERE, SQLParser.LIMIT, SQLParser.SKIP_KW, SQLParser.OFFSET, SQLParser.WHILE, SQLParser.RETURNING, SQLParser.AS -> true;
+      // ORDER and GROUP are keywords only together with BY (ORDER_BY, GROUP_BY): alone they are plain identifiers. A quoted
+      // one is a QUOTED_IDENTIFIER and never gets here
+      case SQLParser.IDENTIFIER -> "ORDER".equalsIgnoreCase(token.getText()) || "GROUP".equalsIgnoreCase(token.getText());
+      default -> false;
+    };
   }
 
   /**
@@ -2357,7 +2387,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     // Handle alias if present
     if (ctx.identifier() != null) {
-      fromItem.alias = (Identifier) visit(ctx.identifier());
+      fromItem.alias = optionalAsAlias(ctx.identifier(), ctx.AS());
     }
 
     return fromItem;
@@ -2373,7 +2403,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     fromItem.functionCall = (FunctionCall) visit(ctx.functionCall());
 
     if (ctx.identifier() != null)
-      fromItem.alias = (Identifier) visit(ctx.identifier());
+      fromItem.alias = optionalAsAlias(ctx.identifier(), ctx.AS());
 
     return fromItem;
   }
@@ -5126,15 +5156,18 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // UNWIND expr1 [AS] alias1, expr2 [AS] alias2, ...: walk the children in order, since an alias belongs to the expression
     // right before it and any of them may be missing
     Expression pendingOperand = null;
+    TerminalNode pendingAs = null;
     for (final ParseTree child : ctx.children) {
       if (child instanceof final SQLParser.ExpressionContext exprCtx) {
         if (pendingOperand != null)
           addUnwindItem(unwind, pendingOperand, null);
         pendingOperand = (Expression) visit(exprCtx);
       } else if (child instanceof final SQLParser.IdentifierContext aliasCtx) {
-        addUnwindItem(unwind, pendingOperand, (Identifier) visit(aliasCtx));
+        addUnwindItem(unwind, pendingOperand, optionalAsAlias(aliasCtx, pendingAs));
         pendingOperand = null;
-      }
+        pendingAs = null;
+      } else if (child instanceof final TerminalNode terminal && terminal.getSymbol().getType() == SQLParser.AS)
+        pendingAs = terminal;
     }
     if (pendingOperand != null)
       addUnwindItem(unwind, pendingOperand, null);
