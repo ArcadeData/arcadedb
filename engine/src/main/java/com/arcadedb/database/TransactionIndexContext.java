@@ -38,9 +38,15 @@ import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.utility.IntHashSet;
 
 import java.util.*;
+import java.util.function.Function;
 import java.util.logging.Level;
 
 public class TransactionIndexContext {
+  /**
+   * {@link #newKeyEntries()} as a non-capturing function, so {@code computeIfAbsent} on the hot path neither allocates a lambda per
+   * call nor a per-key map for a key that is already there (#13022).
+   */
+  private static final Function<ComparableKey, Map<IndexKey, IndexKey>>    NEW_KEY_ENTRIES = key -> newKeyEntries();
   private final DatabaseInternal                                             database;
   private       Map<String, TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> indexEntries = new LinkedHashMap<>(); // MOST COMMON USE CASE INSERTION IS ORDERED, USE AN ORDERED MAP TO OPTIMIZE THE INDEX
   /**
@@ -270,9 +276,11 @@ public class TransactionIndexContext {
 
     @Override
     public int hashCode() {
+      // THE VALUES OF Objects.hash(tuple) AND Objects.hash(rid, tuple), WITHOUT THEIR VARARGS Object[] AND BOXED INT: THE ITERATION ORDER OF THE PER-KEY
+      // MAP, WHICH A COMMIT REPLAYS IN, DEPENDS ON THEM
       if (unique && !LSMTreeIndexAbstract.isKeyNull(keyValues))
-        return Objects.hash(IndexKeyEquality.hashTuple(keyValues));
-      return Objects.hash(rid, IndexKeyEquality.hashTuple(keyValues));
+        return 31 + IndexKeyEquality.hashTuple(keyValues);
+      return 31 * (31 + Objects.hashCode(rid)) + IndexKeyEquality.hashTuple(keyValues);
     }
 
     @Override
@@ -353,6 +361,9 @@ public class TransactionIndexContext {
           return -1;
         } else if (v2 == null) {
           return 1;
+        } else if (v1 instanceof Long long1 && v2 instanceof Long long2) {
+          // THE COMMON KEY, AHEAD OF THE LONG CHAIN OF TYPE TESTS OF BinaryComparator.compareTo
+          cmp = Long.compare(long1, long2);
         } else if (v1 instanceof List<?> list && v2 instanceof List<?> list1) {
 
           return CollectionUtils.compare(list, list1);
@@ -849,11 +860,13 @@ public class TransactionIndexContext {
       values = newKeyEntries();
       keys.put(k, values);
     } else {
-      values = keys.get(k);
-      if (values == null) {
-        values = newKeyEntries();
-        keys.put(k, values);
-      } else {
+      // ONE TRAVERSAL OF THE TREE (get() + put() WALKED IT TWICE FOR A KEY NOT SEEN YET, A COMPARISON PER LEVEL EACH), AND THE
+      // PER-KEY MAP IS ALLOCATED ONLY WHEN THE KEY IS NEW: A REPEATED KEY (NON-UNIQUE INDEX, REMOVE + ADD) ALLOCATES NOTHING HERE.
+      // THE SIZE TELLS A NEW KEY FROM AN EXISTING ONE WITHOUT ASSUMING AN EXISTING PER-KEY MAP IS NEVER EMPTY
+      final int keysBefore = keys.size();
+      values = keys.computeIfAbsent(k, NEW_KEY_ENTRIES);
+      if (keys.size() == keysBefore) {
+        // EXISTING KEY: RECONCILE WITH THE ENTRY ALREADY QUEUED FOR IT
         if (v.operation == IndexKey.IndexKeyOperation.ADD) {
           if (index.isUnique() && !LSMTreeIndexAbstract.isKeyNull(keysValues)) {
             // CHECK IMMEDIATELY (INSTEAD OF AT COMMIT TIME) FOR DUPLICATED KEY IN CASE 2 ENTRIES WITH THE SAME KEY ARE SAVED IN TX.
