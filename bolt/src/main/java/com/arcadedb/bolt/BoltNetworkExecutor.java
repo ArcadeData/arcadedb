@@ -214,6 +214,9 @@ public class BoltNetworkExecutor extends Thread {
   /** What a COMMIT or a RUN past the explicit transaction's tx_timeout is refused with (issue #11392). */
   private static final String TRANSACTION_TIMED_OUT_MESSAGE =
       "The transaction has been terminated because it ran longer than the timeout it was begun with (tx_timeout)";
+  /** What a statement that needs more stack than the thread has is answered with. */
+  private static final String STACK_EXHAUSTED_MESSAGE =
+      "The statement is too deeply nested to be evaluated (stack exhausted): simplify the query";
   private static final AtomicLong LAST_CONNECTION_ID = new AtomicLong();
   /** How {@code SHOW TRANSACTIONS} and {@code list queries} name this connection (issue #9689). */
   private final String connectionId = "bolt-" + LAST_CONNECTION_ID.incrementAndGet();
@@ -735,6 +738,8 @@ public class BoltNetworkExecutor extends Thread {
     rollbackExplicitTransaction();
 
     user = null;
+    // The GQL session parameters belong to the identity that set them: the next one starts with an empty session
+    session.reset();
     markUnauthenticated();
     sendSuccess(Map.of());
     state = State.AUTHENTICATION;
@@ -821,11 +826,23 @@ public class BoltNetworkExecutor extends Thread {
    * whatever the client left open has to go regardless of how many streams there were.
    */
   private void closeAllStreams(final String phase) {
-    for (final BoltQueryStream stream : openStreams.values())
-      stream.close(this, phase);
+    // Every stream is closed, whatever one of them raises: the first Error is held and thrown once none is left open
+    Error pending = null;
+    for (final BoltQueryStream stream : openStreams.values()) {
+      try {
+        stream.close(this, phase);
+      } catch (final Error e) {
+        if (pending == null)
+          pending = e;
+        else
+          pending.addSuppressed(e);
+      }
+    }
     openStreams.clear();
     currentStream = null;
     nextQid = 0;
+    if (pending != null)
+      throw pending;
   }
 
   /**
@@ -972,6 +989,9 @@ public class BoltNetworkExecutor extends Thread {
     }
 
     RunningQuery.Binding binding = null;
+    // Set once the stream is registered with the connection: from then on its release is the job of the teardown paths (PULL,
+    // DISCARD, RESET, ROLLBACK, connection close). Until then this method owns it, on every way out of it
+    boolean streamRegistered = false;
     final boolean readAccessMode = explicitTransaction ? transactionReadOnly : isReadAccessMode(message.getExtra());
     try {
       // Determine if this is a write query using the query analyzer: one it cannot analyze counts as a write, to be safe
@@ -1063,6 +1083,7 @@ public class BoltNetworkExecutor extends Thread {
       }
 
       openStream(stream);
+      streamRegistered = true;
 
       // Build success response with query metadata
       final Map<String, Object> metadata = new LinkedHashMap<>();
@@ -1101,11 +1122,34 @@ public class BoltNetworkExecutor extends Thread {
       final String errorMsg = failureText(e, "Database error");
       sendExecutionFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR), loggedClientMessage(errorMsg), e);
       state = State.FAILED;
+    } catch (final StackOverflowError e) {
+      // A statement whose evaluation needs more stack than the thread has is a failed statement like any other: released first,
+      // answered, and the connection goes on serving
+      stream.close(this, "RUN failure");
+      answerStackExhausted("RUN");
     } finally {
-      CommandTimeoutOverride.clear();
-      if (binding != null)
-        binding.close();
+      try {
+        CommandTimeoutOverride.clear();
+        if (binding != null)
+          binding.close();
+      } finally {
+        // Any other way out of the try block that did not register the stream (an Error that ends the connection among them): the
+        // admission slot, the entry of the list of running statements and the result set go back before the exception travels on
+        if (!streamRegistered)
+          stream.close(this, "RUN failure");
+      }
     }
+  }
+
+  /**
+   * Answers a statement whose evaluation needed more stack than the thread has, as any other failed statement is answered. The
+   * caller has released the statement's stream already. The stack is unwound by now, so there is room to answer, and the
+   * connection goes on serving once the client RESETs.
+   */
+  private void answerStackExhausted(final String phase) throws IOException {
+    LogManager.instance().log(this, Level.WARNING, "BOLT %s error: %s", phase, STACK_EXHAUSTED_MESSAGE);
+    sendFailure(BoltErrorCodes.DATABASE_ERROR, STACK_EXHAUSTED_MESSAGE);
+    state = State.FAILED;
   }
 
   /** Whether the Bolt {@code mode} of a BEGIN or an auto-commit RUN asks for READ access ({@code "r"}; the default is write). */
@@ -1156,6 +1200,10 @@ public class BoltNetworkExecutor extends Thread {
    * Handle PULL message - fetch records from result stream.
    */
   private void handlePull(final PullMessage message) throws IOException {
+    // The rows are produced as they are pulled: the user has to still be the one the server knows, with the database still granted
+    if (!authorizeOpenStreams())
+      return;
+
     final BoltQueryStream stream = resolveStream(message.getQid());
     if (stream == null)
       return;
@@ -1202,6 +1250,11 @@ public class BoltNetworkExecutor extends Thread {
       // rather than held until the client RESETs or disconnects
       closeStream(stream, "PULL failure");
       state = State.FAILED;
+    } catch (final StackOverflowError e) {
+      // The rows are evaluated here as they are read: a row that needs more stack than the thread has fails the stream, as it
+      // does when it is the one the RUN read
+      closeStream(stream, "PULL failure");
+      answerStackExhausted("PULL");
     }
   }
 
@@ -1214,6 +1267,10 @@ public class BoltNetworkExecutor extends Thread {
    * failed the connection. The Java driver always sends {@code n = -1}, which is why its tests never saw it.
    */
   private void handleDiscard(final DiscardMessage discardMessage) throws IOException {
+    // The rows skipped are evaluated as they are skipped: checked as a PULL is
+    if (!authorizeOpenStreams())
+      return;
+
     final BoltQueryStream stream = resolveStream(discardMessage.getQid());
     if (stream == null)
       return;
@@ -1245,6 +1302,11 @@ public class BoltNetworkExecutor extends Thread {
       sendExecutionFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR), loggedClientMessage(errorMsg), e);
       closeStream(stream, "DISCARD failure");
       state = State.FAILED;
+      return;
+    } catch (final StackOverflowError e) {
+      // As in PULL: the rows skipped are evaluated as they are skipped
+      closeStream(stream, "DISCARD failure");
+      answerStackExhausted("DISCARD");
       return;
     }
 
@@ -1523,15 +1585,7 @@ public class BoltNetworkExecutor extends Thread {
         // one that has to be granted it. Past this check a user is always bound.
         if (!authorizeDatabase(database.getName()))
           return false;
-        // Update current user on the existing context to handle LOGOFF/LOGON re-authentication
-        // on the same connection without disrupting any open transactions.
-        final DatabaseContext.DatabaseContextTL ctx =
-            DatabaseContext.INSTANCE.getContextIfExists(((DatabaseInternal) database).getDatabasePath());
-        if (ctx != null) {
-          ctx.setCurrentUser(user.getDatabaseUser(database));
-          // Attach this connection's GQL session so SESSION statements and param merging can reach it.
-          ctx.setQuerySession(session);
-        }
+        bindContextUser();
         return true;
       }
     }
@@ -1621,6 +1675,9 @@ public class BoltNetworkExecutor extends Thread {
    * the HTTP, gRPC, PostgreSQL, Redis and MongoDB listeners do: the deny-all user bound to an ungranted database
    * only rejects the operations routed through the engine's ACL, while this listener answers database and schema
    * listings itself. Fails closed on a connection with no authenticated user.
+   * <p>
+   * A refusal releases what the connection holds open - its result streams and its explicit transaction - so none of
+   * it can be read from or committed afterwards, and the admission slots of the streams go back at once.
    */
   private boolean authorizeDatabase(final String databaseName) throws IOException {
     if (user != null) {
@@ -1629,8 +1686,8 @@ public class BoltNetworkExecutor extends Thread {
         // grant since then must not keep the access it had when it authenticated.
         user = server.getSecurity().revalidate(user);
       } catch (final ServerSecurityException e) {
-        // Released before the handle is dropped: an explicit transaction of the revoked user must not outlive it.
-        rollbackExplicitTransaction();
+        // Released before the handle is dropped: the streams and the explicit transaction of the revoked user must not outlive it.
+        releaseOpenWork("revalidation");
         user = null;
         database = null;
         sendFailure(BoltErrorCodes.AUTHENTICATION_ERROR, "The credentials of this connection are no longer valid");
@@ -1640,9 +1697,61 @@ public class BoltNetworkExecutor extends Thread {
     }
     if (user != null && user.canAccessToDatabase(databaseName))
       return true;
-    sendFailure(BoltErrorCodes.FORBIDDEN_ERROR, "Access to database '" + databaseName + "' is not allowed");
+    return refuseDatabase("Access to database '" + databaseName + "' is not allowed");
+  }
+
+  /**
+   * Answers a {@code Forbidden} failure for a connection that may not read the database it has bound, after releasing its
+   * streams and its explicit transaction (see {@link #authorizeDatabase}).
+   */
+  private boolean refuseDatabase(final String message) throws IOException {
+    releaseOpenWork("revalidation");
+    sendFailure(BoltErrorCodes.FORBIDDEN_ERROR, message);
     state = State.FAILED;
     return false;
+  }
+
+  /**
+   * Releases every result stream of this connection, then rolls back its explicit transaction: the streams first, as ROLLBACK
+   * does, since they read from the transaction. The rollback runs whatever the release of a stream raised.
+   */
+  private void releaseOpenWork(final String phase) {
+    try {
+      closeAllStreams(phase);
+    } finally {
+      rollbackExplicitTransaction();
+    }
+  }
+
+  /**
+   * The check a RUN makes through {@link #ensureDatabase}, made again before a PULL or a DISCARD reads the rows of an open
+   * stream: they are produced as they are pulled, long after the statement started, so the user bound to the connection
+   * has to still be the one the server knows and still be granted the database. Refused, the streams and the explicit
+   * transaction are released and the connection answers FAILURE. When it holds, the context of the database is rebound to the
+   * current principal, so the checks made per record see its current groups.
+   */
+  private boolean authorizeOpenStreams() throws IOException {
+    if (database == null)
+      return refuseDatabase("No database is selected for this connection");
+    if (!authorizeDatabase(database.getName()))
+      return false;
+    bindContextUser();
+    return true;
+  }
+
+  /**
+   * Binds the current user and the GQL session of this connection to the context of its open database. Updating the user on
+   * the existing context is what makes a LOGOFF/LOGON re-authentication on the same connection, or a change of the user's
+   * groups, reach the open transactions without disrupting them.
+   */
+  private void bindContextUser() {
+    final DatabaseContext.DatabaseContextTL ctx =
+        DatabaseContext.INSTANCE.getContextIfExists(((DatabaseInternal) database).getDatabasePath());
+    if (ctx != null) {
+      ctx.setCurrentUser(user.getDatabaseUser(database));
+      // Attach this connection's GQL session so SESSION statements and param merging can reach it.
+      ctx.setQuerySession(session);
+    }
   }
 
   /**
@@ -2099,6 +2208,8 @@ public class BoltNetworkExecutor extends Thread {
       // The transaction of the connection ends before the principal changes
       rollbackExplicitTransaction();
     user = null;
+    // Same for the GQL session parameters: an attempt to change identity, successful or not, starts from an empty session
+    session.reset();
 
     ServerSecurityUser authenticated = null;
     if (principal != null && credentials != null)
@@ -2623,26 +2734,31 @@ public class BoltNetworkExecutor extends Thread {
    * Cleanup resources when connection closes.
    */
   private void cleanup() {
-    closeAllStreams("connection close");
-    rollbackExplicitTransaction();
-
-    // Database is managed by the server - just release our reference
-    // DO NOT close the shared database instance
-    database = null;
-
     try {
-      socket.close();
-    } catch (final Exception e) {
-      // Ignore
-    }
+      try {
+        closeAllStreams("connection close");
+      } finally {
+        rollbackExplicitTransaction();
+      }
+    } finally {
+      // Database is managed by the server - just release our reference
+      // DO NOT close the shared database instance
+      database = null;
 
-    // Notify listener that this connection is closed
-    if (listener != null) {
-      listener.removeConnection(this);
-    }
+      try {
+        socket.close();
+      } catch (final Exception e) {
+        // Ignore
+      }
 
-    if (debug) {
-      LogManager.instance().log(this, Level.FINE, "BOLT connection closed");
+      // Notify listener that this connection is closed
+      if (listener != null) {
+        listener.removeConnection(this);
+      }
+
+      if (debug) {
+        LogManager.instance().log(this, Level.FINE, "BOLT connection closed");
+      }
     }
   }
 

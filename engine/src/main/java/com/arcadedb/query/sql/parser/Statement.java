@@ -26,6 +26,7 @@ import com.arcadedb.exception.CommandParameterMissingException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.literal.LiteralParameterizer;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalExecutionPlan;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -73,6 +74,12 @@ public class Statement extends SimpleNode {
   private transient volatile ParameterBounds positionalParameterBounds;
   // Memo of placeholders(): the ? and :name nodes of the tree, in the order the walk meets them, or null when it cannot be read
   private transient volatile InputParameter[] placeholders;
+  // Set while the statement is built, before it is handed out, on a statement written with more literals than a shape records
+  // (issue #12605, see excludeFromPlanCache()). A copy of a statement whose plans can reach the cache carries it, since the
+  // planners work on copies of the nested statements: SELECT (its own plan) and UPDATE/DELETE (their source plan) do. A statement
+  // type that starts caching a plan of its own must be marked where the AST builder creates it (SQLASTBuilder.planned) and carry
+  // the mark in its copy() too
+  transient boolean excludedFromPlanCache;
 
   /**
    * How many positional values a statement must be bound to ({@code required}) and may be bound to ({@code accepted}).
@@ -515,6 +522,25 @@ public class Statement extends SimpleNode {
 
   public boolean executionPlanCanBeCached() {
     return false;
+  }
+
+  /**
+   * Keeps the plans of this statement, and of every statement nested in it, out of the execution plan cache: the statement was
+   * parsed from a text with more literals than {@link LiteralParameterizer#MAX_LITERALS}, which the statement cache keeps out
+   * too (issue #12350). Every key a plan of it could be cached under - its own text, the rendered read side of an UPDATE or
+   * DELETE, the rendered text of a LET subquery - can hold every literal, so only an exact resend could hit the entry, while the
+   * plan holds the tree for as long as it lives (issue #12605). The literals can be in any nested statement, so the AST builder
+   * calls this on each SELECT, UPDATE and DELETE as it creates it, and the parser on the statement it hands out: no walk of the
+   * finished tree is needed, which for such a text is tens of thousands of nodes on every execution, and could not mark anything
+   * where the fields of the tree cannot be read reflectively. Called while the statement is built only, before it is handed out.
+   */
+  public void excludeFromPlanCache() {
+    excludedFromPlanCache = true;
+  }
+
+  /** Whether {@link #excludeFromPlanCache()} was called on this statement. */
+  public boolean isExcludedFromPlanCache() {
+    return excludedFromPlanCache;
   }
 
   /**

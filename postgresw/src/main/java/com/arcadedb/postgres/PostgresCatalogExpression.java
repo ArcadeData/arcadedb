@@ -18,6 +18,7 @@
  */
 package com.arcadedb.postgres;
 
+import com.arcadedb.function.text.TrimFunction;
 import com.arcadedb.utility.TimeBoundRegex;
 
 import java.util.ArrayList;
@@ -787,15 +788,12 @@ abstract class PostgresCatalogExpression {
     }
   }
 
-  /** {@code text} without the characters of {@code characters} at its start and at its end, as the flags say. */
+  /**
+   * {@code text} without the characters of {@code characters} at its start and at its end, as the flags say. A character is a whole
+   * code point, and the cost is that of reading the two strings once, whatever their lengths.
+   */
   private static String strip(final String text, final String characters, final boolean start, final boolean end) {
-    int from = 0;
-    int to = text.length();
-    while (start && from < to && characters.indexOf(text.charAt(from)) >= 0)
-      ++from;
-    while (end && to > from && characters.indexOf(text.charAt(to - 1)) >= 0)
-      --to;
-    return text.substring(from, to);
+    return TrimFunction.strip(text, characters, start, end);
   }
 
   private static class Not extends PostgresCatalogExpression {

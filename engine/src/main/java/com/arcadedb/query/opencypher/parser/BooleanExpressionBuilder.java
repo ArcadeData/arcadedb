@@ -206,7 +206,12 @@ final class BooleanExpressionBuilder {
    */
   BooleanExpression parsePredicate(final Cypher25Parser.ExpressionContext ctx) {
     rejectNonBooleanPatternExpressions(ctx);
-    return parseBooleanExpression(ctx);
+    final BooleanExpression parsed = parseBooleanExpression(ctx);
+    // A list literal cannot be coerced to a boolean: the reference implementation refuses it, and the engine refuses the
+    // same literal under AND/OR/NOT/XOR since issue #11760. Without this the same literal was true here and refused there
+    // (issue #12975)
+    BooleanOperandValidator.refuseListPredicate(parsed);
+    return parsed;
   }
 
   /**

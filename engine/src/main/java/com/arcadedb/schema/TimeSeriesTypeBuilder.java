@@ -49,6 +49,13 @@ import java.util.Set;
 public class TimeSeriesTypeBuilder {
 
   /**
+   * The most shards a type can declare. Every shard owns a mutable bucket file, a sealed file, a decoded-block cache and a worker
+   * thread, so the count has to stay in a range a database can serve. A type created without a count gets one shard per async
+   * worker thread, and a count up to that value is accepted whatever it is, so the limit never refuses what the default produced.
+   */
+  public static final int MAX_SHARDS = 256;
+
+  /**
    * The timestamp precisions {@code CREATE TIMESERIES TYPE} accepts, upper-cased. A builder carrying anything else
    * has no SQL expression and {@link #toSQL()} refuses it rather than emitting DDL the server will reject.
    */
@@ -156,6 +163,11 @@ public class TimeSeriesTypeBuilder {
     return this;
   }
 
+  /**
+   * Declares the number of shards. 0 (the default) means one per async worker thread. A count below zero or above
+   * {@link #MAX_SHARDS} (or the number of async worker threads, when that is larger) is refused by {@link #validate()}, so
+   * {@link #create()} and {@link #toSQL()} refuse it alike, before any file is created.
+   */
   public TimeSeriesTypeBuilder withShards(final int shards) {
     this.shards = shards;
     return this;
@@ -446,6 +458,19 @@ public class TimeSeriesTypeBuilder {
     if (compactionBucketIntervalMs < 0)
       throw new SchemaException(
           "TimeSeries compaction bucket interval cannot be negative, was " + compactionBucketIntervalMs + "ms");
+
+    // The count sizes the files, the caches and the worker threads of the type, so it is judged before anything is created. 0 keeps its
+    // meaning of "use the default". The upper bound is known only to an embedded builder: a remote one renders the count into the DDL,
+    // and the server that runs it applies the bound of its own configuration.
+    if (shards < 0)
+      throw new SchemaException("TimeSeries shard count cannot be negative, was " + shards);
+    if (shards > MAX_SHARDS && database instanceof DatabaseInternal databaseInternal) {
+      // never below the default a type gets without a count, so a type created that way can always be exported and restored
+      final int maxShards = Math.max(MAX_SHARDS,
+          databaseInternal.getConfiguration().getValueAsInteger(GlobalConfiguration.ASYNC_WORKER_THREADS));
+      if (shards > maxShards)
+        throw new SchemaException("TimeSeries shard count cannot be above " + maxShards + ", was " + shards);
+    }
 
     // A TimeSeries row is a fixed-stride record and a sealed block column is one of three primitive
     // codecs, so a type with neither a fixed width nor a bounded text form cannot be stored. Declaring

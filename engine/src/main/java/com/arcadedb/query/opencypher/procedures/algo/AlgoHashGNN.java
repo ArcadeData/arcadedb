@@ -142,7 +142,7 @@ public class AlgoHashGNN extends AbstractAlgoProcedure {
           getName() + "(): neighborInfluence must be a finite number of at least 0, got " + neighborInfluence);
     final long seed = config != null && config.get("seed") instanceof Number n ? n.longValue() : -1L;
     final String[] relTypes = config != null ? extractRelTypes(config.get("relTypes"), context) : null;
-    final Vertex.DIRECTION dir = parseDirection(config != null ? (String) config.get("direction") : null);
+    final Vertex.DIRECTION dir = extractDirection(config != null ? config.get("direction") : null, Vertex.DIRECTION.BOTH);
 
     final Database db = context.getDatabase();
     final WorkGuard guard = newWorkGuard(context);

@@ -25,6 +25,8 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalDocumentType;
+import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.utility.IntHashSet;
 
 import java.util.ArrayList;
@@ -58,15 +60,17 @@ public class LocalTransactionExplicitLock implements TransactionExplicitLock {
 
   @Override
   public LocalTransactionExplicitLock bucket(final String bucketName) {
-    bucketNames.add(bucketName);
+    // Collected first: a bucket the user may not write leaves nothing behind in this lock, which the transaction can still use for
+    // the next one it asks
     collectBucketFileIds(bucketName);
+    bucketNames.add(bucketName);
     return this;
   }
 
   @Override
   public LocalTransactionExplicitLock type(final String typeName) {
-    typeNames.add(typeName);
     collectTypeFileIds(typeName);
+    typeNames.add(typeName);
     return this;
   }
 
@@ -107,8 +111,11 @@ public class LocalTransactionExplicitLock implements TransactionExplicitLock {
 
   private void collectBucketFileIds(final String bucketName) {
     final Bucket bucket = transactionContext.getDatabase().getSchema().getBucketByName(bucketName);
-    addNonNegative(bucket.getFileId());
     final DocumentType associatedType = transactionContext.getDatabase().getSchema().getInvolvedTypeByBucketId(bucket.getFileId());
+    final SecurityDatabaseUser user = SecurityHelper.currentUser(transactionContext.getDatabase());
+    if (user != null && !canWriteFile(user, bucket.getFileId()))
+      throw refusal(user, associatedType != null ? "type '" + associatedType.getName() + "'" : "bucket '" + bucketName + "'");
+    addNonNegative(bucket.getFileId());
     addExternalBucketOf(associatedType, bucket.getFileId());
     if (associatedType != null)
       for (final var typeIndex : associatedType.getAllIndexes(true))
@@ -118,6 +125,11 @@ public class LocalTransactionExplicitLock implements TransactionExplicitLock {
 
   private void collectTypeFileIds(final String typeName) {
     final DocumentType type = transactionContext.getDatabase().getSchema().getType(typeName);
+
+    // Before anything is collected: the lock takes the files of the type and of every subtype
+    final SecurityDatabaseUser user = SecurityHelper.currentUser(transactionContext.getDatabase());
+    if (user != null)
+      checkWriteGrantsPolymorphic(user, type, new HashSet<>());
 
     // Lock all indexes for this type
     for (final var typeIndex : type.getAllIndexes(true))
@@ -133,6 +145,45 @@ public class LocalTransactionExplicitLock implements TransactionExplicitLock {
     LogManager.instance().log(this, Level.FINE,
       "Explicit lock for type '%s' will lock %d bucket files (threadId=%d)",
       typeName, filesToLock.size(), Thread.currentThread().threadId());
+  }
+
+  /**
+   * The lock takes the files a write to the type touches, so it is for a user who may write them: a create, an update or a delete
+   * grant on each primary bucket of the type and of its subtypes. The files that follow a primary bucket - its paired external
+   * bucket, the edge-list buckets, the files of the indexes - carry the grants of the type, or none of their own.
+   */
+  private void checkWriteGrantsPolymorphic(final SecurityDatabaseUser user, final DocumentType type, final Set<String> visited) {
+    if (!visited.add(type.getName()))
+      return;
+
+    final List<Integer> bucketIds = type.getBucketIds(false);
+    if (bucketIds.isEmpty()) {
+      // A type with no bucket of its own (a time series) is gated by name
+      if (!canWriteType(user, type.getName()))
+        throw refusal(user, "type '" + type.getName() + "'");
+    } else
+      for (int i = 0; i < bucketIds.size(); i++)
+        if (!canWriteFile(user, bucketIds.get(i)))
+          throw refusal(user, "type '" + type.getName() + "'");
+
+    for (final DocumentType subType : type.getSubTypes())
+      checkWriteGrantsPolymorphic(user, subType, visited);
+  }
+
+  private static boolean canWriteFile(final SecurityDatabaseUser user, final int fileId) {
+    return user.requestAccessOnFile(fileId, SecurityDatabaseUser.ACCESS.CREATE_RECORD) || //
+        user.requestAccessOnFile(fileId, SecurityDatabaseUser.ACCESS.UPDATE_RECORD) || //
+        user.requestAccessOnFile(fileId, SecurityDatabaseUser.ACCESS.DELETE_RECORD);
+  }
+
+  private static boolean canWriteType(final SecurityDatabaseUser user, final String typeName) {
+    return user.requestAccessOnType(typeName, SecurityDatabaseUser.ACCESS.CREATE_RECORD) || //
+        user.requestAccessOnType(typeName, SecurityDatabaseUser.ACCESS.UPDATE_RECORD) || //
+        user.requestAccessOnType(typeName, SecurityDatabaseUser.ACCESS.DELETE_RECORD);
+  }
+
+  private static SecurityException refusal(final SecurityDatabaseUser user, final String resource) {
+    return new SecurityException("User '" + user.getName() + "' is not allowed to create, update or delete records on " + resource);
   }
 
   private void collectInvolvedBucketsPolymorphic(final DocumentType type, final Set<String> visited) {

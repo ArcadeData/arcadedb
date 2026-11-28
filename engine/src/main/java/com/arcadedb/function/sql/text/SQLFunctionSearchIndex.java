@@ -34,6 +34,7 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.query.sql.parser.BinaryCompareOperator;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.FromClause;
+import com.arcadedb.query.sql.parser.SuffixIdentifier;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.schema.MultiTypeIndexes;
 import com.arcadedb.schema.Schema;
@@ -105,6 +106,8 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
       return false;
 
     // Verify the named index exists and is a full-text type index
+    if (readsRecordAttribute(oExpressions[0], context))
+      return false;
     final String indexName = resolveStringParam(oExpressions[0], context);
     if (indexName == null)
       return false;
@@ -112,8 +115,14 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
     final Schema schema = context.getDatabase().getSchema();
     // a logical index over several types (issue #11014) is searched through its members; a name that is an index is not a logical
     // one, so the walk of the types is paid only by a name that is not
-    if (!schema.existsIndex(indexName) && MultiTypeIndexes.find(schema, indexName) != null)
+    final boolean exists = schema.existsIndex(indexName);
+    if (!exists && MultiTypeIndexes.find(schema, indexName) != null)
       return true;
+
+    // A name built from the record (`@type + '[name]'`) resolves, with no record, to a name that is no index: the call is
+    // evaluated per record, where the name is the real one, instead of being refused here for a name nobody wrote (issue #12795)
+    if (!exists && !oExpressions[0].isEarlyCalculated(context))
+      return false;
 
     final Index index = schema.getIndexByName(indexName);
     return index instanceof TypeIndex;
@@ -227,12 +236,42 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
   }
 
   /**
-   * Resolves a function expression parameter to a string value.
+   * Resolves a function expression parameter to a string value with no current record, or null when it has no value there.
    */
   static String resolveStringParam(final Expression expr, final CommandContext context) {
-    if (expr == null)
-      return null;
-    final Object value = expr.execute((Identifiable) null, context);
+    final Object value = resolveParam(expr, context);
     return value != null ? value.toString() : null;
+  }
+
+  /**
+   * Resolves a function expression parameter with no current record, for the indexed fetch and for the planner that decides on
+   * it. What reads the record ({@code @type}, a property) is null there. No expression is turned away up front: a value known
+   * only when the statement runs and that is not read from the record, such as {@code $parent.$current.term} in a sub-query,
+   * resolves here and is answered by the index.
+   */
+  static Object resolveParam(final Expression expr, final CommandContext context) {
+    return expr != null ? expr.execute((Identifiable) null, context) : null;
+  }
+
+  /**
+   * Whether the argument that names what to search (the index, the fields) reads a record attribute. With no record the
+   * attribute is null, and an expression can turn that null into the name of another index
+   * ({@code ifnull(@type, 'Other') + '[name]'}): the indexed fetch would then answer from an index the records do not name.
+   * Such a call is not served by the index and is evaluated per record. An argument that reads no attribute costs one more
+   * evaluation of it, once per plan.
+   */
+  static boolean readsRecordAttribute(final Expression expr, final CommandContext context) {
+    if (expr == null)
+      return false;
+    context.setCachedValue(SuffixIdentifier.RECORD_ATTRIBUTE_NEEDS_RECORD, SuffixIdentifier.IN_EVERY_READ);
+    try {
+      expr.execute((Identifiable) null, context);
+      return false;
+    } catch (final CommandExecutionException e) {
+      // the attribute was refused, or the argument fails for a reason the per-record evaluation reports
+      return true;
+    } finally {
+      context.setCachedValue(SuffixIdentifier.RECORD_ATTRIBUTE_NEEDS_RECORD, null);
+    }
   }
 }

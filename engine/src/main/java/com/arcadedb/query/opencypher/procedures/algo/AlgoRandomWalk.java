@@ -91,7 +91,7 @@ public class AlgoRandomWalk extends AbstractAlgoProcedure {
     validateArgs(args);
 
     final Vertex startVertex = extractVertex(args[0], "startNode");
-    final int steps = extractInt((Number) args[1], "steps");
+    final int steps = extractInt(requiredNumberArg(args, 1, "steps"), "steps");
     final String[] relTypes   = extractRelTypes(argOrDefault(args, 2, null), context);
     final Vertex.DIRECTION dir = parseDirection(extractString(argOrDefault(args, 3, "BOTH"), "direction"));
     final long seed = optionalNumberArg(args, 4, "seed", System.currentTimeMillis()).longValue();
