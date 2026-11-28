@@ -18,12 +18,16 @@
  */
 package com.arcadedb.server.grpc;
 
+import com.sun.management.ThreadMXBean;
 import org.junit.jupiter.api.Test;
 
+import java.lang.management.ManagementFactory;
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
+import static org.assertj.core.api.Assumptions.assumeThat;
 
 /**
  * Regression tests for issue #5044 (COR-8, static converter path).
@@ -179,6 +183,74 @@ class GrpcTypeConverterArrayEncoderTest {
       assertThat(GrpcArrayCodec.toArray(List.of(bool, int32(1)), tag)).as(tag).isNull();
       assertThat(GrpcArrayCodec.toArray(List.of(int32(1), absent), tag)).as(tag).isNull();
     }
+  }
+
+  // Regression: #13257
+  @Test
+  void aPrimitiveNumericArrayEncodesAsItsBoxedElementsDo() {
+    final List<Float> floats = new ArrayList<>();
+    final List<Double> doubles = new ArrayList<>();
+    final List<Integer> ints = new ArrayList<>();
+    final List<Long> longs = new ArrayList<>();
+    for (int i = 0; i < 40; i++) {
+      floats.add(i * 0.37F - 5F);
+      doubles.add(i * 0.37D - 5D);
+      ints.add(i * 1_000_003 - 20_000_000);
+      longs.add(i * 5_000_000_011L - 100_000_000_000L);
+    }
+    floats.add(Float.NaN);
+    doubles.add(Double.NEGATIVE_INFINITY);
+
+    // the list of the same boxed values goes through the element encoder, which is what an array used to
+    assertSameElements(GrpcTypeConverter.toGrpcValue(toFloatArray(floats)), GrpcTypeConverter.toGrpcValue(floats));
+    assertSameElements(GrpcTypeConverter.toGrpcValue(doubles.stream().mapToDouble(Double::doubleValue).toArray()),
+        GrpcTypeConverter.toGrpcValue(doubles));
+    assertSameElements(GrpcTypeConverter.toGrpcValue(ints.stream().mapToInt(Integer::intValue).toArray()),
+        GrpcTypeConverter.toGrpcValue(ints));
+    assertSameElements(GrpcTypeConverter.toGrpcValue(longs.stream().mapToLong(Long::longValue).toArray()),
+        GrpcTypeConverter.toGrpcValue(longs));
+  }
+
+  // Regression: #13257
+  @Test
+  void encodingAVectorAllocatesLittlePerElement() {
+    final ThreadMXBean threads = (ThreadMXBean) ManagementFactory.getThreadMXBean();
+    // supported and enabled are two answers: a disabled counter reads -1 twice, and the difference of the two would pass the bound
+    assumeThat(threads.isThreadAllocatedMemorySupported() && threads.isThreadAllocatedMemoryEnabled()).isTrue();
+    final int dims = 1024;
+    final float[] vector = new float[dims];
+    for (int i = 0; i < dims; i++)
+      vector[i] = i * 0.001F;
+    final long thread = Thread.currentThread().threadId();
+
+    int sink = 0;
+    for (int i = 0; i < 3_000; i++)
+      sink += GrpcTypeConverter.toGrpcValue(vector).getListValue().getValuesCount();
+    final int rounds = 2_000;
+    final long before = threads.getThreadAllocatedBytes(thread);
+    for (int i = 0; i < rounds; i++)
+      sink += GrpcTypeConverter.toGrpcValue(vector).getListValue().getValuesCount();
+    final long after = threads.getThreadAllocatedBytes(thread);
+    assertThat(before).as("allocation counter before").isNotNegative();
+    assertThat(after).as("allocation counter after").isGreaterThanOrEqualTo(before);
+    final long perElement = (after - before) / rounds / dims;
+
+    assertThat(sink).isEqualTo(dims * (3_000 + rounds));
+    // One message per element is the wire's shape. Bytes per element, main -> this change, differ by JVM: JDK 21.0.13 G1: 157 -> 69;
+    // Temurin 25.0.4.1 ZGC with compact object headers: 217 -> 89. The bound sits between the two on both, so it separates the bug from
+    // the fix on either, and leaves the fix a quarter of margin where its figure is highest.
+    assertThat(perElement).as("bytes allocated per element of a float[1024]").isLessThan(120L);
+  }
+
+  private static float[] toFloatArray(final List<Float> list) {
+    final float[] array = new float[list.size()];
+    for (int i = 0; i < array.length; i++)
+      array[i] = list.get(i);
+    return array;
+  }
+
+  private static void assertSameElements(final GrpcValue fromArray, final GrpcValue fromList) {
+    assertThat(fromArray.getListValue().getValuesList()).isEqualTo(fromList.getListValue().getValuesList());
   }
 
   private static void assertTagged(final GrpcValue encoded, final String tag, final int size) {

@@ -266,9 +266,27 @@ class GrpcTypeConverter {
       if (o instanceof double[] doubles && GrpcPackedArraysInterceptor.requested())
         return GrpcPackedArrays.encode(doubles);
       final GrpcList.Builder lb = GrpcList.newBuilder();
-      final int len = Array.getLength(o);
-      for (int i = 0; i < len; i++)
-        lb.addValues(element.apply(Array.get(o, i)));
+      // The numeric arrays a vector is (issue #13257) go element by element without Array.get's boxing, and without the builder
+      // toGrpcScalar makes per element: a 1,024-dimension embedding is 1,024 messages, so each object saved is paid a thousand times
+      // per row. Each element is the value toGrpcScalar answers for the boxed one: float_value, double_value, int32_value, int64_value
+      final GrpcValue.Builder scalar = GrpcValue.newBuilder();
+      if (o instanceof float[] floats)
+        for (final float v : floats)
+          lb.addValues(scalar.setFloatValue(v).build());
+      else if (o instanceof double[] doubles)
+        for (final double v : doubles)
+          lb.addValues(scalar.setDoubleValue(v).build());
+      else if (o instanceof int[] ints)
+        for (final int v : ints)
+          lb.addValues(scalar.setInt32Value(v).build());
+      else if (o instanceof long[] longs)
+        for (final long v : longs)
+          lb.addValues(scalar.setInt64Value(v).build());
+      else {
+        final int len = Array.getLength(o);
+        for (int i = 0; i < len; i++)
+          lb.addValues(element.apply(Array.get(o, i)));
+      }
       // a primitive numeric array keeps its class on the client (issue #12189)
       final GrpcValue.Builder vb = GrpcValue.newBuilder().setListValue(lb.build());
       final String logicalType = GrpcArrayCodec.logicalTypeOf(o);
