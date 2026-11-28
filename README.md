@@ -179,7 +179,10 @@ Pass database settings in `ARCADEDB_SETTINGS` and any extra JVM flags in `JAVA_O
 an environment variable rather than appending to it, so keeping the two apart leaves the image's own
 garbage collector and heap sizing (`ARCADEDB_OPTS_GC` and `ARCADEDB_OPTS_MEMORY`) intact. The heap is
 sized as a percentage of the container memory limit, so `docker run -m 512m` and a multi-GB
-production container both work without further tuning.
+production container both work without further tuning. At start the server also asks the collector to
+keep the heap within 60% of that ceiling (`-XX:SoftMaxHeapSize`, which ZGC follows and grows past only
+when it must), unless the JVM was given a soft limit of its own; set `arcadedb.server.softMaxHeapPercent`
+to change the share, or to 0 to leave the heap to the collector.
 The image runs on Java 25, where `server.sh` also enables compact object headers (`-XX:+UseCompactObjectHeaders`),
 after checking that the JVM accepts the flag (a bare distribution on Java 25 or later does the same); set
 `ARCADEDB_OPTS_HEADERS` to override it, or to an empty value to opt out.

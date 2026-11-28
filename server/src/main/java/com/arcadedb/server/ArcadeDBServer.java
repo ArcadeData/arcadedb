@@ -70,6 +70,7 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.server.support.SupportService;
 import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.FileUtils;
+import com.arcadedb.utility.JVMUtils;
 import com.arcadedb.utility.ServerPathUtils;
 import io.micrometer.core.instrument.Meter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -620,6 +621,8 @@ public class ArcadeDBServer {
     if (status != STATUS.OFFLINE)
       return;
 
+    applySoftMaxHeap();
+
     // A NEW LIFECYCLE OF THIS INSTANCE: A DATABASE A COMMAND CLOSED BEFORE THE LAST STOP IS NOT CLOSED ANY MORE (#10234)
     closedByCommand.clear();
     synchronized (databasesLock) {
@@ -957,6 +960,19 @@ public class ArcadeDBServer {
             vmVendorVersion != null ?
                 "(" + vmVendorVersion + ")" :
                 ""));
+  }
+
+  /**
+   * Asks the garbage collector to keep the heap within {@link GlobalConfiguration#SERVER_SOFT_MAX_HEAP_PERCENT} of its ceiling,
+   * when the JVM was started without a soft limit of its own. ZGC otherwise grows the heap to the ceiling under a sustained write
+   * load whatever is live, and keeps it committed.
+   */
+  private void applySoftMaxHeap() {
+    final int percent = configuration.getValueAsInteger(GlobalConfiguration.SERVER_SOFT_MAX_HEAP_PERCENT);
+    final long softMax = JVMUtils.applySoftMaxHeapPercent(percent);
+    if (softMax > 0)
+      LogManager.instance().log(this, Level.INFO, "Soft heap limit set to %s (%d%% of the heap ceiling, %s=%d)",
+          FileUtils.getSizeAsString(softMax), percent, GlobalConfiguration.SERVER_SOFT_MAX_HEAP_PERCENT.getKey(), percent);
   }
 
   private Set<String> getPluginNames() {

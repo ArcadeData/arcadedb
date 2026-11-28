@@ -2129,6 +2129,15 @@ public enum GlobalConfiguration {
       "Directory where the server writes log files, referenced as ${arcadedb.server.logsDirectory} in arcadedb-log.properties. Defaults to './log'; set to an absolute writable path for read-only root filesystems.",
       String.class, "./log"),
 
+  SERVER_SOFT_MAX_HEAP_PERCENT("arcadedb.server.softMaxHeapPercent", SCOPE.JVM,
+      """
+      Share of the heap ceiling (-Xmx, as a percentage) the server asks the garbage collector to keep the heap within when it \
+      starts, through -XX:SoftMaxHeapSize, if the JVM was started without one. ZGC, the collector of the Docker image, grows \
+      the heap to its ceiling under a sustained write load however little of it is live, and that memory stays committed; \
+      with a soft limit it collects earlier and grows past the limit only when allocations would otherwise stall. Collectors \
+      that have no soft limit (G1, Parallel, Serial) ignore it. 0 leaves the JVM's own value (the ceiling).""",
+      Integer.class, 60),
+
   SERVER_DATABASE_DIRECTORY("arcadedb.server.databaseDirectory", SCOPE.JVM, "Directory containing the database", String.class,
       "${arcadedb.server.rootPath}/databases"),
 
