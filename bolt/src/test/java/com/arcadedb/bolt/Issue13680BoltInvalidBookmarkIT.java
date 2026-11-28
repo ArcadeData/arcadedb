@@ -88,6 +88,44 @@ public class Issue13680BoltInvalidBookmarkIT extends BaseBoltServerTest {
     }
   }
 
+  /**
+   * A bookmark that is not a string, and a {@code bookmarks} that is not a list, are refused too. The text names the type of such a
+   * value instead of rendering it: it can be as large as the message that carried it.
+   */
+  @Test
+  void aBookmarkThatIsNotAStringIsRefused() throws Exception {
+    try (final BoltWireConnection bolt = new BoltWireConnection(getServerBoltPort(), getDatabaseName())) {
+      final String large = "x".repeat(5_000);
+      for (final Object bookmarks : List.of(List.of(5L), List.of("arcade:tx:1", Map.of("k", large)), List.of(List.of(large)), "arcade:tx:1",
+          7L)) {
+        bolt.sendMap(BoltMessage.BEGIN, Map.of("db", getDatabaseName(), "bookmarks", bookmarks));
+        final BoltWireConnection.Summary begin = bolt.readSummary();
+        assertThat(begin.signature()).as("BEGIN with %s", bookmarks.getClass().getSimpleName()).isEqualTo(BoltMessage.FAILURE);
+        assertThat(begin.code()).isEqualTo(INVALID_BOOKMARK);
+        assertThat(begin.message()).doesNotContain("xxxx").hasSizeLessThan(200);
+        bolt.sendNoFields(BoltMessage.RESET);
+        assertThat(bolt.readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
+
+        bolt.run("RETURN 1 AS x", Map.of("db", getDatabaseName(), "bookmarks", bookmarks));
+        final BoltWireConnection.Summary run = bolt.readSummary();
+        assertThat(run.signature()).as("RUN with %s", bookmarks.getClass().getSimpleName()).isEqualTo(BoltMessage.FAILURE);
+        assertThat(run.code()).isEqualTo(INVALID_BOOKMARK);
+        bolt.sendNoFields(BoltMessage.RESET);
+        assertThat(bolt.readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
+      }
+
+      // A long string bookmark is echoed cut, and the connection still serves
+      bolt.run("RETURN 1 AS x", Map.of("db", getDatabaseName(), "bookmarks", List.of(large)));
+      final BoltWireConnection.Summary cut = bolt.readSummary();
+      assertThat(cut.code()).isEqualTo(INVALID_BOOKMARK);
+      assertThat(cut.message()).endsWith("x".repeat(64) + "...").hasSizeLessThan(200);
+      bolt.sendNoFields(BoltMessage.RESET);
+      assertThat(bolt.readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
+      bolt.run("RETURN 1 AS x");
+      assertThat(bolt.readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
+    }
+  }
+
   /** What the server issues is accepted back: the bookmark of a COMMIT, an auto-commit bookmark, and none or an empty one. */
   @Test
   void aBookmarkTheServerIssuedIsAccepted() throws Exception {

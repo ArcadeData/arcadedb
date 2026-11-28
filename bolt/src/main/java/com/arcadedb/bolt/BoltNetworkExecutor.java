@@ -1168,18 +1168,34 @@ public class BoltNetworkExecutor extends Thread {
    * @return true when the request may go on
    */
   private boolean acceptsBookmarks(final Map<String, Object> extra) throws IOException {
-    if (!(extra.get("bookmarks") instanceof Collection<?> bookmarks))
+    final Object bookmarks = extra.get("bookmarks");
+    if (bookmarks == null)
       return true;
-    for (final Object bookmark : bookmarks) {
-      if (bookmark instanceof String text && (text.isEmpty() || isIssuedBookmark(text)))
-        continue;
-      final String shown = String.valueOf(bookmark);
-      sendFailure(BoltErrorCodes.INVALID_BOOKMARK_ERROR, "Parsing of supplied bookmarks failed with message: not a bookmark issued by "
-          + "this server: " + (shown.length() > 64 ? shown.substring(0, 64) + "..." : shown));
-      state = State.FAILED;
-      return false;
-    }
+    // Anything but a list is no bookmark list at all: refused like a bookmark that is not ours, rather than read as "none"
+    if (!(bookmarks instanceof Collection<?> list))
+      return refuseBookmark(bookmarks);
+    for (final Object bookmark : list)
+      if (!(bookmark instanceof String text) || !text.isEmpty() && !isIssuedBookmark(text))
+        return refuseBookmark(bookmark);
     return true;
+  }
+
+  /**
+   * Answers FAILURE {@code InvalidBookmark} and leaves the connection FAILED. The text shows the start of a string bookmark and only
+   * the type of anything else, so a nested value the size of the whole message is never rendered just to be cut.
+   *
+   * @return false, what {@link #acceptsBookmarks} answers for a refused request
+   */
+  private boolean refuseBookmark(final Object bookmark) throws IOException {
+    final String shown;
+    if (bookmark instanceof String text)
+      shown = text.length() > 64 ? text.substring(0, 64) + "..." : text;
+    else
+      shown = bookmark == null ? "null" : "a " + bookmark.getClass().getSimpleName();
+    sendFailure(BoltErrorCodes.INVALID_BOOKMARK_ERROR,
+        "Parsing of supplied bookmarks failed with message: not a bookmark issued by this server: " + shown);
+    state = State.FAILED;
+    return false;
   }
 
   /** Whether {@code text} has the shape {@link #generateBookmark()} gives: the prefix and the decimal digits of a positive long. */
