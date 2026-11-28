@@ -22,6 +22,8 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.QueryNotIdempotentException;
+import com.arcadedb.exception.QueryTerminatedException;
+import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graphql.parser.Definition;
 import com.arcadedb.graphql.parser.Document;
 import com.arcadedb.graphql.parser.GraphQLParser;
@@ -141,8 +143,9 @@ public class GraphQLQueryEngine implements QueryEngine {
       // The parameters are the GraphQL variable values of the operation: see issue #6834, before they were dropped
       // and every `$variable` silently resolved to null.
       return graphQLSchema.execute(query, parameters);
-    } catch (final CommandParsingException | CommandExecutionException e) {
-      // An execution failure raised by the delegated statement is not a syntax problem with the GraphQL document.
+    } catch (final CommandParsingException | CommandExecutionException | TimeoutException | QueryTerminatedException e) {
+      // An execution failure raised by the delegated statement, and the stop of a query that exceeded its timeout or was
+      // terminated, is not a syntax problem with the GraphQL document.
       // Narrower than ArcadeDBException on purpose - see the note in GraphQLSchema.executeQuery. Issue #5628.
       throw e;
     } catch (final Exception e) {

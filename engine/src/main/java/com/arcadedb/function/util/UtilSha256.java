@@ -21,7 +21,7 @@ package com.arcadedb.function.util;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
- * util.sha256(value) - Compute SHA-256 hash.
+ * util.sha256(values) - Compute the SHA-256 hash of the concatenated string forms of the values (see {@link #computeHash}).
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -43,7 +43,7 @@ public class UtilSha256 extends AbstractUtilFunction {
 
   @Override
   public String getDescription() {
-    return "Compute SHA-256 hash of the given value";
+    return "Compute SHA-256 hash of the concatenated string forms of the given values";
   }
 
   @Override

@@ -255,11 +255,20 @@ class MaterializedViewPerRecordAlterTest extends TestHelper {
 
     database.close();
     Files.write(schemaFile, onDiskDuringThePass.get());
+    // The status is read from the file, not from the reopened view: an open hands the recovery full pass of a view it loads
+    // non-VALID to the scheduler thread at once (issue #11550), which ends VALID within milliseconds, so the status of the
+    // reopened view cannot be read before it races that pass
+    assertThat(new JSONObject(Files.readString(schemaFile)).getJSONObject("materializedViews").getJSONObject("Adults")
+        .getString("status")).as("an interrupted upgrade is not VALID on disk").isNotEqualTo(MaterializedViewStatus.VALID.name());
     database = factory.open();
 
     final MaterializedViewImpl reopened = view("Adults");
     assertThat(reopened.isPerRecord()).isTrue();
-    assertThat(reopened.getStatus()).as("an interrupted upgrade is not VALID").isNotEqualTo(MaterializedViewStatus.VALID.name());
+    // and the open acted on it: the view either still says so, or a pass already ended (no commit ran yet, so only the recovery
+    // pass of the open can have made it). The status is read first: a pass counts itself before it says VALID
+    final String statusAfterOpen = reopened.getStatus();
+    assertThat(!MaterializedViewStatus.VALID.name().equals(statusAfterOpen) || reopened.getRefreshCount() > 0)
+        .as("the reopened view says it is not VALID (%s) or the open made its recovery pass", statusAfterOpen).isTrue();
 
     database.transaction(() -> database.command("sql", "UPDATE Person SET age = 64 WHERE name = 'a4'"));
     Awaitility.await("the recovery full pass ends VALID").atMost(30, TimeUnit.SECONDS)

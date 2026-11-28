@@ -166,15 +166,43 @@ public class CypherPointFunction implements StatelessFunction {
     // A geographic point built from x/y has its longitude/latitude (and height) too, as in Neo4j (issue #12276)
     if (srid != null && (srid == SRID_WGS84_2D || srid == SRID_WGS84_3D))
       return geographic(x, y, z);
-    final Map<String, Object> result = new LinkedHashMap<>();
-    result.put("x", x);
-    result.put("y", y);
-    if (has3d)
-      result.put("z", z);
     // A known name is stored in canonical spelling so case-sensitive consumers (point.distance, withinBBox, Bolt) agree
     // with the srid; an unknown name is kept as given, without an srid.
     if (crs == null || crsSrid != null)
       crs = crsOfSrid(srid, has3d);
+    return plain(x, y, z, crs, srid);
+  }
+
+  /**
+   * The point of an srid and its coordinates, as a wire protocol receives one (a Bolt Point structure): the very map
+   * {@code point()} builds for them, so the two are equal, hash alike and are one value to {@code DISTINCT} (issue #13570).
+   * A WGS-84 srid (4326, 4979) gives the geographic form, with {@code longitude}/{@code latitude} (and {@code height})
+   * beside {@code x}/{@code y} (and {@code z}) and the longitude wrapped; any other srid gives the plain one.
+   * <p>
+   * Nothing is refused here, unlike {@code point()}: a WGS-84 point {@code point()} would reject, for a latitude outside
+   * [-90, 90] or for coordinates of the other dimension than its srid, keeps the plain form with the coordinates as sent,
+   * which is what such a point decoded to before.
+   *
+   * @param srid the srid of the point
+   * @param x    the first coordinate, the longitude of a WGS-84 point
+   * @param y    the second coordinate, the latitude of a WGS-84 point
+   * @param z    the third coordinate, the height of a WGS-84 point, or null for a 2D point
+   *
+   * @return the point map
+   */
+  public static Map<String, Object> ofSrid(final int srid, final double x, final double y, final Double z) {
+    final boolean has3d = z != null;
+    if ((srid == SRID_WGS84_2D || srid == SRID_WGS84_3D) && is3dSrid(srid) == has3d && !(y > 90 || y < -90))
+      return geographic(x, y, z);
+    return plain(x, y, z, crsOfSrid(srid, has3d), srid);
+  }
+
+  private static Map<String, Object> plain(final double x, final double y, final Double z, final String crs, final Integer srid) {
+    final Map<String, Object> result = new LinkedHashMap<>();
+    result.put("x", x);
+    result.put("y", y);
+    if (z != null)
+      result.put("z", z);
     result.put("crs", crs);
     if (srid != null)
       result.put("srid", srid);

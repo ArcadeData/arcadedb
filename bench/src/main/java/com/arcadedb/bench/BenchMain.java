@@ -72,7 +72,7 @@ import java.util.stream.Stream;
 public final class BenchMain {
   /** Starts the server under test; a seam so tests run without Docker. */
   interface ServerFactory {
-    ServerUnderTest start(String image, String cpuset, int memLimitGb, String heap);
+    ServerUnderTest start(String image, String cpuset, int memLimitGb, String heap, Map<String, String> settings);
 
     /** Why the server no longer answers, null while it does; a seam so a test can script a death. */
     default String deathReason(final ServerUnderTest server) {
@@ -87,6 +87,16 @@ public final class BenchMain {
       return server == null ? null : server.diagnostics(classHistogram);
     }
 
+    /** What the run file records about the server, null for no server; a seam so a test can script it. */
+    default JSONObject config(final ServerUnderTest server) {
+      return server == null ? null : server.config();
+    }
+
+    /** The image the server runs (revision, digest), null for no server; a seam so a test can script it. */
+    default JSONObject imageInfo(final ServerUnderTest server) {
+      return server == null ? null : server.imageInfo();
+    }
+
     /** Writes a thread dump of the server to {@code file}; false when none was taken. A seam so a test runs without Docker. */
     default boolean threadDump(final ServerUnderTest server, final Path file) {
       return server != null && server.threadDump(file);
@@ -98,7 +108,7 @@ public final class BenchMain {
 
   public static void main(final String[] args) {
     System.exit(run(args, WorkloadRegistry.all(),
-        (image, cpuset, memLimitGb, heap) -> ServerUnderTest.start(image, cpuset, memLimitGb, heap, new HashMap<>()), System.out));
+        ServerUnderTest::start, System.out));
   }
 
   static int run(final String[] args, final List<Workload> registry, final ServerFactory serverFactory, final PrintStream out) {
@@ -464,26 +474,45 @@ public final class BenchMain {
     // the results of the workloads already finished; the one running is added by the runner's callback
     final List<CaseResult> results = new ArrayList<>();
     for (final Workload w : selected) {
+      // a workload that measures nothing at this scale gets no server: starting and stopping a container for it costs time
+      // and records nothing
+      if (w.cases(scale).isEmpty())
+        continue;
       if (runner.hasAbandonedWorker()) {
         // the runner records every case as not started; a server started now would only compete with the stuck worker
         results.addAll(runner.run(w, new WorkloadContext(null, scale, seed, params), null, file.onCase(results)));
         continue;
       }
+      if (w.ownsServers()) {
+        // the workload starts its own servers from the spec, so there is no single server to start, watch or restart
+        final WorkloadContext ctx = new WorkloadContext(null, scale, seed, params,
+            new WorkloadContext.ServerSpec(image, serverCpus, memLimitGb, heap));
+        final Consumer<List<CaseResult>> onCase = file.onCase(results);
+        results.addAll(runner.run(w, ctx, null, null, current -> {
+          takeOwnedServers(w, file);
+          onCase.accept(current);
+        }));
+        takeOwnedServers(w, file);
+        continue;
+      }
       final ServerUnderTest server;
       try {
-        server = serverFactory.start(image, serverCpus, memLimitGb, heap);
+        server = serverFactory.start(image, serverCpus, memLimitGb, heap, w.serverSettings());
       } catch (final Throwable t) {
-        for (final String caseName : w.cases())
-          results.add(new CaseResult(w.name(), caseName, scale.name(), params, reps, warmup, List.of(), CaseResult.Status.FAILED,
+        for (final String caseName : w.cases(scale))
+          results.add(new CaseResult(w.name(), caseName, scale.name(), params, runner.repsOf(w), runner.warmupOf(w), List.of(), CaseResult.Status.FAILED,
               "server start failed: " + t.getClass().getName() + ": " + t.getMessage()));
         file.write(results, false);
         continue;
       }
-      if (server != null && file.serverConfig == null) {
-        file.serverConfig = orFallback(server::config, new JSONObject(), "server config");
-        file.imageInfo = orFallback(server::imageInfo, null, "image info");
+      if (file.serverConfig == null) {
+        final JSONObject config = orFallback(() -> serverFactory.config(server), new JSONObject(), "server config");
+        if (config != null) {
+          file.serverConfig = config;
+          file.imageInfo = orFallback(() -> serverFactory.imageInfo(server), null, "image info");
+        }
       }
-      final Guard guard = new Guard(serverFactory, server, w.name(), file, image, serverCpus, memLimitGb, heap, scale, seed, params);
+      final Guard guard = new Guard(serverFactory, server, w.name(), file, image, serverCpus, memLimitGb, heap, w.serverSettings(), scale, seed, params);
       try {
         results.addAll(runner.run(w, new WorkloadContext(server, scale, seed, params), guard, null, file.onCase(results)));
       } finally {
@@ -502,6 +531,28 @@ public final class BenchMain {
   }
 
   /**
+   * Records what a workload that owns its servers reports about them: always under its own name in the diagnostics
+   * ({@code {"serverConfig": ..., "imageInfo": ...}}), since a run of every workload has usually filled the run's config from an
+   * earlier single server; and, as a fallback, where the first single server's config and image would go when no server recorded
+   * them yet.
+   */
+  private static void takeOwnedServers(final Workload w, final RunFile file) {
+    final JSONObject config = orFallback(w::serverConfig, null, "server config of " + w.name());
+    final JSONObject image = orFallback(w::imageInfo, null, "image info of " + w.name());
+    if (config != null) {
+      // a copy: the run's config is completed in place on every write, and the workload's own record must not be
+      final JSONObject owned = new JSONObject().put("serverConfig", new JSONObject(config.toString()));
+      if (image != null)
+        owned.put("imageInfo", new JSONObject(image.toString()));
+      file.addDiagnostics(w.name(), owned);
+    }
+    if (file.serverConfig == null)
+      file.serverConfig = config;
+    if (file.imageInfo == null)
+      file.imageInfo = image;
+  }
+
+  /**
    * The server of one workload as the runner sees it between cases: alive or why not, a fresh one with the same image and
    * settings in place of a dead one, and thread dumps of it into {@code <out>/dumps}. Holds whichever server is current, so the
    * workload closes the last one it ran against. The diagnostics of each server are stored before it is closed: those of a server
@@ -516,6 +567,7 @@ public final class BenchMain {
     private final String          cpus;
     private final int             memLimitGb;
     private final String          heap;
+    private final Map<String, String> settings;
     private final Scale           scale;
     private final long            seed;
     private final JSONObject      params;
@@ -525,7 +577,7 @@ public final class BenchMain {
     private       String          death;
 
     Guard(final ServerFactory factory, final ServerUnderTest server, final String workload, final RunFile file, final String image,
-        final String cpus, final int memLimitGb, final String heap, final Scale scale, final long seed, final JSONObject params) {
+        final String cpus, final int memLimitGb, final String heap, final Map<String, String> settings, final Scale scale, final long seed, final JSONObject params) {
       this.factory = factory;
       this.server = server;
       this.workload = workload;
@@ -534,6 +586,7 @@ public final class BenchMain {
       this.cpus = cpus;
       this.memLimitGb = memLimitGb;
       this.heap = heap;
+      this.settings = settings;
       this.scale = scale;
       this.seed = seed;
       this.params = params;
@@ -549,7 +602,7 @@ public final class BenchMain {
     public WorkloadContext restart() {
       close(workload + "#" + ++replaced);
       death = null;
-      server = factory.start(image, cpus, memLimitGb, heap);
+      server = factory.start(image, cpus, memLimitGb, heap, settings);
       return new WorkloadContext(server, scale, seed, params);
     }
 

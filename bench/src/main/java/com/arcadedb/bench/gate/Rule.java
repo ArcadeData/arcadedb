@@ -23,20 +23,35 @@ final class Rule {
 
   static final double MIN_BAND = 0.10;
 
-  private static final double MS_FLOOR   = 1.0;
-  private static final double S_FLOOR    = 0.5;
-  private static final double BYTE_FLOOR = 1048576;
+  private static final double MS_FLOOR       = 1.0;
+  private static final double S_FLOOR        = 0.5;
+  private static final double BYTE_FLOOR     = 1048576;
+  /** An issue ratio (unit {@code factor}) must move by a whole factor to be news: a ratio near 1 wobbles night to night. */
+  private static final double FACTOR_FLOOR   = 1.0;
+  /** An issue exponent (unit {@code exponent}) must move by a quarter to be news: a fit over three sizes wobbles too. */
+  private static final double EXPONENT_FLOOR = 0.25;
 
   private Rule() {
   }
 
+  /**
+   * The smallest absolute move of a metric of this unit that can be news. Infinite for the informational units {@code flag} (a
+   * 0/1 state such as the ramp's {@code ceiling_reached}), {@code steps} (how many steps a ramp ran, which grows with the
+   * knee) and {@code changes} (how many times a cluster's leader changed during a repetition, the ha workload's
+   * {@code leader_changes}: a failover is an event to look at, not a regression of the engine's speed) and
+   * {@code operations} (how many operations a mixed-phase loop completed in a repetition, a sizing check and not a speed):
+   * they are recorded and plotted, never judged.
+   */
   static double absoluteFloor(final String unit) {
     if (unit == null)
       return 0;
     return switch (unit) {
+      case "flag", "steps", "changes", "operations" -> Double.POSITIVE_INFINITY;
       case "ms" -> MS_FLOOR;
       case "s" -> S_FLOOR;
       case "bytes" -> BYTE_FLOOR;
+      case "factor" -> FACTOR_FLOOR;
+      case "exponent" -> EXPONENT_FLOOR;
       default -> 0;
     };
   }

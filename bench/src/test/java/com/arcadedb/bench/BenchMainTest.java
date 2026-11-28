@@ -65,7 +65,7 @@ class BenchMainTest {
   private static final List<Workload> REGISTRY = List.of(new Fake("alpha", List.of("a1", "a2")), new Fake("beta", List.of("b1")));
 
   private int run(final ByteArrayOutputStream buf, final String... args) {
-    return BenchMain.run(args, REGISTRY, (image, cpuset, mem, heap) -> null,
+    return BenchMain.run(args, REGISTRY, (image, cpuset, mem, heap, settings) -> null,
         new PrintStream(buf, true, StandardCharsets.UTF_8));
   }
 
@@ -124,7 +124,7 @@ class BenchMainTest {
     final ByteArrayOutputStream buf = new ByteArrayOutputStream();
     final int code = BenchMain.run(new String[] { "run", "--workload", "spy", "--scale", "XS", "--image", "img:1", "--variant", "jvm",
         "--reps", "1", "--warmup", "0", "--skip-idle-check", "--server-cpus", "none", "--client-cpus", "none", "--commit",
-        "abc1234567", "--out", tmp.toString() }, List.of(spy), (image, cpuset, mem, heap) -> null, new PrintStream(buf, true, StandardCharsets.UTF_8));
+        "abc1234567", "--out", tmp.toString() }, List.of(spy), (image, cpuset, mem, heap, settings) -> null, new PrintStream(buf, true, StandardCharsets.UTF_8));
     assertThat(code).isZero();
     assertThat(seen).hasSize(1);
     assertThat(seen.getFirst().complete()).isFalse();
@@ -374,7 +374,7 @@ class BenchMainTest {
     final int[] calls = { 0 };
     final int code = BenchMain.run(new String[] { "run", "--workload", "all", "--scale", "XS", "--image", "i", "--variant", "jvm",
         "--reps", "1", "--warmup", "0", "--skip-idle-check", "--server-cpus", "none", "--client-cpus", "none", "--out",
-        tmp.toString() }, REGISTRY, (image, cpuset, mem, heap) -> {
+        tmp.toString() }, REGISTRY, (image, cpuset, mem, heap, settings) -> {
       if (calls[0]++ == 0)
         throw new IllegalStateException("boom");
       return null;
@@ -393,10 +393,229 @@ class BenchMainTest {
     }
   }
 
+  @Test
+  void aWorkloadThatOwnsItsServersGetsNoServer() throws Exception {
+    final List<WorkloadContext> seen = new ArrayList<>();
+    final Workload owner = new Workload() {
+      @Override
+      public String name() {
+        return "owner";
+      }
+
+      @Override
+      public List<String> cases() {
+        return List.of("o1", "o2");
+      }
+
+      @Override
+      public boolean ownsServers() {
+        return true;
+      }
+
+      @Override
+      public JSONObject serverConfig() {
+        return seen.isEmpty() ? null : new JSONObject().put("nodes", 3).put("cpusets", "split");
+      }
+
+      @Override
+      public JSONObject imageInfo() {
+        return seen.isEmpty() ? null : new JSONObject().put("revision", "fedcba9876543210").put("imageDigest", "sha256:abc");
+      }
+
+      @Override
+      public void prepare(final WorkloadContext ctx, final String caseName) {
+        seen.add(ctx);
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) {
+        return new Measurement(List.of());
+      }
+    };
+    final int[] starts = { 0 };
+    final int code = BenchMain.run(new String[] { "run", "--workload", "owner", "--scale", "XS", "--image", "img:1", "--variant",
+        "jvm", "--reps", "1", "--warmup", "0", "--skip-idle-check", "--server-cpus", "0-11", "--client-cpus", "none",
+        "--mem-limit-gb", "16", "--heap", "6g", "--out", tmp.toString() }, List.of(owner), (image, cpuset, mem, heap, settings) -> {
+      starts[0]++;
+      return null;
+    }, new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8));
+    assertThat(code).isZero();
+    // the workload starts its own servers: the factory is never asked for one
+    assertThat(starts[0]).isZero();
+    assertThat(seen).hasSize(2);
+    assertThat(seen).allSatisfy(ctx -> {
+      assertThat(ctx.server()).isNull();
+      assertThat(ctx.spec()).isEqualTo(new WorkloadContext.ServerSpec("img:1", "0-11", 16, "6g"));
+    });
+    try (final Stream<Path> files = Files.list(tmp)) {
+      final RunResult result = RunResult.read(files.filter(p -> p.toString().endsWith(".json")).findFirst().orElseThrow());
+      assertThat(result.results()).extracting(CaseResult::status).containsExactly(CaseResult.Status.OK, CaseResult.Status.OK);
+      // the cluster the workload handed back stands where a single server's config would
+      assertThat(result.info().config().getInt("nodes")).isEqualTo(3);
+      assertThat(result.info().config().getString("cpusets")).isEqualTo("split");
+      assertThat(result.info().arcadedb().getString("revision")).isEqualTo("fedcba9876543210");
+      assertThat(result.info().runId()).contains("fedcba9876");
+    }
+  }
+
+  @Test
+  void anOwnerAfterASingleServerWorkloadKeepsItsServerConfig() throws Exception {
+    // a nightly runs every workload in one JVM: the single server of the first fills the run's config, and the cluster of the
+    // owner after it must still be recorded, under the owner's name
+    final Workload owner = new Workload() {
+      @Override
+      public String name() {
+        return "owner";
+      }
+
+      @Override
+      public List<String> cases() {
+        return List.of("o1");
+      }
+
+      @Override
+      public boolean ownsServers() {
+        return true;
+      }
+
+      @Override
+      public JSONObject serverConfig() {
+        return new JSONObject().put("nodes", 3).put("cpusets", "split");
+      }
+
+      @Override
+      public JSONObject imageInfo() {
+        return new JSONObject().put("revision", "fedcba9876543210");
+      }
+
+      @Override
+      public void prepare(final WorkloadContext ctx, final String caseName) {
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) {
+        return new Measurement(List.of());
+      }
+    };
+    final BenchMain.ServerFactory single = new BenchMain.ServerFactory() {
+      @Override
+      public ServerUnderTest start(final String image, final String cpuset, final int memLimitGb, final String heap,
+          final Map<String, String> settings) {
+        return null;
+      }
+
+      @Override
+      public JSONObject config(final ServerUnderTest server) {
+        return new JSONObject().put("memLimitGb", 16);
+      }
+
+      @Override
+      public JSONObject imageInfo(final ServerUnderTest server) {
+        return new JSONObject().put("revision", "0123456789abcdef");
+      }
+    };
+    assertThat(runAll(List.of(new Fake("alpha", List.of("a1")), owner), single, tmp)).isZero();
+    final RunResult result = onlyRunFile(tmp);
+    // the first server still stands as the run's config
+    assertThat(result.info().config().getInt("memLimitGb")).isEqualTo(16);
+    assertThat(result.info().config().has("nodes")).isFalse();
+    // and the owner's servers are under its name
+    final JSONObject owned = result.diagnostics().getJSONObject("owner");
+    assertThat(owned.getJSONObject("serverConfig").getInt("nodes")).isEqualTo(3);
+    assertThat(owned.getJSONObject("serverConfig").getString("cpusets")).isEqualTo("split");
+    assertThat(owned.getJSONObject("serverConfig").has("benchCommit")).isFalse();
+    assertThat(owned.getJSONObject("imageInfo").getString("revision")).isEqualTo("fedcba9876543210");
+  }
+
+  /** A workload whose case list at S leaves out every case but the first. */
+  private static Workload firstCaseOnlyAtS(final String name, final List<String> all) {
+    return new Workload() {
+      @Override
+      public String name() {
+        return name;
+      }
+
+      @Override
+      public List<String> cases() {
+        return all;
+      }
+
+      @Override
+      public List<String> cases(final Scale scale) {
+        return scale == Scale.S ? all.subList(0, 1) : all;
+      }
+
+      @Override
+      public void prepare(final WorkloadContext ctx, final String caseName) {
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) {
+        return new Measurement(List.of());
+      }
+    };
+  }
+
+  @Test
+  void casesAreTheOnesOfTheRunScaleWhetherTheServerStartsOrNot() throws Exception {
+    final int[] calls = { 0 };
+    final int code = BenchMain.run(new String[] { "run", "--workload", "all", "--scale", "S", "--image", "i", "--variant", "jvm",
+            "--reps", "1", "--warmup", "0", "--skip-idle-check", "--server-cpus", "none", "--client-cpus", "none", "--out",
+            tmp.toString() }, List.of(firstCaseOnlyAtS("alpha", List.of("a1", "a2")), firstCaseOnlyAtS("beta", List.of("b1", "b2"))),
+        (image, cpuset, mem, heap, settings) -> {
+          if (calls[0]++ == 0)
+            throw new IllegalStateException("boom");
+          return null;
+        }, new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8));
+    assertThat(code).isZero();
+    try (final Stream<Path> files = Files.list(tmp)) {
+      final RunResult result = RunResult.read(files.filter(p -> p.toString().endsWith(".json")).findFirst().orElseThrow());
+      // alpha's server failed to start, beta's ran: either way a case left out at S is not recorded
+      assertThat(result.results()).extracting(CaseResult::caseName).containsExactly("a1", "b1");
+      assertThat(result.results().get(0).status()).isEqualTo(CaseResult.Status.FAILED);
+      assertThat(result.results().get(1).status()).isEqualTo(CaseResult.Status.OK);
+    }
+  }
+
+  @Test
+  void aWorkloadWithNoCaseAtTheScaleStartsNoServer() throws Exception {
+    // "empty" measures nothing at XS: no container is started and stopped for it, and it records nothing
+    final List<Workload> registry = List.of(new Fake("alpha", List.of("a1")), new Workload() {
+      @Override
+      public String name() {
+        return "empty";
+      }
+
+      @Override
+      public List<String> cases() {
+        return List.of("e1");
+      }
+
+      @Override
+      public List<String> cases(final Scale scale) {
+        return List.of();
+      }
+
+      @Override
+      public void prepare(final WorkloadContext ctx, final String caseName) {
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) {
+        return new Measurement(List.of());
+      }
+    }, new Fake("beta", List.of("b1")));
+    final DyingServers servers = new DyingServers();
+    assertThat(runAll(registry, servers, tmp)).isZero();
+    assertThat(servers.starts).isEqualTo(2);
+    assertThat(onlyRunFile(tmp).results()).extracting(CaseResult::caseName).containsExactly("a1", "b1");
+  }
+
   /** Counts server starts and answers each liveness check from a script, one entry per call (null = alive). */
   private static final class DyingServers implements BenchMain.ServerFactory {
     final List<String>  reasons;
     final List<Boolean> histogramsAsked = new ArrayList<>();
+    final List<Map<String, String>> startSettings = new ArrayList<>();
     int starts;
     int checks;
     int diagnosed;
@@ -406,8 +625,10 @@ class BenchMainTest {
     }
 
     @Override
-    public ServerUnderTest start(final String image, final String cpuset, final int memLimitGb, final String heap) {
+    public ServerUnderTest start(final String image, final String cpuset, final int memLimitGb, final String heap,
+        final Map<String, String> settings) {
       starts++;
+      startSettings.add(settings);
       return null;
     }
 
@@ -435,6 +656,37 @@ class BenchMainTest {
     try (final Stream<Path> files = Files.list(dir)) {
       return RunResult.read(files.filter(p -> p.toString().endsWith(".json")).findFirst().orElseThrow());
     }
+  }
+
+  /** A workload declaring its own server settings. */
+  private record Configured(String name, List<String> cases, Map<String, String> serverSettings) implements Workload {
+    @Override
+    public void prepare(final WorkloadContext ctx, final String caseName) {
+    }
+
+    @Override
+    public Measurement measure(final WorkloadContext ctx, final String caseName) {
+      return new Measurement(List.of());
+    }
+  }
+
+  @Test
+  void eachWorkloadStartsItsServerWithItsOwnSettings() throws Exception {
+    final Map<String, String> declared = Map.of("arcadedb.server.plugins", "X");
+    final List<Workload> registry = List.of(new Configured("alpha", List.of("a1"), declared), new Fake("beta", List.of("b1")));
+    final DyingServers servers = new DyingServers();
+    assertThat(runAll(registry, servers, tmp)).isZero();
+    assertThat(servers.startSettings).containsExactly(declared, Map.of());
+  }
+
+  @Test
+  void aRestartKeepsTheWorkloadSettings() throws Exception {
+    final Map<String, String> declared = Map.of("arcadedb.server.plugins", "X");
+    final List<Workload> registry = List.of(new Configured("alpha", List.of("a1", "a2"), declared));
+    final DyingServers servers = new DyingServers("OOMKilled");
+    assertThat(runAll(registry, servers, tmp)).isZero();
+    assertThat(servers.starts).isEqualTo(2);
+    assertThat(servers.startSettings).containsExactly(declared, declared);
   }
 
   @Test
@@ -489,7 +741,7 @@ class BenchMainTest {
         return new Measurement(List.of());
       }
     };
-    assertThat(runAll(List.of(clearing), (image, cpuset, mem, heap) -> null, out)).isZero();
+    assertThat(runAll(List.of(clearing), (image, cpuset, mem, heap, settings) -> null, out)).isZero();
     assertThat(measured).containsExactly("a1", "a2", "a3");
     final RunResult result = onlyRunFile(out);
     assertThat(result.complete()).isTrue();
@@ -522,7 +774,7 @@ class BenchMainTest {
         return new Measurement(List.of());
       }
     };
-    assertThat(runAll(List.of(w), (image, cpuset, mem, heap) -> null, out)).isEqualTo(1);
+    assertThat(runAll(List.of(w), (image, cpuset, mem, heap, settings) -> null, out)).isEqualTo(1);
     assertThat(measured).containsExactly("a1", "a2");
   }
 
@@ -560,7 +812,8 @@ class BenchMainTest {
   void diagnosticsLandUnderTheWorkloadName() throws Exception {
     final BenchMain.ServerFactory servers = new BenchMain.ServerFactory() {
       @Override
-      public ServerUnderTest start(final String image, final String cpuset, final int memLimitGb, final String heap) {
+      public ServerUnderTest start(final String image, final String cpuset, final int memLimitGb, final String heap,
+        final Map<String, String> settings) {
         return null;
       }
 
@@ -586,7 +839,8 @@ class BenchMainTest {
   private BenchMain.Guard dumpingGuard(final BenchMain.RunFile file) {
     final BenchMain.ServerFactory servers = new BenchMain.ServerFactory() {
       @Override
-      public ServerUnderTest start(final String image, final String cpuset, final int memLimitGb, final String heap) {
+      public ServerUnderTest start(final String image, final String cpuset, final int memLimitGb, final String heap,
+        final Map<String, String> settings) {
         return null;
       }
 
@@ -600,7 +854,7 @@ class BenchMainTest {
         return true;
       }
     };
-    return new BenchMain.Guard(servers, null, "alpha", file, "i", "", 1, "1g", Scale.XS, 1L, new JSONObject());
+    return new BenchMain.Guard(servers, null, "alpha", file, "i", "", 1, "1g", Map.of(), Scale.XS, 1L, new JSONObject());
   }
 
   private BenchMain.RunFile runFile(final Map<String, String> options) {

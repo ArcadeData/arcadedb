@@ -39,6 +39,7 @@ import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.Component;
 import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PageManager;
@@ -5299,6 +5300,90 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * Certifies the graph a replicated compaction has just shipped to this node, when the compaction created this index's
+   * graph file (issue #13484). Called by the replication layer of a follower right after it applied the entry of a
+   * compaction, and before it applies any later entry.
+   * <p>
+   * A compaction rebuilds the graph on the leader and ships its pages with the new data file, but the manifest and the
+   * ordinal map that say which records the graph was built over are plain files next to it, which nothing replicates.
+   * Without them a follower could reuse those pages only while nothing was deleted (the walk of
+   * {@link #loadPersistedGraphOrDecidePrefix()} re-derives the map from the live set): the first deletion that arrived
+   * before its first search sent every compacted piece to a rebuild from scratch, on every follower, which the leader
+   * never pays.
+   * <p>
+   * Here, and only here, the map is known exactly rather than guessed. The compaction rewrote the data file with the live
+   * vectors renumbered densely from 0 (issue #5870) and built the graph over those ids, ascending, minus any its
+   * validation refused; and the change applied just before this call (one entry, or the chunks and instalments a large one
+   * ships in) is the whole content of the new data file. So when
+   * the location index holds no tombstone, its live ids are exactly {@code [0, N)} and the graph has {@code N} nodes,
+   * the build refused nothing and ordinal {@code i} is vector id {@code i}. Any other shape (a refused vector, a write
+   * already on top of the rewrite after a replay, a manifest already present, PRODUCT quantization, whose codes are not
+   * shipped either) leaves the index as it was, to the ordinary load path. The ordinals the leader's build left
+   * unreachable are not shipped either, and are found again here with the same walk the build runs.
+   *
+   * @param addedFileIds the ids of the files the applied change created, over all of its entries
+   *
+   * @return whether the shipped graph is now certified
+   */
+  public boolean certifyGraphShippedByReplicatedCompaction(final Set<Integer> addedFileIds) {
+    final LSMVectorIndexGraphFile gf = graphFile;
+    if (gf == null || addedFileIds == null || !addedFileIds.contains(gf.getFileId()) || !gf.hasPersistedGraph())
+      return false;
+    if (metadata.quantizationType == VectorQuantizationType.PRODUCT)
+      return false;
+    final LSMVectorIndexGraphManifest manifest = gf.getManifest();
+    if (manifest.exists())
+      return false;
+
+    // Never waited for: this runs on the replication apply thread, and a search that already holds the lock is resolving the
+    // graph of this instance itself, possibly with a build that takes minutes
+    if (!graphBuildLock.tryLock())
+      return false;
+    try {
+      if (graphIndex != null)
+        // Something already resolved the graph of this instance: nothing left to certify for it
+        return false;
+
+      // Timed because it runs on the apply thread every database of the node shares. It reads back the data and graph pages the
+      // change has just written (one parse of the locations, one walk of the graph), the same order of work as applying them
+      final long startNanos = System.nanoTime();
+      final VectorLocationIndex locations = vectorIndex();
+      if (locations.getDeletedCount() > 0)
+        return false;
+      final int[] liveIds = locations.getAllVectorIds().filter(locations::isLive).sorted().toArray();
+      // Dense [0, N): the renumbered content of the rewrite and nothing else
+      if (liveIds.length == 0 || liveIds[0] != 0 || liveIds[liveIds.length - 1] != liveIds.length - 1)
+        return false;
+
+      final int[] unreachableOrdinals;
+      try (final OnDiskGraphIndex shipped = gf.loadGraph()) {
+        if (shipped == null || shipped.size() != liveIds.length) {
+          LogManager.instance().log(this, Level.INFO,
+              "The graph a replicated compaction shipped for index %s holds %d nodes against %d live vectors: it is not "
+                  + "certified, and the index rebuilds its graph on first use", indexName, shipped != null ? shipped.size() : 0,
+              liveIds.length);
+          return false;
+        }
+        unreachableOrdinals = findUnreachableOrdinals(shipped);
+      }
+
+      manifest.write(liveIds, locations::getRid, true, unreachableOrdinals, 0L);
+      LogManager.instance().log(this, Level.INFO,
+          "Certified the graph a replicated compaction shipped for index %s: %d nodes over the vector ids [0, %d), %d "
+              + "unreachable, in %d ms (issue #13484)", indexName, liveIds.length, liveIds.length, unreachableOrdinals.length,
+          TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos));
+      return true;
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Could not certify the graph a replicated compaction shipped for index %s, it is rebuilt on first use: %s", indexName,
+          e.toString());
+      return false;
+    } finally {
+      graphBuildLock.unlock();
+    }
+  }
+
+  /**
    * How long one commit of a bulk graph persist waits for its file locks (issue #7361).
    * <p>
    * {@link GlobalConfiguration#COMMIT_LOCK_TIMEOUT} is sized for an interactive transaction, where giving up fast
@@ -9814,17 +9899,27 @@ public class LSMVectorIndex implements Index, IndexInternal {
     final int availableVectors = Math.min(ordinalToVectorId.length, vectorIndex().size());
     final int cap = Math.max(rows, (int) (availableVectors * maxSelectivity));
 
-    final Set<RID> share = new HashSet<>();
+    // COUNTED FIRST: A LIST WHOSE EVERY MEMBER IS IN THIS BUCKET (A TYPE WITH ONE BUCKET, THE COMMON CASE) IS USED AS IT IS, AND A COPY
+    // OF IT BUILT ON THE WAY AND THEN DISCARDED COST A HASH NODE PER RID PER SEARCH
     int examined = 0;
+    int inBucket = 0;
     for (final RID rid : allowedRIDs) {
       guard.checkPeriodically(++examined);
-      if (rid.getBucketId() == bucketId) {
-        if (share.size() == cap)
-          return allowedRIDs;
-        share.add(rid);
-      }
+      if (rid.getBucketId() == bucketId && ++inBucket > cap)
+        return allowedRIDs;
     }
-    return share.size() == allowedRIDs.size() ? allowedRIDs : share;
+    if (inBucket == allowedRIDs.size())
+      return allowedRIDs;
+    if (inBucket == 0)
+      return Collections.emptySet();
+
+    final Set<RID> share = new HashSet<>((int) (inBucket / 0.75f) + 1);
+    for (final RID rid : allowedRIDs) {
+      guard.checkPeriodically(++examined);
+      if (rid.getBucketId() == bucketId)
+        share.add(rid);
+    }
+    return share;
   }
 
   /**
@@ -12127,6 +12222,36 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   public boolean isPutByCommitInFlight(final RID rid) {
     return bulkPutsInFlight.get() > 0 || putsInFlight.containsKey(rid);
+  }
+
+  /**
+   * Whether a read of the record {@code rid}, about to be made by the calling thread, reads the state of the record a vector id
+   * of it stands for, so that what it reads may be kept in the index-scoped search cache under that id (issue #13396). Asked
+   * BEFORE the read, by a caller that has just seen the id live. Two reads do not:
+   * <ul>
+   * <li>one of a record whose vector a commit that has not concluded put: the id is live from the commit's first phase, the
+   * record page is published in its second, so the read can find the version before. Concluded, its pages are published (or its
+   * vector taken back, the id with it), and a read that starts after that finds the version the id stands for, or a later one
+   * whose commit has already tombstoned the id;</li>
+   * <li>one through a transaction that holds the record's page or a copy of the record: the page a transaction wrote, or pinned
+   * under {@code REPEATABLE_READ}, is its own image, which hides what other transactions commit there afterwards (issue #12644),
+   * so a search inside a transaction that wrote a record of its own next to the record reads the record as it was then.</li>
+   * </ul>
+   * The read still answers the search that makes it: only the cache, shared by every later search, is denied it.
+   */
+  boolean readsCommittedStateOf(final RID rid) {
+    if (isPutByCommitInFlight(rid))
+      return false;
+    final DatabaseInternal database = getDatabase();
+    final TransactionContext transaction = database.getTransactionIfExists();
+    if (transaction == null || !transaction.isActive())
+      return true;
+    if (transaction.holdsRecordCopy(rid))
+      return false;
+    if (!(database.getSchema().getBucketByIdIfExists(rid.getBucketId()) instanceof LocalBucket bucket))
+      return false;
+    return transaction.getPinnedPage(new PageId(database, bucket.getFileId(), (int) (rid.getPosition() / bucket.getMaxRecordsInPage())))
+        == null;
   }
 
   /** Marks {@code rid} as put by a commit in flight, before its vector becomes visible. See {@link #isPutByCommitInFlight}. */

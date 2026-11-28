@@ -33,7 +33,8 @@ import java.util.List;
  */
 public interface ParallelRowSource {
   /**
-   * @return the only variable the rows bind, or {@code null} when these rows are not the ones of a parallel-capable scan
+   * @return the one variable the expressions run in the workers may read, which every row binds (a row may bind others too, such
+   * as the endpoints of a scanned relationship), or {@code null} when these rows are not the ones of a parallel-capable scan
    */
   String parallelVariable();
 

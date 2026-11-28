@@ -35,6 +35,7 @@ import org.slf4j.LoggerFactory;
 import org.testcontainers.containers.BindMode;
 import org.testcontainers.containers.Container;
 import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.containers.Network;
 import org.testcontainers.containers.startupcheck.OneShotStartupCheckStrategy;
 import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.utility.MountableFile;
@@ -83,6 +84,8 @@ public final class ServerUnderTest implements AutoCloseable {
 
   private static final int  HTTP_PORT         = 2480;
   private static final int  GRPC_PORT         = 50051;
+  private static final int  BOLT_PORT         = 7687;
+  private static final int  POSTGRES_PORT     = 5432;
   private static final long GIB               = 1024L * 1024 * 1024;
   private static final long FRESH_SAMPLE_WAIT = 1_500L;
   /** How long one probe of the liveness check waits for {@code /api/v1/ready}. */
@@ -95,6 +98,8 @@ public final class ServerUnderTest implements AutoCloseable {
 
   /** The death reason of a server whose container runs but which does not answer. */
   public static final String NOT_ANSWERING = "not answering /api/v1/ready";
+  /** The death reason of a cluster member whose container runs but which does not answer {@code /api/v1/health}. */
+  public static final String MEMBER_NOT_ANSWERING = "not answering /api/v1/health";
 
   private final GenericContainer<?> container;
   private final String              image;
@@ -163,6 +168,22 @@ public final class ServerUnderTest implements AutoCloseable {
    */
   public static ServerUnderTest start(final String image, final String cpuset, final int memLimitGb, final String heap,
       final Map<String, String> settings) {
+    return launch(image, cpuset, memLimitGb, heap, settings, null, null, "/api/v1/ready", Duration.ofSeconds(120));
+  }
+
+  /**
+   * Starts a member of a cluster: as {@link #start} but attached to {@code network} under the DNS name {@code alias}. It waits
+   * for {@code /api/v1/health} (90 s), not {@code /api/v1/ready}: with {@code readinessRequiresHA} the latter answers only once
+   * a leader is elected, and that wait belongs to the cluster, which reports a missing leader as such.
+   */
+  static ServerUnderTest startMember(final String image, final String cpuset, final int memLimitGb, final String heap,
+      final Map<String, String> settings, final Network network, final String alias) {
+    return launch(image, cpuset, memLimitGb, heap, settings, network, alias, "/api/v1/health", Duration.ofSeconds(90));
+  }
+
+  private static ServerUnderTest launch(final String image, final String cpuset, final int memLimitGb, final String heap,
+      final Map<String, String> settings, final Network network, final String alias, final String waitPath,
+      final Duration startupTimeout) {
     final Map<String, String> all = settings(settings);
 
     final String memoryOpts = "-Xms" + heap + " -Xmx" + heap;
@@ -183,11 +204,13 @@ public final class ServerUnderTest implements AutoCloseable {
       container.withEnv("ARCADEDB_OPTS_MEMORY", memoryOpts);
     else
       container.withCommand(memoryOpts.split("\\s+"));
-    container.withExposedPorts(HTTP_PORT, GRPC_PORT)
-        .withStartupTimeout(Duration.ofSeconds(120))
+    container.withExposedPorts(HTTP_PORT, GRPC_PORT, BOLT_PORT, POSTGRES_PORT)
+        .withStartupTimeout(startupTimeout)
         .withFileSystemBind(hostDir.toString(), "/home/arcadedb/databases")
         .withCreateContainerCmdModifier(cmd -> cmd.getHostConfig().withCpusetCpus(cpuset).withMemory(memory).withMemorySwap(memory))
-        .waitingFor(Wait.forHttp("/api/v1/ready").forPort(HTTP_PORT).forStatusCode(204));
+        .waitingFor(Wait.forHttp(waitPath).forPort(HTTP_PORT).forStatusCode(204));
+    if (network != null)
+      container.withNetwork(network).withNetworkAliases(alias);
 
     ServerUnderTest server = null;
     try {
@@ -204,6 +227,16 @@ public final class ServerUnderTest implements AutoCloseable {
 
   public ServerWrapper wrapper() {
     return wrapper;
+  }
+
+  /** The host port mapped to the Bolt port of the server (the BoltProtocolPlugin must be enabled). */
+  public int boltPort() {
+    return container.getMappedPort(BOLT_PORT);
+  }
+
+  /** The host port mapped to the PostgreSQL port of the server (the PostgresProtocolPlugin must be enabled). */
+  public int postgresPort() {
+    return container.getMappedPort(POSTGRES_PORT);
   }
 
   public String httpUrl() {
@@ -294,9 +327,23 @@ public final class ServerUnderTest implements AutoCloseable {
     return null;
   }
 
+  /**
+   * As {@link #deathReason()} for a member of a Raft cluster, probing {@code /api/v1/health} instead of {@code /api/v1/ready}:
+   * with {@code readinessRequiresHA} the latter answers 503 during an election or while the member lags, which is no death.
+   * A running member that misses every probe is {@link #MEMBER_NOT_ANSWERING}.
+   */
+  public String memberDeathReason() {
+    final String reason = deathReason(() -> answers("/api/v1/health"), this::stoppedReason, READY_PROBES, READY_PAUSE);
+    return NOT_ANSWERING.equals(reason) ? MEMBER_NOT_ANSWERING : reason;
+  }
+
   private boolean answersReady() {
+    return answers("/api/v1/ready");
+  }
+
+  private boolean answers(final String path) {
     try (final HttpClient client = HttpClient.newBuilder().connectTimeout(READY_TIMEOUT).build()) {
-      final HttpRequest request = HttpRequest.newBuilder(URI.create(httpUrl() + "/api/v1/ready")).timeout(READY_TIMEOUT).GET()
+      final HttpRequest request = HttpRequest.newBuilder(URI.create(httpUrl() + path)).timeout(READY_TIMEOUT).GET()
           .build();
       final int status = client.send(request, HttpResponse.BodyHandlers.discarding()).statusCode();
       return status >= 200 && status < 300;

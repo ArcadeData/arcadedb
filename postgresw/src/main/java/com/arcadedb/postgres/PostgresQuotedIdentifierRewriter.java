@@ -54,7 +54,8 @@ import java.util.Set;
  * literal, and the three passes have to agree with it on where the literal ends. A hand-written ArcadeDB escape inside a
  * JSON object is written {@code E'...'} on this protocol, as at the top level. A double-quoted record attribute (such as
  * {@code "@rid"}) is written bare, {@code @rid}, the form ArcadeDB SQL reads as the attribute; double-quoted, it was a
- * string literal (issue #11392).
+ * string literal (issue #11392). Any other double-quoted name, one starting with {@code @} included, is an identifier like
+ * the rest and is written back-ticked, so that every pass reads it as one token.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -581,12 +582,14 @@ public class PostgresQuotedIdentifierRewriter {
       return i;
     }
 
-    if (!closed || identifier.isEmpty() || identifier.charAt(0) == '@') {
-      // UNTERMINATED, EMPTY OR NOT A PLAIN ATTRIBUTE NAME AFTER THE @: LEAVE THE ORIGINAL TEXT UNCHANGED
+    if (!closed || identifier.isEmpty()) {
+      // UNTERMINATED OR EMPTY: LEAVE THE ORIGINAL TEXT UNCHANGED
       out.append(sql, start, i);
       return i;
     }
 
+    // ANY OTHER NAME, ONE STARTING WITH @ INCLUDED, IS WRITTEN AS A BACK-TICK NAME, THE FORM THE ENGINE LEXER READS WITH THE SAME
+    // TOKEN BOUNDARIES AS THIS PASS
     out.append('`');
     for (int k = 0; k < identifier.length(); k++) {
       final char c = identifier.charAt(k);

@@ -55,14 +55,15 @@ public class IngestionWorkload implements Workload {
   // the type the CSV importer creates for a documents file
   private static final String IMPORT_TYPE = "Document";
   private static final String TX_TYPE = "TxRow";
-  private static final int    BATCH = 500;
+  static final int            BATCH = 500;
 
   private Path csv;
 
   static int rows(final Scale scale) {
     return switch (scale) {
       case XS -> 10_000;
-      case S -> 200_000;
+      // 1,000 batches per repetition, so the batch latency of tx-insert is measured on enough samples
+      case S -> 500_000;
       case M -> 2_000_000;
       case L -> 10_000_000;
     };
@@ -76,6 +77,15 @@ public class IngestionWorkload implements Workload {
   @Override
   public List<String> cases() {
     return List.of(BULK, TX_1T, TX_8T);
+  }
+
+  /**
+   * The bulk import is left out at S: 2M rows import in about 4.5 s on the JVM at M, so S would need more rows than M to time
+   * at least 5 s, and below that the repetitions spread more than a regression would move them. M measures it every Saturday.
+   */
+  @Override
+  public List<String> cases(final Scale scale) {
+    return scale == Scale.S ? List.of(TX_1T, TX_8T) : cases();
   }
 
   @Override

@@ -147,7 +147,8 @@ class ConnectClusterTest {
     /**
      * A blank address is the caller's mistake, not a precondition of this server: an
      * {@link IllegalArgumentException} is HTTP 400 and gRPC {@code INVALID_ARGUMENT}, while the
-     * {@link OperationNotAvailableException} below is HTTP 500 and gRPC {@code FAILED_PRECONDITION}.
+     * {@link OperationNotAvailableException} below is HTTP 400 "Operation not available on this server" and gRPC
+     * {@code FAILED_PRECONDITION}.
      * A bare {@code connect cluster} arrives here as {@code ""} from {@code extractTarget}.
      */
     @Test

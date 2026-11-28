@@ -690,11 +690,12 @@ class AsyncExecutorConfigurationTest {
       // survives. Routed through getSlot() on every iteration exactly as the engine's own createRecord() does, so the
       // producer follows the mapping across the resize instead of pinning to a slot number.
       final AtomicBoolean stop = new AtomicBoolean();
+      final CountDownLatch producing = new CountDownLatch(1);
       final Thread producer = new Thread(() -> {
         while (!stop.get()) {
           try {
-            if (async.scheduleTask(async.getSlot(3), new CountingTask(executed, completed), true, 0))
-              scheduled.incrementAndGet();
+            if (async.scheduleTask(async.getSlot(3), new CountingTask(executed, completed), true, 0) && scheduled.incrementAndGet() == 1)
+              producing.countDown();
           } catch (final Throwable e) {
             producerFailures.add(e);
           }
@@ -703,9 +704,29 @@ class AsyncExecutorConfigurationTest {
       producer.start();
 
       try {
+        // Resizing before the producer has scheduled anything would make "keeps working across the shrink" vacuous:
+        // start() only makes the thread runnable, and on a loaded machine all three resizes below can finish before it
+        // first runs (it did on CI, with scheduled == 0 afterwards).
+        assertThat(producing.await(30, TimeUnit.SECONDS)).as("the producer must have started working before the pool is resized")
+            .isTrue();
+
         async.setParallelLevel(2);
         async.setParallelLevel(4);
         async.setParallelLevel(2);
+
+        // and it has to go on past the last shrink, the one that leaves bucket 3 with a surviving worker only. The
+        // producer counts a task only after scheduleTask() returned, so the first count past the snapshot can still
+        // belong to a call that started during the shrink: the second one is from a call that began after it returned.
+        // The deadline is a hang detector, well inside @Timeout, so a producer that stops being accepted fails here
+        // with a message rather than as a bare JUnit timeout.
+        final int scheduledAtTheLastShrink = scheduled.get();
+        final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+        while (scheduled.get() < scheduledAtTheLastShrink + 2 && producerFailures.isEmpty() && producer.isAlive()
+            && System.nanoTime() < deadline)
+          Thread.sleep(1);
+        if (producerFailures.isEmpty())
+          assertThat(scheduled.get()).as("the producer must have kept scheduling after the last shrink")
+              .isGreaterThanOrEqualTo(scheduledAtTheLastShrink + 2);
       } finally {
         stop.set(true);
         producer.join(30_000);

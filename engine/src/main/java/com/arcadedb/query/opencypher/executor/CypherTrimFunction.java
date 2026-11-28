@@ -72,7 +72,7 @@ public class CypherTrimFunction implements StatelessFunction {
         return null;
       if (trimChar.isEmpty())
         return source.strip();
-      return TrimFunction.stripLeading(TrimFunction.stripTrailing(source, trimChar), trimChar);
+      return TrimFunction.strip(source, trimChar, true, true);
     }
 
     if (args.length == 3) {
@@ -99,7 +99,7 @@ public class CypherTrimFunction implements StatelessFunction {
       return switch (mode) {
         case "LEADING" -> TrimFunction.stripLeading(source, trimChar);
         case "TRAILING" -> TrimFunction.stripTrailing(source, trimChar);
-        default -> TrimFunction.stripLeading(TrimFunction.stripTrailing(source, trimChar), trimChar);
+        default -> TrimFunction.strip(source, trimChar, true, true);
       };
     }
 

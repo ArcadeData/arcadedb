@@ -144,6 +144,9 @@ public enum Type {
   public static final  String              DATE_FORMAT_MILLIS  = "yyyy-MM-dd HH:mm:ss.SSS";
   private static final BigDecimal LONG_MAX_DECIMAL = BigDecimal.valueOf(Long.MAX_VALUE);
   private static final BigDecimal LONG_MIN_DECIMAL = BigDecimal.valueOf(Long.MIN_VALUE);
+  // THE FIRST DECIMALS OUT OF THE LONG RANGE: THE FRACTION IS DISCARDED, SO 9223372036854775807.5 IS Long.MAX_VALUE AND 2^63 IS THE FIRST VALUE BEYOND IT
+  private static final BigDecimal LONG_BEYOND_MAX_DECIMAL = LONG_MAX_DECIMAL.add(BigDecimal.ONE);
+  private static final BigDecimal LONG_BEYOND_MIN_DECIMAL = LONG_MIN_DECIMAL.subtract(BigDecimal.ONE);
   private static final BigInteger LONG_MAX_INTEGER = BigInteger.valueOf(Long.MAX_VALUE);
   private static final BigInteger LONG_MIN_INTEGER = BigInteger.valueOf(Long.MIN_VALUE);
   // Don't change the order, the type discover get broken if you change the order.
@@ -1043,6 +1046,10 @@ public enum Type {
           return new BigDecimal(string);
         else if (value instanceof Number)
           return new BigDecimal(value.toString());
+        else if (value instanceof Boolean)
+          // no DECIMAL value, as a boolean has none for the other numeric types: kept as it came, it was ordered against a DECIMAL by the
+          // name of its class, so a scan answered every row for "dec > true" where the index lookup answered none (issue #12936)
+          return asNumber(value, "DECIMAL", property);
 
       } else if (targetClass.equals(Double.TYPE) || targetClass.equals(Double.class)) {
         if (value instanceof Double)
@@ -1645,7 +1652,7 @@ public enum Type {
       return value.longValue();
 
     final boolean outOfRange = switch (value) {
-      case BigDecimal bigDecimal -> bigDecimal.compareTo(LONG_MAX_DECIMAL) > 0 || bigDecimal.compareTo(LONG_MIN_DECIMAL) < 0;
+      case BigDecimal bigDecimal -> bigDecimal.compareTo(LONG_BEYOND_MAX_DECIMAL) >= 0 || bigDecimal.compareTo(LONG_BEYOND_MIN_DECIMAL) <= 0;
       case BigInteger bigInteger -> bigInteger.compareTo(LONG_MAX_INTEGER) > 0 || bigInteger.compareTo(LONG_MIN_INTEGER) < 0;
       // 2^63 is the first double above the range, and -2^63 is exactly Long.MIN_VALUE
       case Double doubleValue -> doubleValue >= 0x1p63 || doubleValue < -0x1p63;
@@ -1722,7 +1729,7 @@ public enum Type {
     // A BIG NUMBER BEYOND THE 64-BIT RANGE IS OUT OF EVERY INTEGRAL RANGE, LONG'S INCLUDED: CLAMPING IT TO Long.MAX_VALUE
     // PASSED THE LONG CHECK BELOW AND STORED EVERY SUCH ELEMENT AS THE SAME NUMBER (issue #10756)
     final boolean beyondLong = switch (value) {
-      case BigDecimal bigDecimal -> bigDecimal.compareTo(LONG_MAX_DECIMAL) > 0 || bigDecimal.compareTo(LONG_MIN_DECIMAL) < 0;
+      case BigDecimal bigDecimal -> bigDecimal.compareTo(LONG_BEYOND_MAX_DECIMAL) >= 0 || bigDecimal.compareTo(LONG_BEYOND_MIN_DECIMAL) <= 0;
       case BigInteger bigInteger -> bigInteger.compareTo(LONG_MAX_INTEGER) > 0 || bigInteger.compareTo(LONG_MIN_INTEGER) < 0;
       // longValue() SATURATES THESE TWO; 2^63 IS THE FIRST DOUBLE ABOVE THE RANGE, -2^63 IS EXACTLY Long.MIN_VALUE
       case Double doubleValue -> doubleValue >= 0x1p63 || doubleValue < -0x1p63;
@@ -2319,6 +2326,9 @@ public enum Type {
     // Double.equals separates the two zeros; IEEE 754 and openCypher do not (issue #8920)
     if (pair[0] instanceof Double a && pair[1] instanceof Double b && a == 0.0d && b == 0.0d)
       return true;
+    // the same for a FLOAT met by a BYTE, a SHORT or another FLOAT: Float.equals separates the two zeros as well
+    if (pair[0] instanceof Float a && pair[1] instanceof Float b && a == 0.0f && b == 0.0f)
+      return true;
 
     if (left instanceof Float f)
       return narrowsTo(f, right);
@@ -2373,6 +2383,24 @@ public enum Type {
       // + 0.0f maps negative zero onto zero, which is one value (issue #8920); Float.compare is for the NaN-free total order
       return Float.isFinite(f) && Float.compare(f + 0.0f, other.floatValue() + 0.0f) == 0;
     return false;
+  }
+
+  /**
+   * Whether {@link #castComparableNumber(Number, Number)} would leave both of its operands exactly as they are: two
+   * numbers of one class, and not a pair of {@link BigDecimal}s (a pair of decimals is stripped of its trailing zeros,
+   * so the cast is not the identity for it).
+   * <p>
+   * The cast answers a fresh pair of numbers on every call, so a caller that folds a value into a running one asks
+   * this first: the fold of a column of one numeric type - what a typed column holds - is the case where the pair
+   * says nothing, and an aggregation over a million rows allocated a million pairs to say it.
+   *
+   * @param left  the first operand
+   * @param right the second operand
+   *
+   * @return {@code true} when the cast would change neither operand
+   */
+  public static boolean castComparableNumberIsIdentity(final Number left, final Number right) {
+    return left.getClass() == right.getClass() && !(left instanceof BigDecimal);
   }
 
   public static Number[] castComparableNumber(Number left, Number right) {

@@ -35,7 +35,7 @@
 
   <properties>
     <metrics.version>4.2.19</metrics.version>
-    <micrometer.version>1.17.2</micrometer.version>
+    <micrometer.version>1.18.0</micrometer.version>
     <!-- Stays on 2.x until swagger-parser (test scope) ships a build for swagger-core 3: see .github/dependabot.yml -->
     <swagger.version>2.2.56</swagger.version>
     <swagger-parser.version>2.1.49</swagger-parser.version>

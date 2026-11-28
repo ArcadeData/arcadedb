@@ -77,6 +77,16 @@
             </excludes>
         </fileSet>
 
+        <!-- Release-level SBOM of this distribution, written by merge-sbom.py under -Pdeploy (see package/pom.xml).
+             The directory is absent in a developer build, and the assembly then has no sbom/. -->
+        <fileSet>
+            <directory>${project.build.directory}/sbom/minimal</directory>
+            <outputDirectory>sbom</outputDirectory>
+            <includes>
+                <include>*.cdx.json</include>
+            </includes>
+            <fileMode>644</fileMode>
+        </fileSet>
     </fileSets>
 
     <!--

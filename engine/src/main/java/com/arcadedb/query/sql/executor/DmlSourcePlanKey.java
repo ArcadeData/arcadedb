@@ -53,9 +53,13 @@ public class DmlSourcePlanKey {
    * The key is memoized, so the target and the WHERE of the statement must not change after it is parsed (the statement
    * cache hands out the same instance to every execution).
    *
-   * @return the plan-cache key, or null when the source SELECT cannot be cached or has repeatedly not been stored
+   * @return the plan-cache key, or null when the source SELECT cannot be cached, has repeatedly not been stored, or belongs to a
+   * statement kept out of the plan cache ({@link Statement#isExcludedFromPlanCache()})
    */
   String resolve(final FromClause target, final WhereClause whereClause, final Timeout timeout, final long cacheEpoch) {
+    if (owner.isExcludedFromPlanCache())
+      // written with more literals than a shape records: the rendered source would hold every one of them (issue #12605)
+      return null;
     if (!resolved) {
       final SelectStatement source = newSource(target, whereClause, timeout, "");
       String text = source.executionPlanCanBeCached() ? source.getOriginalStatement() : null;

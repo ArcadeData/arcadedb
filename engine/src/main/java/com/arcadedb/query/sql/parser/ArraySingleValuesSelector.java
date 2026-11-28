@@ -187,9 +187,16 @@ public class ArraySingleValuesSelector extends SimpleNode {
     switch (currentValue) {
     case List list -> {
       values.sort(this::compareKeysForRemoval);
+      int lastRemoved = -1;
       for (final Object val : values) {
-        if (val instanceof Integer) {
-          list.remove((int) (Integer) val);
+        if (val instanceof Integer index) {
+          // an index outside the list, negative included, reads null and so selects nothing: it removes nothing, where it
+          // used to answer an IndexOutOfBoundsException (issue #12914). The indexes are sorted descending, so a repeated one
+          // follows itself: it names the element already removed, not the one that slid into its place
+          if (index >= 0 && index < list.size() && index != lastRemoved) {
+            list.remove((int) index);
+            lastRemoved = index;
+          }
         } else {
           list.remove(val);
         }
@@ -224,7 +231,8 @@ public class ArraySingleValuesSelector extends SimpleNode {
   private int compareKeysForRemoval(final Object o1, final Object o2) {
     if (o1 instanceof Integer) {
       if (o2 instanceof Integer) {
-        return (int) o2 - (int) o1;
+        // not o2 - o1: the subtraction overflows for indexes far apart (l[-2147483648,1]) and sorts them ascending
+        return Integer.compare((int) o2, (int) o1);
       } else {
         return -1;
       }

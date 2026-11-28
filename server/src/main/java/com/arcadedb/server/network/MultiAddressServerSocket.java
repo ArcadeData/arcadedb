@@ -173,6 +173,12 @@ public final class MultiAddressServerSocket implements AutoCloseable {
       }
       if (next instanceof IOException e)
         throw e;
+      // a failure of an acceptor thread that is not an I/O error is handed on as it is, so the caller classifies it as it does
+      // the failure of a single socket
+      if (next instanceof RuntimeException e)
+        throw e;
+      if (next instanceof Error e)
+        throw e;
       accepted.offer(CLOSED); // leave the marker for any other waiter
       throw new SocketException("Socket is closed");
     } catch (final InterruptedException e) {
@@ -190,6 +196,10 @@ public final class MultiAddressServerSocket implements AutoCloseable {
         } catch (final InterruptedException e) { // noopengrep: interrupted-exception-swallowed - the accept thread, ending
           closeQuietly(client);
           return;
+        } catch (final RuntimeException | Error e) {
+          // not queued, so nobody else owns the connection
+          closeQuietly(client);
+          throw e;
         }
         if (closed)
           drain();
@@ -199,12 +209,27 @@ public final class MultiAddressServerSocket implements AutoCloseable {
         // handed to the caller like the error of a single socket, unless it has not consumed the previous one; either way a pause,
         // so a persistent failure (no file descriptors left) is not retried in a hot loop
         accepted.offer(e); // dropped on purpose when the caller has not consumed the previous one: the backoff bounds the rate
-        try {
-          Thread.sleep(ERROR_BACKOFF_MS);
-        } catch (final InterruptedException ie) { // noopengrep: interrupted-exception-swallowed - the accept thread, ending
+        if (!pause())
           return;
-        }
+      } catch (final RuntimeException | Error e) {
+        // not an I/O failure, but no reason to stop accepting on this address either: nothing starts this thread again, so the
+        // address would stay closed while the others keep working
+        if (closed || socket.isClosed())
+          return;
+        accepted.offer(e); // dropped on purpose when the caller has not consumed the previous one, as above
+        if (!pause())
+          return;
       }
+  }
+
+  /** Waits {@link #ERROR_BACKOFF_MS}; false when interrupted, which is how {@link #close()} stops the acceptors. */
+  private static boolean pause() {
+    try {
+      Thread.sleep(ERROR_BACKOFF_MS);
+      return true;
+    } catch (final InterruptedException e) { // noopengrep: interrupted-exception-swallowed - the accept thread, ending
+      return false;
+    }
   }
 
   /** Closes the connections accepted but never handed out. */

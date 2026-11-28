@@ -134,6 +134,9 @@ public class SQLFunctionSearchFields extends SQLFunctionAbstract implements Inde
     if (!IndexableSQLFunction.selectsMatches(operator, right))
       return false;
     try {
+      // a field list read from a record attribute is the one of each record, not the one the missing record resolves to
+      if (oExpressions != null && oExpressions.length > 0 && SQLFunctionSearchIndex.readsRecordAttribute(oExpressions[0], context))
+        return false;
       return search(target, context, oExpressions) != null;
     } catch (final CommandExecutionException e) {
       return false;
@@ -220,7 +223,7 @@ public class SQLFunctionSearchFields extends SQLFunctionAbstract implements Inde
     if (targetType == null)
       return null;
     final DocumentType type = context.getDatabase().getSchema().getType(targetType.getStringValue());
-    final Object fields = oExpressions[0].execute((Identifiable) null, context);
+    final Object fields = SQLFunctionSearchIndex.resolveParam(oExpressions[0], context);
     final String queryString = SQLFunctionSearchIndex.resolveStringParam(oExpressions[1], context);
     if (type == null || fields == null || queryString == null)
       return null;
@@ -235,7 +238,7 @@ public class SQLFunctionSearchFields extends SQLFunctionAbstract implements Inde
   private static void registerForHierarchy(final FromClause target, final Expression[] oExpressions,
       final FullTextFunctionSearch search, final CommandContext context) {
     final DocumentType type = context.getDatabase().getSchema().getType(target.getItem().getIdentifier().getStringValue());
-    registerForHierarchy(type, fieldNames(oExpressions[0].execute((Identifiable) null, context)),
+    registerForHierarchy(type, fieldNames(SQLFunctionSearchIndex.resolveParam(oExpressions[0], context)),
         SQLFunctionSearchIndex.resolveStringParam(oExpressions[1], context), search, context);
   }
 

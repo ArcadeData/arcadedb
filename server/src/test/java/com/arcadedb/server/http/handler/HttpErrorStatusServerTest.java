@@ -33,6 +33,7 @@ import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.ObjectInUseException;
 import com.arcadedb.exception.RecordVetoedException;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.exception.UnknownFunctionException;
 import com.arcadedb.exception.UnknownProcedureException;
@@ -339,6 +340,54 @@ class HttpErrorStatusServerTest extends BaseGraphServerTest {
       formatPayload(connection, "sql", statement, null, Map.of());
       connection.connect();
       return connection;
+    }
+  }
+
+  // Regression: #12923 a statement stopped by its TIMEOUT clause is a 400 "Timeout", not a 500
+  /**
+   * Issue #12923: a statement that ran out of the time its TIMEOUT clause gave it answered 500, the status of a server fault,
+   * because no arm named the {@link TimeoutException}. It is the caller's limit, so a 400 with a label and an exception field that
+   * tell it from the other 400s.
+   */
+  @Nested
+  class StatementTimeout {
+    private static final String T = "Issue12923T";
+
+    @BeforeEach
+    void createRecords() {
+      final Database database = getServerDatabase(0, getDatabaseName());
+      database.command("sql", "CREATE DOCUMENT TYPE " + T);
+      // enough of them that sorting takes far longer than the 1 ms of the clause
+      database.transaction(() -> {
+        for (int i = 0; i < 50_000; i++)
+          database.newDocument(T).set("k", i).set("s", "s" + (i % 97)).save();
+      });
+    }
+
+    @Test
+    void aStatementStoppedByItsTimeoutClauseIs400() throws Exception {
+      for (final String endpoint : List.of("command", "query")) {
+        final HttpURLConnection connection = (HttpURLConnection) new URI(
+            getServerHttpUrl(0, "/api/v1/" + endpoint + "/" + getDatabaseName())).toURL().openConnection();
+        connection.setRequestMethod("POST");
+        connection.setRequestProperty("Authorization",
+            "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+        formatPayload(connection, "sql", "SELECT FROM " + T + " ORDER BY s, k DESC LIMIT 5 TIMEOUT 1", null, Map.of());
+        connection.connect();
+        try {
+          assertThat(connection.getResponseCode()).as(endpoint).isEqualTo(400);
+          final String body;
+          try (final InputStream in = connection.getErrorStream()) {
+            body = FileUtils.readStreamAsString(in, "UTF-8");
+          }
+          final JSONObject answer = new JSONObject(body);
+          assertThat(answer.getString("error", "")).as(endpoint).isEqualTo("Timeout");
+          assertThat(answer.getString("exception", "")).as(endpoint).isEqualTo(TimeoutException.class.getName());
+          assertThat(answer.getString("detail", "")).as(endpoint).contains("TIMEOUT clause of 1ms");
+        } finally {
+          connection.disconnect();
+        }
+      }
     }
   }
 

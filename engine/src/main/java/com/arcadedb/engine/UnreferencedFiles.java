@@ -234,9 +234,9 @@ public class UnreferencedFiles {
     final List<ComponentFile> physicalFiles = database.getFileManager().getFiles();
     for (int fileId = 0; fileId < physicalFiles.size(); fileId++) {
       final ComponentFile file = physicalFiles.get(fileId);
-      // A slot newFileId() reserved for a component that never opened its file is no file: nothing is on disk to reclaim, and
-      // reporting it made CHECK DATABASE list entries RECLAIM could not remove (issue #11593)
-      if (file == null || FileManager.isReservedSlot(file))
+      // An empty slot: a dropped file, or one newFileId() reserved for a component that never opened its file. Nothing is on disk
+      // to reclaim, and reporting it made CHECK DATABASE list entries RECLAIM could not remove (issue #11593)
+      if (file == null)
         continue;
 
       final Component component = localSchema.getFileByIdIfExists(fileId);

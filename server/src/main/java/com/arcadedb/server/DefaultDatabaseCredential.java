@@ -18,6 +18,8 @@
  */
 package com.arcadedb.server;
 
+import com.arcadedb.server.security.UserNameCheck;
+
 import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
@@ -42,7 +44,9 @@ import java.nio.charset.StandardCharsets;
  * {@code s3cret:admin} created a user in the {@code admin} group with the password {@code s3cret}. Such a credential is now
  * refused, because whichever of its fields is the password cannot be told. So is a credential with an empty user name
  * ({@code :pw}) or an empty password ({@code user:}, {@code user::group}): the first used to be read as a reference to a
- * user named {@code "user:"}, the second created a user anybody could authenticate as.
+ * user named {@code "user:"}, the second created a user anybody could authenticate as. A credential that carries a password
+ * creates the user when there is none, so its name is refused too when no user can be created under it (leading or trailing
+ * whitespace, consecutive whitespace characters: see {@code UserNameCheck}).
  * <p>
  * Every field is decoded, the user name and the group as well as the password, so the three spell a separator the same
  * way. The compatibility cost is the same for each: a name written before with a literal {@code '%'} followed by two
@@ -77,6 +81,11 @@ record DefaultDatabaseCredential(String user, String password, String group) {
 
     if (fields.length == 1)
       return new DefaultDatabaseCredential(user, null, null);
+
+    // A credential with a password creates the user when there is none, so the name must be one a user can be created under
+    final String nameProblem = UserNameCheck.storedNameProblem(user);
+    if (nameProblem != null)
+      throw new IllegalArgumentException("has a user name that " + nameProblem);
 
     final String password = decode(fields[1], "password");
     if (password.isEmpty())

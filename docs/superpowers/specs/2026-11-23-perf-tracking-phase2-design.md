@@ -128,6 +128,10 @@ project builds on the previous one.
   repetition, a latency case runs at least 1,000 operations per repetition. Phase 1 S sizes that break the rule are raised
   (first suspects: vector build 20k, full-text build 50k); a unit test per workload asserts its S size against the rule's
   inputs where it can, and a first dispatched S run checks the rest.
+  Measured on the S nightlies of 2026-11-24..26: vector build S 20k -> 80k (1.0 s on the JVM), kNN queries S 200 -> 1,000,
+  facet queries per repetition S 200 -> 1,000, tx-insert rows S 200k -> 500k (1,000 batches of 500); full-text build (15 s)
+  already passes. The bulk import is **left out at S** (a workload may answer its cases per scale): 2M rows import in 4.5 s
+  on the JVM at M, so S would need more rows than M, and its S repetitions spread 27%. M measures it every Saturday.
 
 ### 3. Workloads
 
@@ -171,21 +175,35 @@ their ports (other workloads keep today's server).
 **Open-loop ramp** (`ramp`, project 4). On the graph OLTP point lookup: arrivals on a fixed schedule, latency measured from
 the scheduled start (no coordinated omission), the rate raised in steps of 25% until p99 over 50 ms, errors over 0.1% or
 dropped arrivals. Metric `knee_per_s` (higher is better) and the p99 at the knee.
+The ramp runs from M up (every Saturday), not at S: one ramp took about 5 minutes at S on a laptop and the case runs four,
+which the weeknight S lane (close to its 240-minute budget once every phase 2 workload runs) has no room for.
 
 **HA** (`ha`, project 5). Three server containers on one Docker network (`ContainersTestTemplate` HA settings), the server
 cores split in three cpusets, the client on its own cores. On one host the network is a loopback bridge: the numbers track
-the engine's replication cost, not a real network, and the dashboard page says so.
+the engine's replication cost, not a real network, and the dashboard page says so. The cpuset split lives in the bench, not
+in perf-infra: the bench resolves the server cpuset as for every other workload and pins each node to its own contiguous
+third of it, so perf-infra needs no change. On a host with fewer server CPUs than nodes, every node gets the whole set and
+the run file records the cpusets as shared.
 - `write-throughput`: records/s and p95 through the leader at 1 and 8 writers.
 - `replication-lag`: p50/p95/max ms from a commit on the leader to its visibility on each follower.
 - **Write ledger:** every acknowledged write is looked up on every node at the end; an answer like
   `DatabaseIsReopeningException` counts as unknown (it may have landed), reported as a metric; a missing acknowledged write
   fails the case. **Digest:** a content digest per type compared across nodes; a difference fails the case.
+- HA runs at S on weeknights: the dispatched S run on perf-01 took about 6 minutes per variant (13 minutes for JVM and
+  native together), well under the 25 minutes that would have moved it to M and up like the ramp.
 
 **Mixed phase, hybrid retrieval, soak** (project 6).
 - `mixed`: ingest, search, compaction, DDL, time-series inserts and vector churn at once; per operation p99 and the longest
   gap with no commit (ms, lower is better).
+  The laptop S run (JVM image, 90 s window, 1 warm-up and 3 repetitions) took about 7 minutes with the case `ok`; `mixed`
+  stays at S pending the perf-01 S run. It publishes the operations each loop completed (`<loop>_ops`, unit `operations`,
+  never judged) so the 1,000 operations rule can be checked there.
+  Known shortfall: at the 90 s S window the laptop ran 762-987 ingest and 495-670 vector churn operations per measured
+  repetition (an operation is a batch of 100 inserts or 50 updates), under the 1,000 operations rule; `ingest_ops` and
+  `vector_churn_ops` of the perf-01 S run decide whether the window grows or the shortfall is accepted.
 - `hybrid-rag`: large-k vector search, full-text and a 2-hop walk behind visibility filters, on skewed data with hub
   vertices; qps, p50/p95/p99, recall of the vector step.
+  The laptop S run took about 2.5 minutes (153 s) with every case `ok`; `hybrid-rag` stays at S pending the perf-01 S run.
 - `soak`: the mixed phase for 2 hours, Saturday only, one repetition and no warm-up. A workload may declare its own reps,
   warm-up and step limit (a default method on `Workload`, overriding the run's), which the soak uses; the slopes are
   published as metrics (unit `ratio`, per hour) so the dashboard charts them, and over a limit the case is `failed`; least-squares slope of heap after GC (limit 5% of its mean per hour),
@@ -199,7 +217,7 @@ the engine's replication cost, not a real network, and the dashboard page says s
 | 2 | time series, wire protocols, correctness, filtered BM25 | arcadedb (bench) | 1 |
 | 3 | issue scenarios | arcadedb (bench) | 1 |
 | 4 | open-loop ramp | arcadedb (bench) | 1 |
-| 5 | HA | arcadedb (bench), perf-infra (cpusets) | 1 |
+| 5 | HA | arcadedb (bench) | 1 |
 | 6 | mixed phase, hybrid retrieval, soak | arcadedb (bench), perf-infra (soak on Saturday) | 2, 5 |
 
 Each project gets its own plan and PR (or one PR per workload in project 2); a workload is added to the schedule by the PR

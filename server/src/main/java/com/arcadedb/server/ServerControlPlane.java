@@ -249,7 +249,7 @@ public class ServerControlPlane {
    *       {@code SelfJoinNotSupportedException} (issue #7515): it is the shape the "make THIS node join"
    *       mistake takes, and it used to be answered 200 while doing nothing;</li>
    *   <li>HA not enabled at all, and an HA implementation that cannot change membership at runtime,
-   *       are both {@link OperationNotAvailableException} - HTTP 500, gRPC
+   *       are both {@link OperationNotAvailableException} - HTTP 400 (issue #12904), gRPC
    *       {@code FAILED_PRECONDITION} - a precondition of this server, not a fault of the request.</li>
    * </ul>
    * <b>Not leader-routed</b>, matching {@code POST /api/v1/cluster/peer} and matching
@@ -684,7 +684,7 @@ public class ServerControlPlane {
             "Reporting READY after waiting %dms for the leader to confirm this node's security documents, which it "
                 + "has not done since the snapshot install at index %d: %s. No snapshot carries them, so this node may "
                 + "be enforcing a user dropped, a group narrowed or a token revoked while it was away. Restart this "
-                + "node or re-POST it to /api/v1/cluster/peer on any member to ask again, or reissue the change. "
+                + "node or re-POST it to /api/v1/cluster/peer on any other member to ask again, or reissue the change. "
                 + "Readiness is not held any longer because a node the leader never answers must not stall a rolling "
                 + "restart; raise arcadedb.ha.securityConvergenceReadinessTimeout to wait longer", window, joinIndex,
             String.join(", ", unconverged));
@@ -2270,12 +2270,17 @@ public class ServerControlPlane {
    * enabled, or the HA implementation does not support joining a node this way - as opposed to having
    * been attempted and failed.
    * <p>
-   * It extends {@link CommandExecutionException} so the HTTP protocol answers it exactly as it did
-   * before this type existed: a 500, through the {@code CommandExecutionException} arm of
-   * {@code AbstractServerHttpHandler}. gRPC needs a distinction the HTTP protocol does not draw -
-   * this is its {@code FAILED_PRECONDITION}, while every other {@code CommandExecutionException}
-   * raised here, such as a backup archive that could not be deleted, is a server-side fault and stays
-   * {@code INTERNAL}.
+   * It extends {@link CommandExecutionException}, whose arm of {@code AbstractServerHttpHandler}
+   * answered it 500 until issue #12904. It now has an arm of its own in front of that one: HTTP 400
+   * "Operation not available on this server", and gRPC {@code FAILED_PRECONDITION}, while every other
+   * {@code CommandExecutionException} raised here, such as a backup archive that could not be
+   * deleted, is a server-side fault and stays 500 / {@code INTERNAL}.
+   * <p>
+   * <b>Raise it only for a condition a retry cannot change.</b> Both statuses tell the caller not to
+   * retry. A condition that passes by itself (a capability still being negotiated, an HA layer still
+   * starting) needs a subtype with an arm in front of this one, as
+   * {@code ClusterCapabilityNotReadyException} (409) has, or a handler that catches it itself, as the
+   * accept-diverged and accept-stale-snapshot handlers do.
    */
   public static class OperationNotAvailableException extends CommandExecutionException {
     public OperationNotAvailableException(final String message) {

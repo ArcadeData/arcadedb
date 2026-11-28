@@ -119,7 +119,7 @@ public class InsertExecutionPlanner {
     } else if (insertBody.getJsonArrayContent() != null) {
       result.chain(new UpdateContentStep(insertBody.getJsonArrayContent(), context));
     } else if (insertBody.getContentInputParam() != null) {
-      result.chain(new UpdateContentStep(insertBody.getContentInputParam(), context));
+      result.chain(new UpdateContentStep(insertBody.getContentInputParam(), "INSERT", context));
     } else if (insertBody.getSetExpressions() != null) {
       final List<UpdateItem> items = new ArrayList<>();
       for (final InsertSetExpression exp : insertBody.getSetExpressions()) {
