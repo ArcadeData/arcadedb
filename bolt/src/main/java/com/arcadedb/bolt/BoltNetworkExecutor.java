@@ -1014,8 +1014,9 @@ public class BoltNetworkExecutor extends Thread {
       // The summary's query type is the one of the statement an EXPLAIN or a PROFILE wraps, as Neo4j reports it (issue #11972).
       // The grammar does not parse the prefix, so the analysis above fails for them and reads as a write: what to run, and in
       // which access mode, stays decided by it, but a PROFILE of a read must not report a write
-      final CypherStatement typedStatement =
-          explainMode || profileMode ? analyzeStatement(OpenCypherQueryEngine.stripCypherPreparser(trimmedQuery.substring(PLAN_PREFIX_LENGTH)).trim()) : statement;
+      final CypherStatement typedStatement = explainMode || profileMode ?
+          analyzeStatement(OpenCypherQueryEngine.stripCypherPreparser(trimmedQuery.substring(PLAN_PREFIX_LENGTH)).trim()) :
+          statement;
       stream.writeOperation = typedStatement == null || !typedStatement.isReadOnly();
       stream.schemaOperation = typedStatement instanceof CypherDDLStatement;
 

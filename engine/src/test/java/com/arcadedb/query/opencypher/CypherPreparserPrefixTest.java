@@ -19,11 +19,13 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for issue #13556: Neo4j's {@code CYPHER <version> [option=value ...]} preparser prefix, which
@@ -32,7 +34,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 class CypherPreparserPrefixTest extends TestHelper {
   private static final String[] PREFIXES = { "CYPHER 5\n", "CYPHER 5 ", "cypher 25\n", "CYPHER 5 runtime=slotted\n",
       "CYPHER planner=cost runtime=interpreted\n", "  CYPHER 5\n\n", "// c\nCYPHER 5\n", "CYPHER 5\n// c\n", "CYPHER\n5\n",
-      "CYPHER 5\nCYPHER runtime=interpreted\n", "CYPHER runtime=slotted CYPHER 25 " };
+      "CYPHER 5\nCYPHER runtime=interpreted\n", "CYPHER runtime=slotted CYPHER 25 ",
+      // whitespace and comments may separate every token of the prefix, the = of an option included
+      "CYPHER 5 runtime = slotted ", "CYPHER 5 runtime= slotted ", "CYPHER 5 runtime =slotted ",
+      "CYPHER 5 CYPHER /* c */ runtime=slotted ", "CYPHER /* c */ 5 ", "CYPHER 5 /* c */ ", "CYPHER 5 runtime=slotted /* c */ planner=idp " };
 
   @Test
   void prefixedQueryAndCommandRunAsTheStatementItPrefixes() {
@@ -87,5 +92,23 @@ class CypherPreparserPrefixTest extends TestHelper {
     assertThat(OpenCypherQueryEngine.stripCypherPreparser("CYPHER 25 runtime=slotted RETURN 1")).isEqualTo("RETURN 1");
     assertThat(OpenCypherQueryEngine.stripCypherPreparser("CYPHER 5\nCYPHER runtime=interpreted\nRETURN 1")).isEqualTo("RETURN 1");
     assertThat(OpenCypherQueryEngine.stripCypherPreparser(null)).isNull();
+  }
+
+  @Test
+  void commentsAfterThePrefixLeaveTheStatementTheEngineAnalyzesAsExplain() {
+    assertThat(OpenCypherQueryEngine.stripCypherPreparser("CYPHER 5 /* c */ EXPLAIN RETURN 1")).isEqualTo("EXPLAIN RETURN 1");
+    assertThat(OpenCypherQueryEngine.stripCypherPreparser("CYPHER 5 CYPHER /* c */ runtime=slotted RETURN 1 AS n"))
+        .isEqualTo("RETURN 1 AS n");
+  }
+
+  @Test
+  void aPrefixWithNoStatementIsASyntaxErrorNotAnException() {
+    // a number is the version only right after CYPHER: Neo4j refuses CYPHER 5 5 RETURN 1
+    assertThat(OpenCypherQueryEngine.stripCypherPreparser("CYPHER 5 5 RETURN 1")).isEqualTo("5 RETURN 1");
+    for (final String text : new String[] { "CYPHER 5", "CYPHER 5 ", "CYPHER 5 /* c */", "CYPHER 5 // c", "CYPHER runtime = slotted",
+        "CYPHER 5 5 RETURN 1" }) {
+      assertThatThrownBy(() -> database.query("opencypher", text).close()).as(text).isInstanceOf(CommandParsingException.class);
+      assertThatThrownBy(() -> database.command("opencypher", text).close()).as(text).isInstanceOf(CommandParsingException.class);
+    }
   }
 }
