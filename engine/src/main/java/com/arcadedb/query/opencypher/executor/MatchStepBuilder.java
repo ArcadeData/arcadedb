@@ -52,6 +52,7 @@ import com.arcadedb.query.opencypher.executor.steps.UniqueKeyAnchor;
 import com.arcadedb.query.opencypher.executor.steps.ZeroLengthPathStep;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
+import com.arcadedb.query.opencypher.optimizer.statistics.StatisticsProvider;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
@@ -381,7 +382,7 @@ final class MatchStepBuilder {
         // (repeated for every row an UNWIND or a WITH hands over) and an expansion of all of them
         if (!reversed && !sourceAlreadyBound
             && startsFromUniquelyKeyedTarget(pathPattern, sourceNode, sourceVar, whereClause, isOptional, boundVariables,
-            matchVariables)) {
+            matchVariables, context)) {
           final NodePattern targetNode = pathPattern.getLastNode();
           reversed = true;
           sourceNode = targetNode;
@@ -793,9 +794,9 @@ final class MatchStepBuilder {
         || !isTypeScannableEndpoint(tgtNode, false, whereClause, boundVariables, matchVariables)
         || !isTypeScanCheaperThanWalk(srcNode, edgeTypes))
       return null;
-    // A target a UNIQUE index pins is the cheaper start: one lookup and the relationships of one vertex (issue #12149)
+    // A target an index pins is the cheaper start: the seeks and the relationships of the vertices they find (issues #12149, #13267)
     if (startsFromUniquelyKeyedTarget(pathPattern, srcNode, srcNode.getVariable() != null ? srcNode.getVariable() : "  src",
-        whereClause, false, boundVariables, matchVariables))
+        whereClause, false, boundVariables, matchVariables, context))
       return null;
 
     final String effectiveSourceVar = srcNode.getVariable() != null ? srcNode.getVariable()
@@ -1056,12 +1057,17 @@ final class MatchStepBuilder {
   }
 
   /**
-   * Whether a pattern of one fixed-length hop is better started from its target (issue #12149): the source is unlabelled and
-   * unconstrained, so starting from it scans every vertex of every type, while the target is pinned by an equality on every
-   * column of a UNIQUE index of its label, through its inline map or through the {@code WHERE} clause (equalities or
-   * {@code IN}-lists), whose values are literals, parameters or variables an earlier clause bound (an UNWIND or WITH row). The
-   * step that starts the pattern then finds the target through that index, once per row, and the hop walks its relationships
-   * backwards.
+   * Whether a pattern of one fixed-length hop is better started from its target (issues #12149, #13267): the source is
+   * unconstrained, so starting from it scans every vertex of every type, or every vertex of its label when it has one, while the
+   * target is pinned by an equality on every column of an index of its label, through its inline map or through the {@code WHERE}
+   * clause (equalities or {@code IN}-lists), whose values are literals, parameters or variables an earlier clause bound (an UNWIND
+   * or WITH row). The step that starts the pattern then finds the target through that index, once per row, and the hop walks its
+   * relationships backwards.
+   * <p>
+   * An unlabelled source starts from a target a UNIQUE index pins. A labelled source does when the walk back from the target reads
+   * fewer records than the label has vertices: the seeks, and every incoming relationship of the hop's types of the vertices they
+   * find, whichever label its other end has ({@link IndexedTargetCost}), so that the label scan, repeated for every row, is not the
+   * cheaper side. A target with a large in-degree, or a key with many entries, keeps the written order.
    * <p>
    * Not over a relationship of no type or of a unidirectional type, whose incoming side no vertex stores, and not for an OPTIONAL
    * MATCH or a path variable, which bind the pattern in the order written. Not when the {@code WHERE} clause pins the source
@@ -1069,7 +1075,8 @@ final class MatchStepBuilder {
    * relationships would read them all.
    */
   private boolean startsFromUniquelyKeyedTarget(final PathPattern pathPattern, final NodePattern sourceNode, final String sourceVar,
-      final WhereClause whereClause, final boolean isOptional, final Set<String> boundVariables, final Set<String> matchVariables) {
+      final WhereClause whereClause, final boolean isOptional, final Set<String> boundVariables, final Set<String> matchVariables,
+      final CommandContext context) {
     if (isOptional || pathPattern.hasPathVariable() || pathPattern.getRelationshipCount() != 1)
       return false;
     final RelationshipPattern rel = pathPattern.getRelationship(0);
@@ -1079,9 +1086,10 @@ final class MatchStepBuilder {
       if (!(database.getSchema().getTypeOrNull(type) instanceof EdgeType edgeType) || !edgeType.isBidirectional())
         return false;
 
-    // the source is a scan of every vertex: no label, no property, no inline predicate, no id, no equality or IN-list of the WHERE
+    // the source is a scan: no property, no inline predicate, no id, no equality or IN-list of the WHERE. Without a label it scans every
+    // vertex of every type; with one the scan is weighed against the seek of the target below
     final BooleanExpression where = whereClause != null ? whereClause.getConditionExpression() : null;
-    if (sourceNode.hasLabels() || sourceNode.hasDynamicLabels() || sourceNode.hasProperties() || sourceNode.hasWhereExpression()
+    if (sourceNode.hasDynamicLabels() || sourceNode.hasProperties() || sourceNode.hasWhereExpression()
         || boundVariables.contains(sourceVar) || matchVariables.contains(sourceVar) || plan.extractIdFilter(whereClause, sourceVar) != null
         || !wherePinnedProperties(sourceVar, where, value -> true).isEmpty())
       return false;
@@ -1092,9 +1100,51 @@ final class MatchStepBuilder {
       return false;
     if (targetVar != null && (targetVar.equals(sourceVar) || boundVariables.contains(targetVar) || matchVariables.contains(targetVar)))
       return false;
-    if (isUniquelyKeyed(target) && readsOnlyEarlierClauses(target.getProperties(), boundVariables))
+    // the reversed plan binds the target first: nothing the target or the relationship reads may be bound by the source side or later
+    // (a map value or a relationship predicate that reads the written first node would be evaluated before it is bound)
+    if (target.hasProperties() && !readsOnlyEarlierClauses(target.getProperties(), boundVariables))
+      return false;
+    if (!relationshipReadsOnlyEarlierClauses(rel, boundVariables))
+      return false;
+    if (!sourceNode.hasLabels())
+      return isUniquelyKeyed(target) && readsOnlyEarlierClauses(target.getProperties(), boundVariables)
+          || targetVar != null && isUniquelyKeyedByWhere(target, targetVar, where, boundVariables);
+
+    // a labelled source is a scan of its label, repeated for every row an UNWIND or a WITH hands over: the walk back from the target
+    // reads fewer records than that scan (issue #13267), judged from the keys and vertices the index finds, see IndexedTargetCost.
+    // The counts of the types are read at planning time, which a user denied a subtype of the target or of the source may not do:
+    // main plans such a statement without them, so the written order stays
+    try {
+      final long scanned = new StatisticsProvider(database).getMatchingVertexCardinality(sourceNode.getLabels(),
+          sourceNode.isLabelDisjunction());
+      final long targetCount = target.hasLabels() && target.getLabels().size() == 1
+          && database.getSchema().existsType(target.getLabels().getFirst()) ? database.countType(target.getLabels().getFirst(), true) : 0L;
+      final double walked = new IndexedTargetCost(database, context, statement).rowsPerRow(target, targetVar, where, boundVariables,
+          rel.getTypes(), rel.getDirection(), targetCount, scanned);
+      return walked >= 0D && walked < scanned;
+    } catch (final SecurityException e) {
+      return false;
+    }
+  }
+
+  /**
+   * Whether the relationship of a hop reads nothing but what an earlier clause bound and its own variable: the inline property map and
+   * the inline {@code WHERE} of {@code -[r:T {k: e.x} WHERE e.y = 1]->} may read neither the node written first, which a plan that
+   * starts from the target has not bound yet, nor the target, which the written order has not bound yet when it evaluates them (a
+   * reversed plan would bind it first and answer rows the written order does not).
+   */
+  private boolean relationshipReadsOnlyEarlierClauses(final RelationshipPattern rel, final Set<String> boundVariables) {
+    if (rel.hasProperties() && rel.getProperties() != null && !readsOnlyEarlierClauses(rel.getProperties(), boundVariables))
+      return false;
+    if (!rel.hasWhereExpression())
       return true;
-    return targetVar != null && isUniquelyKeyedByWhere(target, targetVar, where, boundVariables);
+    final CypherReferencedVariables referenced = CypherReferencedVariables.of(rel.getWhereExpression());
+    if (!referenced.isComplete())
+      return false;
+    for (final String name : referenced.getNames())
+      if (!boundVariables.contains(name) && !name.equals(rel.getVariable()))
+        return false;
+    return true;
   }
 
   /**
