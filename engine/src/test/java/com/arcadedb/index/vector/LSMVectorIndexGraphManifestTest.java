@@ -245,6 +245,79 @@ class LSMVectorIndexGraphManifestTest {
     assertThat(manifest.read().unreachableOrdinals()).containsExactly(9);
   }
 
+  /**
+   * The fingerprint is the proof that a persisted graph still describes the records it was built over (issue #6106): a graph is
+   * reused when the fingerprint of the live ordinal map equals the recorded one, so every part of the ordinal to (vector id, RID)
+   * correspondence has to move it. Written and read back through the same function, a fingerprint that ignored a byte of an id, a
+   * bucket or a position would pass every other test here and certify a graph built over other records.
+   */
+  @Test
+  void theFingerprintMovesWithEveryPartOfTheCorrespondence() {
+    final int[] ids = { 0, 1, 2, 3 };
+    final long base = LSMVectorIndexGraphManifest.fingerprintOf(ids, id -> new RID(3, id * 10L));
+
+    assertThat(base).isNotZero();
+    assertThat(LSMVectorIndexGraphManifest.fingerprintOf(ids, id -> new RID(3, id * 10L))).as("deterministic").isEqualTo(base);
+    assertThat(LSMVectorIndexGraphManifest.fingerprintOf(new int[] { 0, 1, 2 }, id -> new RID(3, id * 10L))).as("one ordinal fewer")
+        .isNotEqualTo(base);
+    assertThat(LSMVectorIndexGraphManifest.fingerprintOf(new int[] { 0, 1, 3, 2 }, id -> new RID(3, id * 10L))).as("two ids swapped")
+        .isNotEqualTo(base);
+    for (final int shift : new int[] { 0, 8, 16, 24 }) {
+      final int movedId = 2 ^ (1 << shift);
+      assertThat(LSMVectorIndexGraphManifest.fingerprintOf(new int[] { 0, 1, movedId, 3 }, id -> new RID(3, id * 10L)))
+          .as("byte of the vector id touched by 1 << %d", shift).isNotEqualTo(base);
+      assertThat(LSMVectorIndexGraphManifest.fingerprintOf(ids, id -> new RID(id == 2 ? 3 ^ (1 << shift) : 3, id * 10L)))
+          .as("byte of the bucket id touched by 1 << %d", shift).isNotEqualTo(base);
+    }
+    for (final int shift : new int[] { 0, 8, 16, 24, 32, 40, 48, 56 })
+      assertThat(LSMVectorIndexGraphManifest.fingerprintOf(ids, id -> new RID(3, id == 2 ? (id * 10L) ^ (1L << shift) : id * 10L)))
+          .as("byte of the position touched by 1L << %d", shift).isNotEqualTo(base);
+    assertThat(LSMVectorIndexGraphManifest.fingerprintOf(ids, id -> id == 2 ? null : new RID(3, id * 10L)))
+        .as("an unresolvable RID is not skipped").isNotEqualTo(base);
+    assertThat(LSMVectorIndexGraphManifest.fingerprintOf(ids, id -> id == 2 ? null : new RID(3, id * 10L)))
+        .as("an unresolvable RID is not a location at bucket 0, position 0")
+        .isNotEqualTo(LSMVectorIndexGraphManifest.fingerprintOf(ids, id -> id == 2 ? new RID(0, 0L) : new RID(3, id * 10L)));
+  }
+
+  /**
+   * The fingerprint is persisted in every manifest, so its construction is a format: changing it makes every graph on disk read as
+   * built over other records and costs each index a rebuild at the first open after an upgrade. Pinned against an independent
+   * FNV-1a over the documented byte sequence (the count, then per ordinal the id, the bucket id and the position, each big-endian).
+   */
+  @Test
+  void theFingerprintIsFnv1aOverTheCountAndEveryIdBucketAndPosition() {
+    final int[] ids = { 0, 7, 300, 70_000, Integer.MAX_VALUE };
+    final RID[] rids = { new RID(0, 0L), new RID(5, 1L << 40), new RID(2, 123_456_789L), null, new RID(1_000_000, Long.MAX_VALUE) };
+
+    long expected = 0xcbf29ce484222325L;
+    expected = fnv1a(expected, ids.length, 4);
+    for (int i = 0; i < ids.length; i++) {
+      expected = fnv1a(expected, ids[i], 4);
+      expected = fnv1a(expected, rids[i] == null ? -1 : rids[i].getBucketId(), 4);
+      expected = fnv1a(expected, rids[i] == null ? -1L : rids[i].getPosition(), 8);
+    }
+
+    final long actual = LSMVectorIndexGraphManifest.fingerprintOf(ids, id -> {
+      for (int i = 0; i < ids.length; i++)
+        if (ids[i] == id)
+          return rids[i];
+      return null;
+    });
+
+    assertThat(actual).isEqualTo(expected);
+    assertThat(LSMVectorIndexGraphManifest.fingerprintSeed(5)).isEqualTo(fnv1a(0xcbf29ce484222325L, 5, 4));
+  }
+
+  /** FNV-1a over the {@code width} big-endian bytes of {@code value}. */
+  private static long fnv1a(final long seed, final long value, final int width) {
+    long hash = seed;
+    for (int i = width - 1; i >= 0; i--) {
+      hash ^= (value >>> (8 * i)) & 0xFFL;
+      hash *= 0x100000001b3L;
+    }
+    return hash;
+  }
+
   private LSMVectorIndexGraphManifest manifest() {
     return new LSMVectorIndexGraphManifest(directory.resolve("graph.vecgraph").toString());
   }
