@@ -195,9 +195,10 @@ final class VectorHeapBudget {
       return -1L;
 
     final int p = Math.min(percent, 90);
-    // The available-heap reading that would make budgetBytes(p) cover `bytes`, rounded up so the answer never
-    // lands one byte short of the budget it is derived from.
-    final long neededAvailable = (bytes * 100 + p - 1) / p;
+    // The available-heap reading that makes budgetBytes(p) cover `bytes`. budgetBytes() divides by 100 before it multiplies
+    // by p, so the reading must be a multiple of 100 that gives it ceil(bytes / p) hundreds: rounding bytes * 100 / p up
+    // instead can leave the budget up to p bytes short of `bytes`.
+    final long neededAvailable = (bytes + p - 1) / p * 100;
     final long shortfall = neededAvailable - Math.max(0L, availableHeap);
     if (shortfall <= 0)
       return 0L;
