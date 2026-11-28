@@ -117,7 +117,7 @@ function physicsApplyForces() {
   let parameters = physicsForceParameters(globalGraphSettings);
   let sim = globalPhysics.sim;
 
-  sim.force("link").distance(parameters.linkDistance);
+  sim.force("link").distance(link => physicsLinkDistance(link, parameters.linkDistance));
   sim.force("charge").strength(parameters.chargeStrength).distanceMax(parameters.chargeDistanceMax);
   sim.force("collide").radius(d => d.r + parameters.collidePadding);
   sim.force("x").strength(parameters.gravityStrength);
@@ -138,6 +138,136 @@ function physicsReheat() {
 }
 
 /**
+ * The rest length of one link, centre to centre: the length the settings ask for, but never less than what keeps the
+ * edge label visible between the two node borders. Big nodes eat most of a fixed centre-to-centre length, and their
+ * discs then cover the label drawn at the middle of the edge. Pure, so it can be pinned by a unit test.
+ */
+function physicsLinkDistance(link, linkDistance) {
+  return Math.max(linkDistance, link.source.r + link.target.r + link.labelGap);
+}
+
+/**
+ * Glyph width of the graph font, as a fraction of the font size, for when the text cannot be measured (no canvas, as
+ * in a headless graph): one em, the widest common glyphs (W, M, full-width characters), so no label is clipped.
+ */
+var PHYSICS_LABEL_CHAR_WIDTH = 1;
+
+/** The canvas context labels are measured with, made on first use; null when the page has no canvas. */
+var globalPhysicsMeasureContext = null;
+
+/**
+ * Returns a function that measures a line of text in the given CSS font, the way Cytoscape measures the label it
+ * draws, or null when there is no canvas to measure with.
+ */
+function physicsTextMeasurer(font) {
+  if (globalPhysicsMeasureContext == null) {
+    if (typeof document === "undefined") return null;
+    globalPhysicsMeasureContext = document.createElement("canvas").getContext("2d");
+    if (globalPhysicsMeasureContext == null) return null;
+  }
+  return line => {
+    globalPhysicsMeasureContext.font = font;
+    return globalPhysicsMeasureContext.measureText(line).width;
+  };
+}
+
+/**
+ * The room the label of an edge needs between the two node borders. The label is rotated along the edge, so what it
+ * takes is the width of its longest line, plus its outline at both ends and one font size of margin for the arrow
+ * head. The lines are the ones the label is drawn in: a label that does not wrap is one line, newlines and all. The
+ * width is measured when a measurer is given, else estimated from the widest glyphs. An edge without a label needs
+ * no room.
+ */
+function physicsLabelGap(label, fontSize, outlineWidth, measure) {
+  if (label == null || label === "") return 0;
+  let lines = String(label).split("\n");
+  let longest = 0;
+  for (let i = 0; i < lines.length; i++)
+    longest = Math.max(longest, measure != null ? measure(lines[i]) : lines[i].length * fontSize * PHYSICS_LABEL_CHAR_WIDTH);
+  return longest + 2 * outlineWidth + fontSize;
+}
+
+/** True when the element is drawn with a style that can be read back (not a headless graph, not a stand-in). */
+function physicsStyled(ele) {
+  return typeof ele.cy === "function" && ele.cy().styleEnabled();
+}
+
+/**
+ * The font size of an edge label in pixels. The graph settings give it in em (labelSize, 0.7em by default), which the
+ * canvas resolves against the font of the graph container; Cytoscape hands the bare em number back.
+ */
+function physicsFontSizePx(edge) {
+  let fontSize = edge.pstyle("font-size");
+  if (fontSize.units !== "em") return fontSize.pfValue || 0;
+  let container = edge.cy().container();
+  let base = container != null && typeof getComputedStyle === "function" ? parseFloat(getComputedStyle(container).fontSize) : NaN;
+  return fontSize.value * (base > 0 ? base : 16);
+}
+
+/**
+ * The room the label of a graph edge needs, read from the style the edge is drawn with. Without a style (a headless
+ * graph) there is no label on screen to keep clear.
+ */
+function physicsEdgeLabelGap(edge) {
+  if (!physicsStyled(edge)) return 0;
+  let fontSize = physicsFontSizePx(edge);
+  let font = edge.pstyle("font-style").strValue + " " + edge.pstyle("font-weight").strValue + " " + fontSize + "px " + edge.pstyle("font-family").strValue;
+  let label = edge.style("label");
+  // WITHOUT WRAPPING (THE EDGE DEFAULT) THE CANVAS DRAWS A NEWLINE AS A SPACE, ON THE SAME LINE
+  if (label != null && edge.pstyle("text-wrap").value === "none") label = String(label).replace(/\n/g, " ");
+  return physicsLabelGap(label, fontSize, edge.numericStyle("text-outline-width") || 0, physicsTextMeasurer(font));
+}
+
+/**
+ * The radius a node is drawn with: the style width and height (a vertex type can set its own size in the graph
+ * settings, which overrides data(size)), or the size the graph gave it when there is no style to read.
+ */
+function physicsNodeRadius(ele) {
+  if (physicsStyled(ele)) return Math.max(ele.numericStyle("width") || 0, ele.numericStyle("height") || 0) / 2 || 12.5;
+  return (ele.data("size") || 25) / 2;
+}
+
+/** How much of the missing label room is made up in one tick: stiff, but short of overshooting into a bounce. */
+var PHYSICS_LABEL_CLEARANCE_STRENGTH = 0.7;
+
+/**
+ * The force that makes the label room a hard minimum. The link spring only pulls towards its rest length: the gravity
+ * and the other springs of a hub can still squeeze two big nodes over the label between them. This force, like d3's
+ * collide force, pushes the two ends of a link apart whenever their borders are closer than the label needs, and
+ * does nothing otherwise. It reads the links of the link force at every tick, so a rebuilt link force is followed.
+ */
+function physicsLabelClearanceForce(sim) {
+  return function () {
+    let linkForce = sim.force("link");
+    if (linkForce == null) return;
+    let links = linkForce.links();
+    for (let i = 0; i < links.length; i++) {
+      let link = links[i];
+      if (link.labelGap <= 0) continue;
+      let s = link.source;
+      let t = link.target;
+      if (s === t) continue;
+      let dx = t.x + t.vx - s.x - s.vx;
+      let dy = t.y + t.vy - s.y - s.vy;
+      let d = Math.sqrt(dx * dx + dy * dy);
+      let min = s.r + t.r + link.labelGap;
+      if (d >= min) continue;
+      if (d === 0) {
+        // ON TOP OF EACH OTHER: ANY DIRECTION WILL DO, AS LONG AS IT IS THE SAME FOR BOTH
+        dx = 1;
+        dy = 0;
+        d = 1;
+      }
+      let k = ((min - d) / d) * 0.5 * PHYSICS_LABEL_CLEARANCE_STRENGTH;
+      t.vx += dx * k;
+      t.vy += dy * k;
+      s.vx -= dx * k;
+      s.vy -= dy * k;
+    }
+  };
+}
+
+/**
  * The links of the simulation, built from the graph edges. An edge whose endpoint is not on the graph is left out:
  * d3 refuses a link to a node it does not know, and it would take the whole simulation down with it.
  */
@@ -148,7 +278,7 @@ function physicsLinks(edges, byId) {
     let source = edge.data("source");
     let target = edge.data("target");
     if (byId[source] == null || byId[target] == null) continue;
-    links.push({ source: source, target: target });
+    links.push({ source: source, target: target, labelGap: physicsEdgeLabelGap(edge) });
   }
   return links;
 }
@@ -165,12 +295,12 @@ function physicsBuildNodes(eles, previousById) {
     let pos = ele.position();
     let node = previousById[ele.id()];
     if (node == null) {
-      node = { id: ele.id(), x: pos.x, y: pos.y, r: (ele.data("size") || 25) / 2 };
+      node = { id: ele.id(), x: pos.x, y: pos.y, r: physicsNodeRadius(ele) };
     } else {
       // THE POSITION COMES FROM THE GRAPH (A LAYOUT MAY HAVE MOVED IT), THE MOTION FROM THE SIMULATION
       node.x = pos.x;
       node.y = pos.y;
-      node.r = (ele.data("size") || 25) / 2;
+      node.r = physicsNodeRadius(ele);
     }
     nodes.push(node);
     byId[node.id] = node;
@@ -206,6 +336,7 @@ function physicsStart() {
     .force("y", d3.forceY(cy))
     .alpha(0.3)
     .on("tick", physicsTick);
+  sim.force("labels", physicsLabelClearanceForce(sim));
 
   globalPhysics = { cy: globalCy, sim: sim, nodes: nodes, eles: eles, byId: byId };
 

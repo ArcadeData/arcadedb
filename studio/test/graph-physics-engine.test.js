@@ -79,7 +79,7 @@ function jqueryStub(state) {
  * The engine runs in this realm (not a vm context) on purpose: Cytoscape recognises a plain object by its
  * constructor, and an object made in another realm is not one, so the positions would silently be dropped.
  */
-function buildPage(elements, settings, stored) {
+function buildPage(elements, settings, stored, styled) {
   const state = { buttonActive: null, buttonPressed: null, checkboxChecked: null, saved: null, stored: stored };
 
   const globals = Object.assign(
@@ -112,8 +112,15 @@ function buildPage(elements, settings, stored) {
   const engine = factory(globals);
   globals.globalCy = cytoscape({
     headless: true,
+    // a styled graph is drawn with labels, as the page renders it; it keeps a render loop alive until destroyed
+    styleEnabled: styled === true,
     elements: elements,
-    style: [{ selector: "node", style: { width: 10, height: 10 } }],
+    style: [
+      { selector: "node", style: { width: "data(size)", height: "data(size)" } },
+      // what the graph widget writes: an em label size, and a vertex type with a size of its own
+      { selector: "node.Sized", style: { width: 500, height: 500 } },
+      { selector: "edge[label]", style: { label: "data(label)", "font-size": "0.7em", "text-outline-width": 8 } },
+    ],
   });
 
   // The page the test drives: the engine's functions, and the globals it reads.
@@ -152,10 +159,13 @@ function chargeStrength(sandbox) {
   return typeof strength === "function" ? strength() : strength;
 }
 
-/** d3 keeps the link distance as a function too (it can be a different one per link), so the number is read through it. */
+/**
+ * d3 keeps the link distance as a function (it is a different one per link), so the number is read through it, for a
+ * link between two points with no label: what the settings ask for.
+ */
 function linkDistance(sandbox) {
   const distance = sandbox.globalPhysics.sim.force("link").distance();
-  return typeof distance === "function" ? distance() : distance;
+  return distance({ source: { r: 0 }, target: { r: 0 }, labelGap: 0 });
 }
 
 test("the simulation starts on the nodes of the graph and moves them", () => {
@@ -441,6 +451,59 @@ test("the edge length slider reaches the running simulation", () => {
   sandbox.physicsReheat();
 
   assert.equal(linkDistance(sandbox), 300);
+});
+
+test("big nodes stay far enough apart to show the label of the edge between them", () => {
+  // A hub with big neighbours, the shape of the reported graph: the gravity and the springs pull them all inwards
+  // The hub's type sets its own size in the graph settings, so it is drawn far bigger than data(size) says
+  const elements = [{ data: { id: "hub", size: 40 }, classes: "Sized" }];
+  for (let i = 0; i < 6; i++) {
+    elements.push({ data: { id: "n" + i, size: 300 } });
+    elements.push({ data: { id: "e" + i, source: "hub", target: "n" + i, label: "applies_to" } });
+  }
+  const { sandbox } = buildPage(elements, {}, null, true);
+
+  try {
+    sandbox.physicsStart();
+    settle(sandbox, 500);
+
+    const nodes = sandbox.globalPhysics.byId;
+    assert.equal(nodes.hub.r, 250, "the hub is as big as it is drawn, not as data(size) says");
+    const labelGap = sandbox.globalPhysics.sim.force("link").links()[0].labelGap;
+    // 0.7em of a 16px font: the ten characters of the label alone take more than 10 * 11.2 * 0.5 pixels
+    assert.ok(labelGap > 10 * 11.2 * 0.5 + 2 * 8, "the label needs room: " + labelGap);
+    for (let i = 0; i < 6; i++) {
+      const hub = nodes.hub;
+      const leaf = nodes["n" + i];
+      const borderGap = Math.hypot(hub.x - leaf.x, hub.y - leaf.y) - hub.r - leaf.r;
+      assert.ok(borderGap >= labelGap - 1, "the borders of hub and n" + i + " ended " + borderGap + " apart, the label needs " + labelGap);
+    }
+  } finally {
+    sandbox.physicsStop();
+    sandbox.globalCy.destroy();
+  }
+});
+
+test("an edge label that does not wrap needs the room of all its text on one line", () => {
+  // Edges keep Cytoscape's text-wrap: none, so the canvas draws the newline as a space and both halves side by side
+  const { sandbox } = buildPage(
+    [
+      { data: { id: "a", size: 25 } },
+      { data: { id: "b", size: 25 } },
+      { data: { id: "ab", source: "a", target: "b", label: "relationship\nrelationship" } },
+      { data: { id: "ba", source: "b", target: "a", label: "relationship relationship" } },
+    ],
+    {},
+    null,
+    true
+  );
+
+  try {
+    const links = sandbox.physicsLinks(sandbox.globalCy.edges(), { a: {}, b: {} });
+    assert.equal(links[0].labelGap, links[1].labelGap, "the newline takes the room of the space it is drawn as");
+  } finally {
+    sandbox.globalCy.destroy();
+  }
 });
 
 test("the settings of the graph keep the physics ones", () => {
