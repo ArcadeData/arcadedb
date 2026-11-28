@@ -344,7 +344,9 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
         else if (inList.isWholeList(element))
           // The whole right side, x IN $ids: a list, or the refusal the scan gives a value that is not one (issue #10541). It used
           // to be taken for one key, which answered no rows where the scan refuses
-          for (final Object v : InExpression.listOperand(resolved))
+          // A part of a parameter ($m.k, $ids[0]) is typed at run time only, and a scalar there
+          // is one key, as the scan compares it as a one-element list (issue #13563)
+          for (final Object v : InExpression.listOperand(resolved, InExpression.isTypedAtRunTime(element)))
             addSeekKey(keys, v, trailing);
         else
           // One item of a list literal, x IN [$a, $b]: one key, whatever it resolves to (issue #10541). A list or a map is a key no

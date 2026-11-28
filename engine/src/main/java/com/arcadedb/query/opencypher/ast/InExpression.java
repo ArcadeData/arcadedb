@@ -117,6 +117,9 @@ public class InExpression implements BooleanExpression {
    */
   private final boolean constantPerExecution;
 
+  /** Whether the right side is one value whose type is only known at run time, see {@link #listOperand(Object, boolean)}. */
+  private final boolean rightSideTypedAtRunTime;
+
   /**
    * The list the last row was asked about, and its lookup once built; see {@link #lookupFor}. One immutable holder in a
    * volatile field, because the node of a cached plan is shared by concurrent executions, and the rows of one execution can
@@ -153,6 +156,7 @@ public class InExpression implements BooleanExpression {
     this.list = list;
     this.literalList = literalList(list);
     this.constantPerExecution = literalList == null && isConstantPerExecution(list);
+    this.rightSideTypedAtRunTime = list.size() == 1 && isTypedAtRunTime(list.get(0));
   }
 
   @Override
@@ -196,9 +200,7 @@ public class InExpression implements BooleanExpression {
             return known;
         }
       }
-      // Neo4j cannot know the type of a stored value before it runs, so x IN n.p compares a scalar p with x as a one-element list;
-      // a literal or a parameter it does know, and those stay refused (issues #10541, #13563)
-      valuesToCheck = readsStoredValue(listItem) && isScalar(listValue) ? List.of(listValue) : listOperand(listValue);
+      valuesToCheck = listOperand(listValue, rightSideTypedAtRunTime);
     } else {
       // Multiple expressions (parsed list literal items)
       final List<Object> evaluated = new ArrayList<>(list.size());
@@ -287,15 +289,31 @@ public class InExpression implements BooleanExpression {
         "InvalidArgumentType: IN requires a list on the right side, got " + listValue.getClass().getSimpleName());
   }
 
-  /** Whether the expression reads a value out of a record or a map (n.p, m.k, a chain of them), whose type is only known at run time. */
-  private static boolean readsStoredValue(final Expression operand) {
-    return operand instanceof PropertyAccessExpression || operand instanceof ChainedPropertyAccessExpression
-        || operand instanceof PropertyReadExpression;
+  /**
+   * {@link #listOperand(Object)} for a right side whose type may only be known at run time (see {@link #isTypedAtRunTime}): Neo4j
+   * cannot type {@code n.p} before it runs, so {@code x IN n.p} compares a scalar {@code p} with x as a one-element list, where a
+   * literal or a parameter, whose type it does know, is refused (issues #10541, #13563). Shared with the index seek, so that the
+   * seek and this node answer {@code b.k IN $m.k} alike.
+   *
+   * @param listValue      the right side, not {@code null}
+   * @param typedAtRunTime whether the expression the value comes from is typed at run time only
+   *
+   * @throws IllegalArgumentException when the value is not a list and its type is known before the run, or it is a BINARY value
+   */
+  public static Iterable<?> listOperand(final Object listValue, final boolean typedAtRunTime) {
+    // A BINARY value stays refused: it is one opaque value that is no list (issue #8098)
+    if (typedAtRunTime && !(listValue instanceof Collection<?>) && !(listValue instanceof byte[]) && !MultiValue.isSequenceArray(
+        listValue))
+      return List.of(listValue);
+    return listOperand(listValue);
   }
 
-  private static boolean isScalar(final Object value) {
-    // a BINARY value stays refused: it is one opaque value that is no list (issue #8098)
-    return !(value instanceof Collection<?>) && !(value instanceof byte[]) && !MultiValue.isSequenceArray(value);
+  /**
+   * Whether the right side of an {@code IN} reads a value out of a record, a map or a list ({@code n.p}, {@code n['p']},
+   * {@code m.k}, {@code a.b.c}, {@code $m.k}, {@code $ids[0]}), whose type is only known at run time.
+   */
+  public static boolean isTypedAtRunTime(final Expression rightSide) {
+    return rightSide instanceof PropertyReadExpression;
   }
 
   /**
