@@ -29,13 +29,15 @@ import com.arcadedb.database.TransactionContext;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.HeapLimitExceededException;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.QueryHeapBudgetExceededException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
-import com.arcadedb.utility.CollectionUtils;
+import com.arcadedb.query.sql.executor.HeapEstimator;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -45,10 +47,12 @@ import com.arcadedb.redis.RedisCounterOperations;
 import com.arcadedb.redis.RedisException;
 import com.arcadedb.redis.RedisIndexKeys;
 import com.arcadedb.redis.RedisRecords;
+import com.arcadedb.redis.RedisReplyHeap;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalEdgeType;
 import com.arcadedb.schema.LocalVertexType;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.CollectionUtils;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentMap;
@@ -223,18 +227,28 @@ public class RedisQueryEngine implements QueryEngine {
   }
 
   private ResultSet executeRedisCommand(final String query) {
+    // What the answers of HMGET take is accounted to the budget the queries share for as long as they are held: the result set owns
+    // the heap and gives it back when it is closed, and a command that fails gives it back here
+    final RedisReplyHeap heap = new RedisReplyHeap("HMGET reply");
+    boolean answered = false;
     try {
       // Check if this is a multi-command query (contains newlines). Same split as analyze(), which must see
       // exactly the commands that run here (issue #8247).
       final String[] lines = splitBatch(query);
-      if (lines.length > 1) {
-        return executeMultipleCommands(lines);
-      }
-
-      // Single command execution
-      return executeSingleCommand(query);
+      final ResultSet resultSet;
+      if (lines.length > 1)
+        resultSet = executeMultipleCommands(lines, heap);
+      else
+        // Single command execution
+        resultSet = executeSingleCommand(query, heap);
+      answered = true;
+      return resultSet;
     } catch (final RedisException | CommandParsingException | SchemaException e) {
       // a missing index is the caller's mistake (issue #11384): neither a server error logged SEVERE nor a command that cannot be read
+      throw e;
+    } catch (final QueryHeapBudgetExceededException | HeapLimitExceededException e) {
+      // The answer did not fit the heap budget the queries share: refused as such (HTTP 503 while other queries hold it), not as a
+      // command that could not be read, and not logged as an error of the server
       throw e;
     } catch (final NeedRetryException | DuplicatedKeyException e) {
       // Unwrapped rather than folded into the branch below: a conflict a write command's own
@@ -250,6 +264,9 @@ public class RedisQueryEngine implements QueryEngine {
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error executing Redis command: " + query, e);
       throw new CommandParsingException("Error executing Redis command", e);
+    } finally {
+      if (!answered)
+        heap.close();
     }
   }
 
@@ -264,7 +281,7 @@ public class RedisQueryEngine implements QueryEngine {
    * loop at the first EXEC or DISCARD silently dropped every line after it, ran the commands before MULTI inside the
    * transaction, and let an EXEC with no MULTI commit the prefix (issue #8297).
    */
-  private ResultSet executeMultipleCommands(final String[] lines) {
+  private ResultSet executeMultipleCommands(final String[] lines, final RedisReplyHeap heap) {
     // A String is a command run on its own, a List<String> the commands of a block that EXEC commits.
     final List<Object> plan = new ArrayList<>(lines.length);
     List<String> block = null;
@@ -307,21 +324,21 @@ public class RedisQueryEngine implements QueryEngine {
       throw new CommandParsingException("MULTI without EXEC - transaction not committed");
 
     if (plan.isEmpty() && discarded)
-      return createResultSet("OK");
+      return createResultSet("OK", heap);
 
     final List<Object> results = new ArrayList<>();
     int position = 0;
     for (final Object step : plan) {
       if (step instanceof String command)
-        results.add(executeSingleCommandInternal(command, looseSlot(position, command)));
+        results.add(executeSingleCommandInternal(command, looseSlot(position, command), heap));
       else {
         @SuppressWarnings("unchecked")
         final List<String> commands = (List<String>) step;
-        results.addAll(executeTransaction(commands));
+        results.addAll(executeTransaction(commands, heap));
       }
       position++;
     }
-    return createResultSet(results);
+    return createResultSet(results, heap);
   }
 
   /**
@@ -331,7 +348,7 @@ public class RedisQueryEngine implements QueryEngine {
    * {@link RamSlot} instead (issue #8254): a SET is published only when the transaction commits, and an INCR/DECR/GETDEL
    * is applied atomically once, the retry of a conflicting block reusing what its first attempt reserved.
    */
-  private List<Object> executeTransaction(final List<String> commands) {
+  private List<Object> executeTransaction(final List<String> commands, final RedisReplyHeap heap) {
     // Filled fresh on every attempt and published only once the block has returned, the way
     // MCPToolUtils.collectInTransaction does: `database.transaction(...)` retries the block up to
     // arcadedb.txRetries times on an MVCC conflict, rolling the failed attempt back first, and an accumulator
@@ -352,7 +369,7 @@ public class RedisQueryEngine implements QueryEngine {
       final List<Object> attemptResults = new ArrayList<>(commands.size());
       for (int i = 0; i < commands.size(); i++) {
         final String command = commands.get(i);
-        attemptResults.add(executeSingleCommandInternal(command, slotFor(scope, i, command)));
+        attemptResults.add(executeSingleCommandInternal(command, slotFor(scope, i, command), heap));
       }
       committed[0] = attemptResults;
     });
@@ -480,15 +497,16 @@ public class RedisQueryEngine implements QueryEngine {
   /**
    * Executes a single command and returns a ResultSet.
    */
-  private ResultSet executeSingleCommand(final String query) {
-    final Object result = executeSingleCommandInternal(query, looseSlot(0, query));
-    return createResultSet(result);
+  private ResultSet executeSingleCommand(final String query, final RedisReplyHeap heap) {
+    final Object result = executeSingleCommandInternal(query, looseSlot(0, query), heap);
+    return createResultSet(result, heap);
   }
 
   /**
    * @param slot the command's {@link RamSlot} inside a MULTI/EXEC block, null outside one
+   * @param heap what the answer takes is charged to it, see {@link #hMGet}
    */
-  private Object executeSingleCommandInternal(final String query, final RamSlot slot) {
+  private Object executeSingleCommandInternal(final String query, final RamSlot slot, final RedisReplyHeap heap) {
     final List<String> parts = parseCommand(query);
     if (parts.isEmpty()) {
       throw new CommandParsingException("Empty Redis command");
@@ -515,7 +533,7 @@ public class RedisQueryEngine implements QueryEngine {
       case "DECRBY" -> decrBy(parts, slot);
       case "HSET", "HMSET" -> hSet(parts);
       case "HGET" -> hGet(parts);
-      case "HMGET" -> hMGet(parts);
+      case "HMGET" -> hMGet(parts, heap);
       case "HEXISTS" -> hExists(parts);
       case "HDEL" -> hDel(parts);
       default -> throw new CommandParsingException("Command not found: " + cmd);
@@ -561,19 +579,40 @@ public class RedisQueryEngine implements QueryEngine {
     return parts;
   }
 
-  private ResultSet createResultSet(final Object result) {
+  /**
+   * The result set owns {@code heap}, what its answer was charged: it is given back when the result set is closed.
+   */
+  private ResultSet createResultSet(final Object result, final RedisReplyHeap heap) {
     if (result == null)
-      return new IteratorResultSet(Collections.emptyIterator());
+      return new HeapHoldingResultSet(Collections.emptyIterator(), heap);
 
     if (result instanceof Record record) {
       // Return documents directly (consistent with SQL/OpenCypher result format)
       final ResultInternal resultInternal = new ResultInternal(record);
-      return new IteratorResultSet(Collections.singleton((Result) resultInternal).iterator());
+      return new HeapHoldingResultSet(Collections.singleton((Result) resultInternal).iterator(), heap);
     }
 
     final ResultInternal resultInternal = new ResultInternal();
     resultInternal.setProperty("value", result);
-    return new IteratorResultSet(Collections.singleton((Result) resultInternal).iterator());
+    return new HeapHoldingResultSet(Collections.singleton((Result) resultInternal).iterator(), heap);
+  }
+
+  /**
+   * The answer of a command, holding the heap it was charged until it is closed: the answers of the commands of a batch are held
+   * together, and so are they while the response is built from them.
+   */
+  private static final class HeapHoldingResultSet extends IteratorResultSet {
+    private final RedisReplyHeap heap;
+
+    HeapHoldingResultSet(final Iterator<?> iterator, final RedisReplyHeap heap) {
+      super(iterator);
+      this.heap = heap;
+    }
+
+    @Override
+    public void close() {
+      heap.close();
+    }
   }
 
   // --- RAM Commands (default bucket) ---
@@ -760,8 +799,11 @@ public class RedisQueryEngine implements QueryEngine {
    * HMGET command: Retrieves multiple documents from the database.
    * Syntax: HMGET <index> <key> [key ...]
    *         HMGET <rid> [rid ...]
+   * <p>
+   * One entry per key: what each entry takes is charged to {@code heap}, the budget the queries share, while the answer is built,
+   * which refuses it once it does not fit instead of building it. The charge stays until the result set that holds the answer is closed.
    */
-  private List<Object> hMGet(final List<String> parts) {
+  private List<Object> hMGet(final List<String> parts, final RedisReplyHeap heap) {
     if (parts.size() < 2) {
       throw new CommandParsingException("HMGET requires index/rids and keys: HMGET <index> <key> [key ...] or HMGET <rid> [rid ...]");
     }
@@ -776,7 +818,9 @@ public class RedisQueryEngine implements QueryEngine {
         if (!rid.startsWith("#")) {
           throw new CommandParsingException("All arguments must be RIDs when first argument is a RID");
         }
-        results.add(RedisRecords.lookupByRid(database, parseRid(rid)));
+        final Record record = RedisRecords.lookupByRid(database, parseRid(rid));
+        results.add(record);
+        heap.add(HeapEstimator.estimate(record) + HeapEstimator.REFERENCE_BYTES);
       }
     } else {
       // It's an index lookup
@@ -786,9 +830,12 @@ public class RedisQueryEngine implements QueryEngine {
 
       final String indexName = firstArg;
       for (int i = 2; i < parts.size(); i++) {
-        results.add(getRecordByIndex(indexName, parts.get(i)));
+        final Record record = getRecordByIndex(indexName, parts.get(i));
+        results.add(record);
+        heap.add(HeapEstimator.estimate(record) + HeapEstimator.REFERENCE_BYTES);
       }
     }
+    heap.flush();
 
     return results;
   }

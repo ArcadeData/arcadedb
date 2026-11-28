@@ -123,7 +123,8 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
     final float[] weights = parseWeights(opts.getList("weights"), sourceCount);
     final String groupBy = opts.getString("groupBy", null);
     final int groupSize = opts.getInt("groupSize", 1);
-    final int limit = opts.getInt("limit", -1);
+    // Absent (or null) is no cap; 0 is a cap of no row and a negative one is refused, as the count of vector.neighbors is
+    final int targetSize = opts.getNonNegativeInt("limit", Integer.MAX_VALUE);
 
     if (groupSize < 1)
       throw new CommandSQLParsingException(NAME + " groupSize must be >= 1, got " + groupSize);
@@ -144,7 +145,8 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
     case DBSF -> applyDBSF(sources, weights, fused);
     }
 
-    if (fused.isEmpty())
+    // A limit of 0 returns here, after every source and score was validated, without ranking and sorting what it would drop
+    if (fused.isEmpty() || targetSize == 0)
       return new ArrayList<>(0);
 
     final ArrayList<RidScore> ranked = new ArrayList<>(fused.size());
@@ -168,7 +170,6 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
     final GroupAdmissionState groups = groupBy != null
         ? new GroupAdmissionState(Integer.MAX_VALUE, groupSize)
         : null;
-    final int targetSize = limit > 0 ? limit : Integer.MAX_VALUE;
     final ArrayList<Object> result = new ArrayList<>(Math.min(targetSize, ranked.size()));
     final BasicDatabase db = context.getDatabase();
 
@@ -297,10 +298,12 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
         if (r.score() < min) min = r.score();
         if (r.score() > max) max = r.score();
       }
-      final float range = max - min;
+      // In double, as vector.normalizeScores does: max - min of two finite floats can overflow a float (-3e38 .. 3e38),
+      // which scored the top row of the source NaN and every other row 0 (#12766)
+      final double range = (double) max - min;
       final float w = weights[s];
       for (final RidScore r : rows) {
-        final float normalized = range == 0.0f ? 1.0f : (r.score() - min) / range;
+        final float normalized = range == 0.0 ? 1.0f : (float) (((double) r.score() - min) / range);
         out.merge(r.rid(), w * normalized, Float::sum);
       }
     }

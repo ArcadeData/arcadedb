@@ -122,7 +122,8 @@ public class CypherDateTime implements CypherTemporalValue {
     if (map.containsKey("datetime")) {
       if (map.containsKey("date") || map.containsKey("time"))
         throw new IllegalArgumentException("datetime cannot be selected together with date or time.");
-      final Object dtVal = map.get("datetime");
+      // A native temporal (a parameter a driver sent) is the Cypher temporal its literal is, its zone included (issue #13569)
+      final Object dtVal = TemporalUtil.fromCoreJavaType(map.get("datetime"));
       final boolean baseHasTimezone = dtVal instanceof CypherDateTime;
       // A local datetime has no zone: it is read in UTC, or in the map's timezone below
       final ZonedDateTime base = baseHasTimezone ?
@@ -147,7 +148,7 @@ public class CypherDateTime implements CypherTemporalValue {
     ZoneId timeZone = null;
     boolean timeHasTimezone = false;
     if (map.containsKey("time")) {
-      final Object timeVal = map.get("time");
+      final Object timeVal = TemporalUtil.fromCoreJavaType(map.get("time"));
       baseTime = TemporalMapFields.timeOf(timeVal);
       if (timeVal instanceof CypherTime ct) {
         timeZone = ct.getValue().getOffset();

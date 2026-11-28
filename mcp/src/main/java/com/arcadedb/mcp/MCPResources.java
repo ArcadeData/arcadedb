@@ -71,7 +71,7 @@ public class MCPResources {
   public static JSONObject read(final ArcadeDBServer server, final ServerSecurityUser user, final MCPConfiguration config,
       final String uri) {
     if (!config.isAllowReads())
-      throw new SecurityException("Read operations are not allowed by MCP configuration");
+      throw new MCPRefusalException("Read operations are not allowed by MCP configuration");
 
     final String databaseName = parseSchemaURI(uri);
     if (databaseName == null || !server.isDatabaseAvailable(databaseName)

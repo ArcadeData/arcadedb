@@ -114,6 +114,16 @@ public class ConditionalStatement implements CypherStatement {
     return true;
   }
 
+  @Override
+  public boolean hasUnconfirmedFunctionCall() {
+    if (conditionsMayWrite)
+      return true;
+    for (final CypherStatement branch : getAllBranches())
+      if (branch.hasUnconfirmedFunctionCall())
+        return true;
+    return false;
+  }
+
   /**
    * Every branch returns the same columns (the parser's validation enforces it), so the first branch's RETURN names the
    * statement's columns.

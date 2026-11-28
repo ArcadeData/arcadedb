@@ -145,8 +145,8 @@ class OpenCypherConvertFunctionsTest {
     final ConvertToJson fn = new ConvertToJson();
     assertThat(fn.getName()).isEqualTo("convert.toJson");
 
-    // Primitives are returned as their string representation
-    assertThat(fn.execute(new Object[]{"hello"}, null)).isEqualTo("hello");
+    // Primitives are written as JSON values: a string is quoted, as APOC's apoc.convert.toJson does (issue #12108)
+    assertThat(fn.execute(new Object[]{"hello"}, null)).isEqualTo("\"hello\"");
     assertThat(fn.execute(new Object[]{42}, null)).isEqualTo("42");
     assertThat(fn.execute(new Object[]{true}, null)).isEqualTo("true");
     assertThat(fn.execute(new Object[]{null}, null)).isEqualTo("null");

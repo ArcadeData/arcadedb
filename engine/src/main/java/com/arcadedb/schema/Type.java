@@ -144,6 +144,9 @@ public enum Type {
   public static final  String              DATE_FORMAT_MILLIS  = "yyyy-MM-dd HH:mm:ss.SSS";
   private static final BigDecimal LONG_MAX_DECIMAL = BigDecimal.valueOf(Long.MAX_VALUE);
   private static final BigDecimal LONG_MIN_DECIMAL = BigDecimal.valueOf(Long.MIN_VALUE);
+  // THE FIRST DECIMALS OUT OF THE LONG RANGE: THE FRACTION IS DISCARDED, SO 9223372036854775807.5 IS Long.MAX_VALUE AND 2^63 IS THE FIRST VALUE BEYOND IT
+  private static final BigDecimal LONG_BEYOND_MAX_DECIMAL = LONG_MAX_DECIMAL.add(BigDecimal.ONE);
+  private static final BigDecimal LONG_BEYOND_MIN_DECIMAL = LONG_MIN_DECIMAL.subtract(BigDecimal.ONE);
   private static final BigInteger LONG_MAX_INTEGER = BigInteger.valueOf(Long.MAX_VALUE);
   private static final BigInteger LONG_MIN_INTEGER = BigInteger.valueOf(Long.MIN_VALUE);
   // Don't change the order, the type discover get broken if you change the order.
@@ -539,6 +542,30 @@ public enum Type {
     if (original == null || targetClass == null || !isScalarKeyClass(targetClass))
       return true;
     return targetClass.isInstance(converted);
+  }
+
+  /**
+   * {@link #canBeIndexLookupKey(Database, Object, Class)} for a key of the binary type {@code keyType}, which also holds the
+   * collection key types to it (issue #12792): a LIST key is only read from a collection or an array, a MAP key only from a map.
+   * Any other value was left as it was (or serialized) and cast by the key comparison, while it matches no row without the index.
+   */
+  public static boolean canBeIndexLookupKey(final Database database, final Object value, final byte keyType) {
+    return canBeCollectionIndexKey(value, keyType) && canBeIndexLookupKey(database, value, BinaryTypes.getClassFromType(keyType));
+  }
+
+  /** {@link #isReadAsIndexKey(Object, Object, Class)} for a key of the binary type {@code keyType}, collection key types included. */
+  public static boolean isReadAsIndexKey(final Object original, final Object converted, final byte keyType) {
+    return canBeCollectionIndexKey(original, keyType) && isReadAsIndexKey(original, converted, BinaryTypes.getClassFromType(keyType));
+  }
+
+  private static boolean canBeCollectionIndexKey(final Object value, final byte keyType) {
+    if (value == null)
+      return true;
+    return switch (keyType) {
+      case BinaryTypes.TYPE_LIST -> value instanceof Collection || value.getClass().isArray();
+      case BinaryTypes.TYPE_MAP -> value instanceof Map;
+      default -> true;
+    };
   }
 
   /**
@@ -1019,6 +1046,10 @@ public enum Type {
           return new BigDecimal(string);
         else if (value instanceof Number)
           return new BigDecimal(value.toString());
+        else if (value instanceof Boolean)
+          // no DECIMAL value, as a boolean has none for the other numeric types: kept as it came, it was ordered against a DECIMAL by the
+          // name of its class, so a scan answered every row for "dec > true" where the index lookup answered none (issue #12936)
+          return asNumber(value, "DECIMAL", property);
 
       } else if (targetClass.equals(Double.TYPE) || targetClass.equals(Double.class)) {
         if (value instanceof Double)
@@ -1621,7 +1652,7 @@ public enum Type {
       return value.longValue();
 
     final boolean outOfRange = switch (value) {
-      case BigDecimal bigDecimal -> bigDecimal.compareTo(LONG_MAX_DECIMAL) > 0 || bigDecimal.compareTo(LONG_MIN_DECIMAL) < 0;
+      case BigDecimal bigDecimal -> bigDecimal.compareTo(LONG_BEYOND_MAX_DECIMAL) >= 0 || bigDecimal.compareTo(LONG_BEYOND_MIN_DECIMAL) <= 0;
       case BigInteger bigInteger -> bigInteger.compareTo(LONG_MAX_INTEGER) > 0 || bigInteger.compareTo(LONG_MIN_INTEGER) < 0;
       // 2^63 is the first double above the range, and -2^63 is exactly Long.MIN_VALUE
       case Double doubleValue -> doubleValue >= 0x1p63 || doubleValue < -0x1p63;
@@ -1698,7 +1729,7 @@ public enum Type {
     // A BIG NUMBER BEYOND THE 64-BIT RANGE IS OUT OF EVERY INTEGRAL RANGE, LONG'S INCLUDED: CLAMPING IT TO Long.MAX_VALUE
     // PASSED THE LONG CHECK BELOW AND STORED EVERY SUCH ELEMENT AS THE SAME NUMBER (issue #10756)
     final boolean beyondLong = switch (value) {
-      case BigDecimal bigDecimal -> bigDecimal.compareTo(LONG_MAX_DECIMAL) > 0 || bigDecimal.compareTo(LONG_MIN_DECIMAL) < 0;
+      case BigDecimal bigDecimal -> bigDecimal.compareTo(LONG_BEYOND_MAX_DECIMAL) >= 0 || bigDecimal.compareTo(LONG_BEYOND_MIN_DECIMAL) <= 0;
       case BigInteger bigInteger -> bigInteger.compareTo(LONG_MAX_INTEGER) > 0 || bigInteger.compareTo(LONG_MIN_INTEGER) < 0;
       // longValue() SATURATES THESE TWO; 2^63 IS THE FIRST DOUBLE ABOVE THE RANGE, -2^63 IS EXACTLY Long.MIN_VALUE
       case Double doubleValue -> doubleValue >= 0x1p63 || doubleValue < -0x1p63;
@@ -2210,6 +2241,15 @@ public enum Type {
   }
 
   /**
+   * The {@code double} a decimal is compared with once the other operand is an infinity or NaN, which has no decimal form: the
+   * decimal itself, or the largest double of its sign when it lies past the double range, so it still orders below an infinity.
+   */
+  public static double finiteDoubleValue(final BigDecimal value) {
+    final double converted = value.doubleValue();
+    return Double.isFinite(converted) ? converted : value.signum() < 0 ? -Double.MAX_VALUE : Double.MAX_VALUE;
+  }
+
+  /**
    * Builds the {@link BigDecimal} that reads the same in decimal as the given floating point operand, so an
    * integral operand too large for {@code double} can be compared against it exactly. A {@code Float} goes through
    * {@link #floatToBigDecimal} and everything else through {@code BigDecimal.valueOf(double)}, both of which read
@@ -2286,6 +2326,9 @@ public enum Type {
     // Double.equals separates the two zeros; IEEE 754 and openCypher do not (issue #8920)
     if (pair[0] instanceof Double a && pair[1] instanceof Double b && a == 0.0d && b == 0.0d)
       return true;
+    // the same for a FLOAT met by a BYTE, a SHORT or another FLOAT: Float.equals separates the two zeros as well
+    if (pair[0] instanceof Float a && pair[1] instanceof Float b && a == 0.0f && b == 0.0f)
+      return true;
 
     if (left instanceof Float f)
       return narrowsTo(f, right);
@@ -2340,6 +2383,24 @@ public enum Type {
       // + 0.0f maps negative zero onto zero, which is one value (issue #8920); Float.compare is for the NaN-free total order
       return Float.isFinite(f) && Float.compare(f + 0.0f, other.floatValue() + 0.0f) == 0;
     return false;
+  }
+
+  /**
+   * Whether {@link #castComparableNumber(Number, Number)} would leave both of its operands exactly as they are: two
+   * numbers of one class, and not a pair of {@link BigDecimal}s (a pair of decimals is stripped of its trailing zeros,
+   * so the cast is not the identity for it).
+   * <p>
+   * The cast answers a fresh pair of numbers on every call, so a caller that folds a value into a running one asks
+   * this first: the fold of a column of one numeric type - what a typed column holds - is the case where the pair
+   * says nothing, and an aggregation over a million rows allocated a million pairs to say it.
+   *
+   * @param left  the first operand
+   * @param right the second operand
+   *
+   * @return {@code true} when the cast would change neither operand
+   */
+  public static boolean castComparableNumberIsIdentity(final Number left, final Number right) {
+    return left.getClass() == right.getClass() && !(left instanceof BigDecimal);
   }
 
   public static Number[] castComparableNumber(Number left, Number right) {
@@ -2424,9 +2485,14 @@ public enum Type {
       // FLOAT
       if (right instanceof Double)
         left = widenFloat(left.floatValue());
-      else if (right instanceof BigDecimal)
-        left = floatToBigDecimal(left.floatValue());
-      else if (right instanceof Byte || right instanceof Short)
+      else if (right instanceof BigDecimal bigDecimal) {
+        if (isFinite(left))
+          left = floatToBigDecimal(left.floatValue());
+        else {
+          left = left.doubleValue();
+          right = finiteDoubleValue(bigDecimal);
+        }
+      } else if (right instanceof Byte || right instanceof Short)
         right = right.floatValue();
       else if (right instanceof Integer) {
         // Symmetric case of the INTEGER branch above: narrowing the integral operand to float would lose
@@ -2459,9 +2525,12 @@ public enum Type {
 
     } else if (left instanceof Double) {
       // DOUBLE
-      if (right instanceof BigDecimal)
-        left = BigDecimal.valueOf(left.doubleValue());
-      else if (right instanceof Float float1)
+      if (right instanceof BigDecimal bigDecimal) {
+        if (isFinite(left))
+          left = BigDecimal.valueOf(left.doubleValue());
+        else
+          right = finiteDoubleValue(bigDecimal);
+      } else if (right instanceof Float float1)
         right = widenFloat(float1);
       else if (right instanceof Long long1) {
         // Symmetric case of the LONG branch above (issue #7628)
@@ -2521,7 +2590,7 @@ public enum Type {
       } else if (right instanceof BigDecimal)
         left = new BigDecimal(bigInteger);
 
-    } else if (left instanceof BigDecimal) {
+    } else if (left instanceof BigDecimal bigDecimal) {
       // DOUBLE
       if (right instanceof Integer integer)
         right = new BigDecimal(integer);
@@ -2529,11 +2598,20 @@ public enum Type {
         // The Long case was missing, so the couple came back as (BigDecimal, Long) and the caller's compareTo()
         // threw ClassCastException - `WHERE decimalProperty > 3000000000` crashed rather than answered (issue #7609).
         right = new BigDecimal(long1);
-      else if (right instanceof Float float1)
-        right = floatToBigDecimal(float1);
-      else if (right instanceof Double double1)
-        right = BigDecimal.valueOf(double1);
-      else if (right instanceof Short short1)
+      else if (right instanceof Float float1) {
+        if (isFinite(float1))
+          right = floatToBigDecimal(float1);
+        else {
+          // an infinity or NaN has no decimal form: both meet at double, the decimal clamped so it still orders below an infinity (issue #12694)
+          left = finiteDoubleValue(bigDecimal);
+          right = float1.doubleValue();
+        }
+      } else if (right instanceof Double double1) {
+        if (Double.isFinite(double1))
+          right = BigDecimal.valueOf(double1);
+        else
+          left = finiteDoubleValue(bigDecimal);
+      } else if (right instanceof Short short1)
         right = new BigDecimal(short1);
       else if (right instanceof Byte byte1)
         right = new BigDecimal(byte1);

@@ -42,7 +42,10 @@ import java.util.stream.Stream;
  * <p>
  * Cost: ArcadeDB keeps no per-label relationship counts, so the relationship records of every readable edge type are scanned
  * once (linear in the number of relationships, where Neo4j reads its count store), and {@code propertyKeyCount} reads a sample
- * of each vertex type. The scan stops at the command's timeout, on termination and on interrupt.
+ * of each vertex type. The relationships of a LIGHTWEIGHT edge type have no record: when a readable edge type is declared
+ * LIGHTWEIGHT, the readable vertices are walked once more and their outgoing entries of those types are counted (linear in
+ * the number of nodes plus those relationships), so one leaving a node the caller may not read is not counted. The scan stops
+ * at the command's timeout, on termination and on interrupt.
  * </p>
  * <p>
  * Example Cypher usage:

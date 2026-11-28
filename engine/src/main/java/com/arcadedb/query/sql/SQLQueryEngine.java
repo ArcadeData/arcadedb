@@ -26,7 +26,7 @@ import com.arcadedb.database.QueryMetricsRecorder;
 import com.arcadedb.database.QueryTracer;
 import com.arcadedb.database.StatementSavepoint;
 import com.arcadedb.database.TransactionContext;
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.UnknownFunctionException;
@@ -234,11 +234,13 @@ public class SQLQueryEngine implements QueryEngine {
     statement.checkParametersBound(bound);
     final Statement executed = statement.withProfiledResultSetLimit(database, bound);
 
-    final CommandContext context = new BasicCommandContext();
+    final DatabaseInternal executionDatabase = executionDatabase();
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(executionDatabase);
     context.setInputParameters(bound);
     context.setConfiguration(configuration);
 
-    return executeGuarded(executed, executionDatabase(), bound, context);
+    return executeGuarded(executed, executionDatabase, bound, context);
   }
 
   /**
@@ -258,14 +260,16 @@ public class SQLQueryEngine implements QueryEngine {
     statement.checkParametersBound(bound);
     final Statement executed = statement.withProfiledResultSetLimit(database, bound);
 
-    final CommandContext context = new BasicCommandContext();
+    final DatabaseInternal executionDatabase = executionDatabase();
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(executionDatabase);
     context.setInputParameters(bound);
     context.setConfiguration(configuration);
     if (variables != null)
       for (final Map.Entry<String, Object> entry : variables.entrySet())
         context.setVariable(entry.getKey(), entry.getValue());
 
-    return executeGuarded(executed, executionDatabase(), bound, context);
+    return executeGuarded(executed, executionDatabase, bound, context);
   }
 
   @Override
@@ -273,14 +277,16 @@ public class SQLQueryEngine implements QueryEngine {
     final Lookup<Statement> lookup = parseParameterized(query);
     final Statement statement = lookup.statement();
     statement.checkPositionalParameterCount(parameters == null ? 0 : parameters.length);
-    final CommandContext context = new BasicCommandContext();
+    final DatabaseInternal executionDatabase = executionDatabase();
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(executionDatabase);
     context.setConfiguration(configuration);
     if (lookup.parameters() != null) {
       final Map<String, Object> bound = lookup.mergeParameters(positionalParameters(parameters));
       context.setInputParameters(bound);
-      return executeGuarded(statement.withProfiledResultSetLimit(database, bound), executionDatabase(), bound, context);
+      return executeGuarded(statement.withProfiledResultSetLimit(database, bound), executionDatabase, bound, context);
     }
-    return executeGuarded(statement.withProfiledResultSetLimit(database, parameters), executionDatabase(), parameters, context);
+    return executeGuarded(statement.withProfiledResultSetLimit(database, parameters), executionDatabase, parameters, context);
   }
 
   /**
@@ -505,8 +511,9 @@ public class SQLQueryEngine implements QueryEngine {
     }
 
     if (sqlFunction == null) {
+      // a form refused on purpose, the caller's to rewrite: a semantic refusal (HTTP 400), not a server fault (issue #12795)
       if ("distinct".equalsIgnoreCase(name))
-        throw new CommandExecutionException(
+        throw new CommandSemanticException(
             "'distinct' is supported only as the whole SELECT projection (e.g. `SELECT distinct(field)` or `SELECT DISTINCT field`), "
                 + "not nested inside another function or as the base of a method");
       // its own type, so every protocol reports it as the caller's mistake rather than a server fault (issue #11314)

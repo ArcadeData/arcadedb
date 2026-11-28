@@ -40,13 +40,15 @@ import static org.assertj.core.api.Assertions.assertThat;
  * import was one transaction held in memory to the end and a large one ran the server out of heap. The handler now leaves that
  * wrapper out for a command that commits its own batches; a caller that asks for it with {@code autoCommit: true} still gets it.
  * <p>
- * Measured by the commits the import makes: one per record of a top-level JSON array when the importer owns the transaction, none
- * when it runs inside one it must leave to its caller.
+ * Measured by the commits the import makes: one per {@code commitEvery} records of a top-level JSON array (#12739) when the
+ * importer owns the transaction, none when it runs inside one it must leave to its caller.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class HttpImportCommitsInBatchesTest extends BaseGraphServerTest {
-  private static final int  RECORDS = 200;
+  private static final int  RECORDS      = 200;
+  private static final int  COMMIT_EVERY = 20;
+  private static final int  BATCHES      = RECORDS / COMMIT_EVERY;
   private final        File source  = new File("target/issue11728-rows.json");
 
   @AfterEach
@@ -57,9 +59,10 @@ class HttpImportCommitsInBatchesTest extends BaseGraphServerTest {
   @Test
   void plainCommandImportCommitsItsOwnBatches() throws Exception {
     writeSource();
-    final long commits = importAndCountCommits("  import database file://" + source.getAbsolutePath(), null);
+    final long commits = importAndCountCommits("  import database file://" + source.getAbsolutePath() + " WITH commitEvery = " + COMMIT_EVERY, null);
 
-    assertThat(commits).as("the import must commit as it goes, not as one transaction at the end").isGreaterThanOrEqualTo(RECORDS);
+    assertThat(commits).as("the import must commit as it goes, not as one transaction at the end").isGreaterThanOrEqualTo(BATCHES);
+    assertThat(commits).as("one commit per batch of commitEvery records, not one per record (#12739)").isLessThan(RECORDS);
     assertImported();
   }
 
@@ -67,10 +70,11 @@ class HttpImportCommitsInBatchesTest extends BaseGraphServerTest {
   @Test
   void importAfterLeadingCommentsCommitsItsOwnBatches() throws Exception {
     writeSource();
-    final long commits = importAndCountCommits("/* restore */ -- from the nightly export\n  IMPORT DATABASE file://" + source.getAbsolutePath(),
-        null);
+    final long commits = importAndCountCommits("/* restore */ -- from the nightly export\n  IMPORT DATABASE file://" + source.getAbsolutePath()
+        + " WITH commitEvery = " + COMMIT_EVERY, null);
 
-    assertThat(commits).as("the import must commit as it goes, not as one transaction at the end").isGreaterThanOrEqualTo(RECORDS);
+    assertThat(commits).as("the import must commit as it goes, not as one transaction at the end").isGreaterThanOrEqualTo(BATCHES);
+    assertThat(commits).as("one commit per batch of commitEvery records, not one per record (#12739)").isLessThan(RECORDS);
     assertImported();
   }
 
@@ -90,10 +94,10 @@ class HttpImportCommitsInBatchesTest extends BaseGraphServerTest {
   @Test
   void explicitAutoCommitKeepsTheImportInsideTheRequestTransaction() throws Exception {
     writeSource();
-    final long commits = importAndCountCommits("  import database file://" + source.getAbsolutePath(), Boolean.TRUE);
+    final long commits = importAndCountCommits("  import database file://" + source.getAbsolutePath() + " WITH commitEvery = " + COMMIT_EVERY, Boolean.TRUE);
 
     // THE CALLER ASKED FOR ONE TRANSACTION: THE IMPORT LEAVES IT TO THE HANDLER, WHICH COMMITS IT ONCE AT THE END (#6561)
-    assertThat(commits).as("an import inside a transaction the caller asked for commits nothing itself").isLessThan(RECORDS);
+    assertThat(commits).as("an import inside a transaction the caller asked for commits nothing itself").isLessThan(BATCHES);
     assertImported();
   }
 

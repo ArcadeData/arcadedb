@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.executor.steps;
 
+import com.arcadedb.database.DocumentValidator;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.opencypher.ast.CypherReferencedVariables;
 import com.arcadedb.query.opencypher.ast.SetClause;
@@ -42,8 +43,8 @@ import java.util.function.Predicate;
  * <p>
  * Only the shape that is the same wherever it runs is folded: {@code SET n.property = value}, {@code SET n = map} and
  * {@code SET n += map} items on a node the clause creates, whose value reads none of the variables the clause creates.
- * The SET is a simultaneous assignment, so every value reads the state before the clause, and a value that does not
- * read the new node is the same before its first save as after it. A label, a dynamic key or an expression target
+ * The items write only the new nodes, so a value that reads none of them is the same whichever items run before it (issue
+ * #12832) and before the node's first save as after it. A label, a dynamic key or an expression target
  * moves or rewrites the record and keeps the {@link SetClauseApplier} path.
  * <p>
  * The map forms matter most (issue #11925): {@code CREATE (n:N) SET n = row} saved every node empty and gave it its
@@ -117,7 +118,8 @@ final class NewNodeSetFolding {
 
   /**
    * Applies {@code items} to a vertex that has not been saved yet, as {@link SetClauseApplier} would apply them to the
-   * saved one: every value is evaluated and checked before any is assigned, and the statistic counts what the applier
+   * saved one: every value is evaluated and checked before any is assigned, which {@link #isFoldable} makes the same as
+   * evaluating each after the items before it, and the statistic counts what the applier
    * counts: an assignment, the removal of a property the node held, and for {@code SET n = map} every property of the
    * node the map does not set again.
    *
@@ -125,7 +127,7 @@ final class NewNodeSetFolding {
    */
   static int apply(final List<SetClause.SetItem> items, final MutableVertex vertex, final Result result,
       final ExpressionEvaluator evaluator, final CommandContext context) {
-    return apply(items, new PropertyTarget() {
+    return apply(items, vertex.getType(), new PropertyTarget() {
       @Override
       public boolean has(final String property) {
         return vertex.has(property);
@@ -153,13 +155,14 @@ final class NewNodeSetFolding {
    * Result, ExpressionEvaluator, CommandContext)} applies them to a vertex: the relationship is then created once with all of
    * them, instead of created with its pattern's properties and written again by the SET.
    *
+   * @param type       the type of the relationship, whose NOTNULL properties refuse a null (issue #13227)
    * @param properties the pattern's properties, changed in place
    *
    * @return the number of properties the items count as set
    */
-  static int apply(final List<SetClause.SetItem> items, final Map<String, Object> properties, final Result result,
-      final ExpressionEvaluator evaluator, final CommandContext context) {
-    return apply(items, new PropertyTarget() {
+  static int apply(final List<SetClause.SetItem> items, final DocumentType type, final Map<String, Object> properties,
+      final Result result, final ExpressionEvaluator evaluator, final CommandContext context) {
+    return apply(items, type, new PropertyTarget() {
       @Override
       public boolean has(final String property) {
         return properties.containsKey(property);
@@ -193,8 +196,8 @@ final class NewNodeSetFolding {
     Set<String> names();
   }
 
-  private static int apply(final List<SetClause.SetItem> items, final PropertyTarget target, final Result result,
-      final ExpressionEvaluator evaluator, final CommandContext context) {
+  private static int apply(final List<SetClause.SetItem> items, final DocumentType type, final PropertyTarget target,
+      final Result result, final ExpressionEvaluator evaluator, final CommandContext context) {
     final Object[] values = new Object[items.size()];
     for (int i = 0; i < values.length; i++) {
       final SetClause.SetItem item = items.get(i);
@@ -204,6 +207,13 @@ final class NewNodeSetFolding {
         case REPLACE_MAP -> SetClauseApplier.toPropertyMap(value, "=", item.getValueExpression());
         default -> SetClauseApplier.toPropertyMap(value, "+=", item.getValueExpression());
       };
+      // A null written to a NOTNULL property is refused before any item is assigned, as SetClauseApplier refuses it: the
+      // null removes the property or is never stored, so the validator would not see it (issue #13227)
+      if (item.getType() == SetClause.SetType.PROPERTY) {
+        if (values[i] == null)
+          DocumentValidator.requireNullAllowed(type, item.getProperty(), null);
+      } else
+        SetClauseApplier.requireNullsAllowed(type, asPropertyMap(values[i]), null);
     }
 
     int counted = 0;

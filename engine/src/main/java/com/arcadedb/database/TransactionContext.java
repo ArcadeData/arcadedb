@@ -167,6 +167,11 @@ public class TransactionContext implements Transaction {
   private static final int                           RECORDS_CACHE_CAPACITY = 1024;
   private static final int                           PAGES_CACHE_CAPACITY   = 64;
   private static final int                           DELETED_SET_CAPACITY   = 256;
+  // #13005: initial capacity of the per-file maps (fileStamps, bucketFirstWriteSequences, snapshotBucketCounts). They hold one
+  // entry per bucket or index file a transaction touched, a handful for almost every one, and grow on demand. The LongLongHashMap
+  // default (1024 slots, sized for its aggregation use) is two 8 KB arrays per map, allocated and filled by every writing
+  // transaction: 32 KB per autocommit write, more than the write itself.
+  private static final int                           SMALL_PER_FILE_MAP     = 16;
   // #10315: the two counters of a lightweight edge entry in lightEdgeEntryChanges
   private static final int                           REMOVED                = 0;
   private static final int                           APPENDED               = 1;
@@ -501,6 +506,19 @@ public class TransactionContext implements Transaction {
   // #10346: the savepoint of the statement the caller is running in this transaction, null while none is: what the statement changes is
   // journaled into it, to be taken back if the statement fails. One object per context, reused by every statement
   private       StatementSavepoint                   statement;
+  /**
+   * The array of a page image of this transaction that the commit-time rebase has just replaced, for the copy of the committed page that
+   * replaces it: nothing reads the stale image any more, and a rebase otherwise allocates a page for every one it drops. Set only for
+   * the span of a rebase and taken only by the copy of the same page ({@link #spareBufferPageId}); null otherwise.
+   * <p>
+   * Tied to the page on purpose, not handed to whichever page the rebase copies first: the transaction no longer reads the dropped
+   * image, but a scan kept across the commit can (a {@code BucketIterator} holds the page it is reading, the transaction's own image
+   * included, from one batch to the next). Written with the committed copy of the SAME page, what that scan reads next is a
+   * consistent image of its page; written with another page's bytes, it would read that page's slot table as its own.
+   */
+  private       byte[]                               spareBuffer;
+  /** The page whose copy takes {@link #spareBuffer}, set and cleared with it. */
+  private       PageId                               spareBufferPageId;
   private       StatementSavepoint                   pooledStatement;
   private       int                                  statementJournalLimit;
   /**
@@ -546,6 +564,7 @@ public class TransactionContext implements Transaction {
   private       Set<String>                          registeredCallbackKeys      = null;
   // Issue #10687: work owed whichever way the transaction ends, by key, see addAfterCompletionCallbackIfAbsent()
   private       Map<String, Runnable>                afterCompletionCallbacks    = null;
+  // The thread that carries the transaction for them: the one that registered the first, or the one they were handed to since (#12805)
   private       Thread                               afterCompletionOwner        = null;
   // Issue #11937: work that reads what the transaction is about to commit, run when the commit starts, see addBeforeCommitCallbackIfAbsent()
   private       Map<String, Runnable>                beforeCommitCallbacks       = null;
@@ -786,6 +805,44 @@ public class TransactionContext implements Transaction {
     return txAtStart != null && txAtStart.getCommitCount() != commitCountAtStart;
   }
 
+  /**
+   * The failure a retry loop raises when it refuses to replay a block that {@link #isPartiallyCommitted} (issue #13251).
+   * <p>
+   * The refusal alone is not enough: the conflict that ended the block is a {@link NeedRetryException}, and every layer above
+   * the loop reads that type as "the same request can succeed as issued". The HTTP API answers it 503 with
+   * {@code Retry-After: 0}, gRPC {@code ABORTED}, Bolt a transient error, and the Java remote client resends the request on
+   * it, so the committed part was applied again by whoever retried next. A {@link TransactionException} is not retryable on
+   * any of them, so the caller learns that the block stopped with part of its work durable and must not be run again as is.
+   * <p>
+   * The conflict is attached as a SUPPRESSED exception, not as the cause: the error mappings look through a
+   * {@link TransactionException} to its cause and would find the retryable conflict again. A {@link DuplicatedKeyException}
+   * is returned unchanged: no layer tells a client to retry it.
+   * <p>
+   * So is a {@link RefusedBeforePublishingException} whose commits the block made all after its watermark (issue #13437): the
+   * commits that moved the counter never left this node, which discards them, so a replay elsewhere applies nothing twice.
+   *
+   * @param conflict           the exception the block failed with
+   * @param block              what failed, for the message ("Transaction block", "COMMIT RETRY block", ...)
+   * @param txAtStart          the transaction context that was open when the block started, as given to {@link #isPartiallyCommitted}
+   * @param commitCountAtStart its commit count sampled at that moment
+   *
+   * @return the exception to raise instead of {@code conflict}
+   */
+  public static ArcadeDBException notReplayable(final ArcadeDBException conflict, final String block,
+      final TransactionContext txAtStart, final long commitCountAtStart) {
+    if (!(conflict instanceof NeedRetryException))
+      return conflict;
+    if (conflict instanceof RefusedBeforePublishingException refused && refused.publishedNothingSince(txAtStart, commitCountAtStart))
+      return conflict;
+
+    final TransactionException failure = new TransactionException(
+        block + " committed part of its work before failing with " + conflict.getClass().getSimpleName() + " (" + conflict.getMessage()
+            + "). It is not retried, because a replay would apply the already committed part a second time: check what was "
+            + "applied before running it again");
+    failure.addSuppressed(conflict);
+    return failure;
+  }
+
   /** True while the transaction holds the file locks a {@code LOCK TYPE} / {@code LOCK BUCKET} took, until its commit or rollback. */
   public boolean holdsExplicitLocks() {
     return explicitLockedFiles != null;
@@ -901,6 +958,15 @@ public class TransactionContext implements Transaction {
       for (final RID rid : updatedRecords.keySet())
         target.add(rid);
     deletedRecordsInTx.forEach(target::add);
+  }
+
+  /**
+   * Whether this transaction keeps a copy of {@code rid} of its own, written or read, which a read of the record through it answers
+   * instead of the newest committed state (issue #13396). Unlike {@link #getRecordFromCache(RID)} it records no read.
+   */
+  public boolean holdsRecordCopy(final RID rid) {
+    return modifiedRecordsCache.containsKey(rid) || immutableRecordsCache.containsKey(rid) || (updatedRecords != null
+        && updatedRecords.containsKey(rid));
   }
 
   public Record getRecordFromCache(final RID rid) {
@@ -1156,6 +1222,11 @@ public class TransactionContext implements Transaction {
 
   int getNewRecordsCount() {
     return newRecords.size();
+  }
+
+  /** How many new records the context holds room for: what it keeps between transactions is bounded (issue #13479). */
+  int getNewRecordsCapacity() {
+    return newRecords.capacity();
   }
 
   int getInsertReservationCount() {
@@ -1629,7 +1700,8 @@ public class TransactionContext implements Transaction {
     newRecords.resetIdentities();
 
     // Taken before reset(), which drops them, and run once it is done: the work they do is owed whatever the outcome (#10687). Only
-    // by the thread that registered them: a sweep rolling back the transaction of a dead thread runs on a thread that is in the
+    // by the thread that carries the transaction, the one that registered them or the one they were handed to since
+    // (transferToCurrentThread(), #12805): a sweep rolling back the transaction of a dead thread runs on a thread that is in the
     // middle of work of its own, and has no business refreshing on the dead thread's behalf
     final Map<String, Runnable> completion = afterCompletionCallbacks;
     final Thread completionOwner = afterCompletionOwner;
@@ -1639,11 +1711,20 @@ public class TransactionContext implements Transaction {
     reset();
 
     if (completion != null) {
-      if (completionOwner == Thread.currentThread())
-        fireOrDefer(null, false, completion);
-      else
+      if (completionOwner == Thread.currentThread()) {
+        // With the interrupt flag cleared, and handed back afterwards, as a 2nd phase is concluded (#10521): the work owed commits
+        // a transaction of its own, and a channel written by a thread with the flag set is closed under the write, for every
+        // thread of the database. A session request that failed because it was interrupted rolls back with the flag up (#12805)
+        final boolean interrupted = Thread.interrupted();
+        try {
+          fireOrDefer(null, false, completion);
+        } finally {
+          if (interrupted)
+            Thread.currentThread().interrupt();
+        }
+      } else
         LogManager.instance().log(this, Level.INFO,
-            "Dropping %d after-completion callback(s) of a transaction rolled back by another thread than the one that registered them: "
+            "Dropping %d after-completion callback(s) of a transaction rolled back by another thread than the one that carries it: "
                 + "the continuous aggregates they would have refreshed catch up at their next refresh",
             null, completion.size());
     }
@@ -1747,8 +1828,9 @@ public class TransactionContext implements Transaction {
    * restored by a {@link #rollback()} - with no transaction of this context active: work that writes has to begin a transaction of
    * its own. A statement that fails inside the transaction does not take it back: what it wrote beside the transaction stays written.
    * A conclusion that is neither a commit nor a rollback (a commit that failed past its point of no return, or whose WAL flush
-   * failed: both fence the database) drops it, and so does a rollback run by another thread than the registering one, the sweep of
-   * a dead thread. A commit runs it on the thread that concludes the commit, as it runs the after-commit callbacks. Exceptions are
+   * failed: both fence the database) drops it, and so does a rollback run by another thread than the one that carries the
+   * transaction - the registering one, or the one it was handed to with {@link #transferToCurrentThread()} - the sweep of a dead
+   * thread. A commit runs it on the thread that concludes the commit, as it runs the after-commit callbacks. Exceptions are
    * logged and do not affect the outcome of the transaction or the other callbacks; an {@link Error} is not caught, as it is not by
    * the after-commit callbacks.
    *
@@ -1764,6 +1846,19 @@ public class TransactionContext implements Transaction {
 
   public boolean hasAfterCompletionCallbackKey(final String key) {
     return afterCompletionCallbacks != null && afterCompletionCallbacks.containsKey(key);
+  }
+
+  /**
+   * Hands the after-completion callbacks registered so far to the current thread, which carries the transaction from now on: a
+   * {@link #rollback()} it runs runs them, as one by the thread that registered them does (issue #12805). For a transaction that
+   * moves between threads, the transaction of a protocol session whose every request runs on whichever worker is free: an HTTP
+   * session's {@code /rollback} runs on another worker than the {@code INSERT} that registered the refresh of a continuous aggregate
+   * as often as not. The thread calls it while it holds the session, so no other thread works on the transaction until it lets go.
+   * A rollback by a thread they were not handed to, the sweep of a dead thread's transaction, still drops them.
+   */
+  public void transferToCurrentThread() {
+    if (afterCompletionCallbacks != null)
+      afterCompletionOwner = Thread.currentThread();
   }
 
   /**
@@ -2344,7 +2439,7 @@ public class TransactionContext implements Transaction {
     if (!isRepeatableRead())
       return committedNow;
     if (snapshotBucketCounts == null)
-      snapshotBucketCounts = new LongLongHashMap();
+      snapshotBucketCounts = new LongLongHashMap(SMALL_PER_FILE_MAP);
     // Long.MIN_VALUE, NOT -1, FOR "NOT PINNED": A DRIFTED COUNTER CAN BE NEGATIVE, AND IT MUST BE PINNED LIKE ANY OTHER VALUE
     final long pinned = snapshotBucketCounts.get(bucketId, Long.MIN_VALUE);
     if (pinned != Long.MIN_VALUE)
@@ -2491,10 +2586,18 @@ public class TransactionContext implements Transaction {
       if (page == null) {
         // IF AVAILABLE REMOVE THE PAGE FROM IMMUTABLE PAGES TO KEEP ONLY ONE PAGE IN RAM
         final ImmutablePage loadedPage = immutablePages.remove(pageId);
-        if (loadedPage == null)
+        if (loadedPage == null) {
           // NOT FOUND, DELEGATES TO THE DATABASE
-          page = database.getPageManager().getMutablePage(pageId, pageSize, isNew, true);
-        else
+          // only the copy of the very page the rebase dropped takes its array, see spareBuffer
+          final byte[] spare;
+          if (spareBuffer != null && pageId.equals(spareBufferPageId)) {
+            spare = spareBuffer;
+            spareBuffer = null;
+            spareBufferPageId = null;
+          } else
+            spare = null;
+          page = database.getPageManager().getMutablePage(pageId, pageSize, isNew, true, spare);
+        } else
           page = loadedPage.modify();
 
         if (isNew)
@@ -2914,11 +3017,32 @@ public class TransactionContext implements Transaction {
    *                                         rebase is no longer possible): the caller falls back to a normal
    *                                         full-transaction retry.
    */
-  private MutablePage rebaseEdgeAppends(final PageId pageId) throws IOException {
-    // Drop the stale copies so the reload observes the current committed version of the page.
+  private MutablePage rebaseEdgeAppends(final MutablePage stale) throws IOException {
+    final PageId pageId = stale.getPageId();
+    // Drop the stale copies so the reload observes the current committed version of the page (the commit loop already took the page this
+    // transaction wrote out of modifiedPages, and hands it here as the stale one)
     modifiedPages.remove(pageId);
     immutablePages.remove(pageId);
 
+    // The array of the dropped page is read by nothing in the transaction from here on: the copy of the same page the rebase reloads is
+    // written into it, and the rest of this method and its caller use the page id only (the commit loop took the page out of its
+    // lists). A statement still open could hold the dropped page (to take the statement back), so then its array is not spare. That is
+    // reachable: a statement that commits its own transaction (a script's COMMIT, a batch boundary) commits while its savepoint is
+    // open, and the array is then left to the garbage collector as before
+    if (statement == null) {
+      spareBuffer = stale.getContent().array();
+      spareBufferPageId = pageId;
+    }
+    try {
+      return rebaseEdgeAppendsOnReloadedPage(pageId);
+    } finally {
+      spareBuffer = null;
+      spareBufferPageId = null;
+    }
+  }
+
+  /** The rebase itself, on the page the caller dropped and the next copy of it reloads at its current committed version. */
+  private MutablePage rebaseEdgeAppendsOnReloadedPage(final PageId pageId) throws IOException {
     final long pageKey = packPageKey(pageId.getFileId(), pageId.getPageNumber());
 
     // Re-apply every tracked segment that lives on this page (usually one: the hot vertex's head chunk).
@@ -3026,7 +3150,7 @@ public class TransactionContext implements Transaction {
     final Binary ownerContent = committedRecord(owner);
     if (ownerContent == null || ownerContent.size() < VERTEX_HEADS_END || ownerContent.getByte(0) != Vertex.RECORD_TYPE)
       return false;
-    final RID head = edgeListHeadAt(ownerContent.toByteArray(), out ? VERTEX_OUT_HEAD_OFFSET : VERTEX_IN_HEAD_OFFSET);
+    final RID head = edgeListHeadAt(ownerContent, out ? VERTEX_OUT_HEAD_OFFSET : VERTEX_IN_HEAD_OFFSET);
     if (head == null)
       return false;
     if (head.equals(segmentRID))
@@ -3610,6 +3734,10 @@ public class TransactionContext implements Transaction {
    *                    whose replayed slots are the edge-list segments this transaction appended to
    */
   private boolean areReadsFromOwnImageCurrent(final MutablePage page, final boolean bySlotMerge) {
+    // #13572: every read of the page was made before anybody else committed to it, so each one read the committed page plus this
+    // transaction's own writes; what was committed since is a phantom READ_COMMITTED allows, and the merges may replay over it
+    if (!page.isStaleReadRecorded())
+      return true;
     final boolean wholePage = page.isWholePageRead();
     if (!wholePage && page.nextSlotRead(0) < 0 && (bySlotMerge || !hasAppendedChunkReadOn(page.getPageId())))
       return true;
@@ -3719,10 +3847,16 @@ public class TransactionContext implements Transaction {
    * Whether {@code slot} holds on {@code committed} the record this transaction read from {@code image} (#11590): the same plain
    * record, or no record on either page. A record that is not plain on one of them is taken as changed. A vertex that changed
    * only in the heads of its edge lists is still the one read when this transaction appended to each list whose head moved: the
-   * edge-append merge and the edge-list head merge (#11498) reconcile a head moved under such appends. A moved head of a list it
-   * did not append to is a stale read of that list (its outgoing appends do not make its read of the incoming list current), and
-   * so is a moved head of a list whose chunk the application read: a walk of that list started from the head it read, and missed
+   * edge-append merge and the edge-list head merge (#11498) reconcile a head moved under such appends. A moved head of a list
+   * whose chunk the application read is a stale read of that list: a walk of that list started from the head it read, and missed
    * the chunk the other transaction put in front of it.
+   * <p>
+   * A moved head of a list it did not append to is a stale read only when a traversal read that head off the vertex, which
+   * {@link #trackEdgeListHeadReadFromOwnImage} records (#12320). A vertex read for what it is - its type, its properties, the
+   * vertex a {@code MATCH (a {uuid: ..})} binds before a relationship is created from it - read neither list: a concurrent
+   * transaction that gave it its first relationship in the other direction, or a new chunk in front of a full one, changed
+   * nothing that read decided on. Refusing it threw away most commits of concurrent relationship loads on shared vertices
+   * (issue #12642).
    */
   private boolean isReadSlotCurrent(final LocalBucket bucket, final MutablePage image, final ImmutablePage committed,
       final int slot) {
@@ -3733,7 +3867,7 @@ public class TransactionContext implements Transaction {
     if (Arrays.equals(read, current))
       return true;
 
-    if (edgeAppendsBySegment == null || read.length != current.length || read.length < VERTEX_HEADS_END
+    if (read.length != current.length || read.length < VERTEX_HEADS_END
         || read[0] != Vertex.RECORD_TYPE || current[0] != Vertex.RECORD_TYPE
         || !Arrays.equals(read, VERTEX_HEADS_END, read.length, current, VERTEX_HEADS_END, current.length))
       return false;
@@ -3743,22 +3877,31 @@ public class TransactionContext implements Transaction {
     final boolean inMoved = !Arrays.equals(read, VERTEX_IN_HEAD_OFFSET, VERTEX_HEADS_END, current, VERTEX_IN_HEAD_OFFSET,
         VERTEX_HEADS_END);
     final RID vertex = recordAt(bucket, image.getPageId(), slot);
-    foldReadsOfAppendedChunks();
     boolean outAppended = false;
     boolean inAppended = false;
     boolean outRead = false;
     boolean inRead = false;
-    for (final EdgeAppendBuffer appends : edgeAppendsBySegment.values())
-      if (vertex.equals(appends.owner)) {
-        if (appends.ownerOut) {
-          outAppended = true;
-          outRead |= appends.readByApplication;
-        } else {
-          inAppended = true;
-          inRead |= appends.readByApplication;
+    if (edgeAppendsBySegment != null) {
+      foldReadsOfAppendedChunks();
+      for (final EdgeAppendBuffer appends : edgeAppendsBySegment.values())
+        if (vertex.equals(appends.owner)) {
+          if (appends.ownerOut) {
+            outAppended = true;
+            outRead |= appends.readByApplication;
+          } else {
+            inAppended = true;
+            inRead |= appends.readByApplication;
+          }
         }
-      }
-    return (!outMoved || outAppended && !outRead) && (!inMoved || inAppended && !inRead);
+    }
+    return (!outMoved || (outAppended ? !outRead : !isHeadReadFromOwnImage(vertex, true)))
+        && (!inMoved || (inAppended ? !inRead : !isHeadReadFromOwnImage(vertex, false)));
+  }
+
+  /** Whether a traversal read the outgoing ({@code out}) or incoming head of {@code vertex} off this transaction's own image. */
+  private boolean isHeadReadFromOwnImage(final RID vertex, final boolean out) {
+    final RidHashSet read = out ? outHeadsReadFromOwnImage : inHeadsReadFromOwnImage;
+    return read != null && read.contains(vertex);
   }
 
   /**
@@ -3773,10 +3916,46 @@ public class TransactionContext implements Transaction {
       ++ownImageReads;
       if (edgeAppendDepth > 0)
         deferRead(mutable, slot);
-      else if (slot < 0)
-        mutable.markWholePageRead();
-      else
-        mutable.markSlotRead(slot);
+      else {
+        if (slot < 0)
+          mutable.markWholePageRead();
+        else
+          mutable.markSlotRead(slot);
+        noteReadStaleness(mutable);
+      }
+    }
+  }
+
+  /**
+   * Notes on {@code image} whether the read just recorded on it was made when the image was already stale (#13572): another
+   * transaction had committed to the page after this transaction's first write to it, which is what the image misses. A read made
+   * before that saw the committed page plus this transaction's own writes, a valid {@code READ_COMMITTED} read: a commit landing on
+   * the page after it is an ordinary phantom, and must not refuse the merge of the page, as it does not refuse the merge of a
+   * transaction that did not read. One page-version lookup per read until the page is found stale, and none after. An image this
+   * transaction did not take from a committed page (one it created, or one that is no longer the image it holds) is taken as stale.
+   */
+  private void noteReadStaleness(final MutablePage image) {
+    if (image.isStaleReadRecorded())
+      return;
+    if (modifiedPages == null || modifiedPages.get(image.getPageId()) != image || isCommittedPageNewer(image))
+      image.markStaleReadRecorded();
+  }
+
+  /** Whether a transaction committed to the page of {@code image} after the image was taken (#13572), as the commit checks it. */
+  private boolean isCommittedPageNewer(final MutablePage image) {
+    final PageId pageId = image.getPageId();
+    try {
+      int committed = database.getPageManager().getMostRecentVersionOfPage(pageId, image.getPhysicalSize());
+      // #6965: a version the replication log already assigned to the page is the most recent one, as for the commit's own check
+      if (database.getEmbedded() instanceof LocalDatabase localDatabase) {
+        final PageVersionReservations reservations = localDatabase.getPageVersionReservations();
+        if (reservations != null)
+          committed = Math.max(committed, reservations.reservedVersion(pageId));
+      }
+      return committed != image.getVersion();
+    } catch (final IOException e) {
+      // a page that cannot be read cannot vouch for the read
+      return true;
     }
   }
 
@@ -3816,8 +3995,8 @@ public class TransactionContext implements Transaction {
    * it replaced. A read image that is no plain vertex record answers true, which keeps the conflict.
    */
   private boolean isOwnImageHeadReadStale(final LocalBucket bucket, final RID vertex, final byte[] committedImage) {
-    final boolean outRead = outHeadsReadFromOwnImage != null && outHeadsReadFromOwnImage.contains(vertex);
-    final boolean inRead = inHeadsReadFromOwnImage != null && inHeadsReadFromOwnImage.contains(vertex);
+    final boolean outRead = isHeadReadFromOwnImage(vertex, true);
+    final boolean inRead = isHeadReadFromOwnImage(vertex, false);
     if (!outRead && !inRead)
       return false;
     final MutablePage image = ownPageImageOf(bucket, vertex);
@@ -3830,10 +4009,7 @@ public class TransactionContext implements Transaction {
 
   /** Whether a traversal read a head of {@code vertex} off a vertex loaded from this transaction's own image of its page. */
   private boolean isEdgeListHeadRead(final MutableVertex vertex, final boolean out) {
-    if (vertex.isEdgeListHeadRead(out))
-      return true;
-    final RidHashSet read = out ? outHeadsReadFromOwnImage : inHeadsReadFromOwnImage;
-    return read != null && read.contains(vertex.getIdentity());
+    return vertex.isEdgeListHeadRead(out) || isHeadReadFromOwnImage(vertex.getIdentity(), out);
   }
 
   /** {@link #trackReadFromPage(BasePage, int)} for a read of the page as a whole, as a scan of it is (#11590). */
@@ -3892,10 +4068,13 @@ public class TransactionContext implements Transaction {
       final MutablePage page = deferredReadPages[i];
       final int slot = deferredReadSlots[i];
       deferredReadPages[i] = null;
-      if (slot < 0)
+      if (slot < 0) {
         page.markWholePageRead();
-      else if (!isChunkAppendedInWindow(page.getPageId(), slot))
+        noteReadStaleness(page);
+      } else if (!isChunkAppendedInWindow(page.getPageId(), slot)) {
         page.markSlotRead(slot);
+        noteReadStaleness(page);
+      }
     }
     deferredReads = 0;
     for (int i = 0; i < deferredChunkReads; ++i) {
@@ -3991,8 +4170,10 @@ public class TransactionContext implements Transaction {
     // the edge-list head merge asks whether the application read such a chunk
     final LocalBucket bucket = database.getSchema().getEmbedded().getBucketById(rid.getBucketId(), false);
     final MutablePage image = bucket != null ? ownPageImageOf(bucket, rid) : null;
-    if (image != null)
+    if (image != null) {
       image.markSlotRead((int) (rid.getPosition() % bucket.getMaxRecordsInPage()));
+      noteReadStaleness(image);
+    }
   }
 
   private boolean isTrackingReadsFromOwnImage() {
@@ -4086,32 +4267,47 @@ public class TransactionContext implements Transaction {
 
     final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(pageId.getFileId());
 
-    // Drop the stale copies so the reload observes the current committed version of the page. The page this transaction
-    // wrote ({@code ownPage}, already out of modifiedPages) is where the images of the inserted slots are read back
-    // from (#10661).
+    // The images of the slots this transaction inserted are read from the page it wrote (#10661) BEFORE that page is dropped: the array
+    // of the dropped page then becomes the copy of the committed page (spareBuffer), and no byte of it is read after that
+    final byte[][] ownImages = new byte[buffer.state.length][];
+    for (int slot = 0; slot < buffer.state.length; slot++) {
+      if (!buffer.isTracked(slot) || !buffer.isFinalImageOnPage(slot))
+        continue;
+      // #11788: an insert that outgrew the page left a chunk head in its slot
+      ownImages[slot] = buffer.kindOf(slot) == SLOT_KIND_FIRST_CHUNK ?
+          bucket.readHeadChunkImage(ownPage, slot) :
+          bucket.readPlainRecordBody(ownPage, slot);
+      if (ownImages[slot] == null)
+        // Cannot happen while every later write to the slot either tracks an image of its own or poisons the page.
+        // Refusing the merge is the safe answer if it ever does: the retry re-runs the whole transaction.
+        throw new ConcurrentModificationException("Slot rebase not possible on page " + pageId + " slot " + slot
+            + " (the inserted record is no longer a plain record on the transaction's page). Please retry the operation");
+    }
+
+    // Drop the stale copies so the reload observes the current committed version of the page.
     modifiedPages.remove(pageId);
     immutablePages.remove(pageId);
 
-    final MutablePage committed = getPageToModify(pageId, bucket.getPageSize(), false);
+    final MutablePage committed;
+    // A statement still open could hold the dropped page (to take the statement back), so then its array is not spare. After this the
+    // method reads only the metadata of the dropped page (isWholePageRead, isSlotRead: a flag and a bit set), never its bytes
+    if (statement == null) {
+      spareBuffer = ownPage.getContent().array();
+      spareBufferPageId = pageId;
+    }
+    try {
+      committed = getPageToModify(pageId, bucket.getPageSize(), false);
+    } finally {
+      spareBuffer = null;
+      spareBufferPageId = null;
+    }
 
     // ascending slot order; entries past the last slot written are simply untracked (state 0)
     for (int slot = 0; slot < buffer.state.length; slot++) {
       if (!buffer.isTracked(slot))
         continue;
       final boolean insertedHere = buffer.isInserted(slot);
-      final byte[] finalBody;
-      if (buffer.isFinalImageOnPage(slot)) {
-        // #11788: an insert that outgrew the page left a chunk head in its slot
-        finalBody = buffer.kindOf(slot) == SLOT_KIND_FIRST_CHUNK ?
-            bucket.readHeadChunkImage(ownPage, slot) :
-            bucket.readPlainRecordBody(ownPage, slot);
-        if (finalBody == null)
-          // Cannot happen while every later write to the slot either tracks an image of its own or poisons the page.
-          // Refusing the merge is the safe answer if it ever does: the retry re-runs the whole transaction.
-          throw new ConcurrentModificationException("Slot rebase not possible on page " + pageId + " slot " + slot
-              + " (the inserted record is no longer a plain record on the transaction's page). Please retry the operation");
-      } else
-        finalBody = buffer.finalBodyOf(slot);
+      final byte[] finalBody = buffer.isFinalImageOnPage(slot) ? ownImages[slot] : buffer.finalBodyOf(slot);
 
       if (finalBody == null) {
         // DELETE (#5569). A slot this transaction both CREATED and deleted never existed on the committed page: its
@@ -4129,7 +4325,8 @@ public class TransactionContext implements Transaction {
       // #11590: appends replayed onto a chunk somebody else appended to meanwhile, only when the application did not read the chunk
       // this transaction holds, which misses those entries
       if (!bucket.rebaseRecordOnPage(committed, slot, finalBody, baseBody, buffer.kindOf(slot))//
-          && (insertedHere || buffer.kindOf(slot) != SLOT_KIND_RECORD || ownPage.isWholePageRead() || ownPage.isSlotRead(slot)
+          && (insertedHere || buffer.kindOf(slot) != SLOT_KIND_RECORD
+          || ownPage.isStaleReadRecorded() && (ownPage.isWholePageRead() || ownPage.isSlotRead(slot))
           || !replayEdgeAppendsOnSlot(bucket, committed, slot, baseBody, finalBody)))
         throw new ConcurrentModificationException(
             "Slot rebase not possible on page " + pageId + " slot " + slot + " (concurrent change to the same record). Please retry the operation");
@@ -4241,7 +4438,7 @@ public class TransactionContext implements Transaction {
   /** Counts a change of {@code fileId} that is not a write into a page the transaction already holds (issue #11472). */
   private void stampFile(final int fileId) {
     if (fileStamps == null)
-      fileStamps = new LongLongHashMap();
+      fileStamps = new LongLongHashMap(SMALL_PER_FILE_MAP);
     fileStamps.increment(fileId);
   }
 
@@ -4752,7 +4949,7 @@ public class TransactionContext implements Transaction {
           bucket.compressPageAtCommit(page);
       }
 
-      List<PageId> pagesToRebase = null;
+      List<MutablePage> pagesToRebase = null;
       // the page itself, not only its id: it leaves modifiedPages here, and the replay reads the inserted slots back from it (#10661)
       List<MutablePage> slotPagesToRebase = null;
       for (final Iterator<MutablePage> it = modifiedPages.values().iterator(); it.hasNext(); ) {
@@ -4782,7 +4979,7 @@ public class TransactionContext implements Transaction {
           if (isLeader && isRebasableEdgeAppendPage(p)) {
             if (pagesToRebase == null)
               pagesToRebase = new ArrayList<>();
-            pagesToRebase.add(p.getPageId());
+            pagesToRebase.add(p);
             it.remove();
           } else if (isLeader && isRebasableSlotPage(p)) {
             // Disjoint-slot merge (#5381): the conflict is only because a concurrent commit touched OTHER slots
@@ -4804,8 +5001,8 @@ public class TransactionContext implements Transaction {
       // because that re-run is what makes compressPage's COVERAGE_ALL_MERGES declaration true. Do not lift it back up
       // here: see the note on those two methods.
       if (pagesToRebase != null)
-        for (final PageId pageId : pagesToRebase) {
-          final MutablePage rebased = rebaseEdgeAppends(pageId);
+        for (final MutablePage ownPage : pagesToRebase) {
+          final MutablePage rebased = rebaseEdgeAppends(ownPage);
           pageManager.checkPageVersion(rebased, false);
           pages.add(rebased);
         }
@@ -6738,7 +6935,11 @@ public class TransactionContext implements Transaction {
 
   /** The head the vertex image holds at {@code offset}, read as {@code MutableVertex} parses it. */
   private static RID edgeListHeadAt(final byte[] image, final int offset) {
-    final Binary content = new Binary(image);
+    return edgeListHeadAt(new Binary(image), offset);
+  }
+
+  /** The head at {@code offset} of the record in {@code content}, read in place: the record is not copied for 12 bytes of it. */
+  private static RID edgeListHeadAt(final Binary content, final int offset) {
     final int bucketId = content.getInt(offset);
     return bucketId == -1 ? null : new RID(bucketId, content.getLong(offset + Binary.INT_SERIALIZED_SIZE));
   }
@@ -6796,7 +6997,7 @@ public class TransactionContext implements Transaction {
       return;
     lastNotedBucket = bucketId;
     if (bucketFirstWriteSequences == null)
-      bucketFirstWriteSequences = new LongLongHashMap();
+      bucketFirstWriteSequences = new LongLongHashMap(SMALL_PER_FILE_MAP);
     if (bucketFirstWriteSequences.get(bucketId, -1L) < 0L)
       bucketFirstWriteSequences.put(bucketId, database.getTransactionManager().getIndexRegistrationSequence());
   }

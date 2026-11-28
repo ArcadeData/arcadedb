@@ -85,7 +85,7 @@ public class GremlinServerAuthenticator implements Authenticator {
 
     final ServerSecurityUser user = server.getSecurity().authenticate(userName, userPassword, databaseName);
 
-    return new ClientAuthenticatedUser(user.getName(), client);
+    return new ClientAuthenticatedUser(user, client);
   }
 
   private static String newConnectionId() {

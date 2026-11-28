@@ -19,8 +19,8 @@
 package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ExternalResourceException;
+import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.opencypher.LoadCSVRowContext;
 import com.arcadedb.query.opencypher.ast.Expression;
@@ -180,8 +180,10 @@ public class LoadCSVStep extends AbstractExecutionStep {
           try {
             final Expression urlExpr = loadCSVClause.getUrlExpression();
             final Object urlValue = evaluator.evaluate(urlExpr, currentInputRow, context);
+            // the caller's value, not a server fault: a client error (HTTP 400, issue #12795)
             if (urlValue == null)
-              throw new CommandExecutionException("LOAD CSV URL expression evaluated to null");
+              throw new InvalidArgumentException(
+                  "LOAD CSV FROM needs a URL, and `" + InvalidArgumentException.quote(urlExpr.getText()) + "` evaluated to null");
             currentUrl = urlValue.toString();
             currentLineNumber = 0;
             currentReader = openReader(currentUrl, context);

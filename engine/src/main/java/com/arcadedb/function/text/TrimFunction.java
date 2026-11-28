@@ -22,6 +22,8 @@ import com.arcadedb.function.FunctionArity;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 
+import java.util.BitSet;
+
 /**
  * trim() function - strips characters from a string.
  * <p>
@@ -35,6 +37,9 @@ import com.arcadedb.query.sql.executor.CommandContext;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class TrimFunction implements StatelessFunction {
+  /** A trim set of up to this many characters is searched as it is: a table of its code points would cost more than it saves. */
+  private static final int SMALL_SET_LENGTH = 8;
+
   @Override
   public String getName() {
     return "trim";
@@ -67,6 +72,9 @@ public class TrimFunction implements StatelessFunction {
 
     if (args.length == 3) {
       // Extended form: trim(mode, trimCharacter, source)
+      // null in, null out: a null mode was a NullPointerException on the switch below (issue #12744)
+      if (args[0] == null)
+        return null;
       final String mode = args[0].toString();
       final String source = args[2] != null ? args[2].toString() : null;
       if (source == null)
@@ -83,7 +91,7 @@ public class TrimFunction implements StatelessFunction {
       return switch (mode) {
         case "LEADING" -> stripLeading(source, trimChar);
         case "TRAILING" -> stripTrailing(source, trimChar);
-        default -> stripLeading(stripTrailing(source, trimChar), trimChar);
+        default -> strip(source, trimChar, true, true);
       };
     }
 
@@ -96,27 +104,61 @@ public class TrimFunction implements StatelessFunction {
    * never stops between the two halves of a pair, so a lone surrogate is never returned for a whole character.
    */
   public static String stripLeading(final String source, final String trimChars) {
-    final int size = source.length();
-    int start = 0;
-    while (start < size) {
-      final int codePoint = source.codePointAt(start);
-      if (!containsCodePoint(trimChars, codePoint))
-        break;
-      start += Character.charCount(codePoint);
-    }
-    return start == 0 ? source : source.substring(start);
+    return strip(source, trimChars, true, false);
   }
 
   /** {@link #stripLeading} from the end of {@code source}. */
   public static String stripTrailing(final String source, final String trimChars) {
-    int end = source.length();
-    while (end > 0) {
-      final int codePoint = source.codePointBefore(end);
-      if (!containsCodePoint(trimChars, codePoint))
-        break;
-      end -= Character.charCount(codePoint);
+    return strip(source, trimChars, false, true);
+  }
+
+  /**
+   * Strips the characters found in {@code trimChars} from the start of {@code source} when {@code leading} is set and from its end
+   * when {@code trailing} is set, as {@link #stripLeading} and {@link #stripTrailing} do. The cost is that of reading the two
+   * strings once, whatever their lengths: a set of more than {@link #SMALL_SET_LENGTH} characters is read once into a table of its
+   * code points, instead of being searched again for each character of the source.
+   */
+  public static String strip(final String source, final String trimChars, final boolean leading, final boolean trailing) {
+    final int size = source.length();
+    if (size == 0 || trimChars.isEmpty())
+      return source;
+
+    final BitSet members = trimChars.length() > SMALL_SET_LENGTH ? codePointsOf(trimChars) : null;
+
+    int end = size;
+    if (trailing)
+      while (end > 0) {
+        final int codePoint = source.codePointBefore(end);
+        if (!contains(trimChars, members, codePoint))
+          break;
+        end -= Character.charCount(codePoint);
+      }
+
+    int start = 0;
+    if (leading)
+      while (start < end) {
+        final int codePoint = source.codePointAt(start);
+        if (!contains(trimChars, members, codePoint))
+          break;
+        start += Character.charCount(codePoint);
+      }
+
+    return start == 0 && end == size ? source : source.substring(start, end);
+  }
+
+  /** The code points of {@code set}: a lone surrogate is a code point of its own, so it is never taken for half of a pair. */
+  private static BitSet codePointsOf(final String set) {
+    final BitSet members = new BitSet();
+    for (int i = 0; i < set.length(); ) {
+      final int codePoint = set.codePointAt(i);
+      members.set(codePoint);
+      i += Character.charCount(codePoint);
     }
-    return end == source.length() ? source : source.substring(0, end);
+    return members;
+  }
+
+  private static boolean contains(final String set, final BitSet members, final int codePoint) {
+    return members != null ? members.get(codePoint) : containsCodePoint(set, codePoint);
   }
 
   /**

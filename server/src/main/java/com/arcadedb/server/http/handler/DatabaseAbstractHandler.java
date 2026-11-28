@@ -385,8 +385,18 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
    */
   boolean isRetryableRefusal(final Throwable failure) {
     final ErrorClassification classification = classifyError(failure);
-    return classification.status() == 503
-        && (classification.reported() instanceof NeedRetryException || classification.reported() instanceof DatabaseIsReopeningException);
+    if (classification.status() == 503
+        && (classification.reported() instanceof NeedRetryException || classification.reported() instanceof DatabaseIsReopeningException))
+      return true;
+
+    // A forwarded write counts as a commit of the block, so the retry loop around the request reports a refusal raised after it
+    // as not retryable, with the refusal suppressed (TransactionContext.notReplayable, issue #13251). That is the refusal this
+    // method is asked about, and the leader's answer still stands for the request
+    if (failure instanceof TransactionException && failure.getCause() == null)
+      for (final Throwable suppressed : failure.getSuppressed())
+        if (suppressed instanceof NeedRetryException && isRetryableRefusal(suppressed))
+          return true;
+    return false;
   }
 
   /**

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.remote;
 
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.CommandExecutionException;
@@ -30,7 +31,9 @@ import com.arcadedb.exception.ExceptionPackageCensus;
 import com.arcadedb.exception.LockTimeoutException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryNotIdempotentException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TypeAlreadyExistsException;
+import com.arcadedb.exception.VertexNotFoundException;
 import com.arcadedb.function.FunctionExecutionException;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.StaleIndexException;
@@ -155,6 +158,36 @@ class Issue11045RemoteExceptionTypeTest {
         wrong.add(name + " came back as " + result.getClass().getName());
     }
     assertThat(wrong).isEmpty();
+  }
+
+  /**
+   * Issue #12931: the names rebuilt with more than a message are an authority of their own, which a follower rebuilding its
+   * leader's answer reads too. Each comes back over the driver as its class (or as the one it is documented to be rebuilt as),
+   * a missing record with the RID its message names and a taken name with its kind.
+   */
+  @Test
+  void everyNameRebuiltWithArgumentsComesBackAsItself() throws Exception {
+    assertThat(RemoteExceptionRebuilder.namesWithArguments()).as("the scan still reaches RemoteExceptionRebuilder.namesWithArguments()")
+        .contains(RecordNotFoundException.class.getName(), VertexNotFoundException.class.getName(),
+            AlreadyExistsException.class.getName(), TypeAlreadyExistsException.class.getName());
+
+    for (final String name : RemoteExceptionRebuilder.namesWithArguments()) {
+      final Class<?> expected = REBUILT_AS.getOrDefault(name, Class.forName(name));
+      final Exception result = component.manageException(404,
+          new JSONObject(body(name, "Record #12:7 not found")).put("exceptionArgs", "INDEX").toString(), "command");
+
+      assertThat(result).as(name).isExactlyInstanceOf(expected).hasMessage("Record #12:7 not found");
+      if (result instanceof final RecordNotFoundException notFound)
+        assertThat(notFound.getRID()).as(name).isEqualTo(new RID(12, 7));
+      else
+        assertThat(((AlreadyExistsException) result).getKind()).as(name).isEqualTo(AlreadyExistsException.Kind.INDEX);
+      // a name that is not one of them is left to the caller
+      assertThat(RemoteExceptionRebuilder.rebuildWithArguments(name + "x", "INDEX", "Record #12:7 not found")).isNull();
+    }
+    assertThat(RemoteExceptionRebuilder.rebuildWithArguments(null, null, "x")).isNull();
+    for (final String message : new String[] { null, "gone", "Record # not found", "Record #zz:yy not found" })
+      assertThat(RemoteExceptionRebuilder.ridNamedIn(message)).as(message).isNull();
+    assertThat(RemoteExceptionRebuilder.ridNamedIn("no such record: #3:4")).isEqualTo(new RID(3, 4));
   }
 
   /**

@@ -23,7 +23,15 @@ import com.arcadedb.bench.workload.Scale;
 import com.arcadedb.serializer.json.JSONObject;
 
 /**
- * What a workload receives from the runner. The server may be null in unit tests.
+ * What a workload receives from the runner. The server may be null in unit tests, and is null for a workload that
+ * {@link Workload#ownsServers() owns its servers}: that one starts them from {@code spec}, which is null for the others.
  */
-public record WorkloadContext(ServerUnderTest server, Scale scale, long seed, JSONObject params) {
+public record WorkloadContext(ServerUnderTest server, Scale scale, long seed, JSONObject params, ServerSpec spec) {
+  /** The run's server options, for a workload that starts its own servers. */
+  public record ServerSpec(String image, String serverCpus, int memLimitGb, String heap) {
+  }
+
+  public WorkloadContext(final ServerUnderTest server, final Scale scale, final long seed, final JSONObject params) {
+    this(server, scale, seed, params, null);
+  }
 }

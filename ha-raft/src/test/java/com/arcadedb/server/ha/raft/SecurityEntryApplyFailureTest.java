@@ -733,14 +733,13 @@ class SecurityEntryApplyFailureTest {
   /**
    * A forced seed the leader could not fully commit is retried like a transient failure, so the catch-up's bounded
    * backoff asks again instead of the node waiting, with its stale files, for a trigger a quiet cluster may never send.
-   * An ordinary catch-up with failed seeds stays answered: retrying it would only resubmit what the leader reported.
+   * Since issue #13447 an ordinary catch-up with failed seeds is retried the same way: the answer no longer depends on
+   * whether the seed was forced.
    */
   @Test
   void aForcedSeedTheLeaderCouldNotCommitIsRetried() {
-    assertThat(SecurityCatchUp.outcomeOfAnswer(true, List.of("users"))).isEqualTo(SecurityCatchUp.Outcome.TRANSIENT_FAILURE);
-    assertThat(SecurityCatchUp.outcomeOfAnswer(true, List.of())).isEqualTo(SecurityCatchUp.Outcome.ASKED);
-    assertThat(SecurityCatchUp.outcomeOfAnswer(false, List.of("users"))).isEqualTo(SecurityCatchUp.Outcome.ASKED);
-    assertThat(SecurityCatchUp.outcomeOfAnswer(false, List.of())).isEqualTo(SecurityCatchUp.Outcome.ASKED);
+    assertThat(SecurityCatchUp.outcomeOfAnswer(List.of("users"))).isEqualTo(SecurityCatchUp.Outcome.TRANSIENT_FAILURE);
+    assertThat(SecurityCatchUp.outcomeOfAnswer(List.of())).isEqualTo(SecurityCatchUp.Outcome.ASKED);
   }
 
   // Regression for #7752: the forced seed survives a restart

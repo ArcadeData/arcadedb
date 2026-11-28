@@ -192,7 +192,13 @@ public class ImmutableDocument extends BaseDocument {
   public void reload() {
     // THE RELOADED CONTENT COMES FROM THE BUCKET, NOT FROM A PAGE WHOSE VERSION THIS RECORD KNOWS
     contentPageVersion = -1;
+    // #12642: a reload reads the content again, from the transaction's own image of the page when it holds the page modified, and
+    // the record that tracks such reads must know it the same way it does for a lazy load (see readContentOfLazyRecord())
+    final TransactionContext tx = tracksReadsFromOwnImage() ? ((DatabaseInternal) database).getTransactionIfExists() : null;
+    final long ownImageReads = tx != null ? tx.getOwnImageReads() : 0L;
     super.reload();
+    if (tx != null && tx.getOwnImageReads() != ownImageReads)
+      contentReadFromOwnImage();
   }
 
   /**
@@ -515,6 +521,25 @@ public class ImmutableDocument extends BaseDocument {
         result.put(RID_PROPERTY, getIdentity().toString());
     }
     return result;
+  }
+
+  /**
+   * {@link #toMap(boolean) toMap(false)}, telling the caller whether it lost anything: the first part of the content that did not
+   * decode is described in {@code damage[0]}, which stays null when the whole record decoded. A consumer that needs the names of the
+   * record as well (a row serializer: a property that does not decode is still a column, with a null value) learns from it that
+   * the values it was handed are every property the record holds, and skips the second pass over the header that listing the names
+   * costs (issue #12979).
+   * <p>
+   * It reads the stored content directly, which a subclass may not answer its map and its names from (a remote record holds the map
+   * the server sent, and no content), so {@code ResultInternal.propertiesOf} reads a record through this method only when its class
+   * is one of the engine's own record classes or declares this method itself, matching its own {@code toMap(false)}.
+   *
+   * @return a NEW, mutable map the caller owns
+   */
+  public Map<String, Object> toMapReportingDamage(final String[] damage) {
+    checkForLazyLoading();
+    final Binary content = requireBuffer("convert to a map");
+    return database.getSerializer().deserializePropertiesReportingDamage(database, content, new EmbeddedModifierObject(this), rid, damage);
   }
 
   @Override

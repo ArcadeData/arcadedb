@@ -96,6 +96,11 @@ public class GtOperator extends SimpleNode implements BinaryCompareOperator {
   }
 
   @Override
+  public LtOperator mirrored() {
+    return new LtOperator();
+  }
+
+  @Override
   public boolean isRangeOperator() {
     return true;
   }

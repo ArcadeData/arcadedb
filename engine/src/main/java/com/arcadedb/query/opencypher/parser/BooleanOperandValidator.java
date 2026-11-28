@@ -24,7 +24,8 @@ import java.util.*;
 
 /**
  * The phase of the semantic validation that rejects an operand of AND, OR, XOR or NOT whose type is known when the
- * statement is parsed and is not a boolean.
+ * statement is parsed and is not a boolean, and a whole predicate whose type is known to be a list
+ * ({@link #refuseListPredicate(Expression)}).
  * <p>
  * Split out of {@link CypherSemanticValidator}, which runs the phases of the validation in order.
  *
@@ -138,11 +139,44 @@ final class BooleanOperandValidator {
     }
   }
 
+  /**
+   * Refuses, when the statement is parsed, a predicate that is known to be a list: a list literal, or a {@code +} with a list
+   * literal on either side. The value in a predicate position (the condition of a WHERE or FILTER, the inline WHERE of a
+   * pattern, the WHEN of a generic CASE, the WHERE of a list predicate or of a comprehension) is taken at run time by
+   * {@link BooleanCoercionExpression#toPredicate(Object)}, which reads a list as "not empty": the coercion a list <b>read from
+   * a property</b> gets, as in Neo4j, since its type is not known before the statement runs. A list whose type IS known was
+   * taken the same way there, and refused as an operand of AND/OR/XOR/NOT by the check below: {@code WHERE [1, 2]} matched the
+   * rows and {@code WHERE [1, 2] AND true} failed (issue #12975). Neo4j refuses both ("Coercion of list to boolean is not
+   * allowed").
+   * <p>
+   * It reads {@link BooleanCoercionExpression#nonBooleanKindOf(Expression)}, the rule of the operand check, so the two cannot
+   * disagree on what a list is. The other kinds that rule knows (a number, a string, a map) are not refused here: the run
+   * refuses them with a type error in every position, so they never had two answers.
+   */
+  static void refuseListPredicate(final Expression predicate) {
+    refuseList(BooleanCoercionExpression.nonBooleanKindOf(predicate));
+  }
+
+  /** {@link #refuseListPredicate(Expression)} for a predicate parsed as a {@link BooleanExpression}: the value it adapts. */
+  static void refuseListPredicate(final BooleanExpression predicate) {
+    refuseList(BooleanCoercionExpression.nonBooleanKindOf(predicate));
+  }
+
+  private static void refuseList(final String kind) {
+    if (BooleanCoercionExpression.LIST_KIND.equals(kind))
+      throw notABoolean(kind);
+  }
+
+  /** The one refusal of a value known not to be a BOOLEAN where a predicate is expected. */
+  private static CommandParsingException notABoolean(final String kind) {
+    return new CommandParsingException("InvalidArgumentType: Expected Boolean but got " + kind);
+  }
+
   /** Refuses an operand known not to be a BOOLEAN: a non-Boolean literal, a list or map literal, an arithmetic expression. */
   private static void checkOperandForBooleanContext(final Expression operand) {
     final String kind = BooleanCoercionExpression.nonBooleanKindOf(operand);
     if (kind != null)
-      throw new CommandParsingException("InvalidArgumentType: Expected Boolean but got " + kind);
+      throw notABoolean(kind);
   }
 
   /**
@@ -155,6 +189,6 @@ final class BooleanOperandValidator {
   private static void checkBooleanExprOperandValidity(final BooleanExpression operand) {
     final String kind = BooleanCoercionExpression.nonBooleanKindOf(operand);
     if (kind != null)
-      throw new CommandParsingException("InvalidArgumentType: Expected Boolean but got " + kind);
+      throw notABoolean(kind);
   }
 }

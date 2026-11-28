@@ -398,22 +398,8 @@ final class CypherStepBuilder {
 
     // Step 8: ORDER BY (if any), unless the operators already produce the rows in that order from an index (issue #8422)
     if (statement.getOrderByClause() != null && !physicalPlan.isIndexOrdered()) {
-      // Evaluate LIMIT before creating OrderByStep for Top-K optimization
-      // When SKIP is also present, TopK must keep SKIP + LIMIT results so SKIP can discard from them
-      Integer limitVal = statement.getLimit() != null ?
-          new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(),
-              new ResultInternal(), context) : null;
-      if (limitVal != null && statement.getSkip() != null) {
-        final int skipVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getSkip(),
-            new ResultInternal(), context);
-        limitVal = limitVal + skipVal;
-      }
-
-      // Top-K must account for SKIP so enough rows survive after skipping
-      final Integer skipVal = statement.getSkip() != null ?
-          new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getSkip(),
-              new ResultInternal(), context) : null;
-      final Integer topKVal = limitVal != null ? limitVal + (skipVal != null ? skipVal : 0) : null;
+      // Top-K must keep SKIP + LIMIT rows so SKIP can discard from them
+      final Integer topKVal = topKRows(statement, functionFactory, context);
 
       final OrderByStep orderByStep =
           new OrderByStep(statement.getOrderByClause(), context, functionFactory, topKVal).withProjection(returnItemsOf(statement));
@@ -582,6 +568,10 @@ final class CypherStepBuilder {
     // #12521). The names an UNWIND and a CALL subquery bind take the taint of the segment's own MATCH variables only when it
     // closes (issue #12323): see EagerBarriers.closeMatchSegment()
     final List<ClauseEntry> currentSegmentBindings = new ArrayList<>();
+    // True when a CALL subquery that reads the graph runs once per row of what precedes it and feeds the rows a write clause
+    // is about to see, in the open segment or behind a WITH that forwards rows one at a time (issue #13653): see
+    // EagerBarriers.subqueryReadsGraphPerRow()
+    boolean subqueryReadsPerRow = false;
 
     // Shape of everything read so far, weighed against each write clause's own shape to decide where an
     // eager read/write barrier has to go so the query never reads back what it just created (issue #7171).
@@ -730,6 +720,7 @@ final class CypherStepBuilder {
                 EagerBarriers.relationshipsWalkedAfter(nextWith, currentSegmentMatchClauses, relationshipsWalkedBefore);
             rowsMayRepeatBefore =
                 EagerBarriers.rowsMayRepeatAfter(nextWith, currentSegmentMatchClauses, currentSegmentBindings, rowsMayRepeatBefore);
+            subqueryReadsPerRow = EagerBarriers.subqueryReadsGraphPerRowAfter(nextWith, subqueryReadsPerRow);
             EagerBarriers.closeMatchSegment(currentSegmentMatchClauses, currentSegmentBindings, disconnectedTaintedVariables);
             EagerBarriers.propagateTaintThroughRenames(nextWith, disconnectedTaintedVariables);
             break;
@@ -750,6 +741,7 @@ final class CypherStepBuilder {
                 EagerBarriers.relationshipsWalkedAfter(nextWith, currentSegmentMatchClauses, relationshipsWalkedBefore);
             rowsMayRepeatBefore =
                 EagerBarriers.rowsMayRepeatAfter(nextWith, currentSegmentMatchClauses, currentSegmentBindings, rowsMayRepeatBefore);
+            subqueryReadsPerRow = EagerBarriers.subqueryReadsGraphPerRowAfter(nextWith, subqueryReadsPerRow);
             EagerBarriers.closeMatchSegment(currentSegmentMatchClauses, currentSegmentBindings, disconnectedTaintedVariables);
             EagerBarriers.propagateTaintThroughRenames(nextWith, disconnectedTaintedVariables);
             break;
@@ -776,6 +768,7 @@ final class CypherStepBuilder {
             EagerBarriers.relationshipsWalkedAfter(withClause, currentSegmentMatchClauses, relationshipsWalkedBefore);
         rowsMayRepeatBefore =
             EagerBarriers.rowsMayRepeatAfter(withClause, currentSegmentMatchClauses, currentSegmentBindings, rowsMayRepeatBefore);
+        subqueryReadsPerRow = EagerBarriers.subqueryReadsGraphPerRowAfter(withClause, subqueryReadsPerRow);
         EagerBarriers.closeMatchSegment(currentSegmentMatchClauses, currentSegmentBindings, disconnectedTaintedVariables);
         // A rename (WITH n AS m) doesn't change how rows flow either - propagate the taint onto the
         // new name too, or a later DELETE of m would find nothing tainted under that name.
@@ -869,7 +862,9 @@ final class CypherStepBuilder {
               || EagerBarriers.deleteMayTargetTaintedVariable(deleteClause, disconnectedTaintedVariables)
               || EagerBarriers.detachDeleteNeedsEagerRead(deleteClause, currentSegmentMatchClauses, relationshipsWalkedBefore)
               || EagerBarriers.deleteNeedsEagerReRead(deleteClause, currentSegmentMatchClauses, currentSegmentBindings,
-                  rowsMayRepeatBefore);
+                  rowsMayRepeatBefore)
+              // a subquery before it reads the graph again for the rows that follow (issue #13653)
+              || subqueryReadsPerRow;
           final DeleteStep deleteStep = new DeleteStep(deleteClause, context, eagerMaterialize);
           deleteStep.setPrevious(currentStep);
           currentStep = deleteStep;
@@ -901,6 +896,9 @@ final class CypherStepBuilder {
         if (plan.isFollowedByCountOnlyReturn(clausesInOrder, entryIndex)) {
           callStep.setCountOnlyOptimization(true);
         }
+        // A void call passes its input rows on when another clause follows it, and answers no row when it ends the query, as
+        // in Neo4j (issue #13537)
+        callStep.setVoidCallKeepsRows(entryIndex + 1 < clausesInOrder.size() || statement.getReturnClause() != null);
         currentStep = callStep;
         eagerness.observeClause(entry, false, boundVariables);
         // A CALL binds the names it yields the way UNWIND binds its variable: they belong to the scope a
@@ -921,7 +919,9 @@ final class CypherStepBuilder {
                 || (foreachClause.containsDetachDelete()
                     && EagerBarriers.relationshipsWalked(currentSegmentMatchClauses, relationshipsWalkedBefore))
                 // a relationship the body deletes can be read again by an expansion that starts after it (issue #12521)
-                || EagerBarriers.relationshipsMayBeReadAgain(currentSegmentMatchClauses, currentSegmentBindings, rowsMayRepeatBefore));
+                || EagerBarriers.relationshipsMayBeReadAgain(currentSegmentMatchClauses, currentSegmentBindings, rowsMayRepeatBefore)
+                // a subquery before it reads the graph again for the rows that follow (issue #13653)
+                || subqueryReadsPerRow);
         final boolean foreachEagerExecution =
             database.getConfiguration().getValueAsBoolean(GlobalConfiguration.OPENCYPHER_FOREACH_EAGER_READ)
                 && GraphReadAnalysis.graphReadFollows(clausesInOrder, entryIndex);
@@ -941,6 +941,8 @@ final class CypherStepBuilder {
       case SUBQUERY:
         final SubqueryClause subqueryClause = entry.getTypedClause();
         final CypherStatement subqueryBody = subqueryClause.getInnerStatement();
+        // Decided on the rows that reach the body, before an eager barrier placed below stands in front of them
+        final boolean subqueryRunsPerRow = currentStep != null && currentStep != singleRowSource;
         // The body runs once per row the enumeration behind it hands over, so a node it deletes is unlinked while that
         // enumeration is still walking it (issue #10512). The rows are read ahead of the first run on the same terms as for
         // a DELETE placed in the outer query, where DeleteStep.eagerMaterialize is decided. A DETACH DELETE in it also cuts the
@@ -948,7 +950,9 @@ final class CypherStepBuilder {
         // A relationship it deletes can be read again by an expansion that starts after it (issue #12521)
         if (currentStep != null && ((EagerBarriers.subqueryBodyDeletes(subqueryBody)
             && (EagerBarriers.matchClausesNeedEagerDelete(currentSegmentMatchClauses) || !disconnectedTaintedVariables.isEmpty()
-            || EagerBarriers.relationshipsMayBeReadAgain(currentSegmentMatchClauses, currentSegmentBindings, rowsMayRepeatBefore)))
+            || EagerBarriers.relationshipsMayBeReadAgain(currentSegmentMatchClauses, currentSegmentBindings, rowsMayRepeatBefore)
+            // a subquery before it reads the graph again for the rows that follow (issue #13653)
+            || subqueryReadsPerRow))
             || (EagerBarriers.subqueryBodyDetachDeletes(subqueryBody)
             && EagerBarriers.relationshipsWalked(currentSegmentMatchClauses, relationshipsWalkedBefore))
             || eagerness.needsBarrierForPropertyWrites(subqueryBody)
@@ -960,6 +964,8 @@ final class CypherStepBuilder {
         // Nothing in a statement that cannot write needs the body's reads finished before the next clause: its rows stream,
         // so a LIMIT after the CALL stops the body too (issue #11082)
         subqueryStep.setStreamBody(statement.isReadOnly());
+        if (EagerBarriers.subqueryReadsGraphPerRow(subqueryBody, subqueryRunsPerRow))
+          subqueryReadsPerRow = true;
         if (currentStep != null) {
           subqueryStep.setPrevious(currentStep);
         }
@@ -1034,22 +1040,8 @@ final class CypherStepBuilder {
 
     // ORDER BY
     if (statement.getOrderByClause() != null && currentStep != null) {
-      // Evaluate LIMIT before creating OrderByStep for Top-K optimization
-      // When SKIP is also present, TopK must keep SKIP + LIMIT results
-      Integer limitVal = statement.getLimit() != null ?
-          new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(),
-              new ResultInternal(), context) : null;
-      if (limitVal != null && statement.getSkip() != null) {
-        final int skipVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getSkip(),
-            new ResultInternal(), context);
-        limitVal = limitVal + skipVal;
-      }
-
-      // Top-K must account for SKIP so enough rows survive after skipping
-      final Integer skipVal = statement.getSkip() != null ?
-          new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getSkip(),
-              new ResultInternal(), context) : null;
-      final Integer topKVal = limitVal != null ? limitVal + (skipVal != null ? skipVal : 0) : null;
+      // Top-K must keep SKIP + LIMIT rows so SKIP can discard from them
+      final Integer topKVal = topKRows(statement, functionFactory, context);
 
       final OrderByStep orderByStep =
           new OrderByStep(statement.getOrderByClause(), context, functionFactory, topKVal).withProjection(returnItemsOf(statement));
@@ -1176,13 +1168,7 @@ final class CypherStepBuilder {
         evaluator.evaluateSkipLimit(withClause.getLimit(), new ResultInternal(), context) : null;
 
     if (ordered && !orderedByIndex) {
-      // Top-K keeps SKIP + LIMIT rows so enough survive the skip; a sum past int range sorts everything instead
-      Integer topKVal = null;
-      if (limitVal != null) {
-        final long topK = (long) limitVal + (skipVal != null ? skipVal : 0);
-        topKVal = topK <= Integer.MAX_VALUE ? (int) topK : null;
-      }
-      final OrderByStep orderByStep = new OrderByStep(withClause.getOrderByClause(), context, functionFactory, topKVal)
+      final OrderByStep orderByStep = new OrderByStep(withClause.getOrderByClause(), context, functionFactory, topKRows(limitVal, skipVal))
           .withProjection(withClause.getItems());
       if (currentStep != null)
         orderByStep.setPrevious(currentStep);
@@ -1349,6 +1335,31 @@ final class CypherStepBuilder {
   }
 
   /**
+   * The rows the ORDER BY of a RETURN has to keep when a LIMIT follows it: see {@link #topKRows(Integer, Integer)}.
+   */
+  private static Integer topKRows(final CypherStatement statement, final CypherFunctionFactory functionFactory, final CommandContext context) {
+    if (statement.getLimit() == null)
+      return null;
+    final ExpressionEvaluator evaluator = new ExpressionEvaluator(functionFactory);
+    final int limit = evaluator.evaluateSkipLimit(statement.getLimit(), new ResultInternal(), context);
+    final Integer skip = statement.getSkip() != null ? evaluator.evaluateSkipLimit(statement.getSkip(), new ResultInternal(), context) : null;
+    return topKRows(limit, skip);
+  }
+
+  /**
+   * The rows an ORDER BY has to keep when a LIMIT follows it: the LIMIT plus the SKIP that discards from them, or null to sort
+   * every row, for no LIMIT or for a bound that reaches {@link Integer#MAX_VALUE}. A bound that large keeps every row a list can
+   * hold, so a heap of that size would only be a slower full sort, and the sum is taken in long so that two large values do not
+   * wrap negative (#12757). One rule for the ORDER BY of a WITH and of a RETURN.
+   */
+  private static Integer topKRows(final Integer limit, final Integer skip) {
+    if (limit == null)
+      return null;
+    final long rows = (long) limit + (skip != null ? skip : 0);
+    return rows < Integer.MAX_VALUE ? (int) rows : null;
+  }
+
+  /**
    * A LIMIT of this statement. A {@code LIMIT 0} drains its input so the writes behind it run; a statement that cannot write
    * has none, so its {@code LIMIT 0} answers without running anything behind it (issue #11081).
    */
@@ -1502,9 +1513,13 @@ final class CypherStepBuilder {
                 matchVariables.add(targetVar);
               }
 
-              // Now add the ShortestPathStep to compute the path
+              // Now add the ShortestPathStep to compute the path; a WHERE conjunct on the path variable restricts the search
+              // (issue #13574)
+              final WhereClause pathWhere = matchClause.hasWhereClause() ? matchClause.getWhereClause() :
+                  statement.getWhereClause();
               final ShortestPathStep shortestStep = new ShortestPathStep(sourceVar, targetVar, pathVariable,
-                  shortestPathPattern, context);
+                  shortestPathPattern, FilterPushdown.extractShortestPathPredicate(pathWhere, pathVariable,
+                  legacyBoundVariables, matchVariables), context);
               if (currentStep != null) {
                 shortestStep.setPrevious(currentStep);
               }
@@ -1947,22 +1962,8 @@ final class CypherStepBuilder {
 
     // Step 8: ORDER BY clause - sort results
     if (statement.getOrderByClause() != null && currentStep != null) {
-      // Evaluate LIMIT before creating OrderByStep for Top-K optimization
-      // When SKIP is also present, TopK must keep SKIP + LIMIT results
-      Integer limitVal = statement.getLimit() != null ?
-          new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(), new ResultInternal(),
-              context) : null;
-      if (limitVal != null && statement.getSkip() != null) {
-        final int skipVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getSkip(),
-            new ResultInternal(), context);
-        limitVal = limitVal + skipVal;
-      }
-
-      // Top-K must account for SKIP so enough rows survive after skipping
-      final Integer skipVal = statement.getSkip() != null ?
-          new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getSkip(), new ResultInternal(),
-              context) : null;
-      final Integer topKVal = limitVal != null ? limitVal + (skipVal != null ? skipVal : 0) : null;
+      // Top-K must keep SKIP + LIMIT rows so SKIP can discard from them
+      final Integer topKVal = topKRows(statement, functionFactory, context);
 
       final OrderByStep orderByStep = new OrderByStep(
           statement.getOrderByClause(), context, functionFactory, topKVal).withProjection(returnItemsOf(statement));
