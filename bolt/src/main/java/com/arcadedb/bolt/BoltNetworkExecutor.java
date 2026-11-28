@@ -219,6 +219,8 @@ public class BoltNetworkExecutor extends Thread {
   private static final String STACK_EXHAUSTED_MESSAGE =
       "The statement is too deeply nested to be evaluated (stack exhausted): simplify the query";
   private static final AtomicLong LAST_CONNECTION_ID = new AtomicLong();
+  /** The last bookmark handed out by any connection of this server: the next one is above it (see {@link #generateBookmark()}). */
+  private static final AtomicLong LAST_BOOKMARK      = new AtomicLong();
   /** How {@code SHOW TRANSACTIONS} and {@code list queries} name this connection (issue #9689). */
   private final String connectionId = "bolt-" + LAST_CONNECTION_ID.incrementAndGet();
 
@@ -1335,6 +1337,10 @@ public class BoltNetworkExecutor extends Thread {
       if (stats.isPresent() && stats.get().containsUpdates())
         metadata.put("stats", BoltResultStats.toStatsMap(stats.get()));
     }
+    // The summary that ends an auto-commit transaction carries its bookmark, as Neo4j's does (issue #11511); inside an explicit
+    // transaction the COMMIT answers it
+    if (!explicitTransaction)
+      metadata.put("bookmark", generateBookmark());
     closeStream(stream, phase);
     return metadata;
   }
@@ -2106,10 +2112,12 @@ public class BoltNetworkExecutor extends Thread {
   }
 
   /**
-   * Generate a bookmark for the current transaction.
+   * Generate a bookmark for the current transaction. Strictly increasing across the server, so two transactions that finish in the
+   * same millisecond (an auto-commit pair, which a client chains through {@code Session.lastBookmarks()}) never share one.
    */
-  private String generateBookmark() {
-    return "arcade:tx:" + System.currentTimeMillis();
+  private static String generateBookmark() {
+    final long now = System.currentTimeMillis();
+    return "arcade:tx:" + LAST_BOOKMARK.updateAndGet(last -> Math.max(last + 1, now));
   }
 
   /**
