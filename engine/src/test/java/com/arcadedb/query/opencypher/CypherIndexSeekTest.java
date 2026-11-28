@@ -2305,4 +2305,124 @@ class CypherIndexSeekTest {
       return values;
     }
   }
+
+  /**
+   * Regression test for issue #13115: {@code $x IN n.list} over a list property indexed BY ITEM scanned every vertex of the
+   * label, where SQL {@code CONTAINS} seeks the index. The seek only narrows the candidates; the WHERE still runs on each.
+   */
+  @Nested
+  class Issue13115ListMembershipByItem extends TestHelper {
+    @Override
+    protected void beginTest() {
+      database.transaction(() -> {
+        database.command("sql", "CREATE VERTEX TYPE Indexed");
+        database.command("sql", "CREATE VERTEX TYPE Plain");
+        for (final String t : new String[] { "Indexed", "Plain" }) {
+          database.command("sql", "CREATE PROPERTY " + t + ".k INTEGER");
+          database.command("sql", "CREATE PROPERTY " + t + ".aliases LIST OF STRING");
+          for (int i = 0; i < 50; i++)
+            database.command("sql", "INSERT INTO " + t + " SET k = " + i + ", aliases = ['a" + i + "', 'b" + i + "', 'shared']");
+        }
+        database.command("sql", "CREATE INDEX ON Indexed (aliases BY ITEM) NOTUNIQUE");
+        // lists that can hold maps: the key of an item is its text, which Cypher equality does not follow
+        for (final String[] t : new String[][] { { "IndexedUntyped", "LIST" }, { "PlainUntyped", "LIST" },
+            { "IndexedMaps", "LIST OF MAP" }, { "PlainMaps", "LIST OF MAP" } }) {
+          database.command("sql", "CREATE VERTEX TYPE " + t[0]);
+          database.command("sql", "CREATE PROPERTY " + t[0] + ".k INTEGER");
+          database.command("sql", "CREATE PROPERTY " + t[0] + ".aliases " + t[1]);
+          for (int i = 0; i < 5; i++)
+            database.command("sql", "INSERT INTO " + t[0] + " SET k = " + i + ", aliases = [{'k': " + i + "}, {'k': 100}]");
+        }
+        database.command("sql", "CREATE INDEX ON IndexedUntyped (aliases BY ITEM) NOTUNIQUE");
+        database.command("sql", "CREATE INDEX ON IndexedMaps (aliases BY ITEM) NOTUNIQUE");
+      });
+    }
+
+    @Test
+    void aListThatCanHoldMapsIsScannedNotSeeked() {
+      // {k: 1.0} equals the stored {k: 1} in Cypher, but the index keys the items by their text: {k=1.0} is not {k=1}
+      for (final String[] pair : new String[][] { { "IndexedUntyped", "PlainUntyped" }, { "IndexedMaps", "PlainMaps" } }) {
+        final Map<String, Object> params = Map.of("a", Map.of("k", 1.0));
+        assertThat(keys(pair[1], "$a IN e.aliases", params)).as(pair[1]).containsExactly(1);
+        assertThat(keys(pair[0], "$a IN e.aliases", params)).as(pair[0]).isEqualTo(keys(pair[1], "$a IN e.aliases", params));
+        assertThat(planOn(pair[0], "$a IN e.aliases", params)).as(pair[0]).doesNotContain("NodeIndexSeek");
+      }
+    }
+
+    private List<Object> keys(final String type, final String where, final Map<String, Object> params) {
+      final List<Object> out = new ArrayList<>();
+      try (final ResultSet rs = database.query("opencypher", "MATCH (e:" + type + ") WHERE " + where + " RETURN e", params)) {
+        while (rs.hasNext())
+          out.add(rs.next().getVertex().get().getInteger("k"));
+      }
+      out.sort(null);
+      return out;
+    }
+
+    private String plan(final String where, final Map<String, Object> params) {
+      return planOn("Indexed", where, params);
+    }
+
+    private String planOn(final String type, final String where, final Map<String, Object> params) {
+      try (final ResultSet rs = database.query("opencypher", "EXPLAIN MATCH (e:" + type + ") WHERE " + where + " RETURN e", params)) {
+        return rs.getExecutionPlan().get().prettyPrint(0, 3);
+      }
+    }
+
+    @Test
+    void parameterMembershipSeeksTheIndex() {
+      assertThat(plan("$a IN e.aliases", Map.of("a", "a7"))).contains("NodeIndexSeek").doesNotContain("NodeByLabelScan");
+      assertThat(keys("Indexed", "$a IN e.aliases", Map.of("a", "a7"))).containsExactly(7);
+    }
+
+    @Test
+    void literalMembershipSeeksTheIndex() {
+      assertThat(plan("'b9' IN e.aliases", Map.of())).contains("NodeIndexSeek");
+      assertThat(keys("Indexed", "'b9' IN e.aliases", Map.of())).containsExactly(9);
+    }
+
+    @Test
+    void sameRowsWithAndWithoutTheIndex() {
+      for (final String where : new String[] { "$a IN e.aliases", "$a IN e.aliases AND e.k > 5", "$a IN e.aliases AND e.k < 5" }) {
+        for (final String a : new String[] { "a7", "shared", "missing" })
+          assertThat(keys("Indexed", where, Map.of("a", a))).as(where + " / " + a).isEqualTo(keys("Plain", where, Map.of("a", a)));
+      }
+    }
+
+    @Test
+    void aNullParameterMatchesNothing() {
+      final Map<String, Object> params = new HashMap<>();
+      params.put("a", null);
+      assertThat(keys("Indexed", "$a IN e.aliases", params)).isEqualTo(keys("Plain", "$a IN e.aliases", params));
+    }
+
+    @Test
+    void aListParameterIsOneItemNotAListOfKeys() {
+      final Map<String, Object> params = Map.of("a", List.of("a7", "b9"));
+      assertThat(keys("Indexed", "$a IN e.aliases", params)).isEqualTo(keys("Plain", "$a IN e.aliases", params));
+    }
+
+    @Test
+    void aNegatedOrDisjunctedMembershipIsNotSeeked() {
+      assertThat(plan("NOT $a IN e.aliases", Map.of("a", "a7"))).doesNotContain("NodeIndexSeek");
+      assertThat(plan("$a IN e.aliases OR e.k = 3", Map.of("a", "a7"))).doesNotContain("[index=Indexed[aliasesbyitem]");
+      assertThat(keys("Indexed", "$a IN e.aliases OR e.k = 3", Map.of("a", "a7")))
+          .isEqualTo(keys("Plain", "$a IN e.aliases OR e.k = 3", Map.of("a", "a7")));
+    }
+
+    @Test
+    void aWholeValueEqualityStillAnswersByWholeValue() {
+      assertThat(keys("Indexed", "e.aliases = 'a7'", Map.of())).isEqualTo(keys("Plain", "e.aliases = 'a7'", Map.of()));
+    }
+
+    @Test
+    void seesAnItemAddedInTheSameTransaction() {
+      database.transaction(() -> {
+        database.command("sql", "INSERT INTO Indexed SET k = 99, aliases = ['fresh']");
+        assertThat(keys("Indexed", "$a IN e.aliases", Map.of("a", "fresh"))).containsExactly(99);
+        database.command("sql", "UPDATE Indexed SET aliases = ['other'] WHERE k = 99");
+        assertThat(keys("Indexed", "$a IN e.aliases", Map.of("a", "fresh"))).isEmpty();
+      });
+    }
+  }
 }
