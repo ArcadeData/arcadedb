@@ -411,16 +411,15 @@ class QueryHeapBudgetTest {
     row.setProperty("age", 42);
     assertThat(HeapEstimator.estimate(row)).isEqualTo(HeapEstimator.RESULT_BYTES + 2L * HeapEstimator.HASH_ENTRY_BYTES + 50 + 16);
 
-    // Nested values count, down to a depth
-    final List<Object> deep = new ArrayList<>();
-    List<Object> level = deep;
+    // Nested values count at every level: a string of 1000 characters held by ten lists, one inside the other
+    final String text = "x".repeat(1000);
+    Object deep = text;
     for (int i = 0; i < 10; i++) {
-      final List<Object> next = new ArrayList<>();
-      next.add("x".repeat(1000));
-      level.add(next);
-      level = next;
+      final List<Object> list = new ArrayList<>();
+      list.add(deep);
+      deep = list;
     }
-    assertThat(HeapEstimator.estimate(deep)).isLessThan(10_000);
+    assertThat(HeapEstimator.estimate(deep)).isGreaterThanOrEqualTo(HeapEstimator.estimate(text));
   }
 
   private static void abandonTrackerHolding(final long bytes) {

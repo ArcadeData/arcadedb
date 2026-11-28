@@ -240,9 +240,9 @@ class OperationHeapLimitSharedContainersTest {
   }
 
   /**
-   * What a walk counts of a container depends on how deep it starts: from the fourth level down everything is counted at 16 bytes. A
-   * list met three levels down by one row is charged that way, which must not stand for the same list held directly by another row,
-   * charged for the arrays it holds.
+   * What a walk counts of a container depends on how deep it starts: the first elements of what it holds down to the fourth level,
+   * one a level below. A list met three levels down by one row is charged for what that walk finds, which must not stand for the
+   * same list held directly by another row: each sighting is charged for the arrays it holds, and gives back what it was charged.
    */
   @Test
   void aContainerMetDeepIsNotWhatARowHoldingItDirectlyIsChargedAsAReferenceTo() {
@@ -256,7 +256,7 @@ class OperationHeapLimitSharedContainersTest {
 
     limit.add(1, deepRow);
     final long deep = limit.getChargedBytes();
-    assertThat(deep).as("the arrays three levels down are counted flat").isLessThan(HeapEstimator.estimate(vectors) / 4);
+    assertThat(deep).as("the arrays three levels down are charged for their size").isGreaterThanOrEqualTo(HeapEstimator.estimate(vectors));
 
     limit.add(2, directRow);
     assertThat(limit.getChargedBytes() - deep).as("held directly, the list is charged for what it holds")
