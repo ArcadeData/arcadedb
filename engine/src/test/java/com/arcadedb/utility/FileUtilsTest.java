@@ -257,6 +257,83 @@ class FileUtilsTest {
     assertThat(FileUtils.getSizeAsNumber("1tb")).isEqualTo(FileUtils.TERABYTE);
   }
 
+  /** Issue #12991: the mantissa went through a float, which rounded every size past 16 MiB. */
+  @Test
+  void getSizeAsNumberIsExactPastTheFloatPrecision() {
+    assertThat(FileUtils.getSizeAsNumber("123456789B")).isEqualTo(123456789L);
+    assertThat(FileUtils.getSizeAsNumber("3000000001B")).isEqualTo(3000000001L);
+    assertThat(FileUtils.getSizeAsNumber("1234567890123B")).isEqualTo(1234567890123L);
+    // the same number without a suffix always was exact
+    assertThat(FileUtils.getSizeAsNumber("1234567890123")).isEqualTo(1234567890123L);
+    assertThat(FileUtils.getSizeAsNumber("16777217KB")).isEqualTo(16777217L * FileUtils.KILOBYTE);
+    assertThat(FileUtils.getSizeAsNumber("16777217MB")).isEqualTo(16777217L * FileUtils.MEGABYTE);
+    assertThat(FileUtils.getSizeAsNumber("16777217GB")).isEqualTo(16777217L * FileUtils.GIGABYTE);
+    assertThat(FileUtils.getSizeAsNumber("1048577tb")).isEqualTo(1048577L * FileUtils.TERABYTE);
+  }
+
+  @Test
+  void getSizeAsNumberKeepsTheFractionOfADecimalMantissaAndTruncatesTowardZero() {
+    // 1.1 * 2^30 = 1181116006.4, 0.1 * 2^30 = 107374182.4, 1023.9 * 2^10 = 1048473.6
+    assertThat(FileUtils.getSizeAsNumber("1.1GB")).isEqualTo(1181116006L);
+    assertThat(FileUtils.getSizeAsNumber("0.1GB")).isEqualTo(107374182L);
+    assertThat(FileUtils.getSizeAsNumber("1023.9KB")).isEqualTo(1048473L);
+    assertThat(FileUtils.getSizeAsNumber("2.5MB")).isEqualTo(2621440L);
+    assertThat(FileUtils.getSizeAsNumber("-1.5KB")).isEqualTo(-1536L);
+    assertThat(FileUtils.getSizeAsNumber("0.5B")).isZero();
+  }
+
+  /** The decimal mantissa is parsed as text, not rounded to a double first. */
+  @Test
+  void getSizeAsNumberParsesADecimalMantissaWithoutRoundingItToADouble() {
+    assertThat(FileUtils.getSizeAsNumber("9007199254740993.0B")).isEqualTo(9007199254740993L);
+    assertThat(FileUtils.getSizeAsNumber("0.99999999999999999B")).isZero();
+    assertThat(FileUtils.getSizeAsNumber("1.5e3B")).isEqualTo(1500L);
+    assertThat(FileUtils.getSizeAsNumber("1.5fB")).isEqualTo(1L);
+  }
+
+  /** A percentage is a negative number: "50%" is -50. */
+  @Test
+  void getSizeAsNumberReadsAPercentageAsANegativeNumber() {
+    assertThat(FileUtils.getSizeAsNumber("50%")).isEqualTo(-50L);
+    assertThat(FileUtils.getSizeAsNumber("12.5%")).isEqualTo(-12L);
+  }
+
+  @Test
+  void getSizeAsNumberSaturatesAtTheLongRange() {
+    assertThat(FileUtils.getSizeAsNumber("9999999999TB")).isEqualTo(Long.MAX_VALUE);
+    assertThat(FileUtils.getSizeAsNumber("-9999999999TB")).isEqualTo(Long.MIN_VALUE);
+    // the whole mantissa is scaled with a long product: the last product that fits, and the first that does not
+    assertThat(FileUtils.getSizeAsNumber("8388607TB")).isEqualTo(8388607L * FileUtils.TERABYTE);
+    assertThat(FileUtils.getSizeAsNumber("8388608TB")).isEqualTo(Long.MAX_VALUE);
+    assertThat(FileUtils.getSizeAsNumber("-8388608TB")).isEqualTo(Long.MIN_VALUE);
+    assertThat(FileUtils.getSizeAsNumber("-8388609TB")).isEqualTo(Long.MIN_VALUE);
+    assertThat(FileUtils.getSizeAsNumber("9223372036854775807B")).isEqualTo(Long.MAX_VALUE);
+    assertThat(FileUtils.getSizeAsNumber("-9223372036854775808B")).isEqualTo(Long.MIN_VALUE);
+    // a percentage negates: the one long with no positive counterpart saturates
+    assertThat(FileUtils.getSizeAsNumber("9223372036854775807%")).isEqualTo(-Long.MAX_VALUE);
+    assertThat(FileUtils.getSizeAsNumber("-9223372036854775808%")).isEqualTo(Long.MAX_VALUE);
+    // and so does a decimal mantissa
+    assertThat(FileUtils.getSizeAsNumber("9999999999.5TB")).isEqualTo(Long.MAX_VALUE);
+    assertThat(FileUtils.getSizeAsNumber("-9999999999.5TB")).isEqualTo(Long.MIN_VALUE);
+    assertThat(FileUtils.getSizeAsNumber("8388607.5TB")).isEqualTo(8388607L * FileUtils.TERABYTE + FileUtils.TERABYTE / 2);
+  }
+
+  /** A decimal mantissa with an exponent far outside the long range is answered from its magnitude, never expanded into digits. */
+  @Test
+  void getSizeAsNumberAnswersAnExtremeExponentFromItsMagnitude() {
+    assertThat(FileUtils.getSizeAsNumber("1.0E999999999B")).isEqualTo(Long.MAX_VALUE);
+    assertThat(FileUtils.getSizeAsNumber("-1.0E999999999B")).isEqualTo(Long.MIN_VALUE);
+    assertThat(FileUtils.getSizeAsNumber("1.0E999999999%")).isEqualTo(Long.MIN_VALUE);
+    assertThat(FileUtils.getSizeAsNumber("1.0E-999999999TB")).isZero();
+    assertThat(FileUtils.getSizeAsNumber("-1.0E-999999999TB")).isZero();
+    assertThat(FileUtils.getSizeAsNumber("0.0E999999999B")).isZero();
+    assertThat(FileUtils.getSizeAsNumber("1.0E30B")).isEqualTo(Long.MAX_VALUE);
+    assertThat(FileUtils.getSizeAsNumber("1.0E-30TB")).isZero();
+    // inside the guard the product is still exact
+    assertThat(FileUtils.getSizeAsNumber("1.5E18B")).isEqualTo(1_500_000_000_000_000_000L);
+    assertThat(FileUtils.getSizeAsNumber("1.0E-9TB")).isEqualTo(1099L);
+  }
+
   @Test
   void getSizeAsStringForBytes() {
     assertThat(FileUtils.getSizeAsString(500L)).isEqualTo("500b");

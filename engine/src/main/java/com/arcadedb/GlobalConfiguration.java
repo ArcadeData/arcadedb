@@ -4955,8 +4955,8 @@ public enum GlobalConfiguration {
    * fractional one rather than truncating it.
    * <p>
    * Issue #6875: the {@code Integer.parseInt}/{@code Long.parseLong} this replaced threw on {@code "6.7"}, and
-   * both routes into here can carry a fraction - {@code FileUtils.getSizeAsNumber} reads a decimal mantissa as a
-   * {@code float} and keeps only the integral part of the result, and {@code ALTER DATABASE ... SETTING} hands
+   * both routes into here can carry a fraction - {@code FileUtils.getSizeAsNumber} scales a decimal mantissa
+   * exactly and keeps only the integral part of the product, and {@code ALTER DATABASE ... SETTING} hands
    * over whatever an arbitrary SQL expression evaluated to, so an unquoted {@code 6.7} arrives already boxed as a
    * {@code Double}.
    * <p>
