@@ -178,6 +178,31 @@ class MatchNodeStepRowSeekContractTest extends TestHelper {
   }
 
   @Test
+  void idFetchPerRowReadsNoCandidateForANullId() {
+    // a null id can never match: the row answers nothing without a walk of the type (issue #13236: a scan of the type per null row)
+    final List<Object> rids = new ArrayList<>();
+    rids.add(null);
+    rids.add(chunkRids.get(3));
+    rids.add(null);
+    rids.add(null);
+    final Map<String, Object> params = Map.of("rids", rids);
+
+    for (final String where : List.of("id(n) = rid", "rid = id(n)", "elementId(n) = rid")) {
+      final String query = "UNWIND $rids AS rid MATCH (n:Chunk) WHERE " + where + " RETURN rid, n.seq AS seq";
+      assertThat(seqs(query, params)).as(where).containsExactly(3);
+      assertThat(candidates(plan(query, params))).as(where + ": only the valid id reads a record").isEqualTo(1);
+    }
+
+    final List<Object> onlyNulls = new ArrayList<>();
+    onlyNulls.add(null);
+    onlyNulls.add(null);
+    final String query = "UNWIND $rids AS rid MATCH (n:Chunk) WHERE id(n) = rid RETURN rid, n.seq AS seq";
+    assertThat(seqs(query, Map.of("rids", onlyNulls))).isEmpty();
+    // PROFILE prints a row count for a step that read at least one candidate
+    assertThat(MATCH_ROWS.matcher(plan(query, Map.of("rids", onlyNulls))).find()).as("no candidate read").isFalse();
+  }
+
+  @Test
   void idFetchPerRowAcceptsTheNumericIdAndTheNodeItself() {
     final List<Object> numeric = new ArrayList<>();
     try (final ResultSet rs = database.query("opencypher", "MATCH (n:Chunk) WHERE n.seq IN [4, 11] RETURN id(n) AS i ORDER BY n.seq")) {
