@@ -678,10 +678,11 @@ public final class SetClauseApplier {
     if (mutableDoc != doc)
       ((ResultInternal) result).setProperty(item.getVariable(), mutableDoc);
 
-    // Remove all existing properties except internal ones
+    // Remove all existing properties. Only a reserved metadata name (@rid, @type, ...) is not one: any other @-prefixed name is an
+    // ordinary property, written and read back like the rest (MutableDocument.isReservedName), so it goes with the others
     final Set<String> existingProps = new HashSet<>(mutableDoc.getPropertyNames());
     for (final String prop : existingProps) {
-      if (!prop.startsWith("@"))
+      if (!MutableDocument.isReservedName(prop))
         mutableDoc.remove(prop);
     }
 

@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.database.DocumentValidator;
+import com.arcadedb.database.MutableDocument;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.opencypher.ast.CypherReferencedVariables;
 import com.arcadedb.query.opencypher.ast.SetClause;
@@ -245,7 +246,7 @@ final class NewNodeSetFolding {
       return 0;
     final Set<String> existing = new HashSet<>(target.names());
     for (final String property : existing)
-      if (!property.startsWith("@"))
+      if (!MutableDocument.isReservedName(property))
         target.remove(property);
 
     int counted = 0;
