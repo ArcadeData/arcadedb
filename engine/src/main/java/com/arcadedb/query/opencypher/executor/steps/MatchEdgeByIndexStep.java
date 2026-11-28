@@ -274,13 +274,6 @@ public class MatchEdgeByIndexStep extends AbstractExecutionStep {
               if (!(record instanceof Edge))
                 continue;
               edge = (Edge) record;
-
-              // A repeated endpoint variable constrains the hop to self-loops. This reads the two RIDs the
-              // edge carries rather than resolving the vertex records, so a rejected edge costs no extra
-              // load - but getOut()/getIn() still lazy-load the EDGE's own content, so the comparison has to
-              // sit under the same dangling-entry guard as the resolution above.
-              if (selfLoopOnly && !edge.getOut().equals(edge.getIn()))
-                continue;
             } catch (final RecordNotFoundException e) {
               // Dangling index entry pointing at a removed edge: skip it, like every other RID resolver.
               continue;
@@ -298,34 +291,10 @@ public class MatchEdgeByIndexStep extends AbstractExecutionStep {
             if (!edge.getType().instanceOf(seek.edgeType()))
               continue;
 
-            // The inline map is a filter only this step applies: the WHERE above does not hold it (issue #11481). It also
-            // decides what the index key conversion let through, a '5' found by the key 5
-            if (relationshipProperties != null && !InlineProperties.matches(edge, relationshipProperties, EMPTY_RESULT, context))
-              continue;
-
-            final ResultInternal result = new ResultInternal();
-            if (relationshipVariable != null && !relationshipVariable.isEmpty())
-              result.setProperty(relationshipVariable, edge);
-
-            // Bind the endpoints from the edge, honouring the written direction. For OUT the source is
-            // the edge's OUT vertex; for IN the pattern is written (a)<-[t]-(b), so the source (a) is the
-            // edge's IN vertex.
-            try {
-              final Vertex source = direction == Direction.IN ? edge.getInVertex() : edge.getOutVertex();
-              final Vertex target = direction == Direction.IN ? edge.getOutVertex() : edge.getInVertex();
-              // The endpoints' labels and inline properties, which the seek answers instead of a scan of the label (#11481)
-              if (!sourceFilter.isEmpty() && !sourceFilter.matches(source, EMPTY_RESULT, context))
-                continue;
-              if (!targetFilter.isEmpty() && !targetFilter.matches(target, EMPTY_RESULT, context))
-                continue;
-              result.setProperty(sourceVariable, source);
-              result.setProperty(targetVariable, target);
-            } catch (final RecordNotFoundException e) {
-              // Ghost endpoint (dangling edge left by a rollback/HA resync): skip the row.
-              continue;
-            }
-
-            buffer.add(result);
+            final ResultInternal result = bindEdge(edge, direction, sourceVariable, relationshipVariable, targetVariable,
+                selfLoopOnly, relationshipProperties, sourceFilter, targetFilter, context);
+            if (result != null)
+              buffer.add(result);
           } finally {
             if (context.isProfiling())
               cost += System.nanoTime() - begin;
@@ -379,6 +348,50 @@ public class MatchEdgeByIndexStep extends AbstractExecutionStep {
     if (cursor != null) {
       cursor.close();
       cursor = null;
+    }
+  }
+
+  /**
+   * The row of one edge a seek found, or null when the pattern rejects it: the endpoints bound from the edge in the written
+   * direction, after the checks no filter above the seek re-applies (the self-loop a repeated endpoint variable asks for, the
+   * relationship's inline map, the endpoints' labels and inline maps). Shared by the seek by index and the seek by id
+   * ({@link MatchEdgeByIdStep}).
+   */
+  static ResultInternal bindEdge(final Edge edge, final Direction direction, final String sourceVariable,
+      final String relationshipVariable, final String targetVariable, final boolean selfLoopOnly,
+      final Map<String, Object> relationshipProperties, final EdgeIndexSeedPlanner.EndpointFilter sourceFilter,
+      final EdgeIndexSeedPlanner.EndpointFilter targetFilter, final CommandContext context) {
+    try {
+      // A repeated endpoint variable constrains the hop to self-loops. This reads the two RIDs the edge carries rather than
+      // resolving the vertex records, so a rejected edge costs no extra load - but getOut()/getIn() still lazy-load the EDGE's
+      // own content, so the comparison has to sit under the dangling-entry guard.
+      if (selfLoopOnly && !edge.getOut().equals(edge.getIn()))
+        return null;
+
+      // The inline map is a filter only the seek applies: the WHERE above does not hold it (issue #11481). It also
+      // decides what the index key conversion let through, a '5' found by the key 5
+      if (relationshipProperties != null && !InlineProperties.matches(edge, relationshipProperties, EMPTY_RESULT, context))
+        return null;
+
+      final ResultInternal result = new ResultInternal();
+      if (relationshipVariable != null && !relationshipVariable.isEmpty())
+        result.setProperty(relationshipVariable, edge);
+
+      // Bind the endpoints from the edge, honouring the written direction. For OUT the source is the edge's OUT vertex; for IN
+      // the pattern is written (a)<-[t]-(b), so the source (a) is the edge's IN vertex.
+      final Vertex source = direction == Direction.IN ? edge.getInVertex() : edge.getOutVertex();
+      final Vertex target = direction == Direction.IN ? edge.getOutVertex() : edge.getInVertex();
+      // The endpoints' labels and inline properties, which the seek answers instead of a scan of the label (#11481)
+      if (!sourceFilter.isEmpty() && !sourceFilter.matches(source, EMPTY_RESULT, context))
+        return null;
+      if (!targetFilter.isEmpty() && !targetFilter.matches(target, EMPTY_RESULT, context))
+        return null;
+      result.setProperty(sourceVariable, source);
+      result.setProperty(targetVariable, target);
+      return result;
+    } catch (final RecordNotFoundException e) {
+      // A removed edge, or a ghost endpoint (dangling edge left by a rollback/HA resync): skip the row.
+      return null;
     }
   }
 

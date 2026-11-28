@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.optimizer.rules;
 
 import com.arcadedb.query.opencypher.Labels;
+import com.arcadedb.query.opencypher.executor.operators.NodeByIdSeek;
 import com.arcadedb.query.opencypher.executor.operators.NodeByLabelDisjunctionIndexSeek;
 import com.arcadedb.query.opencypher.executor.operators.NodeByLabelDisjunctionScan;
 import com.arcadedb.query.opencypher.executor.operators.NodeByLabelScan;
@@ -106,6 +107,11 @@ public class IndexSelectionRule implements OptimizationRule {
    */
   public PhysicalOperator createAnchorOperator(final AnchorSelection anchor) {
     final List<String> labels = anchor.getNode().getLabels();
+
+    // A node pinned by id is fetched by RID, whatever its labels (issue #12134): the seek checks them, a disjunction included
+    if (anchor.isIdSeek())
+      return new NodeByIdSeek(anchor.getVariable(), labels, anchor.getNode().isLabelDisjunction(), anchor.getIds(),
+          anchor.getEstimatedCost(), anchor.getEstimatedCardinality());
 
     // Label disjunction (n:A|B) requires scanning each label type separately — a composite
     // type A~B would not exist in the schema, so NodeByLabelScan would return 0 rows.

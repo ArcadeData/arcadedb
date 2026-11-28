@@ -49,6 +49,7 @@ import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.executor.CypherVariableUsage;
 import com.arcadedb.query.opencypher.executor.EdgeIndexSeedPlanner;
 import com.arcadedb.query.opencypher.executor.EdgeTypeScanPlanner;
+import com.arcadedb.query.opencypher.executor.IdSeekValues;
 import com.arcadedb.query.opencypher.executor.VariableLengthDistinctEndpoints;
 import com.arcadedb.query.opencypher.executor.operators.CartesianProduct;
 import com.arcadedb.query.opencypher.executor.operators.EdgeIndexSeek;
@@ -62,6 +63,7 @@ import com.arcadedb.query.opencypher.executor.operators.GAVExpandInto;
 import com.arcadedb.query.opencypher.executor.operators.GAVFusedChainOperator;
 import com.arcadedb.query.opencypher.executor.operators.InListValues;
 import com.arcadedb.query.opencypher.executor.operators.IndexNestedLoopJoin;
+import com.arcadedb.query.opencypher.executor.operators.NodeByIdSeek;
 import com.arcadedb.query.opencypher.executor.operators.NodeByLabelDisjunctionScan;
 import com.arcadedb.query.opencypher.executor.operators.NodeByLabelScan;
 import com.arcadedb.query.opencypher.executor.operators.NodeIndexSeek;
@@ -352,6 +354,8 @@ public class CypherOptimizer {
               if (componentAnchorOperator instanceof NodeByLabelScan scan)
                 return pushAnchorOnlyConjuncts(conjuncts, componentAnchorVariable, logicalPlan, scan::pushDownFilter);
               if (componentAnchorOperator instanceof NodeIndexSeek seek)
+                return pushAnchorOnlyConjuncts(conjuncts, componentAnchorVariable, logicalPlan, seek::pushDownFilter);
+              if (componentAnchorOperator instanceof NodeByIdSeek seek)
                 return pushAnchorOnlyConjuncts(conjuncts, componentAnchorVariable, logicalPlan, seek::pushDownFilter);
               return conjuncts;
             }));
@@ -976,12 +980,22 @@ public class CypherOptimizer {
     EdgeSeedPlan best = null;
     for (final LogicalRelationship rel : component.relationships()) {
       final String relVar = rel.getVariable();
-      if (rel.isVariableLength() || !rel.hasTypes() || relVar == null || relVar.isEmpty() || relVar.startsWith("  "))
+      if (rel.isVariableLength() || relVar == null || relVar.isEmpty() || relVar.startsWith("  "))
         continue;
       if (rel.getDirection() != Direction.OUT && rel.getDirection() != Direction.IN)
         continue;
       final RelationshipPattern pattern = rel.getPattern();
       if (pattern != null && (pattern instanceof QuantifiedPathPattern || pattern.hasProperties() || pattern.hasWhereExpression()))
+        continue;
+
+      // A relationship the WHERE clause pins by id is fetched by RID with its endpoints (issue #12134): fewer reads than any index
+      final EdgeSeedPlan byId = edgeIdSeedFor(logicalPlan, rel);
+      if (byId != null) {
+        if (best == null || byId.operator().getEstimatedCost() < best.operator().getEstimatedCost())
+          best = byId;
+        continue;
+      }
+      if (!rel.hasTypes())
         continue;
 
       final Map<String, Object> predicates = new LinkedHashMap<>();
@@ -1028,6 +1042,35 @@ public class CypherOptimizer {
         best = new EdgeSeedPlan(rel, operator, new AnchorSelection(rel.getSourceVariable(), source, cost, rows));
     }
     return best;
+  }
+
+  /**
+   * The seek by id of a relationship the {@code WHERE} clause pins with {@code elementId(r)} or {@code id(r)} (issue #12134), or
+   * null: not when one of its types (any type, for an untyped relationship) holds lightweight edges, which no RID fetches.
+   */
+  private EdgeSeedPlan edgeIdSeedFor(final LogicalPlan logicalPlan, final LogicalRelationship rel) {
+    InListValues ids = null;
+    for (final WhereClause where : logicalPlan.getWhereFilters()) {
+      ids = IdSeekValues.find(where.getConditionExpression(), rel.getVariable());
+      if (ids != null)
+        break;
+    }
+    if (ids == null || !IdSeekValues.relationshipsHaveRecords(database.getSchema(), rel.getTypes()))
+      return null;
+
+    // A list parameter is costed as a handful of ids; each is a record read with its two endpoints
+    final long rows = ids.getValues().size() == 1 && ids.isWholeList(ids.getValues().getFirst()) ? 10 : ids.getValues().size();
+    final double cost = rows * (CostModel.INDEX_LOOKUP_COST_PER_ROW + CostModel.EXPAND_COST_PER_ROW);
+    final LogicalNode source = logicalPlan.getPatternNode(rel.getSourceVariable());
+    final LogicalNode target = logicalPlan.getPatternNode(rel.getTargetVariable());
+    final EdgeIndexSeek operator = EdgeIndexSeek.byIds(ids, rel.getTypes(), rel.getDirection(), rel.getSourceVariable(),
+        rel.getVariable(), rel.getTargetVariable(),
+        source != null ? EdgeIndexSeedPlanner.EndpointFilter.ofLabels(source.getLabels(), source.isLabelDisjunction()) :
+            EdgeIndexSeedPlanner.EndpointFilter.NONE,
+        target != null ? EdgeIndexSeedPlanner.EndpointFilter.ofLabels(target.getLabels(), target.isLabelDisjunction()) :
+            EdgeIndexSeedPlanner.EndpointFilter.NONE,
+        database.getSchema(), cost, rows);
+    return new EdgeSeedPlan(rel, operator, new AnchorSelection(rel.getSourceVariable(), source, cost, rows));
   }
 
   /**
@@ -1741,6 +1784,8 @@ public class CypherOptimizer {
         if (anchorOperator instanceof NodeByLabelScan scan)
           filterExpression = pushAnchorOnlyConjuncts(filterExpression, anchorVariable, logicalPlan, scan::pushDownFilter);
         else if (anchorOperator instanceof NodeIndexSeek seek)
+          filterExpression = pushAnchorOnlyConjuncts(filterExpression, anchorVariable, logicalPlan, seek::pushDownFilter);
+        else if (anchorOperator instanceof NodeByIdSeek seek)
           filterExpression = pushAnchorOnlyConjuncts(filterExpression, anchorVariable, logicalPlan, seek::pushDownFilter);
         // An adaptive range scan that is the whole pattern too (issue #11873): when it gives way to a label scan, the workers of
         // a parallel scan evaluate them, where a Filter above evaluated them on every vertex of the label on the calling thread.

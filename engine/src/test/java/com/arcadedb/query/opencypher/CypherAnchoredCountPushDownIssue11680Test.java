@@ -143,9 +143,8 @@ class CypherAnchoredCountPushDownIssue11680Test extends TestHelper {
     // the pipeline of a statement with an OPTIONAL MATCH starts from the first node, which it looks up by id
     assertAnchored("MATCH (r:Record)<-[:OF_RECORD]-(s:Section) WHERE id(r) = $rid OPTIONAL MATCH (p:Section)-[:PARENT_OF]->(s) "
         + "RETURN count(*) AS c", params, 10);
-    // the optimizer's plan filters a scan of the label on id(), no cheaper than the push-down, which is kept
-    assertPushedDown("MATCH (r:Record)<-[:OF_RECORD]-(s:Section) WHERE id(r) = $rid RETURN count(*) AS c", params, "COUNT CHAIN PATHS",
-        10);
+    // so does the optimizer's plan, which fetches the record by id (issue #12134) where it used to filter a scan of the label
+    assertAnchored("MATCH (r:Record)<-[:OF_RECORD]-(s:Section) WHERE id(r) = $rid RETURN count(*) AS c", params, 10);
   }
 
   @Test

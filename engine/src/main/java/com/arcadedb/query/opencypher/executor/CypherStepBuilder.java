@@ -51,6 +51,7 @@ import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.ast.WhereClause;
 import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.executor.operators.GAVFusedChainOperator;
+import com.arcadedb.query.opencypher.executor.operators.InListValues;
 import com.arcadedb.query.opencypher.executor.operators.NodeIndexRangeScan;
 import com.arcadedb.query.opencypher.executor.steps.AggregationStep;
 import com.arcadedb.query.opencypher.executor.steps.BoundNodeCheckStep;
@@ -1480,7 +1481,7 @@ final class CypherStepBuilder {
               if (!legacyBoundVariables.contains(sourceVar) && !matchVariables.contains(sourceVar)) {
                 final WhereClause matchWhere = matchClause.hasWhereClause() ? matchClause.getWhereClause() :
                     statement.getWhereClause();
-                final String sourceIdFilter = plan.extractIdFilter(matchWhere, sourceVar);
+                final InListValues sourceIdFilter = CypherExecutionPlan.extractIdFilter(matchWhere, sourceVar);
                 final BooleanExpression sourcePushdown = filterPushdown.extractPushdownFilter(matchWhere, sourceVar,
                     legacyBoundVariables, matchVariables, pushedConjuncts);
                 final MatchNodeStep sourceStep = FilterPushdown.takePushdown(new MatchNodeStep(sourceVar, sourceNode, context, sourceIdFilter,
@@ -1498,7 +1499,7 @@ final class CypherStepBuilder {
               if (!legacyBoundVariables.contains(targetVar) && !matchVariables.contains(targetVar)) {
                 final WhereClause matchWhere = matchClause.hasWhereClause() ? matchClause.getWhereClause() :
                     statement.getWhereClause();
-                final String targetIdFilter = plan.extractIdFilter(matchWhere, targetVar);
+                final InListValues targetIdFilter = CypherExecutionPlan.extractIdFilter(matchWhere, targetVar);
                 final BooleanExpression targetPushdown = filterPushdown.extractPushdownFilter(matchWhere, targetVar,
                     legacyBoundVariables, matchVariables, pushedConjuncts);
                 final MatchNodeStep targetStep = FilterPushdown.takePushdown(new MatchNodeStep(targetVar, targetNode, context, targetIdFilter,
@@ -1552,7 +1553,7 @@ final class CypherStepBuilder {
               // OPTIMIZATION: Extract ID filter from WHERE clause (if present) for pushdown
               final WhereClause matchWhere = matchClause.hasWhereClause() ? matchClause.getWhereClause() :
                   statement.getWhereClause();
-              final String idFilter = plan.extractIdFilter(matchWhere, variable);
+              final InListValues idFilter = CypherExecutionPlan.extractIdFilter(matchWhere, variable);
               // OPTIMIZATION: Extract WHERE predicates for inline pushdown
               final BooleanExpression pushdownFilter = filterPushdown.extractPushdownFilter(matchWhere, variable,
                   legacyBoundVariables, matchVariables, pushedConjuncts);
@@ -1592,7 +1593,7 @@ final class CypherStepBuilder {
                 // OPTIMIZATION: Extract ID filter from WHERE clause (if present) for pushdown
                 final WhereClause matchWhere = matchClause.hasWhereClause() ? matchClause.getWhereClause() :
                     statement.getWhereClause();
-                final String sourceIdFilter = plan.extractIdFilter(matchWhere, sourceVar);
+                final InListValues sourceIdFilter = CypherExecutionPlan.extractIdFilter(matchWhere, sourceVar);
                 // OPTIMIZATION: Extract WHERE predicates for inline pushdown
                 final BooleanExpression sourcePushdown = filterPushdown.extractPushdownFilter(matchWhere, sourceVar,
                     legacyBoundVariables, matchVariables, pushedConjuncts);

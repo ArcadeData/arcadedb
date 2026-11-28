@@ -41,6 +41,7 @@ import com.arcadedb.query.opencypher.executor.steps.BoundNodeCheckStep;
 import com.arcadedb.query.opencypher.executor.steps.ExpandPathStep;
 import com.arcadedb.query.opencypher.executor.steps.FilterPropertiesStep;
 import com.arcadedb.query.opencypher.executor.steps.IndexSeekStep;
+import com.arcadedb.query.opencypher.executor.steps.MatchEdgeByIdStep;
 import com.arcadedb.query.opencypher.executor.steps.MatchEdgeByIndexStep;
 import com.arcadedb.query.opencypher.executor.steps.MatchEdgeByTypeScanStep;
 import com.arcadedb.query.opencypher.executor.steps.MatchNodeStep;
@@ -213,7 +214,7 @@ final class MatchStepBuilder {
         }
 
         // OPTIMIZATION: Extract ID filter for this variable to avoid Cartesian product
-        final String idFilter = plan.extractIdFilter(whereClause, variable);
+        final InListValues idFilter = CypherExecutionPlan.extractIdFilter(whereClause, variable);
         // OPTIMIZATION: Extract WHERE predicates referencing only available variables for pushdown
         final BooleanExpression pushdownFilter = filterPushdown.extractPushdownFilter(whereClause, variable,
             boundVariables, matchVariables, pushedConjuncts);
@@ -268,7 +269,7 @@ final class MatchStepBuilder {
 
         // Source node matching (if not already bound)
         if (!boundVariables.contains(sourceVar) && !matchVariables.contains(sourceVar)) {
-          final String sourceIdFilter = plan.extractIdFilter(whereClause, sourceVar);
+          final InListValues sourceIdFilter = CypherExecutionPlan.extractIdFilter(whereClause, sourceVar);
           final BooleanExpression sourcePushdown = filterPushdown.extractPushdownFilter(whereClause, sourceVar,
               boundVariables, matchVariables, pushedConjuncts);
           final MatchNodeStep sourceStep = FilterPushdown.takePushdown(new MatchNodeStep(sourceVar, sourceNode, context, sourceIdFilter,
@@ -284,7 +285,7 @@ final class MatchStepBuilder {
 
         // Target node matching (if not already bound)
         if (!boundVariables.contains(targetVar) && !matchVariables.contains(targetVar)) {
-          final String targetIdFilter = plan.extractIdFilter(whereClause, targetVar);
+          final InListValues targetIdFilter = CypherExecutionPlan.extractIdFilter(whereClause, targetVar);
           final BooleanExpression targetPushdown = filterPushdown.extractPushdownFilter(whereClause, targetVar,
               boundVariables, matchVariables, pushedConjuncts);
           final MatchNodeStep targetStep = FilterPushdown.takePushdown(new MatchNodeStep(targetVar, targetNode, context, targetIdFilter,
@@ -319,6 +320,13 @@ final class MatchStepBuilder {
         // path. Only attempted as the leading (seed) step of a non-optional MATCH whose WHERE clause is
         // re-applied above, so the index seek is always a safe prefilter.
         if (!isOptional && currentStep == null) {
+          // A relationship the WHERE clause pins by id is fetched by RID with its endpoints (issue #12134)
+          final MatchEdgeByIdStep edgeIdSeed = tryBuildEdgeIdSeed(matchClause, pathPatterns, patternIndex, boundVariables,
+              matchVariables, context);
+          if (edgeIdSeed != null) {
+            currentStep = edgeIdSeed;
+            continue;
+          }
           final MatchEdgeByIndexStep edgeIndexSeed = tryBuildEdgeIndexScanSeed(matchClause, pathPatterns, patternIndex,
               boundVariables, matchVariables, context);
           if (edgeIndexSeed != null) {
@@ -376,6 +384,25 @@ final class MatchStepBuilder {
           }
         }
 
+        // Issue #12134: a single hop whose target the WHERE clause pins by id, and whose source it does not, starts from the target:
+        // one lookup by RID and a walk of its edges, instead of a scan of every source vertex and a filter on what it reaches.
+        // Not when the target's own pattern reads a row value (an inline map such as {x: a.x}, a dynamic label, an inline WHERE):
+        // matched first, it would read the source before the source is bound and reject the match
+        if (!reversed && !sourceAlreadyBound && !isOptional && !pathPattern.hasPathVariable()
+            && pathPattern.getRelationshipCount() == 1 && !pathPattern.getRelationship(0).isVariableLength()
+            && !(pathPattern.getRelationship(0) instanceof QuantifiedPathPattern)) {
+          final NodePattern targetNode = pathPattern.getLastNode();
+          final String targetVar = targetNode.getVariable();
+          if (targetVar != null && !targetVar.equals(sourceVar) && !boundVariables.contains(targetVar)
+              && !matchVariables.contains(targetVar) && isRowIndependentPattern(targetNode)
+              && CypherExecutionPlan.extractIdFilter(whereClause, targetVar) != null
+              && CypherExecutionPlan.extractIdFilter(whereClause, sourceVar) == null) {
+            reversed = true;
+            sourceNode = targetNode;
+            sourceVar = targetVar;
+          }
+        }
+
         // Issue #12149: a single hop from an unlabelled, unconstrained source to a target a UNIQUE index pins starts from the
         // target: an index lookup and a walk of its relationships backwards, instead of a scan of every vertex of every type
         // (repeated for every row an UNWIND or a WITH hands over) and an expansion of all of them
@@ -394,7 +421,7 @@ final class MatchStepBuilder {
 
         // Always create MatchNodeStep even for bound variables - it handles them
         // correctly (uses bound vertex and validates labels/properties)
-        final String sourceIdFilter = sourceAlreadyBound ? null : plan.extractIdFilter(whereClause, sourceVar);
+        final InListValues sourceIdFilter = sourceAlreadyBound ? null : CypherExecutionPlan.extractIdFilter(whereClause, sourceVar);
         final BooleanExpression sourcePushdown = sourceAlreadyBound ? null :
             filterPushdown.extractPushdownFilter(whereClause, sourceVar, boundVariables, matchVariables, pushedConjuncts);
         final AbstractExecutionStep sourceStep;
@@ -481,7 +508,7 @@ final class MatchStepBuilder {
           // When reversed, swap source/target variables and use the original source as target.
           // This mapping only holds for a single-relationship pattern: the written source is the
           // end of the one reversed hop. Every entry point into `reversed` enforces that (the
-          // bound-target reversal above, the uniquely keyed target one of issue #12149 and
+          // bound-target reversal above, the id-pinned target one of issue #12134, the uniquely keyed target one of issue #12149 and
           // shouldReverseVariableLengthPathFromIndexedAnchor);
           // reversing a longer pattern requires rebuilding the whole pattern back to front.
           final String effectiveSourceVar;
@@ -624,6 +651,62 @@ final class MatchStepBuilder {
   }
 
   /**
+   * Builds a {@link MatchEdgeByIdStep} seed for a single-hop pattern whose named relationship the MATCH's {@code WHERE} clause pins
+   * by id, {@code elementId(r) = $id} or {@code id(r) IN $ids} (issue #12134): the edges are fetched by RID and bound with both
+   * endpoints, where the plan otherwise scanned every source vertex and walked its edges to filter on the id. Returns {@code null}
+   * - deferring to the index seed or the ordinary plan - when a precondition is not met: the same shapes
+   * {@link #tryBuildEdgeIndexScanSeed} takes, over relationship types that hold no lightweight edge (which no RID fetches). On
+   * success it registers the source, target and edge variables in {@code matchVariables}. The WHERE clause is re-applied above.
+   */
+  private MatchEdgeByIdStep tryBuildEdgeIdSeed(final MatchClause matchClause, final List<PathPattern> pathPatterns,
+      final int patternIndex, final Set<String> boundVariables, final Set<String> matchVariables, final CommandContext context) {
+    if (!matchClause.hasWhereClause() || matchClause.getWhereClause() == null)
+      return null;
+    final PathPattern pathPattern = pathPatterns.get(patternIndex);
+    if (pathPattern.hasPathVariable() || pathPattern.getRelationshipCount() != 1)
+      return null;
+
+    final RelationshipPattern rel = pathPattern.getRelationship(0);
+    if (rel instanceof QuantifiedPathPattern || rel.isVariableLength() || rel.hasWhereExpression()
+        || rel.getPropertiesParameterName() != null)
+      return null;
+    final Direction dir = rel.getDirection();
+    if (dir != Direction.OUT && dir != Direction.IN)
+      return null;
+
+    final String edgeVar = rel.getVariable();
+    if (edgeVar == null || edgeVar.isEmpty() || boundVariables.contains(edgeVar) || matchVariables.contains(edgeVar))
+      return null;
+    final Map<String, Object> relProperties = rel.hasProperties() ? rel.getProperties() : null;
+    if (!EdgeIndexSeedPlanner.isRowIndependent(relProperties))
+      return null;
+
+    final BooleanExpression where = matchClause.getWhereClause().getConditionExpression();
+    final InListValues ids = IdSeekValues.find(where, edgeVar);
+    if (ids == null)
+      return null;
+    final List<String> types = rel.hasTypes() ? rel.getTypes() : List.of();
+    if (!IdSeekValues.relationshipsHaveRecords(context.getDatabase().getSchema(), types))
+      return null;
+
+    // One edge per id at most: an endpoint's inline map is checked on it, as an exact index seek checks it
+    final NodePattern srcNode = pathPattern.getFirstNode();
+    final NodePattern tgtNode = pathPattern.getLastNode();
+    if (!isSeedableEndpoint(srcNode, where, true, boundVariables, matchVariables)
+        || !isSeedableEndpoint(tgtNode, where, true, boundVariables, matchVariables))
+      return null;
+
+    final String effectiveSourceVar = srcNode.getVariable() != null ? srcNode.getVariable() : ("  src" + nextAnonymousId());
+    final String effectiveTargetVar = tgtNode.getVariable() != null ? tgtNode.getVariable() : ("  tgt" + nextAnonymousId());
+    matchVariables.add(effectiveSourceVar);
+    matchVariables.add(effectiveTargetVar);
+    matchVariables.add(edgeVar);
+
+    return new MatchEdgeByIdStep(ids, types, dir, effectiveSourceVar, edgeVar, effectiveTargetVar,
+        EdgeIndexSeedPlanner.EndpointFilter.of(srcNode), EdgeIndexSeedPlanner.EndpointFilter.of(tgtNode), relProperties, context);
+  }
+
+  /**
    * Builds a {@link MatchEdgeByIndexStep} seed for a single-hop pattern whose relationship type has an index whose key, or a
    * leading prefix of it, is covered by equality or {@code IN}-list predicates on the relationship (issue #740). Since issue
    * #11481 every spelling of the lookup qualifies, not only an anonymous-endpoint, single-type, {@code WHERE} one: the predicates
@@ -737,6 +820,17 @@ final class MatchStepBuilder {
       return pinned.isEmpty();
     }
     return true;
+  }
+
+  /**
+   * Whether everything a node pattern asks of its node can be checked before any other variable of its hop is bound: no dynamic
+   * label, no inline {@code WHERE}, no property map given as a whole parameter and no inline value that reads a variable
+   * (issue #12134).
+   */
+  private static boolean isRowIndependentPattern(final NodePattern node) {
+    if (node.hasDynamicLabels() || node.hasWhereExpression() || node.getPropertiesParameterName() != null)
+      return false;
+    return !node.hasProperties() || EdgeIndexSeedPlanner.isRowIndependent(node.getProperties());
   }
 
   /**

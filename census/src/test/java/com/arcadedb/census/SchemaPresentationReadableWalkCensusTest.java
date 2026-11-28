@@ -127,6 +127,9 @@ class SchemaPresentationReadableWalkCensusTest {
       // QUERY PLANNING AND EXECUTION
       Map.entry("query/opencypher/Labels#matchingVertexTypes", PLANNER),
       Map.entry("query/opencypher/executor/HopEdgeTrackingAnalyzer#labelsAreTypeDisjoint", PLANNER),
+      Map.entry("query/opencypher/executor/IdSeekValues#relationshipsHaveRecords",
+          "query planning: answers whether any edge type holds lightweight edges, which a RID cannot fetch, to choose the id seek "
+              + "or the walk; describes no type to the caller (issue #12134)"),
       Map.entry("query/opencypher/executor/CountStarShapeDetector$PairJoinStatistics#vertices", PLANNER),
       Map.entry("query/opencypher/executor/MatchStepBuilder#isTypeScanCheaperThanWalk",
           "query planning: sums the vertices of every vertex type into a cost estimate that picks a plan, answers no caller "

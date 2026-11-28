@@ -25,7 +25,6 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
-import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphViewPins;
 import com.arcadedb.graph.IncomingEdgeLookup;
@@ -34,20 +33,15 @@ import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.facet.FacetResults;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.ClauseEntry;
-import com.arcadedb.query.opencypher.ast.ComparisonExpression;
 import com.arcadedb.query.opencypher.ast.CypherReferencedVariables;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
-import com.arcadedb.query.opencypher.ast.LiteralExpression;
 import com.arcadedb.query.opencypher.ast.LoadCSVClause;
-import com.arcadedb.query.opencypher.ast.LogicalExpression;
 import com.arcadedb.query.opencypher.ast.MatchClause;
 import com.arcadedb.query.opencypher.ast.NodePattern;
-import com.arcadedb.query.opencypher.ast.ParameterExpression;
 import com.arcadedb.query.opencypher.ast.PathPattern;
-import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.opencypher.ast.SimpleCypherStatement;
@@ -59,6 +53,7 @@ import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.ast.WhereClause;
 import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.executor.operators.GAVExpandAll;
+import com.arcadedb.query.opencypher.executor.operators.InListValues;
 import com.arcadedb.query.opencypher.executor.operators.NodeByLabelScan;
 import com.arcadedb.query.opencypher.executor.operators.NodeIndexRangeScan;
 import com.arcadedb.query.opencypher.executor.operators.NodeIndexSeek;
@@ -2441,6 +2436,14 @@ public class CypherExecutionPlan {
     // a lookup by id finds one record at most
     if (node.getVariable() != null && extractIdFilter(where, node.getVariable()) != null)
       return true;
+    // so does one of a single hop's target, which the pipeline then starts from, or of its relationship (issue #12134)
+    if (path.getRelationshipCount() == 1) {
+      final String target = path.getLastNode().getVariable();
+      final String relationship = path.getRelationship(0).getVariable();
+      if ((target != null && extractIdFilter(where, target) != null) || (relationship != null
+          && extractIdFilter(where, relationship) != null))
+        return true;
+    }
     // only a single static label lets the node step seek an index (MatchNodeStep.computeVertexIterator)
     if (node.hasDynamicLabels() || !node.hasLabels() || node.getLabels().size() != 1)
       return false;
@@ -2473,6 +2476,9 @@ public class CypherExecutionPlan {
       final CommandContext context) {
     if (anchor == null || !anchor.useIndex() || anchor.getNode() == null)
       return false;
+    // a lookup by id finds one record per id at most
+    if (anchor.isIdSeek())
+      return true;
     final LogicalNode node = anchor.getNode();
     final long labelVertices = statistics.getMatchingVertexCardinality(node.getLabels(), node.isLabelDisjunction());
     if (!anchor.isRangeScan()) {
@@ -2628,104 +2634,13 @@ public class CypherExecutionPlan {
     return false;
   }
 
-  String extractIdFilter(final WhereClause whereClause, final String variable) {
-    if (whereClause == null || whereClause.getConditionExpression() == null)
-      return null;
-
-    final BooleanExpression condition = whereClause.getConditionExpression();
-
-    // Try to extract ID filter from the condition expression
-    // The condition may be an AND expression containing multiple predicates
-    // We need to find the one that matches: ID(variable) = value
-    return extractIdFilterFromExpression(condition, variable);
-  }
-
   /**
-   * Recursively extracts ID filter from a boolean expression.
+   * The ids the WHERE clause pins {@code variable} to - {@code id(v) = x}, {@code elementId(v) = x} or the {@code IN} of either over
+   * literals and parameters - for the node step to fetch by RID instead of scanning (issues #3216, #12134), or null.
    */
-  private String extractIdFilterFromExpression(final BooleanExpression expr, final String variable) {
-    if (expr == null)
+  static InListValues extractIdFilter(final WhereClause whereClause, final String variable) {
+    if (whereClause == null)
       return null;
-
-    // Check if this is a comparison expression (ID(var) = value)
-    if (expr instanceof ComparisonExpression) {
-      final ComparisonExpression compExpr = (ComparisonExpression) expr;
-
-      // Check if left side is ID(variable) or elementId(variable)
-      final Expression left = compExpr.getLeft();
-      if (left instanceof FunctionCallExpression) {
-        final FunctionCallExpression funcExpr = (FunctionCallExpression) left;
-        final String funcName = funcExpr.getFunctionName();
-        if (("id".equalsIgnoreCase(funcName) || "elementid".equalsIgnoreCase(funcName))
-            && funcExpr.getArguments().size() == 1) {
-          final Expression arg = funcExpr.getArguments().get(0);
-          if (arg instanceof VariableExpression) {
-            final VariableExpression varExpr = (VariableExpression) arg;
-            if (variable.equals(varExpr.getVariableName())) {
-              // Found ID(variable) - extract the value from right side
-              final Expression right = compExpr.getRight();
-              return evaluateIdValue(right);
-            }
-          }
-        }
-      }
-    }
-
-    // Check if this is a logical AND expression - recursively search both sides
-    if (expr instanceof LogicalExpression) {
-      final LogicalExpression logExpr = (LogicalExpression) expr;
-      if (logExpr.getOperator() == LogicalExpression.Operator.AND) {
-        final String leftResult = extractIdFilterFromExpression(logExpr.getLeft(), variable);
-        if (leftResult != null)
-          return leftResult;
-        return extractIdFilterFromExpression(logExpr.getRight(), variable);
-      }
-    }
-
-    return null;
-  }
-
-  /**
-   * Evaluates an expression to extract the ID value (literal or parameter).
-   */
-  private String evaluateIdValue(final Expression expr) {
-    if (expr == null)
-      return null;
-
-    // Handle literal values: strings already have the RID format; numeric literals come from id()
-    // (Long-encoded RID, issue #4183) and must be decoded back to a #bucketId:offset string so the
-    // downstream MatchNodeStep can resolve the record via newRID.
-    if (expr instanceof LiteralExpression) {
-      final LiteralExpression litExpr = (LiteralExpression) expr;
-      final Object value = litExpr.getValue();
-      return toRidString(value);
-    }
-
-    // Handle parameter references
-    if (expr instanceof ParameterExpression) {
-      final ParameterExpression paramExpr = (ParameterExpression) expr;
-      final String paramName = paramExpr.getParameterName();
-      if (parameters != null && parameters.containsKey(paramName)) {
-        final Object value = parameters.get(paramName);
-        return toRidString(value);
-      }
-    }
-
-    // Handle property access for UNWIND scenarios (e.g., row.source_id)
-    if (expr instanceof PropertyAccessExpression) {
-      // Can't evaluate at plan time - would need runtime context
-      // This is handled differently via parameter substitution
-      return null;
-    }
-
-    return null;
-  }
-
-  private static String toRidString(final Object value) {
-    if (value == null)
-      return null;
-    if (value instanceof Number number)
-      return IdFunction.decodeLongToRidString(number.longValue());
-    return value.toString();
+    return IdSeekValues.find(whereClause.getConditionExpression(), variable);
   }
 }
