@@ -303,29 +303,35 @@ public class MatchEdgeByIndexStep extends AbstractExecutionStep {
             if (relationshipProperties != null && !InlineProperties.matches(edge, relationshipProperties, EMPTY_RESULT, context))
               continue;
 
-            final ResultInternal result = new ResultInternal();
-            if (relationshipVariable != null && !relationshipVariable.isEmpty())
-              result.setProperty(relationshipVariable, edge);
+            // An undirected hop binds the edge in both orientations, a self-loop once, as the expansion of an undirected
+            // pattern does
+            final int orientations = direction == Direction.BOTH && !edge.getOut().equals(edge.getIn()) ? 2 : 1;
+            for (int orientation = 0; orientation < orientations; orientation++) {
+              final ResultInternal result = new ResultInternal();
+              if (relationshipVariable != null && !relationshipVariable.isEmpty())
+                result.setProperty(relationshipVariable, edge);
 
-            // Bind the endpoints from the edge, honouring the written direction. For OUT the source is
-            // the edge's OUT vertex; for IN the pattern is written (a)<-[t]-(b), so the source (a) is the
-            // edge's IN vertex.
-            try {
-              final Vertex source = direction == Direction.IN ? edge.getInVertex() : edge.getOutVertex();
-              final Vertex target = direction == Direction.IN ? edge.getOutVertex() : edge.getInVertex();
-              // The endpoints' labels and inline properties, which the seek answers instead of a scan of the label (#11481)
-              if (!sourceFilter.isEmpty() && !sourceFilter.matches(source, EMPTY_RESULT, context))
+              // Bind the endpoints from the edge, honouring the written direction. For OUT the source is
+              // the edge's OUT vertex; for IN the pattern is written (a)<-[t]-(b), so the source (a) is the
+              // edge's IN vertex. An undirected hop tries the written order first and the reverse second.
+              try {
+                final boolean reversed = direction == Direction.IN || orientation == 1;
+                final Vertex source = reversed ? edge.getInVertex() : edge.getOutVertex();
+                final Vertex target = reversed ? edge.getOutVertex() : edge.getInVertex();
+                // The endpoints' labels and inline properties, which the seek answers instead of a scan of the label (#11481)
+                if (!sourceFilter.isEmpty() && !sourceFilter.matches(source, EMPTY_RESULT, context))
+                  continue;
+                if (!targetFilter.isEmpty() && !targetFilter.matches(target, EMPTY_RESULT, context))
+                  continue;
+                result.setProperty(sourceVariable, source);
+                result.setProperty(targetVariable, target);
+              } catch (final RecordNotFoundException e) {
+                // Ghost endpoint (dangling edge left by a rollback/HA resync): skip the row.
                 continue;
-              if (!targetFilter.isEmpty() && !targetFilter.matches(target, EMPTY_RESULT, context))
-                continue;
-              result.setProperty(sourceVariable, source);
-              result.setProperty(targetVariable, target);
-            } catch (final RecordNotFoundException e) {
-              // Ghost endpoint (dangling edge left by a rollback/HA resync): skip the row.
-              continue;
+              }
+
+              buffer.add(result);
             }
-
-            buffer.add(result);
           } finally {
             if (context.isProfiling())
               cost += System.nanoTime() - begin;
@@ -504,6 +510,8 @@ public class MatchEdgeByIndexStep extends AbstractExecutionStep {
       types.append(types.isEmpty() ? ":" : "|").append(seek.edgeType());
     if (direction == Direction.IN)
       builder.append("<-[").append(arrowRel).append(types).append("]-");
+    else if (direction == Direction.BOTH)
+      builder.append("-[").append(arrowRel).append(types).append("]-");
     else
       builder.append("-[").append(arrowRel).append(types).append("]->");
     builder.append("(").append(targetVariable).append(labelsOf(targetFilter)).append(")");
