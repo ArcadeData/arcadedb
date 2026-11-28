@@ -38,6 +38,7 @@ import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.exception.DatabaseNotAvailableException.Reason;
 import com.arcadedb.exception.DatabaseNotFoundException;
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.log.DefaultLogger;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ChannelBinary;
@@ -89,6 +90,8 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.lang.reflect.InvocationTargetException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -132,6 +135,11 @@ public class ArcadeDBServer {
    */
   public static final String                                RESERVED_DATABASE_PREFIX             = ".";
   public static final String                                FILESYSTEM_RECOVERY_DIRECTORY        = "lost+found";
+  /**
+   * The most bytes a file name holds on the usual file systems. Not a limit a name is refused by on its own: only what tells a
+   * name too long apart from another failure once the file system refused the directory, see {@link #createDatabase}.
+   */
+  static final int                                          MAX_DATABASE_NAME_BYTES              = 255;
 
   /**
    * Marker file the HA snapshot installer writes into {@code databases/<name>/} before it touches a single file
@@ -1859,7 +1867,13 @@ public class ArcadeDBServer {
 
       factory.setSecurity(getDatabaseSecurityManager());
 
-      DatabaseInternal embeddedDatabase = (DatabaseInternal) factory.create();
+      DatabaseInternal embeddedDatabase;
+      try {
+        embeddedDatabase = (DatabaseInternal) factory.create();
+      } catch (final DatabaseOperationException e) {
+        refuseNameTooLongForTheFileSystem(databaseName, new File(databasePath));
+        throw e;
+      }
 
       if (mode == READ_ONLY) {
         embeddedDatabase.close();
@@ -1877,6 +1891,36 @@ public class ArcadeDBServer {
 
     notifyRegistered(databaseName, serverDatabase);
     return serverDatabase;
+  }
+
+  /**
+   * Called when the engine could not create a database: when the name is what the file system refused, that is the caller's
+   * mistake (400) and not a server fault (issue #12801). Decided from the failure and not ahead of it, because the limit is the
+   * file system's own: a name of 100 three-byte characters is refused by ext4 and accepted by APFS and NTFS.
+   * <p>
+   * The name is held responsible only when all of this holds: the directory is not there, the name is past the bytes a file name
+   * holds on the usual file systems, and the database directory does take a new directory of a short name right now. The last
+   * one is asked of the file system itself, with a directory created and deleted at once under a reserved name no listing shows:
+   * a database directory that is read-only, not writable by the server or out of space fails it, and that failure stays the
+   * server fault it is. The message names neither the name nor the path, which the engine's own failure echoes whole.
+   */
+  private void refuseNameTooLongForTheFileSystem(final String databaseName, final File databaseDirectory) {
+    if (databaseDirectory.exists())
+      return;
+    final int bytes = databaseName.getBytes(StandardCharsets.UTF_8).length;
+    if (bytes <= MAX_DATABASE_NAME_BYTES)
+      return;
+    final File parent = databaseDirectory.getAbsoluteFile().getParentFile();
+    if (parent == null || !parent.isDirectory())
+      return;
+    try {
+      Files.delete(Files.createTempDirectory(parent.toPath(), RESERVED_DATABASE_PREFIX + "name-probe"));
+    } catch (final IOException | RuntimeException e) {
+      // The file system does not take a short name either: not the name's fault
+      LogManager.instance().log(this, Level.FINE, "Database directory does not accept a new directory: %s", null, e.toString());
+      return;
+    }
+    throw new IllegalArgumentException("Database name is too long to be a directory name on this file system: " + bytes + " bytes");
   }
 
   /** The names of the databases open on this server now. {@link #getAvailableDatabaseNames()} adds the ones not open. */
@@ -2098,15 +2142,20 @@ public class ArcadeDBServer {
    * A database name maps directly to a directory name under the database directory, so it must never contain
    * filesystem path separators, parent-directory references or null bytes, and the resolved path must remain
    * inside the configured base directory.
+   * <p>
+   * Also refuses a {@code *}, which the engine refuses for every database it creates or opens, so that a caller's mistake is a
+   * 400 and not a 500 from a later stage (issue #12801). The length of the name is NOT checked here: this is also the gate of
+   * every open, backup and drop, the limit is the file system's own (255 bytes on some, 255 characters on others, less on a
+   * few), and a database that exists has a name its file system accepted. {@link #createDatabase} answers for a name too long.
    *
-   * @throws IllegalArgumentException if the name is empty or would escape the database directory
+   * @throws IllegalArgumentException if the name is empty, would escape the database directory or holds a refused character
    */
   public void checkDatabaseNameIsValid(final String databaseName) {
     if (databaseName == null || databaseName.trim().isEmpty())
       throw new IllegalArgumentException("Database name is empty");
 
     if (databaseName.indexOf('/') > -1 || databaseName.indexOf('\\') > -1 || databaseName.indexOf('\0') > -1
-        || databaseName.equals(".") || databaseName.equals("..") || databaseName.contains(".."))
+        || databaseName.indexOf('*') > -1 || databaseName.equals(".") || databaseName.equals("..") || databaseName.contains(".."))
       throw new IllegalArgumentException("Database name '" + databaseName + "' contains invalid characters");
 
     // Defence in depth: resolve the final path and verify it does not escape the configured base directory.
