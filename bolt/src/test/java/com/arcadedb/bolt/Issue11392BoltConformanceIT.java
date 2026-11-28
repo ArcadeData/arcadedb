@@ -47,8 +47,9 @@ import static org.assertj.core.api.Assertions.catchThrowableOfType;
  *   {@code Neo.ClientError.Statement.AccessMode};</li>
  *   <li>{@code tx_timeout} bounds the transaction: a statement past it is stopped, and a COMMIT past it is refused with
  *   {@code Neo.ClientError.Transaction.TransactionTimedOut}, the transaction rolled back;</li>
- *   <li>an index or a constraint equivalent to one under another name is
- *   {@code Neo.ClientError.Schema.EquivalentSchemaRuleAlreadyExists}, not an argument error.</li>
+ *   <li>an index or a constraint equivalent to one under another name is a conflict on what exists, not an argument error:
+ *   {@code Neo.ClientError.Schema.IndexAlreadyExists} / {@code ConstraintAlreadyExists}, as a live Neo4j 5.26 answers it
+ *   (issue #13664).</li>
  * </ul>
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -264,19 +265,22 @@ public class Issue11392BoltConformanceIT extends BaseBoltServerTest {
     }
   }
 
-  /** The reported exchange: the same index under another name is an equivalent schema rule. */
+  /**
+   * The reported exchange. Compared on a live Neo4j 5.26 (issue #13664): the same index under the same name is an equivalent
+   * schema rule, under another name an index that already exists.
+   */
   @Test
-  void anEquivalentIndexUnderAnotherNameIsAnEquivalentSchemaRule() {
+  void anEquivalentIndexUnderAnotherNameIsAnIndexThatExists() {
     try (final Driver driver = driver(); final Session session = session(driver)) {
       session.run("CREATE INDEX cyidxA FOR (n:CyZ) ON (n.a)").consume();
 
       final ClientException sameName = catchThrowableOfType(ClientException.class,
           () -> session.run("CREATE INDEX cyidxA FOR (n:CyZ) ON (n.a)").consume());
-      assertThat(sameName.code()).as("unchanged, issue #10153").isEqualTo(BoltErrorCodes.INDEX_ALREADY_EXISTS_ERROR);
+      assertThat(sameName.code()).isEqualTo(BoltErrorCodes.SCHEMA_RULE_ALREADY_EXISTS_ERROR);
 
       final ClientException otherName = catchThrowableOfType(ClientException.class,
           () -> session.run("CREATE INDEX cyidxB FOR (n:CyZ) ON (n.a)").consume());
-      assertThat(otherName.code()).isEqualTo(BoltErrorCodes.SCHEMA_RULE_ALREADY_EXISTS_ERROR);
+      assertThat(otherName.code()).isEqualTo(BoltErrorCodes.INDEX_DEFINITION_ALREADY_EXISTS_ERROR);
 
       // IF NOT EXISTS still makes it a no-op
       session.run("CREATE INDEX cyidxC IF NOT EXISTS FOR (n:CyZ) ON (n.a)").consume();
@@ -284,13 +288,13 @@ public class Issue11392BoltConformanceIT extends BaseBoltServerTest {
   }
 
   @Test
-  void anEquivalentConstraintUnderAnotherNameIsAnEquivalentSchemaRule() {
+  void anEquivalentConstraintUnderAnotherNameIsAConstraintThatExists() {
     try (final Driver driver = driver(); final Session session = session(driver)) {
       session.run("CREATE CONSTRAINT cyuA FOR (n:CyU) REQUIRE n.a IS UNIQUE").consume();
 
       final ClientException otherName = catchThrowableOfType(ClientException.class,
           () -> session.run("CREATE CONSTRAINT cyuB FOR (n:CyU) REQUIRE n.a IS UNIQUE").consume());
-      assertThat(otherName.code()).isEqualTo(BoltErrorCodes.SCHEMA_RULE_ALREADY_EXISTS_ERROR);
+      assertThat(otherName.code()).isEqualTo(BoltErrorCodes.CONSTRAINT_DEFINITION_ALREADY_EXISTS_ERROR);
     }
   }
 

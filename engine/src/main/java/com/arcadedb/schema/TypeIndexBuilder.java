@@ -28,6 +28,7 @@ import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.DatabaseMetadataException;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.EquivalentIndexException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.SchemaException;
@@ -910,7 +911,15 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
           + Arrays.asList(metadata.propertyNames) + "' for type '" + metadata.typeName + "'" + (satisfied ?
           ". It already provides what was requested: use IF NOT EXISTS to make this statement idempotent" :
           ". Drop it first if the definition has to change");
-      throw satisfied ? new EquivalentIndexException(message) : new IllegalArgumentException(message);
+      if (!satisfied)
+        throw new IllegalArgumentException(message);
+      // The name the request asked for, or derives when it names none: an equivalent index under another one is what Neo4j
+      // answers as IndexAlreadyExists, under the same one as an equivalent schema rule (issue #13664)
+      final String requestedName = indexName != null && !indexName.isEmpty() ?
+          indexName :
+          LocalDocumentType.defaultIndexName(metadata.typeName, metadata.propertyNames, indexType);
+      throw new EquivalentIndexException(message, AlreadyExistsException.Kind.INDEX,
+          !requestedName.equals(existingTypeIndex.getName()));
     }
   }
 

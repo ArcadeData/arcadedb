@@ -36,6 +36,12 @@ import com.arcadedb.bolt.packstream.PackStreamReader;
 import com.arcadedb.bolt.packstream.PackStreamWriter;
 import com.arcadedb.bolt.structure.BoltStructureMapper;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.Document;
+import com.arcadedb.database.RID;
+import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.index.Index;
+import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.ProtocolContext;
@@ -96,6 +102,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.SequenceInputStream;
+import java.lang.reflect.Array;
 import java.net.InetAddress;
 import java.net.Socket;
 import java.net.SocketException;
@@ -2357,7 +2364,7 @@ public class BoltNetworkExecutor extends Thread {
     // A concealing server sends no engine text, the refusal's own sentence included
     final String text = ErrorConcealment.isConcealing(server) ?
         failureText :
-        procedureCallFailedText(code, withUnavailableReason(failureText, error), error);
+        procedureCallFailedText(code, withUnavailableReason(uniquenessViolationText(code, failureText, error, database), error), error);
     sendFailure(code, withLeaderRedirect(text, error));
   }
 
@@ -2373,6 +2380,88 @@ public class BoltNetworkExecutor extends Thread {
       return text;
     final ProcedureCallFailedException failedCall = CauseChain.find(error, ProcedureCallFailedException.class);
     return failedCall != null ? failedCall.getNeo4jMessage() : text;
+  }
+
+  /**
+   * {@code text} preceded by the sentence Neo4j words a uniqueness violation with, when {@code code} is the one a duplicated key
+   * is classified as (issue #13664): {@code Node(4) already exists with label `Person` and property `name` = 'Tim'}. Clients
+   * classify a violation by that sentence - neomodel raises its UniqueProperty on "already exists with label" - since over Bolt the
+   * message is the only thing telling a duplicate from the violation of another constraint. The engine's text follows in
+   * parentheses, as it was. {@code text} alone when the index or the record holding the key can no longer be read: a constraint
+   * whose build found duplicates has no index left to name.
+   */
+  static String uniquenessViolationText(final String code, final String text, final Throwable error, final Database database) {
+    if (database == null || !BoltErrorCodes.CONSTRAINT_VIOLATION_ERROR.equals(code))
+      return text;
+    final DuplicatedKeyException duplicate = CauseChain.find(error, DuplicatedKeyException.class);
+    final String sentence = duplicate != null ? alreadyExistsSentence(database, duplicate) : null;
+    if (sentence == null)
+      return text;
+    return text == null || text.isEmpty() ? sentence : sentence + " (" + text + ")";
+  }
+
+  /** Neo4j's sentence for the duplicated key, or null when the index or the record holding the key cannot be read. */
+  private static String alreadyExistsSentence(final Database database, final DuplicatedKeyException duplicate) {
+    try {
+      final Schema schema = database.getSchema();
+      if (duplicate.getIndexName() == null || !schema.existsIndex(duplicate.getIndexName()))
+        return null;
+      final Index index = schema.getIndexByName(duplicate.getIndexName());
+      final List<String> properties = index.getPropertyNames();
+      final String typeName = index.getTypeName();
+      if (properties == null || properties.isEmpty() || typeName == null)
+        return null;
+      final boolean relationship = schema.existsType(typeName) && schema.getType(typeName) instanceof EdgeType;
+
+      final RID holder = duplicate.getCurrentIndexedRID();
+      final Document holding = holder != null && holder.asDocument(true) instanceof Document document ? document : null;
+      if (holding == null)
+        return null;
+
+      final StringBuilder sentence = new StringBuilder(64).append(relationship ? "Relationship(" : "Node(")
+          .append(BoltStructureMapper.ridToId(holder)).append(") already exists with ").append(relationship ? "type" : "label")
+          .append(" `").append(typeName).append("` and ").append(properties.size() == 1 ? "property" : "properties").append(' ');
+      for (int i = 0; i < properties.size(); i++) {
+        if (i > 0)
+          sentence.append(", ");
+        sentence.append('`').append(properties.get(i)).append("` = ");
+        appendCypherValue(sentence, holding.get(properties.get(i)));
+      }
+      return sentence.toString();
+    } catch (final RuntimeException e) {
+      // the record is gone, or not readable by this user: the engine's text says what there is to say
+      return null;
+    }
+  }
+
+  /**
+   * A value as Neo4j writes it in a message: a string in single quotes, a list in brackets, anything else as it prints. An array,
+   * which is how a record can hold an indexed list, is written as the list it is.
+   */
+  static void appendCypherValue(final StringBuilder out, final Object value) {
+    if (value instanceof String string)
+      out.append('\'').append(string).append('\'');
+    else if (value instanceof Collection<?> collection) {
+      out.append('[');
+      boolean first = true;
+      for (final Object item : collection) {
+        if (!first)
+          out.append(", ");
+        appendCypherValue(out, item);
+        first = false;
+      }
+      out.append(']');
+    } else if (value != null && value.getClass().isArray()) {
+      out.append('[');
+      final int length = Array.getLength(value);
+      for (int i = 0; i < length; i++) {
+        if (i > 0)
+          out.append(", ");
+        appendCypherValue(out, Array.get(value, i));
+      }
+      out.append(']');
+    } else
+      out.append(value);
   }
 
   /**
@@ -2530,13 +2619,26 @@ public class BoltNetworkExecutor extends Thread {
   }
 
   /**
-   * Neo4j's title for a name held by an index, by a constraint, or by anything else (issue #10153), and for an index or a
-   * constraint that exists already under another name, which is no name conflict but an equivalent schema rule (issue #11392).
+   * Neo4j's title for a rule that exists already (issue #10153, #11392), decided as Neo4j 5 decides it (issue #13664):
+   * <ul>
+   *   <li>the name asked for holds the rule asked for: EquivalentSchemaRuleAlreadyExists;</li>
+   *   <li>the name asked for holds another rule: IndexWithNameAlreadyExists / ConstraintWithNameAlreadyExists, by what holds it;</li>
+   *   <li>the rule asked for holds another name: IndexAlreadyExists / ConstraintAlreadyExists, by what was asked for.</li>
+   * </ul>
+   * A name held by anything else - a type, a property - has no title of its own in Neo4j, which words it as an equivalent rule.
    */
   private static String alreadyExistsCode(final Throwable error) {
-    if (CauseChain.contains(error, EquivalentIndexException.class))
-      return BoltErrorCodes.SCHEMA_RULE_ALREADY_EXISTS_ERROR;
+    final EquivalentIndexException equivalent = CauseChain.find(error, EquivalentIndexException.class);
+    if (equivalent != null) {
+      if (!equivalent.isUnderAnotherName())
+        return BoltErrorCodes.SCHEMA_RULE_ALREADY_EXISTS_ERROR;
+      return equivalent.getKind() == AlreadyExistsException.Kind.CONSTRAINT ?
+          BoltErrorCodes.CONSTRAINT_DEFINITION_ALREADY_EXISTS_ERROR :
+          BoltErrorCodes.INDEX_DEFINITION_ALREADY_EXISTS_ERROR;
+    }
     final AlreadyExistsException taken = CauseChain.find(error, AlreadyExistsException.class);
+    if (taken != null && taken.isEquivalent())
+      return BoltErrorCodes.SCHEMA_RULE_ALREADY_EXISTS_ERROR;
     final AlreadyExistsException.Kind kind = taken != null ? taken.getKind() : null;
     if (kind == AlreadyExistsException.Kind.INDEX)
       return BoltErrorCodes.INDEX_ALREADY_EXISTS_ERROR;

@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.EquivalentIndexException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
@@ -253,7 +254,7 @@ public abstract class IndexBuilder<T extends Index> {
             + (inherited ? " on the parent type '" + existing.getTypeName() + "'" : "")
             + ". A type holds one index per property set, so the requested name cannot be added next to it: use '"
             + existing.getName() + "' to address the existing index, or drop it first to create the index under the "
-            + "requested name");
+            + "requested name", AlreadyExistsException.Kind.INDEX, true);
   }
 
   private static String describeDefinition(final Schema.INDEX_TYPE indexType, final boolean unique) {
