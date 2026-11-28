@@ -67,6 +67,9 @@ public final class BoltErrorCodes {
   // A CALL of a procedure nothing answers (UnknownProcedureException): Neo4j's own title for it, where a function nothing answers
   // is a SyntaxError. It was the generic DatabaseError, an unexplained server fault to a driver (issue #11384)
   public static final String PROCEDURE_NOT_FOUND_ERROR = "Neo.ClientError.Procedure.ProcedureNotFound";
+  // An APOC procedure or function that raised (a ProcedureCallFailedException, today the apoc.util.validate guard): Neo4j's own title
+  // for a failed call, with the text "Failed to invoke procedure `x`: Caused by: java.lang.RuntimeException: <message>" that clients decode
+  public static final String PROCEDURE_CALL_FAILED_ERROR = "Neo.ClientError.Procedure.ProcedureCallFailed";
   // An external resource the statement names - a LOAD CSV URL - that cannot be opened or read (ExternalResourceException):
   // Neo4j's own title for it. It was the generic DatabaseError, an unexplained server fault to a driver (issue #11974)
   public static final String EXTERNAL_RESOURCE_FAILED_ERROR = "Neo.ClientError.Statement.ExternalResourceFailed";

@@ -50,7 +50,6 @@ import com.arcadedb.utility.RidHashSet;
 
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashSet;
@@ -290,26 +289,16 @@ public class DeleteStep extends AbstractExecutionStep {
             if (context.isProfiling())
               rowCount++;
 
-            // Capture type info for relationships before deletion
-            final Map<String, String> relTypes = new HashMap<>();
-            for (final String variable : deleteClause.getVariables()) {
-              if (!variable.contains(".") && !variable.contains("[")) {
-                final Object obj = inputResult.getProperty(variable);
-                if (obj instanceof Edge)
-                  relTypes.put(variable, ((Edge) obj).getTypeName());
-              }
-            }
-
             // Apply DELETE operations to this result
             final Set<String> deletedVars = new HashSet<>();
             applyDeleteOperations(inputResult, deletedVars, this::pinRemainingRows);
 
             // Mark deleted variables in the result so subsequent access throws DeletedEntityAccess
             if (!deletedVars.isEmpty() && inputResult instanceof ResultInternal mutableResult) {
-              for (final String var : deletedVars) {
-                final String relType = relTypes.get(var);
-                mutableResult.setProperty(var, relType != null ? new DeletedEntityMarker(relType) : DeletedEntityMarker.INSTANCE);
-              }
+              // The marker keeps the identity the entity had, which id() and elementId() still answer (issue #13582), and
+              // the type of a relationship, which type() still answers
+              for (final String var : deletedVars)
+                mutableResult.setProperty(var, DeletedEntityMarker.of(mutableResult.getProperty(var)));
             }
 
             // Pass through the result (elements are now deleted)

@@ -140,6 +140,10 @@ public class MergeStep extends AbstractExecutionStep {
   private       DocumentType        readCheckedType;
   private       long                readCheckedSchemaVersion;
   private       boolean             readCheckedAnswer;
+  // The deadline and the termination of the statement, asked by the loops that match a row's pattern: a row's match is one call,
+  // past every check between rows. Set, with the count of steps taken, by every executeMerge, the one entry of the match
+  private       WorkGuard           matchGuard;
+  private       int                 matchSteps;
 
   public MergeStep(final MergeClause mergeClause, final CommandContext context,
                    final CypherFunctionFactory functionFactory) {
@@ -300,6 +304,8 @@ public class MergeStep extends AbstractExecutionStep {
    * @return list of results containing matched or created elements
    */
   private List<Result> executeMerge(final Result inputResult, final LabelReplacements labelReplacements) {
+    matchGuard = WorkGuard.forCommandDeadline(context);
+    matchSteps = 0;
     // Dynamic labels - MERGE (n:$($label) {...}) - are evaluated for this row first, so the match and the create below see static ones (issue #10683)
     final PathPattern pathPattern = DynamicNodeLabels.resolve(mergeClause.getPathPattern(), inputResult, evaluator, context, "MERGE");
 
@@ -329,62 +335,76 @@ public class MergeStep extends AbstractExecutionStep {
     final LabelReplacements.Snapshot labelReplacementsSnapshot = labelReplacements.copy();
     final AtomicReference<List<Result>> resultsRef = new AtomicReference<>();
 
-    database.transaction(() -> {
-      // database.transaction retries this block on MVCC/duplicate-key conflict; reset the counters
-      // to the pre-attempt snapshot so a retried attempt does not double-count matches/creations,
-      // mirroring CreateStep.createPatterns().
-      stats.restore(statsSnapshot);
-      // A failed attempt's ON CREATE/ON MATCH SET n:Label (applySetClause's LABELS branch) can call
-      // labelReplacements.replace(), which both writes records and remembers the move. The transaction
-      // rollback undoes the writes; without this, the stale mapping would still point the retried
-      // attempt at a vertex whose creation was just rolled back.
-      labelReplacements.restore(labelReplacementsSnapshot);
+    // Released once the row is done, whatever the outcome: the map journals what it records only while a snapshot is live
+    try {
+      database.transaction(() -> {
+        // database.transaction retries this block on MVCC/duplicate-key conflict; reset the counters
+        // to the pre-attempt snapshot so a retried attempt does not double-count matches/creations,
+        // mirroring CreateStep.createPatterns().
+        stats.restore(statsSnapshot);
+        // A failed attempt's ON CREATE/ON MATCH SET n:Label (applySetClause's LABELS branch) can call
+        // labelReplacements.replace(), which both writes records and remembers the move. The transaction
+        // rollback undoes the writes; without this, the stale mapping would still point the retried
+        // attempt at a vertex whose creation was just rolled back.
+        labelReplacements.restore(labelReplacementsSnapshot);
 
-      // Create base result and copy input properties if present
-      final ResultInternal baseResult = new ResultInternal();
-      if (inputResult != null) {
-        for (final String prop : inputResult.getPropertyNames()) {
-          baseResult.setProperty(prop, inputResult.getProperty(prop));
+        // Create base result and copy input properties if present
+        final ResultInternal baseResult = new ResultInternal();
+        if (inputResult != null) {
+          for (final String prop : inputResult.getPropertyNames()) {
+            baseResult.setProperty(prop, inputResult.getProperty(prop));
+          }
         }
-      }
-      // The walk and the creation recognize a bound endpoint by its Vertex: one bound to a bare RID becomes its vertex
-      if (boundEndpoints != null)
-        for (int i = 0; i < boundEndpoints.length; i++)
-          if (boundEndpoints[i] != null)
-            baseResult.setProperty(pathPattern.getNode(i).getVariable(), boundEndpoints[i]);
+        // The walk and the creation recognize a bound endpoint by its Vertex: one bound to a bare RID becomes its vertex
+        if (boundEndpoints != null)
+          for (int i = 0; i < boundEndpoints.length; i++)
+            if (boundEndpoints[i] != null)
+              baseResult.setProperty(pathPattern.getNode(i).getVariable(), boundEndpoints[i]);
 
-      final List<Result> results;
-      if (pathPattern.isSingleNode())
-        results = mergeSingleNodeAll(pathPattern, baseResult);
-      else
-        results = mergePathAll(pathPattern, baseResult);
+        final List<Result> results;
+        if (pathPattern.isSingleNode())
+          results = mergeSingleNodeAll(pathPattern, baseResult);
+        else
+          results = mergePathAll(pathPattern, baseResult);
 
-      // Apply ON CREATE SET or ON MATCH SET to each result
-      for (final Result r : results) {
-        final boolean wasCreated = Boolean.TRUE.equals(r.getProperty(WAS_CREATED));
-        final boolean createSetFolded = Boolean.TRUE.equals(r.getProperty(CREATE_SET_FOLDED));
-        // Remove internal flags
-        if (r instanceof ResultInternal) {
-          ((ResultInternal) r).removeProperty(WAS_CREATED);
-          ((ResultInternal) r).removeProperty(CREATE_SET_FOLDED);
+        // Apply ON CREATE SET or ON MATCH SET to each result
+        for (final Result r : results) {
+          matchStep();
+          final boolean wasCreated = Boolean.TRUE.equals(r.getProperty(WAS_CREATED));
+          final boolean createSetFolded = Boolean.TRUE.equals(r.getProperty(CREATE_SET_FOLDED));
+          // Remove internal flags
+          if (r instanceof ResultInternal) {
+            ((ResultInternal) r).removeProperty(WAS_CREATED);
+            ((ResultInternal) r).removeProperty(CREATE_SET_FOLDED);
+          }
+          // A node whose ON CREATE SET was folded into its first save (issue #8735) already carries it
+          // Repeated ON CREATE / ON MATCH SET clauses are separate SETs, each reading the writes of the previous (#11691)
+          if (wasCreated && !createSetFolded && mergeClause.hasOnCreateSet())
+            applySetClauses(mergeClause.getOnCreateActions(), (ResultInternal) r, labelReplacements);
+          else if (!wasCreated && mergeClause.hasOnMatchSet())
+            applySetClauses(mergeClause.getOnMatchActions(), (ResultInternal) r, labelReplacements);
+          // The SET this step absorbed, for a row whose node was not created with it (issue #8735)
+          if (absorbedSet != null && !createSetFolded)
+            // A fresh map per row, as applySetClause does: the folded shape never reads the node, so nothing has to be read
+            // back through an earlier write, and a step-wide map would retain a document per matched node
+            absorbedSetApplier.apply(absorbedSet, r, new HashMap<>(), labelReplacements);
         }
-        // A node whose ON CREATE SET was folded into its first save (issue #8735) already carries it
-        // Repeated ON CREATE / ON MATCH SET clauses are separate SETs, each reading the writes of the previous (#11691)
-        if (wasCreated && !createSetFolded && mergeClause.hasOnCreateSet())
-          applySetClauses(mergeClause.getOnCreateActions(), (ResultInternal) r, labelReplacements);
-        else if (!wasCreated && mergeClause.hasOnMatchSet())
-          applySetClauses(mergeClause.getOnMatchActions(), (ResultInternal) r, labelReplacements);
-        // The SET this step absorbed, for a row whose node was not created with it (issue #8735)
-        if (absorbedSet != null && !createSetFolded)
-          // A fresh map per row, as applySetClause does: the folded shape never reads the node, so nothing has to be read
-          // back through an earlier write, and a step-wide map would retain a document per matched node
-          absorbedSetApplier.apply(absorbedSet, r, new HashMap<>(), labelReplacements);
-      }
 
-      resultsRef.set(results);
-    }, true);
+        resultsRef.set(results);
+      }, true);
+    } finally {
+      labelReplacements.release(labelReplacementsSnapshot);
+    }
 
     return resultsRef.get();
+  }
+
+  /**
+   * One step of the match of a row: a record, an index entry or an edge-list entry the match looks at. Asks the deadline and the
+   * termination of the statement every so often, and at the first step of each row.
+   */
+  private void matchStep() {
+    matchGuard.checkPeriodically(matchSteps++);
   }
 
   /**
@@ -452,6 +472,7 @@ public class MergeStep extends AbstractExecutionStep {
     final String variable = pathPattern.getFirstNode().getVariable();
     final List<Result> results = new ArrayList<>(matches.size());
     for (final Vertex v : matches) {
+      matchStep();
       final ResultInternal r = copyResult(baseResult);
       if (variable != null)
         r.setProperty(variable, v);
@@ -605,6 +626,7 @@ public class MergeStep extends AbstractExecutionStep {
 
     final List<Edge> matchingEdges = new ArrayList<>(2);
     while (indexIter.hasNext()) {
+      matchStep();
       final Identifiable identifiable = indexIter.next();
       if (identifiable == null)
         continue;
@@ -702,6 +724,7 @@ public class MergeStep extends AbstractExecutionStep {
     final RID rightRid = right.getIdentity();
     final Direction dir = relPattern.getDirection();
     while (candidates.hasNext()) {
+      matchStep();
       final Identifiable identifiable = candidates.next();
       if (identifiable == null)
         continue;
@@ -848,6 +871,7 @@ public class MergeStep extends AbstractExecutionStep {
         edgesBetween(internal, fromDir, target.getIdentity(), relType) :
         from.getEdges(fromDir, relType);
     for (final Edge edge : candidates) {
+      matchStep();
       try {
         if (!target.equals(edge.getVertex(otherEnd)))
           continue;
@@ -985,6 +1009,7 @@ public class MergeStep extends AbstractExecutionStep {
       final NodePattern nextPattern, final Vertex.DIRECTION edgeDir, final Vertex.DIRECTION otherEnd,
       final boolean skipSelfLoops, final ResultInternal current, final Object[] trace, final List<TracedResult> rightResults) {
     for (final Edge edge : edgesOf(currentVertex, edgeDir, relType, nextPattern, current)) {
+      matchStep();
       if (skipSelfLoops && isSelfLoop(edge))
         continue;
       if (relProps != null && !matchesProperties(edge, relProps))
@@ -1052,6 +1077,7 @@ public class MergeStep extends AbstractExecutionStep {
       final NodePattern prevPattern, final Vertex.DIRECTION edgeDir, final Vertex.DIRECTION otherEnd,
       final boolean skipSelfLoops, final ResultInternal current, final Object[] trace, final List<Result> results) {
     for (final Edge edge : edgesOf(currentVertex, edgeDir, relType, prevPattern, current)) {
+      matchStep();
       if (skipSelfLoops && isSelfLoop(edge))
         continue;
       if (relProps != null && !matchesProperties(edge, relProps))
@@ -1160,8 +1186,10 @@ public class MergeStep extends AbstractExecutionStep {
         // A lightweight edge has no record to scan, so the type holds nothing to iterate below and the path was never found, then
         // created again by every MERGE (issue #10433). The walk starts from the vertices the first node matches instead, and
         // reads the edges they store, as it does from an anchor the row already binds
-        for (final Vertex candidate : findAllNodes(nodePattern, currentResult))
+        for (final Vertex candidate : findAllNodes(nodePattern, currentResult)) {
+          matchStep();
           traverseFromNode(pathPattern, nodeIndex, candidate, currentResult, branchPathTrace(trace), results);
+        }
         return;
       }
 
@@ -1171,6 +1199,7 @@ public class MergeStep extends AbstractExecutionStep {
       @SuppressWarnings("unchecked")
       final Iterator<Identifiable> it = (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(relType, true);
       while (it.hasNext()) {
+        matchStep();
         final Identifiable id = it.next();
         if (!(id instanceof Edge edge))
           continue;
@@ -1240,6 +1269,7 @@ public class MergeStep extends AbstractExecutionStep {
 
     final NodePattern nextPattern = pathPattern.getNode(nodeIndex + 1);
     for (final Edge edge : edgesOf(vertex, edgeDir, relType, nextPattern, currentResult)) {
+      matchStep();
       try {
         if (relProps != null && !matchesProperties(edge, relProps))
           continue;
@@ -1263,6 +1293,7 @@ public class MergeStep extends AbstractExecutionStep {
     // For undirected patterns also traverse the reverse direction
     if (relPattern.getDirection() == Direction.BOTH) {
       for (final Edge edge : edgesOf(vertex, Vertex.DIRECTION.IN, relType, nextPattern, currentResult)) {
+        matchStep();
         try {
           if (isSelfLoop(edge) || (relProps != null && !matchesProperties(edge, relProps)))
             continue;
@@ -1608,6 +1639,7 @@ public class MergeStep extends AbstractExecutionStep {
       final Iterator<Record> candidates = Labels.iterateMatchingVertices(context.getDatabase(), labels,
           nodePattern.isLabelDisjunction());
       while (candidates.hasNext()) {
+        matchStep();
         final Record record = candidates.next();
         if (record instanceof Vertex vertex)
           if (evaluatedProperties == null || matchesProperties(vertex, evaluatedProperties))
@@ -1627,6 +1659,7 @@ public class MergeStep extends AbstractExecutionStep {
         final Iterator<Identifiable> indexIter = tryFindByIndex(type, label, evaluatedProperties);
         if (indexIter != null) {
           while (indexIter.hasNext()) {
+            matchStep();
             final Identifiable identifiable = indexIter.next();
             if (identifiable == null)
               continue;
@@ -1643,6 +1676,7 @@ public class MergeStep extends AbstractExecutionStep {
     @SuppressWarnings("unchecked")
     final Iterator<Identifiable> iterator = (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(label, true);
     while (iterator.hasNext()) {
+      matchStep();
       final Identifiable identifiable = iterator.next();
       if (identifiable instanceof Vertex vertex)
         if (evaluatedProperties == null || matchesProperties(vertex, evaluatedProperties))

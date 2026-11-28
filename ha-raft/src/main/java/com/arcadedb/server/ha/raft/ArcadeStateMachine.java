@@ -381,7 +381,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * Not final so a test can substitute a recording seeder; production never replaces it.
    */
   private volatile MembershipSecuritySeeder membershipSecuritySeeder = new MembershipSecuritySeeder(
-      this::isLocalNodeRaftLeader, this::securitySeedRetryBudgetMs, this::seedSecurityStateClusterWide);
+      this::isLocalNodeRaftLeader, this::securitySeedRetryBudgetMs, this::seedSecurityStateClusterWide,
+      this::peersWithholdingSecurityEntries);
 
   /**
    * Records whether this node was added to the Raft configuration while running, which is what arms the
@@ -2605,6 +2606,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
           e.getMessage());
       return false;
     }
+  }
+
+  /**
+   * The peers the capability gate of the group and API-token entries is refusing for (issue #7511), as the seeder
+   * reads them to name the peer a failed seed waited for and to run that seed again (issue #13447).
+   */
+  private List<String> peersWithholdingSecurityEntries() {
+    final RaftHAServer raftHA = this.raftHAServer;
+    return raftHA == null ? List.of() : SecurityEntryCapabilityGate.peersWithholdingSecurityEntries(this.server, raftHA);
   }
 
   /** The time budget {@code arcadedb.ha.securitySeedRetryTimeout} gives the membership seed. */

@@ -4361,6 +4361,17 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     capabilityMonitor.refreshPeerCapabilities();
   }
 
+  /**
+   * Runs again the security seed this node could not commit, if one is owed and nothing stands in its way any longer
+   * (issue #13447). See {@link MembershipSecuritySeeder#rerunOwedSeedIfDue}.
+   *
+   * @return whether a re-run was started
+   */
+  boolean rerunOwedSecuritySeedIfDue() {
+    final ArcadeStateMachine sm = getStateMachine();
+    return sm != null && sm.getMembershipSecuritySeeder().rerunOwedSeedIfDue();
+  }
+
   public boolean allPeersSupport(final String capability) {
     return capabilityMonitor.allPeersSupport(capability);
   }

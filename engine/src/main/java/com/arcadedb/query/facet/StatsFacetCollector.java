@@ -444,9 +444,12 @@ public final class StatsFacetCollector implements FacetCollector {
     if (current == null)
       return candidate;
     if (current instanceof Number left && candidate instanceof Number right) {
-      final Number[] cast = Type.castComparableNumber(left, right);
-      current = cast[0];
-      candidate = cast[1];
+      // a pair the cast leaves as it is skips it: the cast allocates a pair for every value folded (#13009)
+      if (!Type.castComparableNumberIsIdentity(left, right)) {
+        final Number[] cast = Type.castComparableNumber(left, right);
+        current = cast[0];
+        candidate = cast[1];
+      }
     } else if (current.getClass() != candidate.getClass() && !(DateUtils.isDate(current) && DateUtils.isDate(candidate)))
       throw new IllegalArgumentException("Cannot compare a " + current.getClass().getSimpleName() + " with a " + candidate.getClass()
           .getSimpleName());

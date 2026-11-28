@@ -298,10 +298,12 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
         if (r.score() < min) min = r.score();
         if (r.score() > max) max = r.score();
       }
-      final float range = max - min;
+      // In double, as vector.normalizeScores does: max - min of two finite floats can overflow a float (-3e38 .. 3e38),
+      // which scored the top row of the source NaN and every other row 0 (#12766)
+      final double range = (double) max - min;
       final float w = weights[s];
       for (final RidScore r : rows) {
-        final float normalized = range == 0.0f ? 1.0f : (r.score() - min) / range;
+        final float normalized = range == 0.0 ? 1.0f : (float) (((double) r.score() - min) / range);
         out.merge(r.rid(), w * normalized, Float::sum);
       }
     }

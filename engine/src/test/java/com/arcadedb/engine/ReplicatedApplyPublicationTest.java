@@ -35,6 +35,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -383,22 +384,28 @@ class ReplicatedApplyPublicationTest {
     void aReaderSeesTheSequenceOddWhileAnEntryIsBeingApplied() throws Exception {
       final DatabaseInternal db = (DatabaseInternal) database;
       final PageManager pageManager = db.getPageManager();
-      final AtomicBoolean stop = new AtomicBoolean();
-      final AtomicInteger oddSamples = new AtomicInteger();
-      final Thread reader = new Thread(() -> {
-        while (!stop.get())
-          if ((pageManager.getPublicationSequence() & 1) != 0)
-            oddSamples.incrementAndGet();
-      });
-      reader.start();
+      final WALFile.WALTransaction entry = entryAdvancingTheBucketPage();
+      final AtomicLong sampledByAReader = new AtomicLong(-1);
+      // The seam runs with the publication of the apply open, once the first page of the entry is in the read cache, so a reader
+      // started from there samples the sequence in the middle of an apply on every run. A reader looping beside the applies and
+      // hoping to land in one of those windows is a race for a CPU, and loses it on a loaded machine (#12900).
+      TransactionManager.applyChangesHookForTesting = () -> {
+        final Thread reader = new Thread(() -> sampledByAReader.set(pageManager.getPublicationSequence()), "publication-reader");
+        reader.start();
+        try {
+          reader.join();
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+      };
       try {
-        for (int i = 0; i < 300 && oddSamples.get() == 0; i++)
-          db.getTransactionManager().applyChanges(entryAdvancingTheBucketPage(), Collections.emptyMap(), null, false);
+        assertThat(db.getTransactionManager().applyChanges(entry, Collections.emptyMap(), null, false)).isTrue();
       } finally {
-        stop.set(true);
-        reader.join();
+        TransactionManager.applyChangesHookForTesting = null;
       }
-      assertThat(oddSamples.get()).isPositive();
+
+      assertThat(sampledByAReader.get()).as("the apply must have reached the point where the reader samples").isNotNegative();
+      assertThat(sampledByAReader.get() & 1).as("a reader sampling during the apply sees the sequence odd").isOne();
       assertThat(pageManager.getPublicationSequence() & 1).isZero();
     }
 

@@ -1525,6 +1525,10 @@ public enum PostgresType {
       } else if (element instanceof BigDecimal bd) {
         // as the scalar is written: toString() switches to scientific notation, which a numeric[] element is never written in
         sb.append(bd.toPlainString());
+      } else if (element instanceof Boolean b && pgType == ARRAY_BOOLEAN) {
+        // PostgreSQL writes a bool[] as {t,f}, as the scalar is written: a client that reads the element by its first character
+        // (lib/pq's BoolArray wants exactly one) refuses "true" (issue #12994)
+        sb.append(b ? 't' : 'f');
       } else if (element instanceof Number || element instanceof Boolean) {
         sb.append(element);
       } else if (pgType == ARRAY_BYTEA && byteaValueOf(element) != null) {
@@ -2061,6 +2065,9 @@ public enum PostgresType {
       if (elemLen == -1) {
         result.add(null);
       } else {
+        // The element is read out of the bytes this value holds: a length past them, or below the null marker, is no element
+        if (elemLen < -1 || elemLen > buffer.remaining())
+          throw new PostgresProtocolException("Invalid array element length: " + elemLen);
         final byte[] elemBytes = new byte[elemLen];
         buffer.get(elemBytes);
         result.add(deserializeBinaryElement(elemOid, elemBytes));

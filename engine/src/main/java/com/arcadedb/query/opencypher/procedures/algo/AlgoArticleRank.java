@@ -108,6 +108,8 @@ public class AlgoArticleRank extends AbstractAlgoProcedure {
         extractInt(num, "maxIterations", 1) : 20;
     final double tolerance = config != null && config.get("tolerance") instanceof Number num ?
         num.doubleValue() : 0.0001;
+    requireInterval("dampingFactor", dampingFactor, 0.0, 1.0);
+    requireNonNegativeFinite("tolerance", tolerance);
 
     final Database db = context.getDatabase();
     final WorkGuard guard = newWorkGuard(context);

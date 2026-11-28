@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server;
 
+import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
 import com.arcadedb.server.monitor.MicrometerQueryMetricsRecorder;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
@@ -31,6 +32,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * The recorder and the HTTP handler already collapse client-influenced tag values onto constants, so these
  * filters exist for the case where that collapse is bypassed by a future route, a new wire protocol, or a
  * regression: past the budget the meter must be denied rather than registered forever (issues #6805, #7122).
+ * The method tag of the HTTP timer is bounded the same way.
  * <p>
  * Applied to a throwaway registry rather than to {@code Metrics.globalRegistry}, because a
  * {@code MeterFilter} can never be removed from a registry once installed.
@@ -86,6 +88,27 @@ class ArcadeDBServerMetricsFiltersTest {
     Timer.builder("arcadedb.http.requests").tag("path", "/one-too-many").tag("db", "none").register(registry);
 
     assertThat(registry.find("arcadedb.http.requests").tag("path", "/one-too-many").timer()).isNull();
+  }
+
+  @Test
+  void theMethodTagOfTheHttpTimerIsCappedInTheRegistry() {
+    final MeterRegistry registry = new SimpleMeterRegistry();
+    ArcadeDBServer.installCardinalityMeterFilters(registry.config());
+
+    final int budget = AbstractServerHttpHandler.MAX_METHOD_TAG_VALUES;
+    for (int i = 0; i < budget; i++)
+      Timer.builder("arcadedb.http.requests").tag("method", "M" + i).tag("path", "unmatched").tag("db", "none").register(registry);
+
+    // Everything inside the budget is registered, so the standard methods keep their own series.
+    assertThat(registry.find("arcadedb.http.requests").timers()).hasSize(budget);
+
+    for (int i = 0; i < 100; i++)
+      Timer.builder("arcadedb.http.requests").tag("method", "EXTRA" + i).tag("path", "unmatched").tag("db", "none")
+          .register(registry);
+
+    assertThat(registry.find("arcadedb.http.requests").timers())
+        .as("past the budget the meter must be denied, never registered permanently").hasSize(budget);
+    assertThat(registry.find("arcadedb.http.requests").tag("method", "EXTRA0").timer()).isNull();
   }
 
   private static void queryTimer(final MeterRegistry registry, final String language, final String db) {

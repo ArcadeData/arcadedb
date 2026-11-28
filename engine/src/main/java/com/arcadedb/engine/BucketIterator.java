@@ -489,6 +489,10 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
     if (prefetchIndex < writeIndex)
       return;
 
+    // AN ITERATOR CAN BE KEPT OPEN FOR LONG BETWEEN TWO READS: THE GRANT IS ASKED AGAIN FOR EVERY BATCH, NOT ONLY WHEN IT IS CREATED.
+    // ONE LOOKUP OF THE BOUND USER PER BATCH OF UP TO PREFETCH_SIZE RECORDS
+    database.checkPermissionsOnFile(bucket.fileId, SecurityDatabaseUser.ACCESS.READ_RECORD);
+
     // THE BATCH BEFORE IS HANDED OVER: ITS BYTES GO BACK TO THE POOL, SO THAT THIS BATCH SEES WHAT IS REALLY LEFT
     releaseReadAhead();
 

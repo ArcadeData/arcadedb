@@ -212,6 +212,26 @@ class DropDatabaseApplyTest {
     }
 
     /**
+     * Issue #13484: the files a schema change's delivery-only entries created wait for its publishing entry. A drop of the
+     * database means that entry never comes, so the drop forgets them, and a database recreated under the name starts clean.
+     */
+    @Test
+    void aDropForgetsTheFilesOfASchemaChangeThatWasNeverPublished() {
+      final ArcadeStateMachine sm = startWithBackupWaitOf(LONG_WAIT_MS);
+      final RaftLogEntryCodec.DecodedEntry firstChunk = RaftLogEntryCodec.decode(
+          RaftTransactionBroker.splitSchemaEntry(DB_NAME, "{}", Map.of(41, "graph"), Map.of(), List.of(new byte[2_048], new byte[2_048]),
+              List.of(Map.of(), Map.of()), List.of(), 3_000, Integer.MAX_VALUE).getFirst());
+      assertThat(firstChunk.moreChunksFollow()).as("precondition: a delivery-only chunk").isTrue();
+      sm.schemaEntries.filesCreatedByTheChange(firstChunk, true);
+
+      applyDrop(sm);
+
+      final RaftLogEntryCodec.DecodedEntry publishing = RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeSchemaEntry(DB_NAME, "{}",
+          Map.of(), Map.of(), List.of(), List.of(), List.of()));
+      assertThat(sm.schemaEntries.filesCreatedByTheChange(publishing, false)).as("files of the dropped database's change").isEmpty();
+    }
+
+    /**
      * On the node that issued the verb, {@code dropInReplicas} waits for this apply while its request thread holds
      * DROP. The apply must not wait on that slot - it would wait on itself - and must leave it to the verb to release.
      */

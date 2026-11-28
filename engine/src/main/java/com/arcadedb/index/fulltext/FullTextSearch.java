@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseRID;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexInternal;
@@ -87,17 +88,18 @@ public class FullTextSearch {
    * independently, so the array is still materialized once per call.
    *
    * @throws com.arcadedb.exception.SchemaException if no index carries that name
-   * @throws CommandExecutionException              if the index exists but is not a full-text type index
+   * @throws InvalidArgumentException               if the index exists but is not a full-text type index: the caller named the wrong
+   *                                                index (issue #12809)
    */
   public static TypeIndex resolveFullTextIndex(final Database database, final String indexName) {
     final Index index = database.getSchema().getIndexByName(indexName);
 
     if (!(index instanceof final TypeIndex typeIndex))
-      throw new CommandExecutionException("Index '" + indexName + "' is not a type index");
+      throw new InvalidArgumentException("Index '" + indexName + "' is not a type index");
 
     final IndexInternal[] bucketIndexes = typeIndex.getIndexesOnBuckets();
     if (bucketIndexes.length == 0 || !(bucketIndexes[0] instanceof LSMTreeFullTextIndex))
-      throw new CommandExecutionException("Index '" + indexName + "' is not a full-text index");
+      throw new InvalidArgumentException("Index '" + indexName + "' is not a full-text index");
 
     return typeIndex;
   }
@@ -107,8 +109,8 @@ public class FullTextSearch {
    * a {@code CREATE FULLTEXT INDEX ... FOR (n:A|B)} spans, which SQL and openCypher resolve alike (issues #10914 and #11014).
    *
    * @throws com.arcadedb.exception.SchemaException if no index carries that name
-   * @throws CommandExecutionException              if the index exists but is not a full-text type index, or is a logical index
-   *                                                none of whose per-type indexes is left
+   * @throws InvalidArgumentException               if the index exists but is not a full-text type index
+   * @throws CommandExecutionException              if the name is a logical index none of whose per-type indexes is left
    */
   public static List<TypeIndex> resolveFullTextIndexes(final Database database, final String indexName) {
     // An index name is unique across the database, so a name that is an index is not a logical one: the lookup of the logical
@@ -144,7 +146,7 @@ public class FullTextSearch {
    * index name on hand, such as the SEARCH_INDEX SQL function, whose per-row boolean semantics need the full match set.
    *
    * @throws com.arcadedb.exception.SchemaException if no index carries that name
-   * @throws CommandExecutionException              if the index exists but is not a full-text type index
+   * @throws InvalidArgumentException               if the index exists but is not a full-text type index
    */
   public static Map<RID, Float> search(final Database database, final String indexName, final String queryText) {
     return search(resolveFullTextIndex(database, indexName), queryText, -1);

@@ -282,6 +282,24 @@ public class GrpcControlPlaneIT extends BaseGrpcServerTest {
           .hasMessageContaining("INVALID_ARGUMENT");
     }
 
+    /**
+     * Root is the only principal that administers the server, so dropping it leaves a server nobody can administer
+     * (issue #12813). The REST {@code DELETE /server/users} route always refused it; this RPC did not.
+     */
+    @Test
+    void deleteUserOfRootIsARejectedArgument() {
+      assertThatThrownBy(() -> adminStub.deleteUser(
+          DeleteUserRequest.newBuilder().setCredentials(root()).setUser("root").build()))
+          .isInstanceOf(StatusRuntimeException.class)
+          .hasMessageContaining("INVALID_ARGUMENT")
+          .hasMessageContaining("Cannot delete the root user");
+
+      assertThat(getServer(0).getSecurity().existsUser("root")).isTrue();
+      // root still authenticates: the next admin call is answered
+      assertThat(adminStub.listUsers(ListUsersRequest.newBuilder().setCredentials(root()).build()).getUsersList())
+          .extracting(UserInfo::getName).contains("root");
+    }
+
     @Test
     void listUsersNeverCarriesAPasswordHash() {
       final ListUsersResponse users = adminStub.listUsers(ListUsersRequest.newBuilder().setCredentials(root()).build());

@@ -20,6 +20,7 @@ package com.arcadedb.query.java;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
@@ -237,7 +238,7 @@ class JavaQueryTest extends TestHelper {
   @Test
   void unsupportedMethods() {
     database.getQueryEngine("java").registerFunctions("com.arcadedb.query.java.JavaMethods");
-    assertThatThrownBy(() -> database.query("java", "com.arcadedb.query.java.JavaMethods::sum", 5, 3)).isInstanceOf(UnsupportedOperationException.class);
+    assertThatThrownBy(() -> database.query("java", "com.arcadedb.query.java.JavaMethods::sum", 5, 3)).isInstanceOf(QueryNotIdempotentException.class);
 
     database.getQueryEngine("java").registerFunctions("com.arcadedb.query.java.JavaMethods");
     assertThatThrownBy(() -> {
@@ -247,7 +248,7 @@ class JavaQueryTest extends TestHelper {
     }).isInstanceOf(UnsupportedOperationException.class);
 
     database.getQueryEngine("java").registerFunctions("com.arcadedb.query.java.JavaMethods");
-    assertThatThrownBy(() -> database.getQueryEngine("java").query("com.arcadedb.query.java.JavaMethods::sum", null, new HashMap<>())).isInstanceOf(UnsupportedOperationException.class);
+    assertThatThrownBy(() -> database.getQueryEngine("java").query("com.arcadedb.query.java.JavaMethods::sum", null, new HashMap<>())).isInstanceOf(QueryNotIdempotentException.class);
   }
 
   /**

@@ -26,6 +26,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.Map;
 import java.util.Objects;
@@ -47,10 +48,12 @@ public class SleepStatement extends SimpleExecStatement {
     final Object value = expression.execute((Identifiable) null, context);
     if (!(value instanceof Number number))
       throw new TypeMismatchException("Invalid value for SLEEP: " + value + ". SLEEP takes a number of milliseconds");
-    final long millis = number.longValue();
+    // A duration that is not positive is no pause: Thread.sleep refuses a negative one
+    final long millis = Math.max(0L, number.longValue());
 
     try {
-      Thread.sleep(millis);
+      // In slices that check the command: the pause ends when the statement is terminated or the command deadline passes
+      WorkGuard.forCommandDeadline(context).sleep(millis);
       item.setProperty("result", "OK");
       item.setProperty("millis", millis);
     } catch (final InterruptedException e) {

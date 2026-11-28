@@ -316,6 +316,35 @@ final class EagerBarriers {
         && relationshipsWalked(closingSegment, walkedBefore);
   }
 
+  /**
+   * True when a {@code CALL { }} subquery of the open segment reads the graph again for each of several input rows: its body
+   * (see {@link GraphReadAnalysis#subqueryBodyReadsGraph}) runs once per row the clauses before it hand over, so a delete
+   * applied for the rows of the first runs takes what it deletes away from the runs that follow (issue #13653).
+   * {@code UNWIND [1,2,3,4] AS x CALL (x) { MATCH (n:l10) RETURN n } DETACH DELETE n RETURN x} over 34 nodes answered 102 rows
+   * instead of 136: the delete pulled the rows of the first three runs, deleted the nodes they returned, and the fourth run
+   * matched an empty graph. Neo4j reads the rows of the subquery to completion first (its Eager operator).
+   * <p>
+   * Unlike a MATCH of the outer query, which replays the candidates of its scan for every row, the body of a subquery is
+   * planned and run again for each row, so nothing it read for one row is kept for the next. A body that runs once, on the one
+   * row the statement starts from, holds no such hazard.
+   *
+   * @param body        the body of the subquery
+   * @param runsPerRow  true when the clauses before the subquery can hand it more than one row
+   */
+  static boolean subqueryReadsGraphPerRow(final CypherStatement body, final boolean runsPerRow) {
+    return runsPerRow && GraphReadAnalysis.subqueryBodyReadsGraph(body);
+  }
+
+  /**
+   * Carries across a WITH whether a subquery that reads the graph per row (see {@link #subqueryReadsGraphPerRow}) still feeds
+   * the rows the next segment receives: a WITH that forwards rows one at a time leaves it feeding them, and a WITH that
+   * aggregates or sorts reads it to the end before it emits its first row (the same two rules as
+   * {@link #relationshipsWalkedAfter}).
+   */
+  static boolean subqueryReadsGraphPerRowAfter(final WithClause withClause, final boolean readsBefore) {
+    return readsBefore && !withClause.hasAggregations() && withClause.getOrderByClause() == null;
+  }
+
   /** Whether every target of the DELETE is, by its plain name, a relationship variable bound by the given MATCH clause(s). */
   private static boolean deletesOnlyMatchedRelationships(final DeleteClause deleteClause, final List<MatchClause> matchClauses) {
     return deletesOnlyMatched(deleteClause, matchClauses, true);

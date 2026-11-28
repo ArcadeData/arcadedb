@@ -37,7 +37,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * a stale read whether or not anything read that head: the page merge refused the commit. A {@code MATCH (a {uuid: ..})} that binds
  * the vertex a relationship is then created from reads what the vertex is, not its lists, so a concurrent relationship load on
  * shared vertices lost most of its commits to it. The head is a stale read only when a traversal read it, which the transaction
- * records (#12320).
+ * records (#12320). It is stale only when it was read after the concurrent commit: a head read before it was the committed one, a
+ * valid READ_COMMITTED read, and the move is then an ordinary phantom (#13572, {@link #aTraversalReadBeforeTheHeadMovedStillMerges()}).
  */
 class Issue12642VertexReadWithUnreadMovedHeadTest extends TestHelper {
 
@@ -63,9 +64,10 @@ class Issue12642VertexReadWithUnreadMovedHeadTest extends TestHelper {
 
     database.begin();
     database.command("opencypher", "MATCH (a:V {id: 1}) SET a.f = 1").close();
-    // the traversal reads the IN head of vertex 2 off the transaction's image: a decision on its incoming relationships
-    assertThat(valueOf("MATCH (b:V {id: 2})<-[e:E]-() RETURN count(e) AS v")).isEqualTo(0L);
     commitFromAnotherThread("MATCH (a:V {id: 3}), (b:V {id: 2}) CREATE (a)-[:E]->(b)");
+    // the traversal reads the IN head of vertex 2 off the transaction's image, which misses the move committed before: a stale decision
+    // on its incoming relationships (a read made before that commit would be current, #13572)
+    assertThat(valueOf("MATCH (b:V {id: 2})<-[e:E]-() RETURN count(e) AS v")).isEqualTo(0L);
 
     assertThatThrownBy(() -> database.commit()).isInstanceOf(ConcurrentModificationException.class);
     assertThat(valueOf("MATCH (a:V {id: 1}) RETURN a.f AS v")).isNull();
@@ -106,8 +108,8 @@ class Issue12642VertexReadWithUnreadMovedHeadTest extends TestHelper {
 
     database.begin();
     database.command("opencypher", "MATCH (a:V {id: 1}) SET a.f = 1").close();
-    assertThat(valueOf("MATCH (a:V {id: 2})-[e:E]->() RETURN count(e) AS v")).isEqualTo(0L);
     commitFromAnotherThread("MATCH (a:V {id: 2}), (b:V {id: 3}) CREATE (a)-[:E]->(b)");
+    assertThat(valueOf("MATCH (a:V {id: 2})-[e:E]->() RETURN count(e) AS v")).isEqualTo(0L);
 
     assertThatThrownBy(() -> database.commit()).isInstanceOf(ConcurrentModificationException.class);
     assertThat(valueOf("MATCH (a:V {id: 1}) RETURN a.f AS v")).isNull();
@@ -137,9 +139,9 @@ class Issue12642VertexReadWithUnreadMovedHeadTest extends TestHelper {
     database.begin();
     database.command("opencypher", "MATCH (a:V {id: 1}) SET a.f = 1").close();
     database.command("opencypher", "MATCH (a:V {id: 0}), (b:V {id: 4}) CREATE (a)-[:E]->(b)").close();
+    commitFromAnotherThread("MATCH (a:V {id: 3}), (b:V {id: 0}) CREATE (a)-[:E]->(b)");
     // the incoming list of vertex 0 is read: its outgoing appends do not make that read current
     assertThat(valueOf("MATCH (b:V {id: 0})<-[e:E]-() RETURN count(e) AS v")).isEqualTo(0L);
-    commitFromAnotherThread("MATCH (a:V {id: 3}), (b:V {id: 0}) CREATE (a)-[:E]->(b)");
 
     assertThatThrownBy(() -> database.commit()).isInstanceOf(ConcurrentModificationException.class);
     assertThat(valueOf("MATCH (a:V {id: 0})-[e:E]->() RETURN count(e) AS v")).isEqualTo(1L);
@@ -151,9 +153,9 @@ class Issue12642VertexReadWithUnreadMovedHeadTest extends TestHelper {
 
     database.begin();
     database.command("opencypher", "MATCH (a:V {id: 1}) SET a.f = 1").close();
+    commitFromAnotherThread("MATCH (a:V {id: 3}), (b:V {id: 2}) CREATE (a)-[:E]->(b)");
     final Vertex vertex = vertexOf(2);
     assertThat(vertex.countEdges(Vertex.DIRECTION.IN)).isZero();
-    commitFromAnotherThread("MATCH (a:V {id: 3}), (b:V {id: 2}) CREATE (a)-[:E]->(b)");
 
     assertThatThrownBy(() -> database.commit()).isInstanceOf(ConcurrentModificationException.class);
   }
@@ -165,9 +167,9 @@ class Issue12642VertexReadWithUnreadMovedHeadTest extends TestHelper {
     database.begin();
     database.command("opencypher", "MATCH (a:V {id: 1}) SET a.f = 1").close();
     // the copy is built from the transaction's own image of the page, traversed, and never saved
+    commitFromAnotherThread("MATCH (a:V {id: 3}), (b:V {id: 2}) CREATE (a)-[:E]->(b)");
     final MutableVertex copy = vertexOf(2).modify();
     assertThat(copy.countEdges(Vertex.DIRECTION.IN)).isZero();
-    commitFromAnotherThread("MATCH (a:V {id: 3}), (b:V {id: 2}) CREATE (a)-[:E]->(b)");
 
     assertThatThrownBy(() -> database.commit()).isInstanceOf(ConcurrentModificationException.class);
   }
@@ -181,12 +183,31 @@ class Issue12642VertexReadWithUnreadMovedHeadTest extends TestHelper {
     final Vertex vertex = vertexOf(2);
     assertThat(vertex.getInteger("id")).isEqualTo(2);
     database.command("opencypher", "MATCH (a:V {id: 1}) SET a.f = 1").close();
+    commitFromAnotherThread("MATCH (a:V {id: 3}), (b:V {id: 2}) CREATE (a)-[:E]->(b)");
     // reloaded now, from the transaction's own image of the page
     vertex.reload();
     assertThat(vertex.countEdges(Vertex.DIRECTION.IN)).isZero();
-    commitFromAnotherThread("MATCH (a:V {id: 3}), (b:V {id: 2}) CREATE (a)-[:E]->(b)");
 
     assertThatThrownBy(() -> database.commit()).isInstanceOf(ConcurrentModificationException.class);
+  }
+
+  /**
+   * #13572: the order of {@link #aVertexWhoseMovedHeadATraversalReadIsStillRefused()} with the concurrent commit AFTER the traversal.
+   * Nobody had committed to the page when the head was read, so the count was the committed one: the move that comes after is a phantom
+   * READ_COMMITTED allows, as it would be had the transaction not written the page at all, and the page still merges.
+   */
+  @Test
+  void aTraversalReadBeforeTheHeadMovedStillMerges() throws Exception {
+    createGraph();
+
+    database.begin();
+    database.command("opencypher", "MATCH (a:V {id: 1}) SET a.f = 1").close();
+    assertThat(valueOf("MATCH (b:V {id: 2})<-[e:E]-() RETURN count(e) AS v")).isEqualTo(0L);
+    commitFromAnotherThread("MATCH (a:V {id: 3}), (b:V {id: 2}) CREATE (a)-[:E]->(b)");
+    database.commit();
+
+    assertThat(valueOf("MATCH (a:V {id: 1}) RETURN a.f AS v")).isEqualTo(1L);
+    assertThat(valueOf("MATCH (b:V {id: 2})<-[e:E]-() RETURN count(e) AS v")).isEqualTo(1L);
   }
 
   private void createGraph() {

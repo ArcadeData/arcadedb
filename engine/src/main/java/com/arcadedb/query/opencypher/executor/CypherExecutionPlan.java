@@ -113,6 +113,7 @@ import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.ExecutionStep;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.ParallelRecordScan;
 import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
@@ -495,6 +496,7 @@ public class CypherExecutionPlan {
     // transaction's copies of the records they hold (issue #12565)
     context.setCurrentRecordsOnly(WrittenCopy.holdsCurrentRecordsOnly(statement.isReadOnly(), outerContext));
     setupFunctionResolver(context);
+    installCommandDeadline(context, outerContext);
     CypherFunctionHelper.inheritStatementTime(context, outerContext);
     inheritIncomingEdgeLookup(context, outerContext);
     inheritGraphViewPins(context, outerContext);
@@ -627,6 +629,46 @@ public class CypherExecutionPlan {
       if (runningQuery != null)
         context.setRunningQuery(runningQuery);
     }
+  }
+
+  /**
+   * The deadline a plan's context starts with: the enclosing statement's for a nested plan (a UNION branch included, which runs on
+   * a context of its own), and for a top-level statement the one the {@code readTimeout} of its user's groups gives it.
+   */
+  private void installCommandDeadline(final BasicCommandContext context, final CommandContext outerContext) {
+    if (outerContext != null)
+      inheritCommandDeadline(context, outerContext);
+    else
+      boundByReadTimeout(context);
+  }
+
+  /**
+   * Bounds a top-level statement that reads by the {@code readTimeout} of the groups of the user running it, as a SQL SELECT or
+   * MATCH is: the whole statement shares one deadline, every guarded loop of every step reads it, and the nested plans inherit it
+   * (see {@link #inheritCommandDeadline}). The bucket scans carried that timeout alone until now, each on a clock of its own, so
+   * an index seek, an expansion, an UNWIND, an aggregation or a procedure ran past it.
+   * <p>
+   * Resolved from the user at the moment the statement starts and kept on its context, never on the plan: the physical plan is
+   * shared through the plan cache by every user of the same text. The earlier of this deadline and the command's own
+   * ({@code arcadedb.command.timeout}) wins, and a timeout that is not positive adds no bound, as a {@code TIMEOUT 0} clause adds
+   * none. A statement that writes keeps the pace it had, as a SQL UPDATE or DELETE does.
+   */
+  private void boundByReadTimeout(final BasicCommandContext context) {
+    if (!statement.isReadOnly())
+      return;
+
+    final long readTimeout = database.getReadTimeout();
+    if (readTimeout <= 0)
+      return;
+
+    // Saturating, and one below Long.MAX_VALUE, which stands for "no deadline at all"
+    final long now = System.currentTimeMillis();
+    final long deadline = readTimeout > Long.MAX_VALUE - 1 - now ? Long.MAX_VALUE - 1 : now + readTimeout;
+    // The command's own bound is the stricter one, and it carries its own description
+    if (context.getCommandDeadline() <= deadline)
+      return;
+
+    context.setCommandDeadline(deadline, "group readTimeout of " + readTimeout + "ms", false);
   }
 
   /**
@@ -1049,6 +1091,7 @@ public class CypherExecutionPlan {
     context.setProfiling(profile != null);
     context.setCurrentRecordsOnly(WrittenCopy.holdsCurrentRecordsOnly(statement.isReadOnly(), outerContext));
     setupFunctionResolver(context);
+    installCommandDeadline(context, outerContext);
     // Every branch runs on a context of its own, so the statement clock has to travel from here into each of
     // them - and into here from an enclosing statement when this UNION is a CALL body (issue #7052).
     CypherFunctionHelper.inheritStatementTime(context, outerContext);
@@ -1395,73 +1438,105 @@ public class CypherExecutionPlan {
     context.setDatabase(database);
     context.setInputParameters(parameters);
     setupFunctionResolver(context);
+    installCommandDeadline(context, null);
     context.setProfiling(true);
     context.openGraphViewPins();
     SubqueryPlans.install(context, null, statement);
 
-    final InternalResultSet results = new InternalResultSet();
-    AbstractExecutionStep rootStep = null;
-    boolean countPushedDown = false;
-    // The rows the statement answers, as execute() answers them: the run is still drained for its side effects, but a
-    // RETURN-less write (or a FINISH) keeps none. It kept the rows its last write clause passed on, which a client iterating
-    // the profiled write read as phantom records (issue #11386)
-    final boolean keepRows = statement.isReadOnly() ? !statement.hasFinishClause() : !writeAnswersNoRows();
+    final ProfiledRows results = new ProfiledRows(OperationHeapLimit.of(context, "PROFILE result"));
+    try {
+      AbstractExecutionStep rootStep = null;
+      boolean countPushedDown = false;
+      // The rows the statement answers, as execute() answers them: the run is still drained for its side effects, but a
+      // RETURN-less write (or a FINISH) keeps none. It kept the rows its last write clause passed on, which a client iterating
+      // the profiled write read as phantom records (issue #11386)
+      final boolean keepRows = statement.isReadOnly() ? !statement.hasFinishClause() : !writeAnswersNoRows();
 
-    // A failure ends the statement here, as it ends the statement PROFILE wraps: it reaches the caller, so the transaction
-    // around the statement rolls back what was written before it. It used to be caught into the profile text, which
-    // answered a failed write with no rows and no error and let its writes commit (issue #10252); Neo4j's PROFILE fails too
-    if (unionSubqueryPlans != null && !unionSubqueryPlans.isEmpty()) {
-      final UnionStep unionStep =
-          new UnionStep(unionSubqueryPlans, unionRemoveDuplicates, context);
-      if (!statement.isReadOnly())
-        shareLabelReplacementsWithBranches(context, null);
-      try (final ResultSet resultSet = unionStep.syncPull(context, Integer.MAX_VALUE)) {
-        while (resultSet.hasNext()) {
-          final Result row = resultSet.next();
-          if (keepRows)
-            results.add(row);
-        }
-        redirectProfiledRows(context, results);
-      } finally {
-        LabelReplacements.endOfStatement(context);
-      }
-    } else {
-      // FAST PATH: Count-push-down (same logic as execute())
-      rootStep = tryCountPushDown(context, false);
-      countPushedDown = rootStep != null;
-
-      if (rootStep == null) {
-        if (canUseOptimizedPhysicalPlan()) {
-          rootStep = stepBuilder.buildExecutionStepsWithOptimizer(context);
-        } else
-          rootStep = stepBuilder.buildExecutionSteps(context);
-      }
-
-      if (rootStep != null) {
-        try (final ResultSet resultSet = rootStep.syncPull(context, Integer.MAX_VALUE)) {
+      // A failure ends the statement here, as it ends the statement PROFILE wraps: it reaches the caller, so the transaction
+      // around the statement rolls back what was written before it. It used to be caught into the profile text, which
+      // answered a failed write with no rows and no error and let its writes commit (issue #10252); Neo4j's PROFILE fails too
+      if (unionSubqueryPlans != null && !unionSubqueryPlans.isEmpty()) {
+        final UnionStep unionStep =
+            new UnionStep(unionSubqueryPlans, unionRemoveDuplicates, context);
+        if (!statement.isReadOnly())
+          shareLabelReplacementsWithBranches(context, null);
+        try (final ResultSet resultSet = unionStep.syncPull(context, AbstractExecutionStep.DEFAULT_FETCH_RECORDS_PER_PULL)) {
           while (resultSet.hasNext()) {
             final Result row = resultSet.next();
             if (keepRows)
-              results.add(row);
+              results.keep(row);
           }
           redirectProfiledRows(context, results);
         } finally {
-          // The run is drained: no binding of a record a label write replaced is left to resolve (issue #12336)
           LabelReplacements.endOfStatement(context);
         }
+      } else {
+        // FAST PATH: Count-push-down (same logic as execute())
+        rootStep = tryCountPushDown(context, false);
+        countPushedDown = rootStep != null;
+
+        if (rootStep == null) {
+          if (canUseOptimizedPhysicalPlan()) {
+            rootStep = stepBuilder.buildExecutionStepsWithOptimizer(context);
+          } else
+            rootStep = stepBuilder.buildExecutionSteps(context);
+        }
+
+        if (rootStep != null) {
+          // Pulled as execute() pulls it, a batch at a time: a step hands on its whole input however small the batch is, so
+          // the batch only bounds what each step buffers per pull
+          try (final ResultSet resultSet = rootStep.syncPull(context, AbstractExecutionStep.DEFAULT_FETCH_RECORDS_PER_PULL)) {
+            while (resultSet.hasNext()) {
+              final Result row = resultSet.next();
+              if (keepRows)
+                results.keep(row);
+            }
+            redirectProfiledRows(context, results);
+          } finally {
+            // The run is drained: no binding of a record a label write replaced is left to resolve (issue #12336)
+            LabelReplacements.endOfStatement(context);
+          }
+        }
       }
+
+      final long endTime = System.nanoTime();
+      final long rowCount = results.countEntries();
+
+      results.setPlan(buildProfilePlan(context, rootStep, countPushedDown, endTime - startTime, rowCount));
+      // Surface the CRUD-count accumulator built up by the mutation steps during the profiled run,
+      // mirroring execute()'s write path so a profiled write still reports its counters. Read-only
+      // statements never attach a statistics accumulator, matching execute()'s read path.
+      if (!statement.isReadOnly())
+        results.setStatistics(context.getStatistics());
+      return results;
+    } catch (final RuntimeException | Error e) {
+      // The rows kept so far are not answered to anyone: their heap goes back now, not when the garbage collector finds the context
+      results.close();
+      throw e;
+    }
+  }
+
+  /**
+   * The rows of a profiled run, held until the caller closes the result set. Each row kept is counted against the element cap of
+   * one operation and its estimated size charged to the heap budget of the query, and both are given back by {@link #close()}.
+   */
+  private static final class ProfiledRows extends InternalResultSet {
+    private final OperationHeapLimit heapLimit;
+
+    private ProfiledRows(final OperationHeapLimit heapLimit) {
+      this.heapLimit = heapLimit;
     }
 
-    final long endTime = System.nanoTime();
-    final long rowCount = results.countEntries();
+    private void keep(final Result row) {
+      add(row);
+      heapLimit.add(countEntries(), row);
+    }
 
-    results.setPlan(buildProfilePlan(context, rootStep, countPushedDown, endTime - startTime, rowCount));
-    // Surface the CRUD-count accumulator built up by the mutation steps during the profiled run,
-    // mirroring execute()'s write path so a profiled write still reports its counters. Read-only
-    // statements never attach a statistics accumulator, matching execute()'s read path.
-    if (!statement.isReadOnly())
-      results.setStatistics(context.getStatistics());
-    return results;
+    @Override
+    public void close() {
+      super.close();
+      heapLimit.release();
+    }
   }
 
   /**

@@ -47,7 +47,8 @@ import java.util.stream.Stream;
  * <ul>
  *   <li>maxIterations (int, default 10): maximum number of optimization iterations</li>
  *   <li>tolerance (double, default 0.0001): minimum modularity improvement to continue</li>
- *   <li>weightProperty (string, default null): edge property to use as weight</li>
+ *   <li>weightProperty (string, default null): edge property to use as weight; every weight must be finite and
+ *       non-negative, or the call is refused</li>
  * </ul>
  * </p>
  * <p>
@@ -101,7 +102,8 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
         extractInt(n, "maxIterations", 1) : 10;
     final double tolerance = config != null && config.get("tolerance") instanceof Number n ?
         n.doubleValue() : 0.0001;
-    final String weightProperty = config != null ? (String) config.get("weightProperty") : null;
+    requireNonNegativeFinite("tolerance", tolerance);
+    final String weightProperty = configString(config, "weightProperty");
 
     final Database db = context.getDatabase();
     final WorkGuard guard = newWorkGuard(context);
@@ -113,6 +115,9 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
     if (n == 0)
       return Stream.empty();
     final GraphData.WeightedAdjacency adjacency = graph.weightedAdjacency(guard, Vertex.DIRECTION.BOTH, weightProperty);
+    // one NaN or infinite weight made the degrees, the total weight and so the modularity NaN (issue #12957)
+    if (weightProperty != null)
+      requireFiniteNonNegativeWeights(adjacency, weightProperty, guard);
 
     // doubles: weighted degree, community total degree, candidate weights and the two modularity accumulators; ints:
     // the community and the candidate list (reused for the renumbering); the touched flags

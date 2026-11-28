@@ -21,6 +21,9 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.database.*;
 import com.arcadedb.database.Record;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.ImmutableEdge;
+import com.arcadedb.graph.ImmutableLightEdge;
+import com.arcadedb.graph.ImmutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
@@ -135,7 +138,8 @@ public class ResultInternal implements Result {
    * Asking for each name in turn reads a row backed by a stored record once per property, since
    * {@code ImmutableDocument.get(name)} walks the record header from its first byte until it meets the name, so a row of P
    * properties cost P walks. The values of a plain row come from {@link #toPropertyMap(boolean)} instead, which reads the
-   * record once (issue #10098), so the row costs two passes whatever its size: that one and the name list. A projection row
+   * record once (issue #10098), so the row costs one pass whatever its size (two when that read reports that a part of the record did
+   * not decode, which is when the names are needed to tell a missing property from an unreadable one, issue #12979). A projection row
    * (one that holds its own values) gets the map {@code toPropertyMap} built and nothing else: its names are that map's keys,
    * so neither a name set nor a second map is built for it. The names still decide what a record row holds: the single read
    * leaves out a property whose value does not decode (a damaged record), which a read by name answers with {@code null}.
@@ -172,6 +176,29 @@ public class ResultInternal implements Result {
     if (plain.element == null || (plain.content != null && !plain.content.isEmpty()))
       return plain.toPropertyMap(false);
 
+    // A STORED RECORD NOTHING NARROWED IS READ IN ONE PASS (issue #12979): the map of its values is also the list of its names, unless
+    // the read reports that a part of the record did not decode, which is the one case that needs the names to tell a property
+    // that is not there from one that could not be read. Listing the names first cost a second walk over the header, a set of them
+    // and a copy of the map for every row of a result.
+    if (plain.element instanceof ImmutableDocument stored && excluded.isEmpty() && plain.projectionExcludes == null
+        && (plain.tombstones == null || plain.tombstones.isEmpty()) && readsInOnePass(stored.getClass())) {
+      final String[] damage = new String[1];
+      final Map<String, Object> read = stored.toMapReportingDamage(damage);
+      if (damage[0] == null) {
+        for (final Map.Entry<String, Object> entry : read.entrySet()) {
+          final Object value = entry.getValue();
+          if (value instanceof Identifiable)
+            entry.setValue(toPropertyValue(value));
+        }
+        return read;
+      }
+      final Set<String> names = stored.getPropertyNames();
+      final Map<String, Object> properties = new LinkedHashMap<>(names.size() * 4 / 3 + 1);
+      for (final String name : names)
+        properties.put(name, toPropertyValue(read.get(name)));
+      return properties;
+    }
+
     // The names getPropertyNames() lists, minus the caller's exclusions, noting whether any stored name was dropped
     final Set<String> names = new LinkedHashSet<>();
     boolean narrowed = false;
@@ -206,6 +233,49 @@ public class ResultInternal implements Result {
     return properties;
   }
 
+  /**
+   * True when the keys of {@link #propertiesOf(Result)} are the names of the record behind {@code row}, the projection's exclusions
+   * left out, and nothing else: a plain row over a record that holds no values of its own and has had none removed. A consumer that
+   * also lists the record's names itself (the Postgres column list) already has them as those keys and spares the walk over the
+   * record header and the set of names that listing costs for every row (issue #13012).
+   */
+  public static boolean isPlainRecordRow(final Result row) {
+    if (row.getClass() != ResultInternal.class)
+      return false;
+    final ResultInternal plain = (ResultInternal) row;
+    return plain.element != null && (plain.content == null || plain.content.isEmpty())
+        && (plain.tombstones == null || plain.tombstones.isEmpty());
+  }
+
+  /**
+   * Whether {@link #propertiesOf} may read a record of {@code recordClass} through
+   * {@link ImmutableDocument#toMapReportingDamage(String[])}, which reads the stored content directly, instead of through the
+   * {@code getPropertyNames()} and {@code toMap(false)} a subclass may answer differently from that content: a remote record holds
+   * no content at all, only the map the server sent (issue #12979). A class qualifies when it is one of the engine's own record
+   * classes, whose {@code toMap(false)} is that read (pinned by {@code ResultInternalPropertiesOfTest}), or when it declares
+   * {@code toMapReportingDamage} itself, saying how a record of its own reports damage. Any other subclass keeps the read through
+   * its names and its map. Only a declaration found counts: in a native image a method whose reflection metadata is not registered
+   * reads as not declared, which leaves the class on the read through its names and its map, never on a read of content it may not
+   * have. Decided once per class.
+   */
+  static boolean readsInOnePass(final Class<?> recordClass) {
+    return READS_IN_ONE_PASS.get(recordClass);
+  }
+
+  private static final ClassValue<Boolean> READS_IN_ONE_PASS = new ClassValue<>() {
+    @Override
+    protected Boolean computeValue(final Class<?> recordClass) {
+      if (recordClass == ImmutableDocument.class || recordClass == ImmutableVertex.class || recordClass == ImmutableEdge.class
+          || recordClass == ImmutableLightEdge.class || recordClass == ImmutableEmbeddedDocument.class)
+        return true;
+      try {
+        recordClass.getDeclaredMethod("toMapReportingDamage", String[].class);
+        return true;
+      } catch (final NoSuchMethodException e) {
+        return false;
+      }
+    }
+  };
   private static boolean sameNamesInOrder(final Set<String> names, final Map<String, Object> read) {
     if (names.size() != read.size())
       return false;
@@ -639,6 +709,11 @@ public class ResultInternal implements Result {
       return true;
     }
     return false;
+  }
+
+  /** Whether {@code name} is a column of the row's own content, not a property it reads from its record. */
+  boolean hasContentColumn(final String name) {
+    return content != null && content.containsKey(name);
   }
 
   /**

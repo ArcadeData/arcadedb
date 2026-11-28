@@ -133,14 +133,17 @@ import com.arcadedb.utility.VectorApiSupport;
 import java.io.File;
 import java.io.IOException;
 import java.io.RandomAccessFile;
-import java.io.UncheckedIOException;
 import java.nio.BufferUnderflowException;
 import java.nio.channels.ClosedByInterruptException;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
+import java.nio.file.DirectoryIteratorException;
+import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
@@ -165,7 +168,6 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Consumer;
 import java.util.function.UnaryOperator;
 import java.util.logging.Level;
-import java.util.stream.Stream;
 
 /**
  * Local implementation of {@link Database}. It is based on files opened on the local file system.
@@ -499,16 +501,58 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       if (afterDropCloseHook != null)
         afterDropCloseHook.accept(this);
 
+      final File databaseDirectory = new File(databasePath);
       executeInWriteLock(() -> {
-        FileUtils.deleteRecursively(new File(databasePath));
+        FileUtils.deleteRecursively(databaseDirectory);
         return null;
       });
+
+      // THE DELETE ONLY LOGS WHAT IT COULD NOT REMOVE (ISSUE #12865): A DROP THAT LEFT FILES BEHIND MUST NOT REPORT SUCCESS, OR THE
+      // CALLER IS TOLD THE DATABASE IS GONE WHILE create() OF THE PATH IS REFUSED AS "ALREADY EXISTS" AND open() BRINGS THE DATA
+      // BACK. CHECKED WHILE THE PATH IS STILL HELD IN THE REGISTRY, SO NO create() CAN PUT NEW FILES THERE IN BETWEEN. AN EMPTY
+      // DIRECTORY LEFT BEHIND (A MOUNT POINT, A PARENT THAT REFUSES THE UNLINK) HOLDS NO DATABASE AND IS NOT A FAILURE
+      checkDatabaseDirectoryIsGone(databaseDirectory.toPath());
     } finally {
       // WHATEVER BECAME OF THE DELETE: NOTHING IS LEFT TO KEEP THE PATH FOR. A DROP THAT LOST THE CLOSING CAS TO A CONCURRENT
       // close() HAS NOTHING TO UNREGISTER, THAT CLOSE DID IT
       if (registrationKept)
         unregisterClosedInstance();
     }
+  }
+
+  /**
+   * Throws when the directory of the database is still there with any entry in it, or cannot be inspected: only a directory
+   * that is gone (NoSuchFileException) or empty holds no database. File.exists() and File.list() are not enough, because they
+   * answer "absent" or null for a directory they are not allowed to look at (an unreadable directory, an ancestor without
+   * search permission), where the delete removed nothing either.
+   */
+  private void checkDatabaseDirectoryIsGone(final Path databaseDirectory) {
+    final List<String> leftOver = new ArrayList<>();
+    try (final DirectoryStream<Path> entries = Files.newDirectoryStream(databaseDirectory)) {
+      for (final Path entry : entries)
+        leftOver.add(entry.getFileName().toString());
+    } catch (final NoSuchFileException e) {
+      return;
+    } catch (final IOException | DirectoryIteratorException e) {
+      throw new DatabaseOperationException(
+          "Database '" + databasePath + "' was closed but its files could not be deleted: its directory cannot be inspected (" + e
+              + ")", e);
+    }
+
+    if (leftOver.isEmpty())
+      return;
+
+    Collections.sort(leftOver);
+    final int listed = Math.min(leftOver.size(), 10);
+    final StringBuilder buffer = new StringBuilder();
+    for (int i = 0; i < listed; i++) {
+      if (i > 0)
+        buffer.append(", ");
+      buffer.append(leftOver.get(i));
+    }
+    if (leftOver.size() > listed)
+      buffer.append(" and ").append(leftOver.size() - listed).append(" more");
+    throw new DatabaseOperationException("Database '" + databasePath + "' was closed but its files could not be deleted: " + buffer);
   }
 
   /**
@@ -829,19 +873,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     return executeInReadLock(() -> {
       checkDatabaseIsOpen();
       try {
-        final Path dir = Path.of(databasePath);
-        if (!Files.exists(dir))
-          return 0L;
-        try (Stream<Path> stream = Files.walk(dir)) {
-          return stream.filter(Files::isRegularFile).mapToLong(p -> {
-            try {
-              return Files.size(p);
-            } catch (IOException e) {
-              throw new UncheckedIOException(e);
-            }
-          }).sum();
-        }
-      } catch (Exception e) {
+        return FileUtils.getDirectorySize(Path.of(databasePath));
+      } catch (final IOException e) {
         throw new DatabaseOperationException("Error calculating database size", e);
       }
     });
@@ -5265,7 +5298,13 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       // ISSUE #4511: RELEASE THE FILE LOCK AND CLOSE THE I/O RESOURCES ACQUIRED BEFORE THE FAILURE, OTHERWISE THE
       // DATABASE STAYS PERMANENTLY UNOPENABLE WITHIN THIS JVM (AND THE LOCK FILE CANNOT BE REMOVED ON WINDOWS).
-      releaseResourcesOnOpenFailure(null);
+      try {
+        releaseResourcesOnOpenFailure(null);
+      } catch (final Error cleanupError) {
+        // THE ERROR PROPAGATES, BUT NOT AT THE COST OF THE REASON THE OPEN FAILED
+        cleanupError.addSuppressed(e);
+        throw cleanupError;
+      }
 
       if (e instanceof DatabaseOperationException exception)
         throw exception;
@@ -5300,9 +5339,36 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * @param primaryError the Error that failed the open, or null when an Exception did. With one, a step's failure of
    *                     any kind is attached to it as suppressed and the next step still runs: a second Error thrown
    *                     from here (an OutOfMemoryError is likely to strike again right away) would otherwise replace
-   *                     the original and skip the steps after it, leaving database.lck locked.
+   *                     the original and skip the steps after it, leaving database.lck locked. Without one, the first
+   *                     Error a step raises is thrown once every step has run, with the later failures suppressed in it.
    */
   private void releaseResourcesOnOpenFailure(final Error primaryError) {
+    Error pending = primaryError;
+
+    // THE TRANSACTION CONTEXT openInternal() REGISTERED FOR THIS THREAD, FIRST, WHILE THE MANAGERS IT MAY HOLD LOCKS IN ARE STILL
+    // THERE: IT BELONGS TO AN INSTANCE THAT NEVER OPENED. LEFT BEHIND, IT PINNED THAT INSTANCE FOR AS LONG AS THE THREAD LIVES AND
+    // FAILED THE THREAD'S FIRST USE OF A DATABASE OF THE SAME PATH OPENED LATER, BY ANY THREAD ("Invalid transactional context
+    // (different db)"). NO LIVE INSTANCE OF THE PATH CAN OWN A CONTEXT OF THIS THREAD: THE FACTORY BUILDS THIS INSTANCE UNDER THE
+    // PATH'S MONITOR AND ONLY WHEN NO ACTIVE INSTANCE OF THE PATH IS REGISTERED, AND A CLOSED INSTANCE TOOK ITS CONTEXTS WITH IT
+    // (removeAllContexts). EACH TRANSACTION IS ROLLED BACK ON ITS OWN: ONE THAT FAILS MUST NOT KEEP THE OUTER ONES' LOCKS HELD
+    try {
+      final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.removeContext(databasePath);
+      if (context != null)
+        for (int i = context.transactions.size() - 1; i > -1; --i) {
+          try {
+            final TransactionContext tx = context.transactions.get(i);
+            if (tx.isActive())
+              tx.rollback();
+          } catch (final Throwable e) {
+            pending = onOpenFailureReleaseError(pending, e, "Error on rolling back a transaction after a failed open of database '%s'",
+                name);
+          }
+        }
+    } catch (final Throwable e) {
+      pending = onOpenFailureReleaseError(pending, e, "Error on clearing the transaction context after a failed open of database '%s'",
+          name);
+    }
+
     try {
       if (columnarIndexManager != null) {
         // a failed open is no clean close: nothing is flushed, the projections opened by the schema load only release their files
@@ -5310,7 +5376,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         columnarIndexManager.close();
       }
     } catch (final Throwable e) {
-      onOpenFailureReleaseError(primaryError, e, "Error on closing the columnar indexes after a failed open of database '%s'", name);
+      pending = onOpenFailureReleaseError(pending, e, "Error on closing the columnar indexes after a failed open of database '%s'", name);
     }
 
     try {
@@ -5329,14 +5395,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         }
       }
     } catch (final Throwable e) {
-      onOpenFailureReleaseError(primaryError, e, "Error on releasing lock file '%s' after a failed open", lockFile);
+      pending = onOpenFailureReleaseError(pending, e, "Error on releasing lock file '%s' after a failed open", lockFile);
     }
 
     try {
       if (fileManager != null)
         fileManager.close();
     } catch (final Throwable e) {
-      onOpenFailureReleaseError(primaryError, e, "Error on closing file manager after a failed open of database '%s'", name);
+      pending = onOpenFailureReleaseError(pending, e, "Error on closing file manager after a failed open of database '%s'", name);
     }
 
     try {
@@ -5348,23 +5414,32 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         // data files. This instance may not even own a WAL pool; it never owns the right to delete one.
         transactionManager.close(false, true);
     } catch (final Throwable e) {
-      onOpenFailureReleaseError(primaryError, e, "Error on closing transaction manager after a failed open of database '%s'",
+      pending = onOpenFailureReleaseError(pending, e, "Error on closing transaction manager after a failed open of database '%s'",
           name);
     }
+
+    if (pending != primaryError)
+      // AN ERROR OF THE EXCEPTION PATH: IT STILL PROPAGATES, BUT ONLY NOW THAT EVERY STEP RAN (ISSUE #4511: database.lck RELEASED)
+      throw pending;
   }
 
   /**
-   * One step of {@link #releaseResourcesOnOpenFailure(Error)} failed. Without a primary Error the behaviour is the one
-   * the Exception path always had: an Exception is logged and the next step runs, an Error propagates.
+   * One step of {@link #releaseResourcesOnOpenFailure(Error)} failed. With an Error already pending (the one that failed the
+   * open, or the first one a step raised) the failure is attached to it as suppressed. Otherwise an Exception is logged and an
+   * Error becomes the pending one, thrown once the last step has run.
+   *
+   * @return the Error pending after this failure, or null when there is none
    */
-  private void onOpenFailureReleaseError(final Error primaryError, final Throwable failure, final String message,
+  private Error onOpenFailureReleaseError(final Error pending, final Throwable failure, final String message,
       final Object argument) {
-    if (primaryError != null)
-      primaryError.addSuppressed(failure);
-    else if (failure instanceof Error error)
-      throw error;
-    else
-      LogManager.instance().log(this, Level.WARNING, message, failure, argument);
+    if (pending != null) {
+      pending.addSuppressed(failure);
+      return pending;
+    }
+    if (failure instanceof Error error)
+      return error;
+    LogManager.instance().log(this, Level.WARNING, message, failure, argument);
+    return null;
   }
 
   /**

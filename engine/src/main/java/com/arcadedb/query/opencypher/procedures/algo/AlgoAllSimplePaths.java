@@ -109,7 +109,7 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
     final RelationshipPattern pattern = extractRelationshipPattern(args[2], context);
     final String[] outTypes = pattern.typesFor(Vertex.DIRECTION.OUT);
     final String[] inTypes = pattern.typesFor(Vertex.DIRECTION.IN);
-    final int maxDepth = NumberUtils.saturateToInt((Number) args[3]);
+    final int maxDepth = NumberUtils.saturateToInt(requiredNumberArg(args, 3, "maxDepth"));
     final Map<String, Object> options = extractConfig(argOrDefault(args, 4, null), "options", OPTION_KEYS);
     final Set<String> skipRelTypes = extractSkipTypes(options, "skipRelTypes", true, context);
     final Set<String> skipVertexTypes = extractSkipTypes(options, "skipVertexTypes", false, context);

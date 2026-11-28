@@ -98,14 +98,16 @@ public class TimeConstructorFunction implements StatelessFunction {
         throw new CommandSemanticException("time() " + e.getMessage());
       }
     }
-    if (args[0] instanceof CypherTime)
-      return args[0];
-    if (args[0] instanceof CypherDateTime)
-      return new CypherTime(((CypherDateTime) args[0]).getValue().toOffsetDateTime().toOffsetTime());
-    if (args[0] instanceof CypherLocalTime)
-      return new CypherTime(((CypherLocalTime) args[0]).getValue().atOffset(ZoneOffset.UTC));
-    if (args[0] instanceof CypherLocalDateTime)
-      return new CypherTime(((CypherLocalDateTime) args[0]).getValue().toLocalTime().atOffset(ZoneOffset.UTC));
+    // A native temporal (a parameter a driver sent, a value read off a map or a list) is the Cypher temporal its literal is (issue #13569)
+    final Object temporal = TemporalUtil.fromCoreJavaType(args[0]);
+    if (temporal instanceof CypherTime)
+      return temporal;
+    if (temporal instanceof CypherDateTime)
+      return new CypherTime(((CypherDateTime) temporal).getValue().toOffsetDateTime().toOffsetTime());
+    if (temporal instanceof CypherLocalTime)
+      return new CypherTime(((CypherLocalTime) temporal).getValue().atOffset(ZoneOffset.UTC));
+    if (temporal instanceof CypherLocalDateTime)
+      return new CypherTime(((CypherLocalDateTime) temporal).getValue().toLocalTime().atOffset(ZoneOffset.UTC));
     throw new CommandSemanticException("time() expects a string, map, or temporal argument");
   }
 }

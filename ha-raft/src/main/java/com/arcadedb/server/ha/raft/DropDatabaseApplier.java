@@ -96,6 +96,8 @@ final class DropDatabaseApplier {
     // Nor the term of its last materialized view recovery (issue #11555): a database recreated under the same name in this
     // leadership gets the full recovery at its open, not the partial one the dropped database had earned
     sm.viewRecovery.materializedViewsRecoveredInTerm.remove(databaseName);
+    // Nor the files of a schema change whose publishing entry never came (issue #13484)
+    sm.schemaEntries.forgetUnpublishedChange(databaseName);
     // The copy the served index described is going away with it (issue #8579): a database recreated under the same
     // name must not inherit it.
     final InstallApplyGate installGate = sm.replacement.installApplyGates.get(databaseName);

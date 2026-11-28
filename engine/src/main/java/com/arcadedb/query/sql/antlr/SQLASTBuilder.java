@@ -259,6 +259,37 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       "map", "agg", "node", "rel", "path", "create");
 
   /**
+   * Whether the text being built holds more literals than a shape records: every statement built from it whose plans can reach
+   * the execution plan cache is then kept out of it as it is built (see {@link #planned}, issue #12605).
+   */
+  private final boolean keepPlansOutOfTheCache;
+
+  public SQLASTBuilder() {
+    this(false);
+  }
+
+  /**
+   * @param keepPlansOutOfTheCache true for a text with more literals than a shape records
+   *                               ({@link LiteralParameterizer#MAX_LITERALS}), which the parser counts
+   *                               on the tokens it read
+   */
+  public SQLASTBuilder(final boolean keepPlansOutOfTheCache) {
+    this.keepPlansOutOfTheCache = keepPlansOutOfTheCache;
+  }
+
+  /**
+   * Hands back a statement this builder just created, kept out of the execution plan cache when the text is a bulk one. Every
+   * SELECT, UPDATE and DELETE the builder creates goes through here, at any nesting depth (a LET, a FROM subquery, the source of
+   * an INSERT, the body of a script block): those are the statements a plan is cached for, and the literals can be in any of
+   * them. Marking them here costs nothing for a text under the limit and needs no walk of the finished tree for one above it.
+   */
+  private <S extends Statement> S planned(final S statement) {
+    if (keepPlansOutOfTheCache)
+      statement.excludeFromPlanCache();
+    return statement;
+  }
+
+  /**
    * Token indexes of every parameter that takes a sequential number ({@code ?}, {@code :name}, {@code bucket:?},
    * {@code bucket::name}), in source order. A parameter's number is its position in this array, so it follows where
    * the placeholder is WRITTEN, not the order in which the clauses happen to be visited: SKIP is built before LIMIT
@@ -501,7 +532,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    */
   @Override
   public SelectStatement visitSelectStatement(final SQLParser.SelectStatementContext ctx) {
-    final SelectStatement stmt = new SelectStatement();
+    final SelectStatement stmt = planned(new SelectStatement());
 
     // FROM clause. Visited before every other clause even though it is not written first: the target may declare an
     // alias, and the clauses below are the ones that reference it (issue #7153).
@@ -828,7 +859,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    */
   @Override
   public SelectStatement visitSelectStmt(final SQLParser.SelectStmtContext ctx) {
-    final SelectStatement stmt = new SelectStatement();
+    final SelectStatement stmt = planned(new SelectStatement());
 
     // Get the selectStatement context from the labeled alternative
     final SQLParser.SelectStatementContext selectCtx = ctx.selectStatement();
@@ -5260,7 +5291,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         stmt.selectStatement = (SelectStatement) visitResult;
       } else if (visitResult instanceof FromClause) {
         // Handle case where parser returns FromClause - wrap it in a SELECT
-        final SelectStatement select = new SelectStatement();
+        final SelectStatement select = planned(new SelectStatement());
         select.target = (FromClause) visitResult;
         stmt.selectStatement = select;
       } else {
@@ -5286,6 +5317,50 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
+   * The rows of a {@code (columns) VALUES (...), (...)} clause. The grammar keeps every expression of the clause in one flat
+   * list of the context, so the rows are read from the parentheses that follow {@code VALUES}: cutting the flat list every
+   * {@code columns} expressions made {@code (a) VALUES (1, 2)} two records and {@code (a, b) VALUES (1, 2, 3, 4)} two as well
+   * (issue #12844). A row whose size differs from the column list is the caller's mistake.
+   */
+  private List<List<Expression>> valueRows(final ParserRuleContext ctx, final int columns) {
+    final List<List<Expression>> rows = new ArrayList<>();
+    List<Expression> row = null;
+    boolean afterValues = false;
+    for (final ParseTree child : ctx.children) {
+      if (child instanceof TerminalNode terminal) {
+        final int type = terminal.getSymbol().getType();
+        if (type == SQLParser.VALUES)
+          afterValues = true;
+        else if (afterValues && type == SQLParser.LPAREN)
+          row = new ArrayList<>(columns);
+        else if (afterValues && type == SQLParser.RPAREN && row != null) {
+          if (row.size() != columns)
+            throw new CommandSQLParsingException(
+                "The row " + (rows.size() + 1) + " of VALUES holds " + row.size() + " values for " + columns + " fields");
+          rows.add(row);
+          row = null;
+        }
+      } else if (row != null && child instanceof SQLParser.ExpressionContext expression)
+        row.add((Expression) visit(expression));
+    }
+    return rows;
+  }
+
+  /**
+   * The token index of the parenthesis that opens the column list of a {@code CREATE VERTEX [type [BUCKET b]] (columns) VALUES ...},
+   * {@code Integer.MAX_VALUE} when the statement has none: an identifier before it is the type or the bucket, one after it is a
+   * column. Taking the first identifier as the type whatever its position made {@code CREATE VERTEX (a, b) VALUES (1, 2)} a
+   * statement on a type named {@code a} with the single column {@code b} (issue #12844).
+   */
+  private static int columnsStart(final ParserRuleContext ctx) {
+    if (ctx.children != null)
+      for (final ParseTree child : ctx.children)
+        if (child instanceof TerminalNode terminal && terminal.getSymbol().getType() == SQLParser.LPAREN)
+          return terminal.getSymbol().getTokenIndex();
+    return Integer.MAX_VALUE;
+  }
+
+  /**
    * Visit INSERT body (VALUES, SET, or CONTENT).
    */
   @Override
@@ -5301,24 +5376,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
       body.valueExpressions = new ArrayList<>();
 
-      // The grammar: (id, id) VALUES (expr, expr) (, (expr, expr))*
-      // All expressions are in ctx.expression() as a flat list
-      // We need to group them by the number of fields per row
-      final List<SQLParser.ExpressionContext> allExpressions = ctx.expression();
       final int fieldsPerRow = body.identifierList.size();
-
-      if (fieldsPerRow > 0 && !allExpressions.isEmpty()) {
-        // Split expressions into rows of size fieldsPerRow
-        for (int i = 0; i < allExpressions.size(); i += fieldsPerRow) {
-          List<Expression> currentRow = new ArrayList<>();
-          for (int j = 0; j < fieldsPerRow && (i + j) < allExpressions.size(); j++) {
-            currentRow.add((Expression) visit(allExpressions.get(i + j)));
-          }
-          if (!currentRow.isEmpty()) {
-            body.valueExpressions.add(currentRow);
-          }
-        }
-      }
+      if (fieldsPerRow > 0 && !ctx.expression().isEmpty())
+        body.valueExpressions.addAll(valueRows(ctx, fieldsPerRow));
     }
     // SET clause: SET field1 = val1, field2 = val2
     else if (ctx.SET() != null) {
@@ -5358,7 +5418,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    */
   @Override
   public UpdateStatement visitUpdateStmt(final SQLParser.UpdateStmtContext ctx) {
-    final UpdateStatement stmt = new UpdateStatement();
+    final UpdateStatement stmt = planned(new UpdateStatement());
     final SQLParser.UpdateStatementContext updateCtx = ctx.updateStatement();
 
     // Target
@@ -5595,7 +5655,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    */
   @Override
   public DeleteStatement visitDeleteStmt(final SQLParser.DeleteStmtContext ctx) {
-    final DeleteStatement stmt = new DeleteStatement();
+    final DeleteStatement stmt = planned(new DeleteStatement());
     final SQLParser.DeleteStatementContext deleteCtx = ctx.deleteStatement();
 
     // FROM clause
@@ -6057,6 +6117,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final SQLParser.CreateVertexBodyContext bodyCtx = ctx.createVertexBody();
 
     try {
+      final int columnsStart = columnsStart(bodyCtx);
       // Set targetType (vertex type identifier) - first identifier in the body
       if (bodyCtx.BUCKET_IDENTIFIER() != null) {
         // bucket:name format — no type, just bucket
@@ -6072,11 +6133,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         final Bucket bucket = new Bucket();
         bucket.bucketNumber = Integer.parseInt(bucketNum);
         stmt.targetBucket = bucket;
-      } else if (bodyCtx.identifier() != null && !bodyCtx.identifier().isEmpty()) {
-        // First identifier is the target type
+      } else if (bodyCtx.identifier() != null && !bodyCtx.identifier().isEmpty()
+          && bodyCtx.identifier(0).getStart().getTokenIndex() < columnsStart) {
+        // First identifier is the target type, unless it is already a column of the list: "(a, b) VALUES (...)" names no type
         stmt.targetType = (Identifier) visit(bodyCtx.identifier(0));
         // Second identifier is the bucket name if BUCKET keyword is present
-        if (bodyCtx.BUCKET() != null && bodyCtx.identifier().size() > 1) {
+        if (bodyCtx.BUCKET() != null && bodyCtx.identifier().size() > 1
+            && bodyCtx.identifier(1).getStart().getTokenIndex() < columnsStart) {
           stmt.targetBucketName = (Identifier) visit(bodyCtx.identifier(1));
         }
       }
@@ -6087,33 +6150,22 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
         // Handle VALUES clause - (field1, field2) VALUES (val1, val2), (val3, val4)
         if (bodyCtx.VALUES() != null) {
-          // Build identifier list from identifiers (skipping type name and bucket name)
-          final int startIdx =
-              (stmt.targetType != null ? 1 : 0) + (stmt.targetBucketName != null ? 1 : 0);
-          if (bodyCtx.identifier() != null && bodyCtx.identifier().size() > startIdx) {
-            body.identifierList = new ArrayList<>();
-            for (int i = startIdx; i < bodyCtx.identifier().size(); i++) {
-              body.identifierList.add((Identifier) visit(bodyCtx.identifier(i)));
+          // The column list: the identifiers after the opening parenthesis, whatever precedes it
+          for (final SQLParser.IdentifierContext identifierCtx : bodyCtx.identifier()) {
+            if (identifierCtx.getStart().getTokenIndex() > columnsStart) {
+              if (body.identifierList == null)
+                body.identifierList = new ArrayList<>();
+              body.identifierList.add((Identifier) visit(identifierCtx));
             }
           }
 
-          // Build value expressions list
+          // Build value expressions list: one row per parenthesis, each as wide as the column list
           if (bodyCtx.expression() != null && !bodyCtx.expression().isEmpty()) {
             body.valueExpressions = new ArrayList<>();
 
-            // Group expressions by VALUES rows
-            // Each row has same number of expressions as identifierList
             final int colCount = body.identifierList != null ? body.identifierList.size() : 0;
-            if (colCount > 0) {
-              int exprIdx = 0;
-              while (exprIdx < bodyCtx.expression().size()) {
-                final List<Expression> row = new ArrayList<>();
-                for (int i = 0; i < colCount && exprIdx < bodyCtx.expression().size(); i++) {
-                  row.add((Expression) visit(bodyCtx.expression(exprIdx++)));
-                }
-                body.valueExpressions.add(row);
-              }
-            }
+            if (colCount > 0)
+              body.valueExpressions.addAll(valueRows(bodyCtx, colCount));
           }
         }
         // Handle SET clause - list of updateItems
@@ -6141,6 +6193,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         stmt.insertBody = body;
       }
 
+    } catch (final CommandSQLParsingException e) {
+      // Already says what is wrong with the statement (a VALUES row of the wrong size): the same text INSERT gives
+      throw e;
     } catch (final Exception e) {
       throw new CommandSQLParsingException("Failed to build CREATE VERTEX statement: " + e.getMessage(), e);
     }
@@ -7239,7 +7294,11 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
             if (bodyCtx.children.get(j) instanceof TerminalNode tn2
                 && tn2.getSymbol().getType() == SQLParser.INTEGER_LITERAL) {
               stmt.shards = new PInteger();
-              stmt.shards.setValue(Integer.parseInt(tn2.getText()));
+              try {
+                stmt.shards.setValue(Integer.parseInt(tn2.getText()));
+              } catch (final NumberFormatException e) {
+                throw new CommandSQLParsingException("SHARDS value '" + tn2.getText() + "' is not a valid shard count", e);
+              }
               break;
             }
           }
@@ -8045,40 +8104,27 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final CheckDatabaseStatement stmt = new CheckDatabaseStatement();
     final SQLParser.CheckDatabaseStatementContext checkCtx = ctx.checkDatabaseStatement();
 
-    // Parse TYPE clause - list of type identifiers
-    if (checkCtx.TYPE() != null) {
-      for (final SQLParser.IdentifierContext identCtx : checkCtx.identifier()) {
+    // TYPE and BUCKET clauses share the identifier() list: an identifier is a bucket name when it comes after the BUCKET
+    // token, a type name otherwise. Splitting by position matters once both clauses are present: counting every identifier as
+    // a type made "TYPE V BUCKET V_0" scope the check to the types {V, V_0} and to no bucket at all (#12845)
+    final int bucketTokenIndex = checkCtx.BUCKET() != null ? checkCtx.BUCKET().getSymbol().getTokenIndex() : Integer.MAX_VALUE;
+    for (final SQLParser.IdentifierContext identCtx : checkCtx.identifier()) {
+      if (identCtx.getStart().getTokenIndex() < bucketTokenIndex)
         stmt.types.add((Identifier) visit(identCtx));
+      else {
+        final BucketIdentifier bucketId = new BucketIdentifier();
+        bucketId.bucketName = (Identifier) visit(identCtx);
+        stmt.buckets.add(bucketId);
       }
     }
 
-    // Parse BUCKET clause - list of bucket identifiers or integers
-    if (checkCtx.BUCKET() != null) {
-      // Count how many identifiers we've consumed for TYPE
-      final int typeIdentCount = checkCtx.TYPE() != null ? checkCtx.identifier().size() : 0;
-
-      // BUCKET can be identifier or INTEGER_LITERAL
-      // If we have INTEGER_LITERAL tokens, use them
-      if (checkCtx.INTEGER_LITERAL() != null && !checkCtx.INTEGER_LITERAL().isEmpty()) {
-        for (final TerminalNode intNode : checkCtx.INTEGER_LITERAL()) {
-          final BucketIdentifier bucketId = new BucketIdentifier();
-          final PInteger pInt = new PInteger();
-          pInt.setValue(Integer.parseInt(intNode.getText()));
-          bucketId.bucketId = pInt;
-          stmt.buckets.add(bucketId);
-        }
-      }
-
-      // Also check for bucket identifiers (non-TYPE identifiers)
-      // All identifiers after TYPE count belong to BUCKET
-      final List<SQLParser.IdentifierContext> allIdents = checkCtx.identifier();
-      if (allIdents != null && allIdents.size() > typeIdentCount) {
-        for (int i = typeIdentCount; i < allIdents.size(); i++) {
-          final BucketIdentifier bucketId = new BucketIdentifier();
-          bucketId.bucketName = (Identifier) visit(allIdents.get(i));
-          stmt.buckets.add(bucketId);
-        }
-      }
+    // A bucket id: INTEGER_LITERAL appears in the rule only in the BUCKET clause
+    for (final TerminalNode intNode : checkCtx.INTEGER_LITERAL()) {
+      final BucketIdentifier bucketId = new BucketIdentifier();
+      final PInteger pInt = new PInteger();
+      pInt.setValue(Integer.parseInt(intNode.getText()));
+      bucketId.bucketId = pInt;
+      stmt.buckets.add(bucketId);
     }
 
     // Parse RECORD clause - list of RIDs (#5680): scopes the check to those records only
