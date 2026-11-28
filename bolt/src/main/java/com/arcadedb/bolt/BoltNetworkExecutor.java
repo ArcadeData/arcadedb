@@ -219,6 +219,8 @@ public class BoltNetworkExecutor extends Thread {
   private static final String STACK_EXHAUSTED_MESSAGE =
       "The statement is too deeply nested to be evaluated (stack exhausted): simplify the query";
   private static final AtomicLong LAST_CONNECTION_ID = new AtomicLong();
+  /** What every bookmark this server issues starts with; a bookmark that does not is refused (issue #13680). */
+  private static final String BOOKMARK_PREFIX = "arcade:tx:";
   /** How {@code SHOW TRANSACTIONS} and {@code list queries} name this connection (issue #9689). */
   private final String connectionId = "bolt-" + LAST_CONNECTION_ID.incrementAndGet();
 
@@ -898,6 +900,11 @@ public class BoltNetworkExecutor extends Thread {
       return;
     }
 
+    // The bookmarks an auto-commit RUN waits for must be ones this server issued (issue #13680). Inside an explicit transaction the
+    // BEGIN carried them already
+    if (!explicitTransaction && !acceptsBookmarks(message.getExtra()))
+      return;
+
     // Get database from message extra if specified
     final String db = message.getDatabase();
 
@@ -1153,6 +1160,38 @@ public class BoltNetworkExecutor extends Thread {
     state = State.FAILED;
   }
 
+  /**
+   * Checks the {@code bookmarks} of a BEGIN or an auto-commit RUN: each must be one this server issued ({@link #generateBookmark()}).
+   * Answers FAILURE {@code InvalidBookmark} for the first that is not, as Neo4j does for one it cannot parse (issue #13680), and
+   * leaves the connection FAILED for the client's RESET; the transaction or statement is not started. Empty bookmarks are ignored.
+   *
+   * @return true when the request may go on
+   */
+  private boolean acceptsBookmarks(final Map<String, Object> extra) throws IOException {
+    if (!(extra.get("bookmarks") instanceof Collection<?> bookmarks))
+      return true;
+    for (final Object bookmark : bookmarks) {
+      if (bookmark instanceof String text && (text.isEmpty() || isIssuedBookmark(text)))
+        continue;
+      final String shown = String.valueOf(bookmark);
+      sendFailure(BoltErrorCodes.INVALID_BOOKMARK_ERROR, "Parsing of supplied bookmarks failed with message: not a bookmark issued by "
+          + "this server: " + (shown.length() > 64 ? shown.substring(0, 64) + "..." : shown));
+      state = State.FAILED;
+      return false;
+    }
+    return true;
+  }
+
+  /** Whether {@code text} has the shape {@link #generateBookmark()} gives: the prefix and the decimal digits of a positive long. */
+  private static boolean isIssuedBookmark(final String text) {
+    if (!text.startsWith(BOOKMARK_PREFIX) || text.length() == BOOKMARK_PREFIX.length() || text.length() > BOOKMARK_PREFIX.length() + 18)
+      return false;
+    for (int i = BOOKMARK_PREFIX.length(); i < text.length(); i++)
+      if (text.charAt(i) < '0' || text.charAt(i) > '9')
+        return false;
+    return true;
+  }
+
   /** Whether the Bolt {@code mode} of a BEGIN or an auto-commit RUN asks for READ access ({@code "r"}; the default is write). */
   private static boolean isReadAccessMode(final Map<String, Object> extra) {
     return "r".equals(extra.get("mode"));
@@ -1343,6 +1382,9 @@ public class BoltNetworkExecutor extends Thread {
    * Handle BEGIN message - start explicit transaction.
    */
   private void handleBegin(final BeginMessage beginMessage) throws IOException {
+    if (!acceptsBookmarks(beginMessage.getExtra()))
+      return;
+
     // Get database from message if specified
     final String db = beginMessage.getDatabase();
     resolveRequestDatabase(db);
@@ -2109,7 +2151,7 @@ public class BoltNetworkExecutor extends Thread {
    * Generate a bookmark for the current transaction.
    */
   private String generateBookmark() {
-    return "arcade:tx:" + System.currentTimeMillis();
+    return BOOKMARK_PREFIX + System.currentTimeMillis();
   }
 
   /**
