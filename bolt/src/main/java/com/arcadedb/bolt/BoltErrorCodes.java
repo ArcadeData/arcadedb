@@ -99,6 +99,9 @@ public final class BoltErrorCodes {
   // generic DatabaseError a driver reads as an unexplained server fault.
   public static final String TRANSACTION_TIMED_OUT_ERROR = "Neo.ClientError.Transaction.TransactionTimedOut";
 
+  // A bookmark in BEGIN or an auto-commit RUN that this server did not issue (issue #13680): Neo4j refuses one it cannot parse with this code.
+  public static final String INVALID_BOOKMARK_ERROR = "Neo.ClientError.Transaction.InvalidBookmark";
+
   // A write sent in a transaction or an auto-commit query the client opened in READ access mode (BEGIN or RUN with
   // mode "r", what session.executeRead and a READ session send): refused before it runs, as Neo4j does (issue #11392).
   public static final String ACCESS_MODE_ERROR = "Neo.ClientError.Statement.AccessMode";
