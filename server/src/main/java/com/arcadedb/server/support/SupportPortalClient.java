@@ -21,6 +21,7 @@ package com.arcadedb.server.support;
 import com.arcadedb.Constants;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.BoundedHttpExchange;
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.ByteArrayInputStream;
@@ -210,7 +211,7 @@ public class SupportPortalClient {
   public String addComment(final long number, final String body, final List<String> files) {
     final JSONObject json = new JSONObject().put("body", body);
     if (!files.isEmpty())
-      json.put("files", new com.arcadedb.serializer.json.JSONArray(files));
+      json.put("files", new JSONArray(files));
     return call("POST", "/issues/" + number + "/comments", json.toString());
   }
 

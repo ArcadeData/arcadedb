@@ -85,11 +85,13 @@ final class OperationLoop implements Runnable {
             failure = e;
             return;
           }
+          // noopengrep: volatile-read-modify-write - written only by the loop's own thread, other threads only read it
           retries++;
         }
       }
       final long end = System.nanoTime();
       latencies.record(end - begin);
+      // noopengrep: volatile-read-modify-write - written only by the loop's own thread, other threads only read it
       completed++;
       if (commits)
         gaps.committed(end);

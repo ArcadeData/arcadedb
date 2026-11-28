@@ -64,7 +64,7 @@ final class ExecutorTermination {
                 + "background and may still %s", null, threadName, TimeUnit.NANOSECONDS.toMillis(budgetNanos),
             consequence);
       return true;
-    } catch (final InterruptedException e) {
+    } catch (final InterruptedException e) { // noopengrep: interrupted-exception-swallowed - returned, the caller restores it
       return false;
     }
   }

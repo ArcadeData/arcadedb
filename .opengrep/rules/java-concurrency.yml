@@ -1,0 +1,138 @@
+# Concurrency correctness of the Java main code. These are source shapes, so opengrep reads them: what the bytecode keeps of a
+# try/finally or of a catch block is not the shape a reviewer checks.
+#
+# A site that is right for a reason the shape cannot see is suppressed AT the site, with the reason, so the invariant is written
+# where the next reader needs it:  // noopengrep: <rule-id> - <why this one is safe>
+rules:
+  - id: interrupted-exception-swallowed
+    languages: [java]
+    severity: ERROR
+    message: "An InterruptedException caught and dropped clears the thread's interrupt flag, so a shutdown or a cancel that interrupted this thread is lost and whatever waits next waits for nothing. Restore it (Thread.currentThread().interrupt()), rethrow, or record it (interrupted = true) and restore it once the waits that must finish are done."
+    paths:
+      include: ["*/src/main/**"]
+    patterns:
+      - pattern: |
+          catch (InterruptedException $E) { ... }
+      - pattern-not: |
+          catch (InterruptedException $E) { ... Thread.currentThread().interrupt(); ... }
+      - pattern-not: |
+          catch (InterruptedException $E) { ... throw $X; }
+      - pattern-not: |
+          catch (InterruptedException $E) { ... throw $X; ... }
+      # The deferred restore: a flag named for the interrupt, set here and restored once the wait that must finish is done
+      - pattern-not-regex: (?i)interrupt\w*\s*=\s*true
+  - id: wait-outside-a-loop
+    languages: [java]
+    severity: ERROR
+    message: "Object.wait() can return without a notify (a spurious wakeup) and after a notify meant for a condition that no longer holds. Wait in a loop that re-checks the condition: while (!condition) monitor.wait(timeout)."
+    paths:
+      include: ["*/src/main/**"]
+    patterns:
+      - pattern-either:
+          - pattern: $O.wait(...)
+          - pattern: wait(...)
+      - pattern-not-inside: while (...) $S;
+      - pattern-not-inside: for (...) $S;
+      - pattern-not-inside: do $S; while (...);
+  - id: lock-not-released-in-finally
+    languages: [java]
+    severity: ERROR
+    message: "A lock() not followed at once by try { ... } finally { unlock(); } stays held when anything between the two throws, and every later taker of the lock hangs. Take the lock as the last statement before the try; anything that can fail goes before the lock() or inside the try."
+    paths:
+      include: ["*/src/main/**"]
+    # Every exemption names the release: a finally that does not unlock this lock (cleanup only, or another lock) is no
+    # release, and neither is an unrelated try/finally around the lock().
+    patterns:
+      - pattern: $L.lock();
+      - pattern-not-inside: |
+          $L.lock();
+          try { ... } finally { ... $L.unlock(); ... }
+      - pattern-not-inside: |
+          $L.lock();
+          try { ... } catch (...) { ... } finally { ... $L.unlock(); ... }
+      # Taken first thing inside the try whose finally releases it
+      - pattern-not-inside: |
+          try { $L.lock(); ... } finally { ... $L.unlock(); ... }
+      - pattern-not-inside: |
+          try { $L.lock(); ... } catch (...) { ... } finally { ... $L.unlock(); ... }
+      # A conditional lock released under the same condition
+      - pattern-not-inside: |
+          if ($C) $L.lock();
+          try { ... } finally { ... $L.unlock(); ... }
+      # Two locks in a fixed order: ReentrantLock.lock() does not throw, so nothing runs between them that can fail
+      - pattern-not-inside: |
+          $L.lock();
+          $M.lock();
+          try { ... } finally { ... $L.unlock(); ... }
+      # The fallback of a failed tryLock(), released by the finally that follows
+      - pattern-not-inside: |
+          if (!$L.tryLock()) { ... }
+          try { ... } finally { ... $L.unlock(); ... }
+      # Every lock of an array taken in a loop, all released by the finally that follows: the unlock names the same lock
+      - pattern-not-inside: |
+          for (...) $L.lock();
+          try { ... } finally { ... $L.unlock(); ... }
+      # A held flag the finally reads to know whether the body already released the lock
+      - pattern-not-inside: |
+          $L.lock();
+          $V = true;
+          try { ... } finally { ... $L.unlock(); ... }
+      # A barrier: wait for the current holder, hold nothing
+      - pattern-not-inside: |
+          $L.lock();
+          $L.unlock();
+      # java.util.concurrent.locks.Lock.lock() is void: a lock() whose value is returned is another API
+      - pattern-not-inside: return ...;
+  - id: volatile-read-modify-write
+    languages: [java]
+    severity: ERROR
+    message: "++, -- and += on a volatile field are a read and a separate write: two threads lose an update. Use an AtomicInteger/AtomicLong/LongAdder, or write it only under one lock or from one thread and say which at the site."
+    paths:
+      include: ["*/src/main/**"]
+    patterns:
+      - pattern-either:
+          - pattern: $F++
+          - pattern: ++$F
+          - pattern: $F--
+          - pattern: --$F
+          - pattern: $F += $V
+          - pattern: $F -= $V
+          - pattern: this.$F++
+          - pattern: ++this.$F
+          - pattern: this.$F--
+          - pattern: --this.$F
+          - pattern: this.$F += $V
+          - pattern: this.$F -= $V
+      - pattern-inside: |
+          class $C { ... volatile $T $F; ... }
+      - pattern-not-inside: synchronized (...) { ... }
+      - pattern-not-inside: |
+          synchronized $R $M(...) { ... }
+      # Inside the critical section only: from the lock() to the unlock() that releases it
+      - pattern-not-inside: |
+          $L.lock();
+          ...
+          $L.unlock();
+      - pattern-not-inside: |
+          $L.lock();
+          try { ... } finally { ... $L.unlock(); ... }
+  - id: empty-catch
+    languages: [java]
+    severity: WARNING
+    message: "An empty catch block drops the failure without a trace (a comment inside it does not count). Log it, rethrow it, or, when ignoring it is right, suppress this finding at the site with the reason: // noopengrep: empty-catch - <why>."
+    paths:
+      include: ["*/src/main/**"]
+    pattern: |
+      catch ($T $E) { }
+  - id: catch-throwable-not-rethrown
+    languages: [java]
+    severity: WARNING
+    message: "Catching Throwable or Error also catches OutOfMemoryError, StackOverflowError and the like, which leave the JVM in no state to continue. Catch Exception, or rethrow what is not yours to handle."
+    paths:
+      include: ["*/src/main/**"]
+    patterns:
+      - pattern-either:
+          - pattern: catch (Throwable $E) { ... }
+          - pattern: catch (Error $E) { ... }
+      - pattern-not: catch ($T $E) { ... throw $X; }
+      - pattern-not: catch ($T $E) { ... throw $X; ... }

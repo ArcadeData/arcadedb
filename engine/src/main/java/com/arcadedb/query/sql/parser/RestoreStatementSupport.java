@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
@@ -51,7 +52,7 @@ final class RestoreStatementSupport {
       if (val instanceof java.util.Map<?, ?> map)
         doc.fromMap((java.util.Map<String, Object>) map);
       else if (val != null)
-        throw new com.arcadedb.exception.CommandSQLParsingException("Invalid CONTENT value for RESTORE: " + val);
+        throw new CommandSQLParsingException("Invalid CONTENT value for RESTORE: " + val);
     }
   }
 }

@@ -384,6 +384,7 @@ class FlushPageIndex {
     synchronized (counter) {
       if (counter.get() <= 0)
         return;
+      // noopengrep: wait-outside-a-loop - a bounded park, not a condition wait: the callers loop and re-check (see above)
       counter.wait(maxWaitMillis);
     }
   }

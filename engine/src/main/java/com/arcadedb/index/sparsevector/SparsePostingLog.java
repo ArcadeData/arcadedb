@@ -228,6 +228,7 @@ public class SparsePostingLog extends PaginatedComponent {
         break;
       if (decodedPage + 1 >= totalPages || readCommittedPage(decodedPage + 1).readLong(PAGE_GENERATION) != decodedGeneration)
         break;
+      // noopengrep: volatile-read-modify-write - decoded only under the engine's memtableLock (syncMemtablesWithLogs)
       ++decodedPage;
       decodedOffset = FIRST_ENTRY_OFFSET;
     }

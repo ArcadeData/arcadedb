@@ -44,6 +44,7 @@ class CoarseClockTest {
   @Test
   void theClockStaysCloseToTheRealOne() {
     await().atMost(Duration.ofSeconds(30)).untilAsserted(
+        // noopengrep: test-asserts-raw-wall-clock - compares two clocks, no latency of the code under test is bounded
         () -> assertThat(System.currentTimeMillis() - CoarseClock.currentTimeMillis()).isLessThan(CoarseClock.RESOLUTION_MS * 20));
   }
 

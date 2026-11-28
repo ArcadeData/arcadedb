@@ -1,0 +1,50 @@
+# Conventions of the Java test sources (CLAUDE.md). No module's classpath carries the test classes of the others,
+# so a census over compiled classes cannot see these; opengrep reads the source.
+#
+# Known gap: opengrep 2.0.0's Java grammar does not parse a Java 21 pattern-matching switch (`case Type var ->`).
+# The method holding one is dropped from the scan (the rest of the file is still scanned), so a wall-clock assertion
+# in the same method as such a switch is missed.
+rules:
+  - id: test-asserts-raw-wall-clock
+    languages: [java]
+    severity: ERROR
+    message: "Raw wall-clock latency bound: a stop-the-world pause late in a full-suite run turns it into a coin flip (#6260). Measure with StallAwareStopwatch.start() and assertGaveUpWithin(bound, whatItSeparates) for a tripwire, or assertStayedUnder(bound, claim) when the bound IS the assertion."
+    paths:
+      include: ["*/src/test/**"]
+    patterns:
+      - pattern-either:
+          - pattern: assertThat($CLOCK - $S). ... .$BOUND(...)
+          - pattern: assertThat($CLOCK). ... .$BOUND(...)
+          - pattern: assertThat($UNIT.toMillis($CLOCK - $S)). ... .$BOUND(...)
+          - pattern: |
+              $T = $CLOCK - $S;
+              ...
+              assertThat($T). ... .$BOUND(...);
+          - pattern: |
+              $T = $UNIT.toMillis($CLOCK - $S);
+              ...
+              assertThat($T). ... .$BOUND(...);
+      # The whole operand, not a clock read nested in it: assertThat(remaining(now() + budget)) bounds a computed value
+      - metavariable-regex:
+          metavariable: $CLOCK
+          regex: ^System\.(currentTimeMillis|nanoTime)\(\)$
+      - metavariable-regex:
+          metavariable: $BOUND
+          regex: ^(isLessThan|isLessThanOrEqualTo|isBetween|isCloseTo)$
+  - id: test-uses-junit-assertions
+    languages: [java]
+    severity: WARNING
+    message: "Prefer AssertJ: assertThat(x).isTrue(), assertThat(a).isEqualTo(b), assertThatThrownBy(...)."
+    paths:
+      include: ["*/src/test/**"]
+    pattern-regex: '^import static org\.junit\.jupiter\.api\.Assertions\.'
+  - id: cucumber-suite-with-junit-tag
+    languages: [java]
+    severity: ERROR
+    message: "A JUnit @Tag on a Cucumber @Suite does nothing: Surefire's groups reach the scenarios inside the suite, not the suite class. Route the suite to a lane with -Dsurefire.includes, as mvn-test.yml does for the openCypher TCK."
+    paths:
+      include: ["*/src/test/**"]
+    pattern: |
+      @Suite
+      @Tag("...")
+      class $C { ... }

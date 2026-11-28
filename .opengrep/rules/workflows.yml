@@ -1,0 +1,9 @@
+# Spellings of the GitHub workflows that CLAUDE.md warns produce a meaningless green or a spurious red run.
+rules:
+  - id: workflow-negated-dtest
+    languages: [yaml]
+    severity: ERROR
+    message: "-Dtest='!Foo' replaces Surefire's include patterns and drags *IT classes into the test phase, where they run without Failsafe and fail by the hundred. Exclude a class with a @Tag lane and -DexcludedGroups."
+    paths:
+      include: [".github/workflows/*.yml", ".github/workflows/*.yaml"]
+    pattern-regex: "-Dtest=['\"]?!"

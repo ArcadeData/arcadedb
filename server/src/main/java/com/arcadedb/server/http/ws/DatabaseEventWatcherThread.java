@@ -127,7 +127,7 @@ final public class DatabaseEventWatcherThread extends Thread {
         this.eventBus.publish(event);
       }
 
-    } catch (final InterruptedException ignored) {
+    } catch (final InterruptedException ignored) { // noopengrep: interrupted-exception-swallowed - the watcher's own thread, ending
     } finally {
       this.database.getEvents().unregisterListener((AfterRecordCreateListener) listener)
           .unregisterListener((AfterRecordUpdateListener) listener)

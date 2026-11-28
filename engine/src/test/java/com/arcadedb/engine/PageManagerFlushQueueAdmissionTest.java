@@ -136,10 +136,10 @@ class PageManagerFlushQueueAdmissionTest {
       try {
         // The flush thread polls this batch, then blocks on its monitor: from here nothing leaves the queue.
         flush.scheduleFlushOfPages(wedge);
-        final long deadline = System.currentTimeMillis() + TimeUnit.SECONDS.toMillis(ASSERTION_TIMEOUT_SEC);
+        final StallAwareStopwatch wait = StallAwareStopwatch.start();
         while (!isWriting(flush, wedge)) {
-          assertThat(System.currentTimeMillis()).as("the flush thread never reached the batch it must be held on")
-              .isLessThan(deadline);
+          wait.assertGaveUpWithin(TimeUnit.SECONDS.toMillis(ASSERTION_TIMEOUT_SEC),
+              "the flush thread never reached the batch it must be held on");
           Thread.sleep(1);
         }
 

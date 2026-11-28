@@ -30,6 +30,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
@@ -84,7 +85,7 @@ class OpenCypherBatchBenchmark {
       final Map<String, Object> params = new HashMap<>();
       params.put("batch", batch);
 
-      final long start = System.currentTimeMillis();
+      final StallAwareStopwatch clock = StallAwareStopwatch.start();
       database.transaction(() -> {
         try (final ResultSet rs = database.command("opencypher",
             "UNWIND $batch AS item CREATE (n:VectorDoc {name: item.name, embedding: item.embedding}) RETURN count(n) AS cnt",
@@ -94,7 +95,7 @@ class OpenCypherBatchBenchmark {
           assertThat(count).isEqualTo(BATCH_SIZE);
         }
       });
-      final long freshTime = System.currentTimeMillis() - start;
+      clock.assertStayedUnder(10_000, "a fresh-database batch insert of BATCH_SIZE rows");
 
       // Verify the vertices were created
       database.transaction(() -> {
@@ -103,8 +104,6 @@ class OpenCypherBatchBenchmark {
           assertThat(((Number) rs.next().getProperty("cnt")).longValue()).isEqualTo(BATCH_SIZE);
         }
       });
-
-      assertThat(freshTime).as("Fresh database batch insert took %d ms", freshTime).isLessThan(10_000);
     }
 
     // Issue #3864: batch insert after HNSW graph build must not degrade dramatically (no per-vector O(log n) inserts).
@@ -115,7 +114,7 @@ class OpenCypherBatchBenchmark {
       final Map<String, Object> initialParams = new HashMap<>();
       initialParams.put("batch", initialBatch);
 
-      final long startFresh = System.currentTimeMillis();
+      final StallAwareStopwatch fresh = StallAwareStopwatch.start();
       database.transaction(() -> {
         try (final ResultSet rs = database.command("opencypher",
             "UNWIND $batch AS item CREATE (n:VectorDoc {name: item.name, embedding: item.embedding}) RETURN count(n) AS cnt",
@@ -124,7 +123,10 @@ class OpenCypherBatchBenchmark {
           assertThat(((Number) rs.next().getProperty("cnt")).longValue()).isEqualTo(BATCH_SIZE);
         }
       });
-      final long freshTime = System.currentTimeMillis() - startFresh;
+      // The baseline keeps its stalls: a stall the sampler records late can be wider than this window, and discounted
+      // here it could take the baseline to 0 and tighten the bound. Raw, a pause in this batch only loosens the bound.
+      // The populated batch below is discounted, so a pause there cannot fail the ratio either.
+      final long freshTime = fresh.elapsedMs();
 
       // Step 2: Force graph build - simulates what happens between API calls when
       // the inactivity timer fires and builds the HNSW graph
@@ -143,7 +145,7 @@ class OpenCypherBatchBenchmark {
       final Map<String, Object> secondParams = new HashMap<>();
       secondParams.put("batch", secondBatch);
 
-      final long startPopulated = System.currentTimeMillis();
+      final StallAwareStopwatch populated = StallAwareStopwatch.start();
       database.transaction(() -> {
         try (final ResultSet rs = database.command("opencypher",
             "UNWIND $batch AS item CREATE (n:VectorDoc {name: item.name, embedding: item.embedding}) RETURN count(n) AS cnt",
@@ -152,7 +154,7 @@ class OpenCypherBatchBenchmark {
           assertThat(((Number) rs.next().getProperty("cnt")).longValue()).isEqualTo(BATCH_SIZE);
         }
       });
-      final long populatedTime = System.currentTimeMillis() - startPopulated;
+      final long populatedTime = populated.effectiveMs();
 
       // Verify total vertex count
       database.transaction(() -> {
@@ -183,7 +185,7 @@ class OpenCypherBatchBenchmark {
       final Map<String, Object> params = new HashMap<>();
       params.put("batch", batch);
 
-      final long start = System.currentTimeMillis();
+      final StallAwareStopwatch clock = StallAwareStopwatch.start();
       database.transaction(() -> {
         try (final ResultSet rs = database.command("opencypher",
             "UNWIND $batch AS item CREATE (n:PlainDoc {name: item.name, embedding: item.embedding}) RETURN count(n) AS cnt",
@@ -192,9 +194,7 @@ class OpenCypherBatchBenchmark {
           assertThat(((Number) rs.next().getProperty("cnt")).longValue()).isEqualTo(BATCH_SIZE);
         }
       });
-      final long noIndexTime = System.currentTimeMillis() - start;
-
-      assertThat(noIndexTime).as("No-index batch insert took %d ms", noIndexTime).isLessThan(10_000);
+      clock.assertStayedUnder(10_000, "a no-index batch insert of BATCH_SIZE rows");
     }
 
     private static List<Map<String, Object>> generateBatch(final int size, final String namePrefix) {
@@ -272,7 +272,7 @@ class OpenCypherBatchBenchmark {
       params.put("batch", batch);
 
       // Execute the UNWIND + MATCH + CREATE query
-      final long start = System.currentTimeMillis();
+      final StallAwareStopwatch clock = StallAwareStopwatch.start();
       database.transaction(() ->
         database.command("opencypher",
             """
@@ -281,7 +281,7 @@ class OpenCypherBatchBenchmark {
             CREATE (p:CHUNK_EMBEDDING {vector: BatchEntry.vector}) \
             CREATE (p)-[:embb]->(b)""",
             params));
-      final long elapsed = System.currentTimeMillis() - start;
+      clock.assertStayedUnder(4_000, "UNWIND+MATCH(ID)+CREATE with the RID lookup optimisation");
 
       // Verify correctness: BATCH_SIZE embeddings and BATCH_SIZE edges created
       database.transaction(() -> {
@@ -294,10 +294,6 @@ class OpenCypherBatchBenchmark {
           assertThat(((Number) rs.next().getProperty("cnt")).longValue()).isEqualTo(BATCH_SIZE);
         }
       });
-
-      assertThat(elapsed)
-          .as("UNWIND+MATCH(ID)+CREATE took %d ms - should be under 4s with RID lookup optimization", elapsed)
-          .isLessThan(4_000);
     }
 
     // Issue #3864: each CHUNK_EMBEDDING produced by UNWIND+MATCH(ID)+CREATE must connect to the correct CHUNK.

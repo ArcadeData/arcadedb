@@ -85,6 +85,12 @@ final class CompiledClasses {
     boolean matches(String owner, String name, String descriptor);
   }
 
+  /** What a static field read is a read of: the owner and name of the field. */
+  @FunctionalInterface
+  interface FieldMatcher {
+    boolean matches(String owner, String name);
+  }
+
   private CompiledClasses() {
   }
 
@@ -244,6 +250,32 @@ final class CompiledClasses {
               for (final Object argument : bootstrapArguments)
                 if (argument instanceof Handle handle && matcher.matches(handle.getOwner(), handle.getName(), handle.getDesc()))
                   sites.computeIfAbsent(key, k -> new TreeSet<>()).add(simpleNameOf(handle.getOwner()) + "::" + handle.getName());
+            }
+          };
+        }
+      }, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
+    }
+    return sites;
+  }
+
+  /**
+   * Every method that reads a static field {@code matcher} accepts ({@code GETSTATIC}), keyed as {@link #callSitesOf}, with
+   * what was read there as {@code Owner.name}.
+   */
+  static Map<String, Set<String>> staticFieldReadsOf(final Map<String, byte[]> classes, final FieldMatcher matcher) {
+    final Map<String, Set<String>> sites = new TreeMap<>();
+    for (final Map.Entry<String, byte[]> entry : classes.entrySet()) {
+      final String outerClass = keyOf(entry.getKey());
+      new ClassReader(entry.getValue()).accept(new ClassVisitor(Opcodes.ASM9) {
+        @Override
+        public MethodVisitor visitMethod(final int access, final String methodName, final String descriptor, final String signature,
+            final String[] exceptions) {
+          final String key = outerClass + "#" + methodOf(methodName);
+          return new MethodVisitor(Opcodes.ASM9) {
+            @Override
+            public void visitFieldInsn(final int opcode, final String owner, final String name, final String desc) {
+              if (opcode == Opcodes.GETSTATIC && matcher.matches(owner, name))
+                sites.computeIfAbsent(key, k -> new TreeSet<>()).add(simpleNameOf(owner) + "." + name);
             }
           };
         }

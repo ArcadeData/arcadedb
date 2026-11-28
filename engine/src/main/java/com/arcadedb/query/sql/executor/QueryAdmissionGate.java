@@ -335,6 +335,7 @@ public final class QueryAdmissionGate {
   }
 
   private Ticket admitLocked() {
+    // noopengrep: volatile-read-modify-write - written only under lock (the Locked suffix), read without it by the metrics
     running++;
     admitted.increment();
     final Slot slot = new Slot();

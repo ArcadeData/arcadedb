@@ -556,9 +556,9 @@ class PaginatedComponentFileSyncStateTest {
   }
 
   private static void awaitQueued(final ReentrantReadWriteLock lock, final int threads) throws InterruptedException {
-    final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+    final StallAwareStopwatch wait = StallAwareStopwatch.start();
     while (lock.getQueueLength() < threads) {
-      assertThat(System.nanoTime()).as("threads never queued on the channel lock").isLessThan(deadline);
+      wait.assertGaveUpWithin(TimeUnit.SECONDS.toMillis(30), "threads never queued on the channel lock");
       Thread.sleep(1);
     }
   }
@@ -571,10 +571,10 @@ class PaginatedComponentFileSyncStateTest {
       final Future<?> future) throws Exception {
     final ReentrantLock syncLock = syncLock(fileManager);
 
-    final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+    final StallAwareStopwatch wait = StallAwareStopwatch.start();
     while (thread.get() == null || !syncLock.hasQueuedThread(thread.get())) {
       assertThat(future.isDone()).as("the second sync returned while the first one's fsync was still in flight").isFalse();
-      assertThat(System.nanoTime()).as("the second sync never queued on the sync lock").isLessThan(deadline);
+      wait.assertGaveUpWithin(TimeUnit.SECONDS.toMillis(30), "the second sync never queued on the sync lock");
       Thread.sleep(1);
     }
   }

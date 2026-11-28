@@ -1943,6 +1943,7 @@ public final class ColumnarProjection {
     markApplied(tracker, appliedDuringRebuild);
     if (externalTracker != null)
       markApplied(externalTracker, externalAppliedDuringRebuild);
+    // noopengrep: volatile-read-modify-write - written only under publishLock, which the check above enforces
     rebuildSequence++;
     ownersLock.writeLock().lock();
     try {

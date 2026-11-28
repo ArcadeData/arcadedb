@@ -350,7 +350,7 @@ public class ProtocolsWorkload implements Workload {
       for (final Thread t : threads)
         try {
           t.join(JOIN_AFTER_INTERRUPT_MS);
-        } catch (final InterruptedException again) {
+        } catch (final InterruptedException again) { // noopengrep: interrupted-exception-swallowed - added to e, which is rethrown below
           e.addSuppressed(again);
           break;
         }

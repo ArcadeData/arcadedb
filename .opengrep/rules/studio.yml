@@ -1,0 +1,19 @@
+# Studio (webapp) JavaScript. Advisory until the existing sites are reviewed; promote to ERROR once `advise` reports
+# zero for it.
+rules:
+  - id: studio-html-sink-with-concatenation
+    languages: [javascript]
+    severity: WARNING
+    message: "HTML built by string concatenation reaches a DOM sink; record names, property values and query results are attacker-controlled. Build the node and set text with .text()/.attr(), or pass every interpolated value through escapeHtml()."
+    paths:
+      include: ["studio/src/main/resources/static/js/*.js"]
+    patterns:
+      - pattern-either:
+          - pattern: $X.html($A + $B)
+          - pattern: $X.html($A + $B + ...)
+          - pattern: $X.append($A + $B)
+          - pattern: $X.append($A + $B + ...)
+          - pattern: $X.innerHTML = $A + $B
+          - pattern: $X.innerHTML += $E
+          - pattern: $X.html(`...`)
+          - pattern: $X.append(`...`)

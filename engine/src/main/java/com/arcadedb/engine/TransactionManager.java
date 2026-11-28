@@ -1901,10 +1901,10 @@ public class TransactionManager {
   /** The apply itself, under the shared apply lock and the locks of the buckets with an unknown counter: what it did, as {@code APPLIED_*} bits. */
   private int applyChangesUnderLocks(final WALFile.WALTransaction tx, final Map<Integer, Integer> bucketRecordDelta,
       final List<FullTextCorpusDeltas.CorpusDelta> corpusDeltas, final boolean ignoreErrors) {
-    applyLock.readLock().lock();
     final Object requester = Thread.currentThread();
     BucketLocks bucketLocks = null;
     int[] vertexPageStripes = null;
+    applyLock.readLock().lock();
     try {
       // #11592: before the first page is written, so a transaction whose commit overlaps the apply is refused a head merge on them
       vertexPageStripes = replicatedVertexPagesApplying(tx);

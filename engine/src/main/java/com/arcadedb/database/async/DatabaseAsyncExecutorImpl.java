@@ -3209,6 +3209,8 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       // race a pool resize to reach - out of scope here, and the same window the barrier of #6281 has always had.
       return new HeldQuiesce(null, false);
 
+    // Every failure path below releases it in the finally; success hands it to the HeldQuiesce, whose close() releases it
+    // noopengrep: lock-not-released-in-finally - held past this method by the returned HeldQuiesce
     quiesceLock.lock();
     if (quiesceLock.getHoldCount() > 1)
       // ALREADY QUIESCED BY THIS THREAD: the workers are parked, and re-parking them is what would hang.

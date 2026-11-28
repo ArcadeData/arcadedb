@@ -121,6 +121,13 @@ green or spuriously red* run rather than an error that tells you what you did wr
   port is answered by whatever already listens there, and the failures read as authentication errors
   (`403`, "Too many failed authentication attempts") rather than as a port conflict. Check with
   `lsof -nP -iTCP:2480-2489 -sTCP:LISTEN` before believing a wall of red in the `server` module
+- **A convention that can be checked as source text goes in `.opengrep/rules`** (a test-source shape, a workflow
+  spelling, Studio JS, a statement shape of main code such as a `lock()` outside `try/finally`), with a self-test in
+  `.opengrep/tests` that carries a `ruleid:` and an `ok:` line for it. A convention about what compiled main code
+  calls or reads goes in `census/` as before. `./.github/scripts/opengrep.sh check` runs the blocking (ERROR) rules and
+  is a pre-commit hook; `advise` reports the WARNING ones; `test` runs the self-tests. A site that is right for a
+  reason the rule cannot see is suppressed on the line above it, with the reason:
+  `// noopengrep: <rule-id> - <why this one is safe>`
 
 ## Pull Request Reviews
 

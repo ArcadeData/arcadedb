@@ -360,7 +360,7 @@ public final class MixedPhase {
         Progress.advance();
       }
       return false;
-    } catch (final InterruptedException e) {
+    } catch (final InterruptedException e) { // noopengrep: interrupted-exception-swallowed - returned to the caller, which restores or rethrows it
       return true;
     }
   }

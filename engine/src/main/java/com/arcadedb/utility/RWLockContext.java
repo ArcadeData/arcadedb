@@ -73,6 +73,7 @@ public class RWLockContext {
       return null;
 
     final ReentrantReadWriteLock.ReadLock rl = stripes[(int) Thread.currentThread().threadId() & stripeMask].readLock();
+    // noopengrep: lock-not-released-in-finally - returned to the caller, which releases it through readUnlock() in a finally
     rl.lock();
     return rl;
   }
@@ -102,6 +103,7 @@ public class RWLockContext {
     try {
       for (; i < stripes.length; i++) {
         wl[i] = stripes[i].writeLock();
+        // noopengrep: lock-not-released-in-finally - returned to the caller; a failure halfway releases the stripes already taken
         wl[i].lock();
       }
     } catch (final Throwable t) {

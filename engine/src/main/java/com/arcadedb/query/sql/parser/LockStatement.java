@@ -37,6 +37,7 @@ public class LockStatement extends SimpleExecStatement {
           for (final Identifier bucketName : identifiers)
             explicitLock.bucket(bucketName.getStringValue());
 
+        // noopengrep: lock-not-released-in-finally - the transaction's explicit lock, released when the transaction ends
         explicitLock.lock();
       } catch (final TransactionException e) {
         // The transaction refuses the lock for where the statement stands in it - after a modification, a second LOCK, or after

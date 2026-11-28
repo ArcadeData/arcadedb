@@ -62,6 +62,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.CommandSemanticException;
+import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DeletedEntityException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.ExternalResourceException;
@@ -430,7 +431,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * Registry of leader-side exception class names to a factory that rebuilds the same type from its
    * message, used by {@link #reconstructLeaderException} on forwarded-command errors. Reconstructing
    * the exact type (rather than collapsing to a common supertype) preserves retry semantics for
-   * callers: a {@link com.arcadedb.exception.ConcurrentModificationException} or
+   * callers: a {@link ConcurrentModificationException} or
    * {@link LockTimeoutException} stays a {@link NeedRetryException} subtype and therefore retryable,
    * while a non-retryable {@link TimeoutException} stays distinct instead of being mistaken for a
    * retryable one. It also lets callers catch the specific type directly.
@@ -448,17 +449,18 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * {@code NoSuchElementException}): the forwarding path rethrows the refusal it rebuilt as it is,
    * whatever its type, so they reach the client as the leader raised them instead of being wrapped.
    * <p>
-   * ArcadeDB's {@code ConcurrentModificationException} is referenced by its fully qualified name, and
-   * {@link java.util.ConcurrentModificationException} is intentionally NOT imported, so that a bare
-   * {@code ConcurrentModificationException} anywhere in this file cannot silently bind to the JDK type
-   * (which the engine never throws) - the root cause of issue #5018.
+   * ArcadeDB's {@code ConcurrentModificationException} is imported by name, so a bare
+   * {@code ConcurrentModificationException} anywhere in this file binds to it and never to the JDK type
+   * {@link java.util.ConcurrentModificationException} (which the engine never throws) - the root cause of issue #5018.
+   * A single-type import outranks any on-demand {@code java.util.*} import, and a second single-type import of the JDK
+   * type would not compile.
    */
   private static final Map<String, Function<String, RuntimeException>> LEADER_EXCEPTION_FACTORIES = Map.ofEntries(
       Map.entry(NeedRetryException.class.getName(), NeedRetryException::new),
       // #13437: the leader's session refused before anything of it was published. It describes the leader's own thread, so it is
       // rebuilt as the plain retryable refusal it extends
       Map.entry(RefusedBeforePublishingException.class.getName(), NeedRetryException::new),
-      Map.entry(com.arcadedb.exception.ConcurrentModificationException.class.getName(), com.arcadedb.exception.ConcurrentModificationException::new),
+      Map.entry(ConcurrentModificationException.class.getName(), ConcurrentModificationException::new),
       Map.entry(LockTimeoutException.class.getName(), LockTimeoutException::new),
       // #8479: the refusals the leader answers a forwarded commit with BEFORE its entry reaches the Raft log, so the
       // leader rolled it back and a retry runs it for the first time. The lookup is by exact class name, so without
@@ -1780,13 +1782,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * points at a locking bug rather than an arbitrary failure. Both templates take
    * {@code (db, txId, errorMessage)} as their three arguments.
    * <p>
-   * The type test is written against the fully qualified engine exception on purpose: before issue
+   * The type test is written against the imported engine exception on purpose: before issue
    * #5018 the check bound to the JDK {@code java.util.ConcurrentModificationException} (an unrelated
    * type the engine never throws), so the page-conflict branch was dead and every phase-2 conflict
    * was logged with the generic wording.
    */
   static String phase2CommitFailureMessage(final Throwable e) {
-    if (e instanceof com.arcadedb.exception.ConcurrentModificationException)
+    if (e instanceof ConcurrentModificationException)
       return """
           Phase 2 commit failed AFTER successful Raft replication with a page version conflict (db=%s, txId=%s). \
           A page was concurrently modified under file lock - this may indicate a locking bug. \
@@ -2082,8 +2084,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     if (transactionStaysValidPastTheType(hadWritten, schemaUnchangedSincePrepared, createdByThisRequest, schemaChangesInTheStretch))
       stampReplicationBase(appliedNow);
     else
-      // Fully qualified, as the rest of this file does: the JDK type of the same name is deliberately not imported
-      throw new com.arcadedb.exception.ConcurrentModificationException("Type '" + typeName + "' was created on the leader for this "
+      // The engine's exception, imported by name: the JDK type of the same name is never thrown by the engine (#5018)
+      throw new ConcurrentModificationException("Type '" + typeName + "' was created on the leader for this "
           + "statement, but this transaction had already written under a schema that is not the current one (it was prepared at "
           + "Raft index " + preparedAt + ", and another schema change was applied since), so it could not commit. The type exists "
           + "now: retry the transaction");

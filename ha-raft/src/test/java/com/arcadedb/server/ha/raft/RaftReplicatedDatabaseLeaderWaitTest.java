@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.atomic.AtomicInteger;
@@ -72,15 +73,14 @@ class RaftReplicatedDatabaseLeaderWaitTest {
   @Test
   void failsFastWhenTimeoutDisabled() {
     final AtomicInteger probes = new AtomicInteger();
-    final long start = System.currentTimeMillis();
+    final StallAwareStopwatch clock = StallAwareStopwatch.start();
     final String addr = RaftReplicatedDatabase.awaitLeaderAddress(() -> {
       probes.incrementAndGet();
       return null;
     }, 0L, 100L);
-    final long elapsed = System.currentTimeMillis() - start;
 
     assertThat(addr).isNull();
     assertThat(probes.get()).isEqualTo(1); // probed once, no waiting
-    assertThat(elapsed).isLessThan(100L);
+    clock.assertGaveUpWithin(100L, "a single probe from a wait loop");
   }
 }

@@ -1,0 +1,8 @@
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      # ruleid: workflow-negated-dtest
+      - run: ./mvnw test -Dtest='!SlowTest'
+      # ok: workflow-negated-dtest
+      - run: ./mvnw test -DexcludedGroups=slow

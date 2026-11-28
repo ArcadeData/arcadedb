@@ -237,12 +237,14 @@ public final class GlobalDictionary {
       final long newPosition = channel != null ? writeRecord(value) : appendPosition;
       // odd sequence while the (position, size) pair is being advanced, so fsync() never reads a torn pair; if the append fails
       // the position is not advanced and the pair stays at its previous consistent state (the written record is overwritten later)
+      // noopengrep: volatile-read-modify-write - one writer at a time, the contract enterWriter() asserts
       writeSequence++;
       try {
         final int ordinal = append(value);
         appendPosition = newPosition;
         return ordinal;
       } finally {
+        // noopengrep: volatile-read-modify-write - one writer at a time, the contract enterWriter() asserts
         writeSequence++;
       }
     } finally {
@@ -573,6 +575,7 @@ public final class GlobalDictionary {
       table = grown;
     } else
       insert(t, value, ordinal);
+    // noopengrep: volatile-read-modify-write - one writer at a time, the contract enterWriter() asserts
     valueHeapBytes += estimateHeap(value);
     size = ordinal + 1;
     return ordinal;

@@ -1270,9 +1270,10 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       // before the lock of the unique indexes is taken and before any record is read
       MongoDBCollectionWrapper.checkAccess(database, collectionName, SecurityDatabaseUser.ACCESS.DELETE_RECORD);
       final Lock indexLock = MongoDBCollectionWrapper.idIndexLock(database, collectionName).readLock();
-      indexLock.lock();
-      // the command's OWN transaction: a failure rolls back this one, never one the caller holds (issue #9977)
+      // the command's OWN transaction: a failure rolls back this one, never one the caller holds (issue #9977). Begun BEFORE the
+      // lock is taken: a begin() that throws must not leave the read lock held, or every later drop or rebuild of the _id index hangs
       final OwnTransaction tx = OwnTransaction.begin((DatabaseInternal) database);
+      indexLock.lock();
       try {
         // one regex budget for the whole command, whatever the number of entries
         final MongoFilter.RegexBudget budget = MongoFilter.RegexBudget.of(database);

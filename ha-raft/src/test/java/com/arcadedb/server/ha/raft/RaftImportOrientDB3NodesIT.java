@@ -25,6 +25,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.utility.FileUtils;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -114,14 +115,11 @@ class RaftImportOrientDB3NodesIT extends BaseRaftHATest {
     final int leader = findLeaderIndex();
     assertThat(leader).isGreaterThanOrEqualTo(0);
 
-    final long start = System.currentTimeMillis();
+    final StallAwareStopwatch clock = StallAwareStopwatch.start();
     postServerCommand(leader, "import database " + DB_NAME + " " + fixtureUrl);
-    final long elapsedMs = System.currentTimeMillis() - start;
 
-    assertThat(elapsedMs)
-        .as("IMPORT DATABASE should complete in under %d seconds on a 3-node Raft cluster (actual: %d ms)",
-            IMPORT_TIMEOUT_SECS, elapsedMs)
-        .isLessThan(IMPORT_TIMEOUT_SECS * 1000);
+    // IMPORT DATABASE must complete within IMPORT_TIMEOUT_SECS on a 3-node Raft cluster
+    clock.assertGaveUpWithin(IMPORT_TIMEOUT_SECS * 1000, "an import that completes from one that hangs on the cluster");
 
     Awaitility.await().atMost(60, TimeUnit.SECONDS).pollInterval(500, TimeUnit.MILLISECONDS)
         .until(() -> {

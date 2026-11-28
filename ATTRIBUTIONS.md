@@ -375,6 +375,10 @@ These dependencies are used only during the build process:
 | com.github.os72 | protoc-jar-maven-plugin | 3.x | Apache 2.0 | https://github.com/os72/protoc-jar-maven-plugin |
 | org.cyclonedx | cyclonedx-maven-plugin | 2.9.3 | Apache 2.0 | https://github.com/CycloneDX/cyclonedx-maven-plugin |
 | org.codehaus.mojo | exec-maven-plugin (studio and package, run the SBOM scripts under -Pdeploy) | 3.6.4 | Apache 2.0 | https://www.mojohaus.org/exec-maven-plugin/ |
+| (binary) | opengrep | 2.0.0 | LGPL-2.1 | https://github.com/opengrep/opengrep |
+
+opengrep is a CI/pre-commit source checker run by `.github/scripts/opengrep.sh`; it is never linked into or shipped
+with any artifact.
 
 ---
 

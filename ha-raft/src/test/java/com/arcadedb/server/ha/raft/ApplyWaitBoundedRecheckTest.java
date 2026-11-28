@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.TestServerHelper;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.apache.ratis.server.DivisionInfo;
 import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.server.raftlog.RaftLog;
@@ -111,13 +112,11 @@ class ApplyWaitBoundedRecheckTest {
       // wait loop, not the 10s quorum timeout, is what has to catch it.
       scheduler.schedule(() -> appliedIndex.set(42), 300, TimeUnit.MILLISECONDS);
 
-      final long start = System.currentTimeMillis();
+      final StallAwareStopwatch clock = StallAwareStopwatch.start();
       raft.waitForAppliedIndex(42, true); // must not throw ReplicationException
-      final long elapsed = System.currentTimeMillis() - start;
 
-      assertThat(elapsed)
-          .as("a missed notifyApplied() must cost at most one bounded re-check interval, not the full quorum timeout")
-          .isLessThan(2_000);
+      // A missed notifyApplied() must cost at most one bounded re-check interval, not the full quorum timeout
+      clock.assertGaveUpWithin(2_000L, "one bounded re-check interval from the full quorum timeout");
     } finally {
       scheduler.shutdownNow();
     }
@@ -135,13 +134,11 @@ class ApplyWaitBoundedRecheckTest {
     try {
       scheduler.schedule(() -> appliedIndex.set(42), 300, TimeUnit.MILLISECONDS);
 
-      final long start = System.currentTimeMillis();
+      final StallAwareStopwatch clock = StallAwareStopwatch.start();
       raft.waitForLocalApply();
-      final long elapsed = System.currentTimeMillis() - start;
 
-      assertThat(elapsed)
-          .as("a missed notifyApplied() must cost at most one bounded re-check interval, not the full quorum timeout")
-          .isLessThan(2_000);
+      // A missed notifyApplied() must cost at most one bounded re-check interval, not the full quorum timeout
+      clock.assertGaveUpWithin(2_000L, "one bounded re-check interval from the full quorum timeout");
     } finally {
       scheduler.shutdownNow();
     }

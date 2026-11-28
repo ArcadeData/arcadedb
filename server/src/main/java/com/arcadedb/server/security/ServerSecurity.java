@@ -2792,6 +2792,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
             try {
               Thread.sleep(500);
             } catch (final InterruptedException e) {
+              Thread.currentThread().interrupt();
               return;
             }
             rootPassword = null;
@@ -2810,6 +2811,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
               try {
                 Thread.sleep(500);
               } catch (final InterruptedException e) {
+                Thread.currentThread().interrupt();
                 return;
               }
               rootPassword = null;
