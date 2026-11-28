@@ -26,6 +26,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -86,10 +87,13 @@ public class SchemaInfo {
     else
       typeJson.put("category", "document");
 
+    // Resolved once for the parents and the properties below
+    final SecurityDatabaseUser user = SecurityHelper.currentUser(database);
+
     // Parent types
     final JSONArray parents = new JSONArray();
     for (final DocumentType superType : type.getSuperTypes())
-      if (SecurityHelper.isReadable(database, superType))
+      if (SecurityHelper.canAccessType(user, superType, SecurityDatabaseUser.ACCESS.READ_RECORD))
         parents.put(superType.getName());
     if (parents.length() > 0)
       typeJson.put("parentTypes", parents);
@@ -113,8 +117,10 @@ public class SchemaInfo {
         propJson.put("min", prop.getMin());
       if (prop.getMax() != null)
         propJson.put("max", prop.getMax());
-      if (prop.getOfType() != null)
-        propJson.put("ofType", prop.getOfType());
+      // The declared type is a reference to another type: shown only when the user may read that one, like the parents above
+      final String ofType = SecurityHelper.readableOfType(database, user, prop);
+      if (ofType != null)
+        propJson.put("ofType", ofType);
       properties.put(propJson);
     }
     if (properties.length() > 0)

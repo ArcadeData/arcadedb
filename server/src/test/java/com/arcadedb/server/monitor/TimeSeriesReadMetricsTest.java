@@ -19,6 +19,7 @@
 package com.arcadedb.server.monitor;
 
 import com.arcadedb.engine.timeseries.AggregationMetrics;
+import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.search.Search;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -277,6 +278,59 @@ class TimeSeriesReadMetricsTest {
     assertThat(TimeSeriesReadMetrics.cachedMeterSetCount())
         .as("a database sharing the sentinel string must collapse like any other, not bypass the ceiling")
         .isEqualTo(afterFilling);
+  }
+
+  /**
+   * The ceiling above bounds how MANY tuples are cached, not how big each is: a cached tuple keeps its key string
+   * and registers twelve meters that carry the db and type values as tags. A value no database or TimeSeries type
+   * can have (both are names of files, so they are a few hundred characters at the most) is therefore never
+   * kept: the read is counted under the overflow tag instead of being dropped.
+   */
+  @Test
+  void aValueNoNameCanHaveIsCountedUnderTheOverflowTagAndNotKept() {
+    final String hugeDatabase = "d".repeat(100_000);
+    final String hugeType = "t".repeat(100_000);
+    final double before = overflowBlocks(TimeSeriesReadMetrics.SURFACE_TS_QUERY);
+
+    final AggregationMetrics hugeDatabaseRead = new AggregationMetrics();
+    hugeDatabaseRead.addSkippedBlock();
+    TimeSeriesReadMetrics.publish(hugeDatabaseRead, hugeDatabase, "Readings", TimeSeriesReadMetrics.SURFACE_TS_QUERY);
+
+    final AggregationMetrics hugeTypeRead = new AggregationMetrics();
+    hugeTypeRead.addSkippedBlock();
+    TimeSeriesReadMetrics.publish(hugeTypeRead, "size-guard", hugeType, TimeSeriesReadMetrics.SURFACE_TS_QUERY);
+
+    assertThat(Search.in(registry).name("arcadedb.timeseries.read.blocks").tag("db", hugeDatabase).meters())
+        .as("the oversized database value must not become a tag").isEmpty();
+    assertThat(Search.in(registry).name("arcadedb.timeseries.read.blocks").tag("type", hugeType).meters())
+        .as("the oversized type value must not become a tag").isEmpty();
+    assertThat(TimeSeriesReadMetrics.cachedMeterSetCount())
+        .as("both reads share the one overflow tuple of their surface, and nothing else is cached").isEqualTo(1);
+    assertThat(overflowBlocks(TimeSeriesReadMetrics.SURFACE_TS_QUERY) - before)
+        .as("the reads are still counted, under the overflow tag").isEqualTo(2);
+  }
+
+  /** The other side of the bound above: a name as long as a name can be keeps its own series. */
+  @Test
+  void aValueAsLongAsTheBoundIsKeptUnderItsOwnName() {
+    final String longestDatabase = "d".repeat(TimeSeriesReadMetrics.MAX_TAG_VALUE_LENGTH);
+    final String longestType = "t".repeat(TimeSeriesReadMetrics.MAX_TAG_VALUE_LENGTH);
+    final AggregationMetrics metrics = new AggregationMetrics();
+    metrics.addSkippedBlock();
+
+    TimeSeriesReadMetrics.publish(metrics, longestDatabase, longestType, TimeSeriesReadMetrics.SURFACE_GRPC);
+
+    assertThat(Search.in(registry).name("arcadedb.timeseries.read.blocks").tag("db", longestDatabase)
+        .tag("type", longestType).tag("outcome", "skipped").counter().count()).isEqualTo(1);
+  }
+
+  private static double overflowBlocks(final String surface) {
+    double total = 0;
+    for (final Counter counter : Search.in(registry)
+        .name("arcadedb.timeseries.read.blocks").tag("db", "other").tag("type", "other").tag("surface", surface)
+        .counters())
+      total += counter.count();
+    return total;
   }
 
   private static double blocks(final String database, final String outcome) {

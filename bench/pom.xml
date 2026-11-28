@@ -33,7 +33,7 @@
         <!-- Nothing here is published to Maven Central, so no SBOM is built for it. -->
         <cyclonedx.skip>true</cyclonedx.skip>
         <allowIncompleteProjects>true</allowIncompleteProjects>
-        <postgresql.version>42.7.14</postgresql.version>
+        <postgresql.version>42.7.15</postgresql.version>
     </properties>
 
     <artifactId>arcadedb-bench</artifactId>

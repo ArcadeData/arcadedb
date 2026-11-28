@@ -38,6 +38,7 @@ import com.arcadedb.exception.QueryAdmissionException;
 import com.arcadedb.exception.QueryHeapBudgetExceededException;
 import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.exception.TransactionOutcomeUnknownException;
@@ -243,6 +244,10 @@ class HttpErrorStatusMappingTest {
         // of it ran, so the same request re-issued later can succeed. It extends CommandExecutionException too.
         new MappedFailure("QueryAdmissionException", 503,
             () -> new QueryAdmissionException("Query not started because it waited 30000ms in the queue")),
+        // A query that ran out of the time its caller gave it (a TIMEOUT clause) or the operator gave the caller (the group
+        // readTimeout): the server did what it was told, so not a 5xx, and the same request with a larger limit or a narrower
+        // query can succeed (issue #12923). It answered the generic 500. Not 408, which a browser resends by itself.
+        new MappedFailure("TimeoutException", 400, () -> new TimeoutException("Timeout expired: TIMEOUT clause of 1ms")),
         // A permanent DROP DATABASE race (not the transient resync above) that lost the retry-then-reresolve round trip:
         // allowLoad=false found no database under the name. An accurate 404, not the generic 500 the un-typed
         // DatabaseOperationException used to fall through to (issue #6778, #6770 follow-up), and since issue #10872 the
@@ -321,6 +326,63 @@ class HttpErrorStatusMappingTest {
                 failure.expectedStatus(), inCommand.body)
             .isEqualTo(failure.expectedStatus());
       }));
+    }
+
+    // Regression: #12923 a statement that ran out of its time limit is a 400 "Timeout", not a 500
+    /**
+     * Issue #12923: the timeout is named in the label and in the exception field, however deep the engine wrapped it, so a client
+     * tells it from the other 400s and the remote client rebuilds the type.
+     */
+    @Test
+    void aTimeoutIsNamedHoweverDeepItIsWrapped() {
+      final HandledResponse response = handle(new TransactionException("Error on executing command",
+          new CommandExecutionException("Error on command execution",
+              new CommandExecutionException("Error on executing script", new TimeoutException("Timeout on iteration")))));
+
+      assertThat(response.statusCode).isEqualTo(400);
+      final JSONObject json = new JSONObject(response.body);
+      assertThat(json.getString("error")).isEqualTo("Timeout");
+      assertThat(json.getString("exception")).isEqualTo(TimeoutException.class.getName());
+      assertThat(json.getString("detail")).contains("Timeout on iteration");
+    }
+
+    /**
+     * Issue #12923: a timeout is decided last, as {@code ErrorCategory} decides it for the other protocols. A failure that carries
+     * a timeout somewhere in its chain keeps its own answer, and so does a timeout that carries a more specific failure.
+     */
+    @Test
+    void aTimeoutDoesNotOverrideAMoreSpecificFailure() {
+      // an unknown outcome caused by a timeout stays the 504 that tells the client not to resend
+      assertThat(handle(new TransactionOutcomeUnknownException("The leader did not answer",
+          new TimeoutException("Timeout on waiting for the leader"))).statusCode).isEqualTo(504);
+      // a conflict stays retryable
+      assertThat(handle(new TransactionException("Error on executing command",
+          new ConcurrentModificationException("Record modified", new TimeoutException("Timeout on locking")))).statusCode)
+          .isEqualTo(503);
+      // a duplicated key stays a conflict
+      assertThat(handle(new CommandExecutionException("Error on command execution",
+          new TimeoutException("Timeout", new DuplicatedKeyException("Idx", "[1]", new RID(1, 1))))).statusCode).isEqualTo(409);
+      // COMMIT RETRY giving up at the command deadline carries the conflict as its cause: the other protocols classify it as the
+      // conflict, so it is not reported as a timeout here, and keeps the answer it had
+      assertThat(handle(new TimeoutException("COMMIT RETRY gave up after 1 of 10 attempts: the command exceeded the timeout",
+          new ConcurrentModificationException("Record modified"))).statusCode).isEqualTo(500);
+    }
+
+    /**
+     * Issue #12923 with #13251: a COMMIT RETRY block that committed part of its work and then reached the command deadline raises
+     * the timeout over the {@code TransactionException} that says so. It must not be answered as a statement to send again with a
+     * larger limit: it keeps the 500.
+     */
+    @Test
+    void aTimeoutOverAPartialCommitIsNotAnsweredAsATimeout() {
+      final Supplier<RuntimeException> partial = () -> new TimeoutException(
+          "COMMIT RETRY gave up after 2 of 10 attempts: the command exceeded the timeout",
+          new TransactionException("COMMIT RETRY block committed part of its work before failing with "
+              + "ConcurrentModificationException (Record modified). It is not retried"));
+
+      assertThat(handle(partial.get()).statusCode).isEqualTo(500);
+      assertThat(handle(new TransactionException("Error on executing command", partial.get())).statusCode).isEqualTo(500);
+      assertThat(handle(new CommandExecutionException("Error on command execution", partial.get())).statusCode).isEqualTo(500);
     }
 
     /**

@@ -497,6 +497,7 @@ class QueryHeapBudgetTest {
         "SELECT percentile(k, 0.5) FROM D",//
         "SELECT median(k) FROM D",//
         "SELECT mode(k) FROM D",//
+        "SELECT concat(k, ',') FROM D",//
         "SELECT ts.percentile(k, 0.5) FROM D",//
         "SELECT ts.rank(k, t) FROM D",//
         "SELECT ts.movingAvg(k, 3) FROM D",//
@@ -505,7 +506,8 @@ class QueryHeapBudgetTest {
         "SELECT ts.rate(k, t) FROM D",//
         "SELECT ts.interpolate(k, 'prev', t) FROM D",//
         "SELECT g, list(k) FROM D GROUP BY g",//
-        "SELECT g, percentile(k, 0.5) FROM D GROUP BY g");
+        "SELECT g, percentile(k, 0.5) FROM D GROUP BY g",//
+        "SELECT g, concat(k, ',') FROM D GROUP BY g");
 
     private static final List<String> CYPHER_OVER_CAP = List.of(//
         // the controls
@@ -518,11 +520,13 @@ class QueryHeapBudgetTest {
         // the same SQL aggregates, reached from openCypher
         "MATCH (d:D) RETURN sql.list(d.k)",//
         "MATCH (d:D) RETURN d.g AS g, sql.list(d.k) AS l",//
-        "MATCH (d:D) RETURN sql.mode(d.k)");
+        "MATCH (d:D) RETURN sql.mode(d.k)",//
+        "MATCH (d:D) RETURN sql.concat(d.k, ',')");
 
     /** The aggregates the statements above cover; a newly registered one that keeps every value must be added there. */
     private static final Set<String> COVERED_AGGREGATES = Set.of("list", "set", "unionall", "intersect", "symmetricdifference", "map",
-        "percentile", "median", "mode", "ts.percentile", "ts.rank", "ts.movingavg", "ts.lead", "ts.lag", "ts.rate", "ts.interpolate");
+        "percentile", "median", "mode", "concat", "ts.percentile", "ts.rank", "ts.movingavg", "ts.lead", "ts.lag", "ts.rate",
+        "ts.interpolate");
 
     @AfterEach
     void resetBudget() {

@@ -24,14 +24,20 @@ import com.arcadedb.database.RID;
 import com.arcadedb.event.BeforeRecordCreateListener;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.exception.QueryTerminatedException;
+import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.RunningQuery;
+import com.arcadedb.query.RunningQueryRegistry;
 import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import com.arcadedb.query.sql.parser.CreateEdgeStatement;
 import com.arcadedb.query.sql.parser.Statement;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.HashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -45,9 +51,14 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * for the end-to-end one.
  */
 class CreateEdgeRetryWaitTest extends TestHelper {
-  private final AtomicInteger attempts = new AtomicInteger();
-  private       RID           from;
-  private       RID           to;
+  /** Far longer than the tripwire below, so a wait that does not stop with its command is told apart from one that does. */
+  private static final long LONG_WAIT_MS = 20_000;
+  private static final long TRIPWIRE_MS  = 10_000;
+
+  private final AtomicInteger        attempts = new AtomicInteger();
+  private final RunningQueryRegistry registry = new RunningQueryRegistry();
+  private       RID                  from;
+  private       RID                  to;
 
   @BeforeEach
   void setUpGraph() {
@@ -154,6 +165,57 @@ class CreateEdgeRetryWaitTest extends TestHelper {
 
     assertThat(attempts.get()).as("attempts after the thread was interrupted").isEqualTo(1);
     assertThat(edges()).isZero();
+  }
+
+  @Test
+  void aTerminatedStatementStopsWaitingBetweenAttempts() throws Exception {
+    failFirstAttempts(Integer.MAX_VALUE);
+
+    try (final RunningQuery statement = registry.register(database.getName(), "admin", "test", null, null,
+        RunningQuery.Client.NONE)) {
+      final Thread terminator = new Thread(() -> {
+        try {
+          Thread.sleep(200);
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+          return;
+        }
+        statement.terminate("root");
+      }, "create-edge-wait-test-terminator");
+      terminator.setDaemon(true);
+      terminator.start();
+      try {
+        final StallAwareStopwatch watch = StallAwareStopwatch.start();
+        assertThatThrownBy(() -> database.command("sql", createEdge(" RETRY 5 WAIT " + LONG_WAIT_MS)).close())
+            .isInstanceOf(QueryTerminatedException.class);
+        watch.assertGaveUpWithin(TRIPWIRE_MS, "a wait that stops with its terminated statement from one that runs to its end");
+      } finally {
+        terminator.join();
+      }
+    }
+
+    assertThat(attempts.get()).as("attempts made before the statement was terminated during the wait").isEqualTo(1);
+    assertThat(edges()).isZero();
+    assertThat(database.isTransactionActive()).as("the statement's own transaction is closed").isFalse();
+  }
+
+  @Test
+  void theCommandDeadlineEndsTheWaitBetweenAttempts() {
+    failFirstAttempts(Integer.MAX_VALUE);
+    // The deadline is the one the command carries, whichever way it was set: here, a context that holds it
+    final BasicCommandContext parent = new BasicCommandContext();
+    parent.setDatabase(database);
+    parent.setCommandDeadline(System.currentTimeMillis() + 300, "test deadline");
+    final Statement statement = parse(createEdge(" RETRY 5 WAIT " + LONG_WAIT_MS));
+
+    final StallAwareStopwatch watch = StallAwareStopwatch.start();
+    assertThatThrownBy(() -> statement.execute(database, new HashMap<String, Object>(), parent).close())
+        .isInstanceOf(TimeoutException.class).hasStackTraceContaining("test deadline");
+    watch.assertGaveUpWithin(TRIPWIRE_MS, "a wait that stops at the command deadline from one that runs to its end");
+
+    assertThat(attempts.get()).as("attempts made before the deadline passed during the wait").isEqualTo(1);
+    assertThat(edges()).isZero();
+    assertThat(database.isTransactionActive()).as("the statement's own transaction is closed").isFalse();
   }
 
   @Test

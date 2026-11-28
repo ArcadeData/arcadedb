@@ -96,7 +96,7 @@ public class SQLFunctionMin extends SQLAggregatedFunction {
       // FIRST TIME
       context = min;
     else {
-      if (context instanceof Number number && min instanceof Number number1) {
+      if (context instanceof Number number && min instanceof Number number1 && !Type.castComparableNumberIsIdentity(number, number1)) {
         final Number[] casted = Type.castComparableNumber(number, number1);
         context = casted[0];
         min = casted[1];

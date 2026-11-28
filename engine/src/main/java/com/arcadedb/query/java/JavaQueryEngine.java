@@ -20,11 +20,13 @@ package com.arcadedb.query.java;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.CallerUser;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.function.java.JavaMethodFunctionDefinition;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.InternalResultSet;
@@ -44,6 +46,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 public class JavaQueryEngine implements QueryEngine {
   public static final String                       ENGINE_NAME       = "java";
+  private final       DatabaseInternal             database;
   private final       long                         timeout;
   private final       ThreadPoolExecutor           userCodeExecutor;
   private final       ArrayBlockingQueue<Runnable> userCodeExecutorQueue;
@@ -107,6 +110,7 @@ public class JavaQueryEngine implements QueryEngine {
   }
 
   protected JavaQueryEngine(final DatabaseInternal database) {
+    this.database = database;
     this.userCodeExecutorQueue = new ArrayBlockingQueue<>(1_000);
     // #5418: named DAEMON workers. With the JDK default factory these were non-daemon core threads that never
     // time out, so a single java-language query on a Database the embedder later leaks pinned its JVM alive.
@@ -240,17 +244,20 @@ public class JavaQueryEngine implements QueryEngine {
 
   @Override
   public ResultSet query(final String query, ContextConfiguration configuration, final Map<String, Object> parameters) {
-    throw new UnsupportedOperationException("Execution of a query (idempotent) is not supported for polyglot engine. Use command instead");
+    throw new QueryNotIdempotentException("Execution of a query (idempotent) is not supported for polyglot engine. Use command instead");
   }
 
   @Override
   public ResultSet query(final String query, ContextConfiguration configuration, final Object... parameters) {
-    throw new UnsupportedOperationException("Execution of a query (idempotent) is not supported for polyglot engine. Use command instead");
+    throw new QueryNotIdempotentException("Execution of a query (idempotent) is not supported for polyglot engine. Use command instead");
   }
 
   private ResultSet executeUserCode(final Callable task, final long executionTimeoutMs) throws Exception {
+    // What the method does with the database is checked against the user who issued the command, not against a pool thread
+    // that has none
+    final Callable asCaller = CallerUser.bind(database, task);
     // IF NOT INITIALIZED, EXECUTE AS SOON AS THE SERVICE STARTS
-    final Future future = userCodeExecutor.submit(task);
+    final Future future = userCodeExecutor.submit(asCaller);
 
     try {
       final Object result = executionTimeoutMs > 0 ? future.get(executionTimeoutMs, TimeUnit.MILLISECONDS) : future.get();

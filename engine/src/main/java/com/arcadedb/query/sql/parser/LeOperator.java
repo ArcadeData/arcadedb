@@ -92,6 +92,11 @@ public class LeOperator extends SimpleNode implements BinaryCompareOperator {
   }
 
   @Override
+  public GeOperator mirrored() {
+    return new GeOperator();
+  }
+
+  @Override
   public boolean isRangeOperator() {
     return true;
   }

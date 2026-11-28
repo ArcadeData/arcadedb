@@ -20,13 +20,15 @@ package com.arcadedb.server.network;
 
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * What an accept loop does with a failure of the work of one accepted connection: an error pauses it and is logged at a
- * bounded rate, an exception is only logged, and neither ends the loop.
+ * bounded rate, an exception is only logged, and neither ends the loop. A failure of the socket itself, which lasts for as long
+ * as its cause does, is always paused and logged at a bounded rate.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -64,6 +66,40 @@ class AcceptFailureHandlerTest {
 
     // the first is logged, the two that follow inside the interval are held back and counted
     assertThat(handler.getHeldBack()).isEqualTo(2);
+  }
+
+  @Test
+  void aFailureOfTheSocketPausesTheLoopEachTime() {
+    final AcceptFailureHandler handler = new AcceptFailureHandler("TEST");
+
+    final long start = System.nanoTime();
+    for (int i = 0; i < 3; i++)
+      handler.handleAcceptFailure(this, "Error accepting connections", new IOException("accept failed"));
+    final long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
+
+    // a lower bound only: a stall can make the pauses longer, never shorter
+    assertThat(elapsedMs).isGreaterThanOrEqualTo(3 * (AcceptFailureHandler.PAUSE_MS - 10));
+  }
+
+  @Test
+  void failuresOfTheSocketAreLoggedAtABoundedRate() {
+    final AcceptFailureHandler handler = new AcceptFailureHandler("TEST");
+
+    for (int i = 0; i < 3; i++)
+      handler.handleAcceptFailure(this, "Error accepting connections", new IOException("accept failed"));
+
+    // the first is logged, the two that follow inside the interval are held back and counted
+    assertThat(handler.getHeldBack()).isEqualTo(2);
+  }
+
+  @Test
+  void aFailureOfTheSocketThatIsNotAnExceptionIsHandledTheSame() {
+    final AcceptFailureHandler handler = new AcceptFailureHandler("TEST");
+
+    handler.handleAcceptFailure(this, "Error accepting connections", new OutOfMemoryError("start failed"));
+    handler.handleAcceptFailure(this, "Error accepting connections", new IllegalStateException("not usable"));
+
+    assertThat(handler.getHeldBack()).isEqualTo(1);
   }
 
   @Test

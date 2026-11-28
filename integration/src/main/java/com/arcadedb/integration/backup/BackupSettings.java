@@ -65,6 +65,12 @@ public class BackupSettings {
    * {@link com.arcadedb.GlobalConfiguration#BACKUP_MAX_MB_PER_SECOND}.
    */
   public       Integer             maxMBPerSecond;
+  /**
+   * Run before every chunk read from the database files and between two archive entries, or {@code null} for none. It ends the
+   * backup by throwing: the partial archive is removed and the caller sees that exception. Set by the SQL statement, which hands
+   * over the check of the statement it runs for, so a backup that was asked to stop does not run to its end.
+   */
+  public       Runnable            abortCheck;
 
   protected void parseParameters(final String[] args) {
     if (args != null)

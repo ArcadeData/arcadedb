@@ -4187,6 +4187,136 @@ expect "verify-release.sh refuses a tag that is not a version" 2 "is not a relea
 expect "verify-release.sh without arguments exits 2" 2 "Usage" "$VERIFYREL"
 
 echo
+echo "check-release-credentials.sh"
+
+# Real gpg (throwaway keys in a private keyring) and a stub curl (fixtures/release-credentials/stubs): the GPG checks
+# are the ones a wrong secret breaks, so they run against gpg itself; the HTTP services answer from $STUB_DIR/http.
+RELCRED="$SCRIPTS/check-release-credentials.sh"
+CREDSTUBS="$PWD/$SCRIPTS/tests/fixtures/release-credentials/stubs"
+credgpg="$work/credgpg"
+mkdir -m 700 "$credgpg"
+gen_key() {   # <uid> <expiry>: prints the fingerprint
+    gpg --homedir "$credgpg" --batch --pinentry-mode loopback --passphrase pw --quick-gen-key "$1" ed25519 sign "$2" >/dev/null 2>&1
+    gpg --homedir "$credgpg" --batch --with-colons --list-keys "$1" | awk -F: '$1 == "fpr" { print $10; exit }'
+}
+CREDFPR="$(gen_key "Release Test <release@example.com>" 3y)"
+SOONFPR="$(gen_key "Soon Expiring <soon@example.com>" 10d)"
+CREDKEY="$(gpg --homedir "$credgpg" --batch --pinentry-mode loopback --passphrase pw --armor --export-secret-keys "$CREDFPR")"
+SOONKEY="$(gpg --homedir "$credgpg" --batch --pinentry-mode loopback --passphrase pw --armor --export-secret-keys "$SOONFPR")"
+gpgconf --homedir "$credgpg" --kill gpg-agent >/dev/null 2>&1 || true
+
+docker_body() {   # <repository> <actions json array>: a token endpoint answer whose JWT grants those actions
+    local payload
+    payload="$(printf '{"access":[{"type":"repository","name":"%s","actions":%s}]}' "$1" "$2" | base64 | tr -d '\n=' | tr '/+' '_-')"
+    printf '{"token":"eyJhbGciOiJub25lIn0.%s.c2ln"}' "$payload"
+}
+
+# A fresh stub world in which every service accepts the credentials and nothing is published or tagged yet.
+cred_world() {
+    local d="$work/cred.$1"
+    rm -rf "$d"
+    mkdir -p "$d/http"
+    echo '{"published":false}' >"$d/http/central.body"
+    docker_body arcadedata/arcadedb '["pull","push"]' >"$d/http/docker.body"
+    echo "$d"
+}
+
+run_cred() {   # <stub dir> [VAR=value ...]: the check with good credentials, overridden by the arguments
+    local d="$1"
+    shift
+    env -u GITHUB_TOKEN -u SKIP_CENTRAL -u DOCKER_REPOSITORY PATH="$CREDSTUBS:$PATH" STUB_DIR="$d" \
+        GPG_PRIVATE_KEY="$CREDKEY" GPG_PASSPHRASE=pw RELEASE_GPG_FINGERPRINT="$CREDFPR" \
+        CENTRAL_USERNAME=cu CENTRAL_PASSWORD=cp DOCKER_USERNAME=du DOCKER_PASSWORD=dp GITHUB_REPOSITORY=ArcadeData/arcadedb \
+        "$@" "$RELCRED" 26.12.1
+}
+
+cw="$(cred_world good)"
+expect "check-release-credentials.sh passes when every credential works" 0 "all checks passed, 0 warning(s)" run_cred "$cw"
+if grep -qx "Authorization: Bearer $(printf 'cu:cp' | base64)" "$cw/calls.log" &&
+    grep -qx "Authorization: Basic $(printf 'du:dp' | base64)" "$cw/calls.log"; then
+    pass "check-release-credentials.sh sends the Central token as Bearer and the Docker Hub token as Basic"
+else
+    fail "check-release-credentials.sh sends the Central token as Bearer and the Docker Hub token as Basic" "$(cat "$cw/calls.log")"
+fi
+if grep -q 'scope=repository:arcadedata/arcadedb:push,pull' "$cw/calls.log" &&
+    grep -q "central.sonatype.com/api/v1/publisher/published?namespace=com.arcadedb&name=arcadedb-engine&version=26.12.1" "$cw/calls.log"; then
+    pass "check-release-credentials.sh asks Docker Hub for push on the release repository and Central about the release version"
+else
+    fail "check-release-credentials.sh asks Docker Hub for push on the release repository and Central about the release version" "$(cat "$cw/calls.log")"
+fi
+expect "check-release-credentials.sh accepts the fingerprint in lower case with spaces" 0 "all checks passed" \
+    run_cred "$(cred_world spaced)" RELEASE_GPG_FINGERPRINT="$(tr '[:upper:]' '[:lower:]' <<<"$CREDFPR" | sed 's/..../& /g')"
+
+expect "check-release-credentials.sh fails on a wrong passphrase" 1 "MAVEN_GPG_PASSPHRASE is probably not the passphrase" \
+    run_cred "$(cred_world pass)" GPG_PASSPHRASE=wrong
+expect "check-release-credentials.sh fails when the key is not RELEASE_GPG_FINGERPRINT" 1 "update them together" \
+    run_cred "$(cred_world fpr)" RELEASE_GPG_FINGERPRINT="$SOONFPR"
+expect "check-release-credentials.sh fails without RELEASE_GPG_FINGERPRINT" 1 "RELEASE_GPG_FINGERPRINT is not set" \
+    run_cred "$(cred_world nofpr)" RELEASE_GPG_FINGERPRINT=
+expect "check-release-credentials.sh fails on an empty private key" 1 "MAVEN_GPG_PRIVATE_KEY) is empty" \
+    run_cred "$(cred_world nokey)" GPG_PRIVATE_KEY=
+expect "check-release-credentials.sh fails on a private key that does not import" 1 "does not import" \
+    run_cred "$(cred_world badkey)" GPG_PRIVATE_KEY="not a key"
+expect "check-release-credentials.sh fails on a key expiring within EXPIRY_FAIL_DAYS" 1 "the signing key expires in" \
+    run_cred "$(cred_world soon)" GPG_PRIVATE_KEY="$SOONKEY" RELEASE_GPG_FINGERPRINT="$SOONFPR"
+expect "check-release-credentials.sh only warns on a key expiring within EXPIRY_WARN_DAYS" 0 "all checks passed, 1 warning(s)" \
+    run_cred "$(cred_world warnsoon)" GPG_PRIVATE_KEY="$SOONKEY" RELEASE_GPG_FINGERPRINT="$SOONFPR" EXPIRY_FAIL_DAYS=5
+
+cw="$(cred_world onekeyserver)"
+echo 404 >"$cw/http/openpgp.code"
+expect "check-release-credentials.sh only warns when one keyserver lacks the key" 0 "but not on keys.openpgp.org" run_cred "$cw"
+cw="$(cred_world nokeyserver)"
+echo 404 >"$cw/http/openpgp.code"
+echo 404 >"$cw/http/ubuntu.code"
+expect "check-release-credentials.sh fails when no keyserver has the key" 1 "on neither keyserver.ubuntu.com nor keys.openpgp.org" run_cred "$cw"
+
+cw="$(cred_world central401)"
+echo 401 >"$cw/http/central.code"
+expect "check-release-credentials.sh fails when Central rejects the token" 1 "generate a new Portal user token" run_cred "$cw"
+cw="$(cred_world published)"
+echo '{"published":true}' >"$cw/http/central.body"
+expect "check-release-credentials.sh fails when the version is already on Central" 1 "is already published on Maven Central" run_cred "$cw"
+expect "check-release-credentials.sh fails on empty Central credentials" 1 "MAVEN_CENTRAL_PASSWORD) are empty" \
+    run_cred "$(cred_world nocentral)" CENTRAL_PASSWORD=
+cw="$(cred_world skipcentral)"
+expect "check-release-credentials.sh skips Central with SKIP_CENTRAL=true" 0 "skipped - Maven Central" \
+    run_cred "$cw" SKIP_CENTRAL=true CENTRAL_USERNAME= CENTRAL_PASSWORD=
+if [[ ! -s "$cw/calls.log" ]] || grep -qE 'central.sonatype.com|keyserver.ubuntu.com|keys.openpgp.org' "$cw/calls.log"; then
+    fail "check-release-credentials.sh with SKIP_CENTRAL=true calls neither Central nor the keyservers" "$(cat "$cw/calls.log")"
+else
+    pass "check-release-credentials.sh with SKIP_CENTRAL=true calls neither Central nor the keyservers"
+fi
+cw="$(cred_world rehearsal)"
+echo 404 >"$cw/http/openpgp.code"
+echo 404 >"$cw/http/ubuntu.code"
+expect "check-release-credentials.sh with SKIP_CENTRAL=true accepts a test key on no keyserver" 0 "skipped - keyservers" \
+    run_cred "$cw" SKIP_CENTRAL=true
+
+cw="$(cred_world pullonly)"
+docker_body arcadedata/arcadedb '["pull"]' >"$cw/http/docker.body"
+expect "check-release-credentials.sh fails on a read-only Docker Hub token" 1 "cannot push to arcadedata/arcadedb (granted: pull)" run_cred "$cw"
+cw="$(cred_world otherrepo)"
+docker_body someone/arcadedb '["pull","push"]' >"$cw/http/docker.body"
+expect "check-release-credentials.sh fails when push is granted only on another repository" 1 "cannot push to arcadedata/arcadedb" run_cred "$cw"
+cw="$(cred_world docker401)"
+echo 401 >"$cw/http/docker.code"
+expect "check-release-credentials.sh fails when Docker Hub rejects the credentials" 1 "Docker Hub rejects DOCKER_USERNAME" run_cred "$cw"
+cw="$(cred_world forkns)"
+docker_body someone/arcadedb '["pull","push"]' >"$cw/http/docker.body"
+expect "check-release-credentials.sh checks push on DOCKER_REPOSITORY" 0 "can push to someone/arcadedb" run_cred "$cw" DOCKER_REPOSITORY=someone/arcadedb
+
+cw="$(cred_world tagged)"
+echo 200 >"$cw/http/github.code"
+expect "check-release-credentials.sh fails when the release tag exists" 1 "the tag 26.12.1 already exists in ArcadeData/arcadedb" run_cred "$cw"
+
+cw="$(cred_world everything)"
+echo 401 >"$cw/http/central.code"
+docker_body arcadedata/arcadedb '["pull"]' >"$cw/http/docker.body"
+echo 200 >"$cw/http/github.code"
+expect "check-release-credentials.sh reports every failure in one run" 1 "4 check(s) failed" run_cred "$cw" GPG_PASSPHRASE=wrong
+expect "check-release-credentials.sh without arguments exits 2" 2 "Usage" "$RELCRED"
+
+echo
 if [[ $failures -gt 0 ]]; then
     echo "$failures of $checks checks failed"
     exit 1

@@ -26,6 +26,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.HeapLimitExceededException;
 import com.arcadedb.exception.QueryHeapBudgetExceededException;
 import com.arcadedb.exception.RecordNotFoundException;
@@ -55,6 +56,8 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.RidHashSet;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Iterator;
@@ -86,6 +89,7 @@ import java.util.function.UnaryOperator;
  */
 public class SubqueryStep extends AbstractExecutionStep {
   private static final String STAR_SCOPE = "*";
+  private static final BigDecimal MAX_BATCH_SIZE = BigDecimal.valueOf(Integer.MAX_VALUE);
 
   private final SubqueryClause subqueryClause;
   private final DatabaseInternal database;
@@ -509,10 +513,11 @@ public class SubqueryStep extends AbstractExecutionStep {
         final boolean callerTransaction = database.isTransactionActive();
         final int nesting = database.getNestedTransactions();
         // A label the batch writes replaces the node by a new record, noted for the outer rows to follow: a batch that does not
-        // commit takes its notes back with it. Only a body that can write has any, and the map is not created for one that cannot
+        // commit takes its notes back with it. Only a body that can write has any, and the map is not created for one that cannot.
+        // Taken after begin(), right before the try whose finally releases it, so a begin() that throws leaves no snapshot live
+        database.begin();
         final LabelReplacements.Snapshot labelReplacements =
             innerMayWrite && onError != SubqueryClause.OnError.FAIL ? LabelReplacements.of(context).copy() : null;
-        database.begin();
         try {
           for (final Result outerRow : batch) {
             final long begin = context.isProfiling() ? System.nanoTime() : 0;
@@ -579,6 +584,10 @@ public class SubqueryStep extends AbstractExecutionStep {
           if (!prevResults.hasNext())
             finished = true;
           return;
+        } finally {
+          // The batch either committed or was taken back: its notes can no longer be restored
+          if (labelReplacements != null)
+            LabelReplacements.of(context).release(labelReplacements);
         }
         final Map<String, Object> committedStatus = statusVariable != null ? status(true, true, transactionId, null) : null;
 
@@ -757,11 +766,39 @@ public class SubqueryStep extends AbstractExecutionStep {
     if (batchSizeExpr == null)
       return subqueryClause.getDefaultBatchSize();
 
-    final Object value = expressionEvaluator.evaluate(batchSizeExpr, new ResultInternal(), context);
-    if (value instanceof Number number)
-      return number.intValue();
+    return positiveBatchSize(expressionEvaluator.evaluate(batchSizeExpr, new ResultInternal(), context));
+  }
 
-    throw new CommandExecutionException("IN TRANSACTIONS batch size must be a number, got: " + value);
+  /**
+   * The batch size a value denotes: an integral number of at least 1, clamped to {@code Integer.MAX_VALUE} (a batch of every
+   * row) rather than wrapped. A size of 0 or less collects an empty first batch, which reads as the end of the input and drops
+   * every outer row without running the body, and {@code intValue()} did the same for 2^32 (issue #12983). Anything else is
+   * refused, as SKIP and LIMIT refuse a value that is not an integer.
+   */
+  private static int positiveBatchSize(final Object value) {
+    if (value instanceof Number number) {
+      final long size;
+      if (number instanceof Double || number instanceof Float) {
+        final double d = number.doubleValue();
+        if (d != Math.rint(d) || Double.isInfinite(d))
+          throw invalidBatchSize(value);
+        size = (long) d;
+      } else if (number instanceof BigInteger || number instanceof BigDecimal) {
+        // longValue() drops the fraction of a BigDecimal and keeps the low 64 bits of either: read the value itself
+        final BigDecimal exact = number instanceof BigInteger big ? new BigDecimal(big) : (BigDecimal) number;
+        if (exact.signum() < 1 || exact.stripTrailingZeros().scale() > 0)
+          throw invalidBatchSize(value);
+        return exact.compareTo(MAX_BATCH_SIZE) > 0 ? Integer.MAX_VALUE : exact.intValue();
+      } else
+        size = number.longValue();
+      if (size >= 1)
+        return (int) Math.min(size, Integer.MAX_VALUE);
+    }
+    throw invalidBatchSize(value);
+  }
+
+  private static CommandParsingException invalidBatchSize(final Object value) {
+    return new CommandParsingException("InvalidArgumentValue: IN TRANSACTIONS batch size must be a positive integer, got: " + value);
   }
 
   /**

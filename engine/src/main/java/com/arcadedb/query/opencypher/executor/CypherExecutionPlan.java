@@ -496,6 +496,7 @@ public class CypherExecutionPlan {
     // transaction's copies of the records they hold (issue #12565)
     context.setCurrentRecordsOnly(WrittenCopy.holdsCurrentRecordsOnly(statement.isReadOnly(), outerContext));
     setupFunctionResolver(context);
+    installCommandDeadline(context, outerContext);
     CypherFunctionHelper.inheritStatementTime(context, outerContext);
     inheritIncomingEdgeLookup(context, outerContext);
     inheritGraphViewPins(context, outerContext);
@@ -628,6 +629,46 @@ public class CypherExecutionPlan {
       if (runningQuery != null)
         context.setRunningQuery(runningQuery);
     }
+  }
+
+  /**
+   * The deadline a plan's context starts with: the enclosing statement's for a nested plan (a UNION branch included, which runs on
+   * a context of its own), and for a top-level statement the one the {@code readTimeout} of its user's groups gives it.
+   */
+  private void installCommandDeadline(final BasicCommandContext context, final CommandContext outerContext) {
+    if (outerContext != null)
+      inheritCommandDeadline(context, outerContext);
+    else
+      boundByReadTimeout(context);
+  }
+
+  /**
+   * Bounds a top-level statement that reads by the {@code readTimeout} of the groups of the user running it, as a SQL SELECT or
+   * MATCH is: the whole statement shares one deadline, every guarded loop of every step reads it, and the nested plans inherit it
+   * (see {@link #inheritCommandDeadline}). The bucket scans carried that timeout alone until now, each on a clock of its own, so
+   * an index seek, an expansion, an UNWIND, an aggregation or a procedure ran past it.
+   * <p>
+   * Resolved from the user at the moment the statement starts and kept on its context, never on the plan: the physical plan is
+   * shared through the plan cache by every user of the same text. The earlier of this deadline and the command's own
+   * ({@code arcadedb.command.timeout}) wins, and a timeout that is not positive adds no bound, as a {@code TIMEOUT 0} clause adds
+   * none. A statement that writes keeps the pace it had, as a SQL UPDATE or DELETE does.
+   */
+  private void boundByReadTimeout(final BasicCommandContext context) {
+    if (!statement.isReadOnly())
+      return;
+
+    final long readTimeout = database.getReadTimeout();
+    if (readTimeout <= 0)
+      return;
+
+    // Saturating, and one below Long.MAX_VALUE, which stands for "no deadline at all"
+    final long now = System.currentTimeMillis();
+    final long deadline = readTimeout > Long.MAX_VALUE - 1 - now ? Long.MAX_VALUE - 1 : now + readTimeout;
+    // The command's own bound is the stricter one, and it carries its own description
+    if (context.getCommandDeadline() <= deadline)
+      return;
+
+    context.setCommandDeadline(deadline, "group readTimeout of " + readTimeout + "ms", false);
   }
 
   /**
@@ -1050,6 +1091,7 @@ public class CypherExecutionPlan {
     context.setProfiling(profile != null);
     context.setCurrentRecordsOnly(WrittenCopy.holdsCurrentRecordsOnly(statement.isReadOnly(), outerContext));
     setupFunctionResolver(context);
+    installCommandDeadline(context, outerContext);
     // Every branch runs on a context of its own, so the statement clock has to travel from here into each of
     // them - and into here from an enclosing statement when this UNION is a CALL body (issue #7052).
     CypherFunctionHelper.inheritStatementTime(context, outerContext);
@@ -1396,6 +1438,7 @@ public class CypherExecutionPlan {
     context.setDatabase(database);
     context.setInputParameters(parameters);
     setupFunctionResolver(context);
+    installCommandDeadline(context, null);
     context.setProfiling(true);
     context.openGraphViewPins();
     SubqueryPlans.install(context, null, statement);

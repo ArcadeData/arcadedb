@@ -79,7 +79,16 @@ public class BoltNetworkListener extends Thread {
     try {
       while (active) {
         try {
-          final Socket socket = serverSocket.accept();
+          final Socket socket;
+          try {
+            socket = serverSocket.accept();
+          } catch (final Throwable e) {
+            // The socket itself failed, which it keeps doing at once on every call for as long as the cause lasts: retried at
+            // a bounded rate rather than in a hot loop
+            if (active)
+              failureHandler.handleAcceptFailure(this, "Error accepting BOLT connections", e);
+            continue;
+          }
 
           // Check connection limit
           if (maxConnections > 0 && activeConnections.size() >= maxConnections) {

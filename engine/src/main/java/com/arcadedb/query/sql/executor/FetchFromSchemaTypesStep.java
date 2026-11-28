@@ -137,8 +137,10 @@ public class FetchFromSchemaTypesStep extends AbstractFetchFromSchemaListStep {
             propRes.setProperty("name", property.getName());
             propRes.setProperty("type", property.getType());
 
-            if (property.getOfType() != null)
-              propRes.setProperty("ofType", property.getOfType());
+            // The declared type is a reference to another type: shown only when the user may read that one, like its parents
+            final String ofType = SecurityHelper.readableOfType(context.getDatabase(), currentUser, property);
+            if (ofType != null)
+              propRes.setProperty("ofType", ofType);
             if (property.isMandatory())
               propRes.setProperty("mandatory", property.isMandatory());
             if (property.isReadonly())

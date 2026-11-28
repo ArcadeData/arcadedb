@@ -1,0 +1,89 @@
+ArcadeDB release signing keys
+
+This file holds the public OpenPGP keys that sign ArcadeDB releases: the Maven Central artifacts and the
+SHA256SUMS file attached to each GitHub release. Container images and release assets are also signed with
+cosign keyless; SECURITY.md ("Verifying releases") describes both.
+
+Import the keys with:
+
+    curl -sSL https://raw.githubusercontent.com/ArcadeData/arcadedb/main/KEYS | gpg --import
+
+Then check the fingerprint of the key that made a signature against the table below. Never trust a key
+only because it is in your keyring.
+
+  Fingerprint                                   Used for
+  84BC E850 6583 E8FC 20BE  FEAD 1FA7 72BE 48D5 DB9A   releases after 26.11.1 (ArcadeDB Release Signing)
+  F3F3 4F5F CBA9 CBD5 02A5  DA0E F060 7669 1BEF 0134   releases up to and including 26.11.1
+
+The older key is not revoked: signatures it made on earlier releases remain valid.
+
+pub   rsa4096 2026-11-27 [SC] [expires: 2029-11-26]
+      84BC E850 6583 E8FC 20BE  FEAD 1FA7 72BE 48D5 DB9A
+uid           ArcadeDB Release Signing <security@arcadedb.com>
+
+-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+mQINBGsJV4gBEACdreo+SqVQgelRo8j+mgd3j+eSkrLbmN5x2KnBi2tcpb2oyJSn
+x/IdolH2NUoStfI8ZrBN3EvdGungvQbdedNpnuxEc1lTGiKaxD/+qVSY3qY/mU1j
+DdIG8qyycuDhulobei4iVXm+9Sos2z0/OieUsxV1Y1IOXaS2HbbBStgNGK3m6VbS
++K/Cs9iqAJYKAKndavAz2djde4Ldu+K9u6XPlIiYdeNk3rqRs/A4mHTK0iifcRLs
++bmxh0SBiDurX8kphnbLaIO7X95DTUF2X/LTJA9+D2C5I3cZLODM8b6HYthe+IBc
+y3DsbFUaYWZQPg1TM12p7lOdwfBhnWmXf7rbnZB0vUjOv5tKClzpapm/5o1M8Zf3
+CIHj69h0aShHQ0GoPs7kevqATWlSsJIuXc51DTD6ovZkAn9OqjVlvORQAcLdznOi
+pvvs3n1TSrVJlwQmzHxv0zSEskFs7X4nF46prb0Wu1dfOi4P8m8fa/2o0NCIZR/G
+j41xF2UkyWk4MRw5EtaGERQ/Tg6LfF70g1WBfHVjwIQVCE3DZc77Jmg35DBTgYC1
+298uTDz8LqK3lVuESdXPSr3N4aZqN9irSvd5QMWZfVsVLhXO/wnzq6CTqUrR7gIC
+fu8yKhK+jhoZ/01TURcm/zY7UaDzbbbKTAIYmqkgqVQmM2ceSiBBBYh7OwARAQAB
+tDBBcmNhZGVEQiBSZWxlYXNlIFNpZ25pbmcgPHNlY3VyaXR5QGFyY2FkZWRiLmNv
+bT6JAnMEEwEIAF0WIQSEvOhQZYPo/CC+/q0fp3K+SNXbmgUCawlXiBsUgAAAAAAE
+AA5tYW51MiwyLjUrMS4xMiwwLDMCGwMFCQWjmoAFCwkIBwICIgIGFQoJCAsCBBYC
+AwECHgcCF4AACgkQH6dyvkjV25pS2g/+KKKt1uZ1LCgILGiOtfDOZmd4f/Y2p3qF
+838ntWAnG0f4rOBOn9qJhdGIoO04i+WIZa0/EH50NWaJ+zoYlUO7rucZjhsIXKJp
+4elIfsMnWJGrirPmGvbZghMEr0JuzvkB+HXI188RbF2KcrZvuq+zP+JEamlm/Zys
+OXfAPYwTJvuobcQWumwcVPsRn5fArjjWmVMB2tpHG1cXFKp0hm/RcMMOUtZ6VwFP
+690zW/cY5JPBeO3eFzuWCzmfp/e+EM24W6ivPVddYenzpgt+Cnvivncl1KWvH4Oq
+3Z54IqpONLAVjROPBPvw7fZvHPWGzjH7x4OPuZre8JT4fq0iMxmIRVusavQ8NYTG
+uyLgZ2cm+nnmSTrZpW3ejSh3Mohx8VXhBlJVS6t/dbtijWLV7Z/FMilJ4HQ6asx/
+Nl5VNfwY4MmJQQXlKGvCY/+omfr6HNIr4uygG2vbWRTr7wWScIS3nA9asfYBLjcm
+MLlygyYtrN/PC4O5CW40L/LteTiLrl2pfyeJELL+R09Hgj2f0sxiUPaI1bxhbtj6
+owLKkp97RqFhYV797ufSfLX08P/MLMYAA9whSfHx4NcZPZqg5khVvVYPNXmL4lSs
+A1Um50YVXgdX+Nf2NJLASB2q4TgAgkUTEMju7BT3T8tgCECX+Qn2qqU7Uy33SC/D
+uwPoydrgZ9A=
+=noRA
+-----END PGP PUBLIC KEY BLOCK-----
+
+pub   rsa2048 2019-02-08 [SC]
+      F3F3 4F5F CBA9 CBD5 02A5  DA0E F060 7669 1BEF 0134
+uid           Roberto Franchini <ro.franchini@gmail.com>
+sub   rsa2048 2019-02-08 [E]
+      12EA E3A1 A871 40A3 A543  F3DC 3B38 9874 127E 3796
+
+-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+mQENBFxdoAcBCACZxHXgUNzN/TsGH7S+sBr4G6USAkHKKpZBkNHhCo5fu6yOb7W2
+6y2EAxK4xC4XRDKmVjyhVw0Pqwqr8LfS5iJ3L9JIiONhIPbm236qOq1Q4rGzrn4i
+CdGRW0rNPX/5/MzWSrnntcMIpHZx2t3M6MLa1vvW4uZvoV81/L53oVI21NIEMZVK
+Svec5kZG90wHy9z+bpCYQ/OWitUnEo2IHLpkyJSfiho+d4jySREU0PWf3lBnt4du
+IsKKUkWBg49fqAa0gyEnKnEaKhaxJiOqK7ftkZimtdxRKOixgZ0XM/KY/AMeinrg
+k5m+kHYBcOB1HAn9uAuh1CWM/NxNG2fG+KkPABEBAAG0KlJvYmVydG8gRnJhbmNo
+aW5pIDxyby5mcmFuY2hpbmlAZ21haWwuY29tPokBNwQTAQoAIQUCXF2gBwIbAwUL
+CQgHAwUVCgkICwUWAgMBAAIeAQIXgAAKCRDwYHZpG+8BNJNECACBUojErs7ALDKz
+1pwSOL4iWDpwWbLquK/n1ZWn2oaXsgM41VQ0e7aiJKaiQCnnv20FUVZLcuHh0pjw
+ZsIdA3QzyYxtF3+2wMKZSnmQtS/4DNXJHNMBWBO1daOhNVdLRi+xjgGdHhQwAUrl
+kelc6AKxNNFMBf+X9iS5tk4uaO7PqCNX4bKQLOFAPBTfYPcljnIvr0q/utRnIieG
+/Rhk6QFpD82gzeR0gOz8lI+aSSxni2wStW3sZCOfBEnpFojy/nU+++4Y3FhJT73p
+TPiwIKpHdgc7eV3x5YOSeA6FPDc4dwxF3EOluVV21kmGmG8+bfIJGrZ68a+pA9bR
+ajPtkCNluQENBFxdoAcBCADJfNSUsawaq5tl4Q7WtCthgQwWutpVlPjFfnrKEWZ7
+2TlTgA/dN3eVGBGZT080Vje8IEDOpvr2XSi+qwONkrHAZVtldAwo7Pem3/GVrodU
+LCUrwLejjcMD7bc/KVE6MOZjy1udSZ2zyXJQ9kc/M/t30AEtSs1W4L5Bl6eoAm0H
+3v5VcRKFm1yyQdxRKDUt99QjsDG9iDVjbscGrLd2hiD5h+amx/rQ6lEqrZWyhpRb
+61ZxcOSStz3o4R5JxvsxkjzA4fPrYWKAXmQtTQr7QehnpT/jHWRKtehQKguZjGxc
+0PnmDNh5vCZczpaw3kUP+nIinORgs0EpLjCmuN3QZ4DzABEBAAGJAR8EGAEKAAkF
+AlxdoAcCGwwACgkQ8GB2aRvvATR9mwf+KH5V8nm0WZvYkX3vjoGRnRCm71DKj81+
+Chd8/UVIIPCPYO7fFA0Owa7ffn6j1Vp6C2EQW0aYfikEtSk9fo6hw7/Poc+TvMo3
+q4+JeIL/PGFooy+QBydujArAW93tVW3hYJP9sDbq8S+ZfnuvHRsm4NBm7oTcrTDU
+VCHTtnOs0A26Xi2WZVCj9zH5Im/PGi23XgtWUGUF/80VH4wRKrpkvcA+7PxyrzW+
+gVvl467CfRAQqv6dY+U439pfgiBmKR2egjCjqi67zwiwk7R950BBIQ599ftT1yD2
+Zwou0yZqer1uQuBS+FGQ3OSKNN+e0i+ofRwdDfMFw/bGRfsbb8ys9w==
+=DmJa
+-----END PGP PUBLIC KEY BLOCK-----

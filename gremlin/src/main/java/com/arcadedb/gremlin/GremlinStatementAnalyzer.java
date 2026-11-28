@@ -20,6 +20,7 @@ package com.arcadedb.gremlin;
 
 import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
+import org.apache.commons.configuration2.Configuration;
 import org.apache.tinkerpop.gremlin.language.grammar.GremlinAntlrToJava;
 import org.apache.tinkerpop.gremlin.language.grammar.GremlinParser;
 import org.apache.tinkerpop.gremlin.language.grammar.GremlinQueryParser;
@@ -29,6 +30,7 @@ import org.apache.tinkerpop.gremlin.process.traversal.Step;
 import org.apache.tinkerpop.gremlin.process.traversal.Traversal;
 import org.apache.tinkerpop.gremlin.process.traversal.TraversalStrategy;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
+import org.apache.tinkerpop.gremlin.process.traversal.step.GValue;
 import org.apache.tinkerpop.gremlin.process.traversal.step.Mutating;
 import org.apache.tinkerpop.gremlin.process.traversal.step.ReadWriting;
 import org.apache.tinkerpop.gremlin.process.traversal.step.filter.DropStep;
@@ -42,6 +44,7 @@ import org.apache.tinkerpop.gremlin.process.traversal.util.TraversalHelper;
 
 import java.util.ArrayList;
 import java.util.EnumSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -59,6 +62,8 @@ import java.util.Set;
  * <li>a traversal that has to run to build another one, a terminated traversal passed as an argument
  * ({@code g.V(g.V().has('name','a').id().next())}), runs only when it reads: the source it is built from carries
  * {@link WriteRefusingStrategy}, which stops one that writes before its first step, and the script is then a write</li>
+ * <li>the strategies are not applied either, so a traversal that a strategy holds in its configuration
+ * ({@code g.withStrategies(SubgraphStrategy(vertices: ...))}), which only becomes steps when they are, is read from there</li>
  * </ul>
  * A script the grammar cannot read is Groovy, which only the {@code auto} and {@code groovy} engines run: it is code, which only
  * running tells what it does, so {@code ArcadeGremlin} does not evaluate it and answers {@link #anyOperation()} for it.
@@ -69,6 +74,8 @@ final class GremlinStatementAnalyzer {
   private static final Set<OperationType> READ      = Set.of(OperationType.READ);
   private static final Set<OperationType> ANY_WRITE     = Set.of(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE);
   private static final Set<OperationType> ANY_OPERATION = Set.of(OperationType.values());
+  // DEEPER THAN THE CONFIGURATION OF A STRATEGY IS BUILT ON PURPOSE: BEYOND IT THE CONFIGURATION IS TAKEN FOR A WRITE
+  private static final int                MAX_CONFIGURATION_DEPTH = 32;
 
   private GremlinStatementAnalyzer() {
   }
@@ -92,8 +99,10 @@ final class GremlinStatementAnalyzer {
    */
   static QueryEngine.AnalyzedQuery analyze(final List<Traversal.Admin<?, ?>> traversals) {
     final EnumSet<OperationType> writes = EnumSet.noneOf(OperationType.class);
-    for (final Traversal.Admin<?, ?> traversal : traversals)
+    for (final Traversal.Admin<?, ?> traversal : traversals) {
       collectWrites(traversal, writes);
+      collectStrategyWrites(traversal, writes, 0);
+    }
     return writes.isEmpty() ? read() : result(Set.copyOf(writes));
   }
 
@@ -169,6 +178,80 @@ final class GremlinStatementAnalyzer {
       else
         // AN UNKNOWN MUTATING STEP: ANY WRITE
         writes.addAll(ANY_WRITE);
+    }
+    return writing;
+  }
+
+  /**
+   * Adds to {@code writes} what the strategies of {@code traversal} write. A strategy added to the traversal source of the script
+   * ({@code g.withStrategies(SubgraphStrategy(vertices: ...))}) can be configured with a traversal, which joins the traversal as
+   * steps only when the strategies are applied, at execution, and the analysis never applies them: what that traversal writes is
+   * read from the configuration of the strategy, whichever strategy holds it.
+   * <p>
+   * Only the strategies of the traversal itself are read: a script configures the strategies of its traversal source, which every
+   * child traversal is given when the strategies are applied.
+   *
+   * @return whether the configuration of a strategy writes
+   */
+  static boolean collectStrategyWrites(final Traversal.Admin<?, ?> traversal, final EnumSet<OperationType> writes, final int depth) {
+    boolean writing = false;
+    for (final TraversalStrategy<?> strategy : traversal.getStrategies().toList())
+      if (collectStrategyWrites(strategy, writes, depth))
+        writing = true;
+    return writing;
+  }
+
+  private static boolean collectStrategyWrites(final TraversalStrategy<?> strategy, final EnumSet<OperationType> writes, final int depth) {
+    final Configuration configuration = strategy.getConfiguration();
+    if (configuration == null)
+      return false;
+
+    boolean writing = false;
+    for (final Iterator<String> keys = configuration.getKeys(); keys.hasNext(); )
+      if (collectConfigurationWrites(configuration.getProperty(keys.next()), writes, depth))
+        writing = true;
+    return writing;
+  }
+
+  /**
+   * What a value of the configuration of a strategy writes: a traversal, itself or inside a collection, a map, an array or a
+   * parameter. Nothing else holds a step. A structure nested deeper than {@value #MAX_CONFIGURATION_DEPTH} levels is not read, and
+   * is taken for any write.
+   */
+  private static boolean collectConfigurationWrites(final Object value, final EnumSet<OperationType> writes, final int depth) {
+    if (value == null || value instanceof String || value instanceof Number || value instanceof Boolean)
+      return false;
+    if (depth > MAX_CONFIGURATION_DEPTH) {
+      writes.addAll(ANY_WRITE);
+      return true;
+    }
+
+    final int next = depth + 1;
+    boolean writing = false;
+    if (value instanceof Traversal<?, ?> traversal) {
+      final Traversal.Admin<?, ?> admin = traversal.asAdmin();
+      writing = collectWrites(admin, writes);
+      if (collectStrategyWrites(admin, writes, next))
+        writing = true;
+    } else if (value instanceof GValue<?> parameter)
+      writing = collectConfigurationWrites(parameter.get(), writes, next);
+    else if (value instanceof TraversalStrategy<?> strategy)
+      writing = collectStrategyWrites(strategy, writes, next);
+    else if (value instanceof Iterable<?> iterable) {
+      for (final Object element : iterable)
+        if (collectConfigurationWrites(element, writes, next))
+          writing = true;
+    } else if (value instanceof Map<?, ?> map) {
+      for (final Map.Entry<?, ?> entry : map.entrySet()) {
+        if (collectConfigurationWrites(entry.getKey(), writes, next))
+          writing = true;
+        if (collectConfigurationWrites(entry.getValue(), writes, next))
+          writing = true;
+      }
+    } else if (value instanceof Object[] array) {
+      for (final Object element : array)
+        if (collectConfigurationWrites(element, writes, next))
+          writing = true;
     }
     return writing;
   }

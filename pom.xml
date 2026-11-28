@@ -97,7 +97,7 @@
         <maven-javadoc-plugin.version>3.12.0</maven-javadoc-plugin.version>
         <maven-source-plugin.version>3.4.0</maven-source-plugin.version>
         <maven-gpg-plugin.version>3.2.8</maven-gpg-plugin.version>
-        <maven-versions-plugin.version>2.25.2</maven-versions-plugin.version>
+        <maven-versions-plugin.version>2.25.3</maven-versions-plugin.version>
         <maven-jar-plugin.version>3.5.1</maven-jar-plugin.version>
         <maven-shade-plugin.version>3.6.2</maven-shade-plugin.version>
         <maven-install-plugin.version>3.2.0</maven-install-plugin.version>
@@ -112,10 +112,10 @@
 
         <testcontainers.version>2.0.5</testcontainers.version>
         <logback-classic.version>1.6.7</logback-classic.version>
-        <micrometer.version>1.17.2</micrometer.version>
+        <micrometer.version>1.18.0</micrometer.version>
         <micrometer-tracing.version>1.7.2</micrometer-tracing.version>
         <opentelemetry.version>1.68.0</opentelemetry.version>
-        <postgres.version>42.7.14</postgres.version>
+        <postgres.version>42.7.15</postgres.version>
         <jackson.version>2.23.0</jackson.version>
 
         <assertj-core.version>3.27.7</assertj-core.version>
@@ -533,7 +533,7 @@
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>
                 <artifactId>license-maven-plugin</artifactId>
-                <version>2.9.0</version>
+                <version>2.10.0</version>
                 <configuration>
                     <licenseMerges>
                         <!-- Group similar licenses to avoid duplicates in the human-facing report -->
