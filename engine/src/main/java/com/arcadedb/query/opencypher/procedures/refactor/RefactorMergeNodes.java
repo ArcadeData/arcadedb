@@ -44,7 +44,8 @@ import java.util.stream.Stream;
 /**
  * Procedure: refactor.mergeNodes(nodes, config = {})
  * <p>
- * Merges a list of nodes into the first one (the survivor). Every incoming and outgoing edge of the
+ * Merges a list of nodes into the first one (the survivor). An empty list answers no row, and a list holding a single
+ * distinct node answers that node unchanged, as APOC does (issue #13685). Every incoming and outgoing edge of the
  * other nodes (the absorbed nodes) is rewired onto the survivor - an edge that connected two nodes
  * both being merged becomes a self-relationship on the survivor - and the absorbed nodes are then
  * deleted.
@@ -119,13 +120,21 @@ public class RefactorMergeNodes implements CypherProcedure {
     validateArgs(args);
 
     final List<Vertex> nodes = RefactorProcedureArgs.extractVertices(getName(), args[0]);
-    if (nodes.size() < 2)
-      throw new CommandSemanticException(getName() + "(): at least two distinct nodes are required to merge");
 
     final Map<String, Object> config = optionalMapArg(args, 1, "config");
     final String globalPolicy = extractPropertiesPolicy(config);
 
+    // APOC answers an empty list with no row, and a list holding one distinct node (the same node repeated included)
+    // with that node, untouched: there is nothing to absorb. A caller that merges every group of nodes sharing a key
+    // relies on both (neo4j-graphrag's entity resolver merges its groups of one too, issue #13685). The config is
+    // validated above first, so an invalid policy is refused whatever the size of the list.
+    if (nodes.isEmpty())
+      return Stream.empty();
+
     final Database database = context.getDatabase();
+
+    if (nodes.size() == 1)
+      return createResultStream(CypherVertexReload.latest(database, nodes.getFirst()));
 
     // Every node here arrives as the instance its row carried, loaded before the rows ahead of it applied their
     // merges. The survivor is the one the rows share: mergeProperties READS its properties and save() writes the

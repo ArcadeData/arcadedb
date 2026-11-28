@@ -65,8 +65,13 @@ class RefactorMergeNodesTest {
 
   @AfterEach
   void teardown() {
-    if (database != null)
+    if (database != null) {
+      // A failed assertion inside an explicit transaction would otherwise leave it open, the drop would fail, and
+      // every following test would find the database still in use
+      if (database.isTransactionActive())
+        database.rollback();
       database.drop();
+    }
   }
 
   @Test
@@ -220,14 +225,98 @@ class RefactorMergeNodesTest {
     assertThat(rs.hasNext()).isTrue();
   }
 
+  /**
+   * APOC answers a list of one node with that node, untouched: nothing is absorbed. A caller that merges every group
+   * of nodes sharing a key (neo4j-graphrag's SinglePropertyExactMatchResolver) does not special-case the groups of one
+   * (issue #13685).
+   */
   @Test
-  void fewerThanTwoNodesThrows() {
+  void singleNodeIsReturnedUnchanged() {
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").set("name", "A").set("age", 30L).save();
+    database.commit();
+
+    database.begin();
+    final ResultSet rs = database.command("opencypher",
+        "MATCH (a:Person {name:'A'}) CALL apoc.refactor.mergeNodes([a], {}) YIELD node RETURN node");
+    final List<Result> rows = rs.stream().toList();
+    database.commit();
+
+    assertThat(rows).hasSize(1);
+    final Vertex node = rows.getFirst().getVertex().get();
+    assertThat(node.getIdentity()).isEqualTo(a.getIdentity());
+    assertThat(node.getString("name")).isEqualTo("A");
+    assertThat(node.getLong("age")).isEqualTo(30L);
+    assertThat(database.countType("Person", true)).isEqualTo(1L);
+  }
+
+  /**
+   * The resolver's own form: {@code collect(n)} over a group of one, with {@code properties:'discard', mergeRels:true}
+   * (issue #13685). The node keeps its edges and properties.
+   */
+  @Test
+  void collectedGroupOfOneWithResolverConfigReturnsTheNode() {
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Person").set("name", "B").save();
+    a.newEdge("KNOWS", b).save();
+    database.commit();
+
+    database.begin();
+    final ResultSet rs = database.command("opencypher",
+        "MATCH (n:Person {name:'A'}) WITH collect(n) AS ns "
+            + "CALL apoc.refactor.mergeNodes(ns, {properties: 'discard', mergeRels: true}) YIELD node "
+            + "RETURN labels(node) AS l, node.name AS name, count(*) AS c");
+    final List<Result> rows = rs.stream().toList();
+    database.commit();
+
+    assertThat(rows).hasSize(1);
+    assertThat(rows.getFirst().<List<String>>getProperty("l")).containsExactly("Person");
+    assertThat(rows.getFirst().<String>getProperty("name")).isEqualTo("A");
+    assertThat(rows.getFirst().<Long>getProperty("c")).isEqualTo(1L);
+    assertThat(database.query("opencypher", "MATCH (:Person {name:'A'})-[r:KNOWS]->(:Person {name:'B'}) RETURN r").stream().count())
+        .isEqualTo(1L);
+  }
+
+  /**
+   * APOC answers an empty list with no row and no error (issue #13685).
+   */
+  @Test
+  void emptyListReturnsNoRow() {
+    database.begin();
+    final ResultSet rs = database.command("opencypher", "CALL apoc.refactor.mergeNodes([]) YIELD node RETURN node");
+    final long rows = rs.stream().count();
+    database.commit();
+
+    assertThat(rows).isZero();
+  }
+
+  /**
+   * An empty group collected by the resolver-like form: {@code collect} over no match is {@code []}, so no row.
+   */
+  @Test
+  void emptyCollectedGroupReturnsNoRow() {
+    database.begin();
+    final ResultSet rs = database.command("opencypher",
+        "MATCH (n:Person {name:'nobody'}) WITH collect(n) AS ns "
+            + "CALL apoc.refactor.mergeNodes(ns, {properties: 'discard', mergeRels: true}) YIELD node RETURN node");
+    final long rows = rs.stream().count();
+    database.commit();
+
+    assertThat(rows).isZero();
+  }
+
+  /**
+   * The config is still validated when there is nothing to merge: an unknown policy is refused for a list of one too.
+   */
+  @Test
+  void unknownPropertiesPolicyThrowsForASingleNode() {
     database.begin();
     database.newVertex("Person").set("name", "A").save();
     database.commit();
 
     assertThatThrownBy(() -> database.command("opencypher",
-        "MATCH (a:Person {name:'A'}) CALL apoc.refactor.mergeNodes([a], {}) YIELD node RETURN node").hasNext())
+        "MATCH (a:Person {name:'A'}) CALL apoc.refactor.mergeNodes([a], {properties: 'bogus'}) YIELD node RETURN node").hasNext())
         .isInstanceOf(CommandSemanticException.class);
   }
 
@@ -250,15 +339,24 @@ class RefactorMergeNodesTest {
         .isInstanceOf(RecordNotFoundException.class);
   }
 
+  /**
+   * The same node twice is one distinct node: APOC answers it, untouched, and does not delete it (issue #13685).
+   */
   @Test
-  void nodesCollapsingToFewerThanTwoAfterDeduplicationThrows() {
+  void nodesCollapsingToOneAfterDeduplicationReturnTheNode() {
     database.begin();
-    database.newVertex("Person").set("name", "A").save();
+    final MutableVertex a = database.newVertex("Person").set("name", "A").save();
     database.commit();
 
-    assertThatThrownBy(() -> database.command("opencypher",
-        "MATCH (a:Person {name:'A'}) CALL apoc.refactor.mergeNodes([a,a], {}) YIELD node RETURN node").hasNext())
-        .isInstanceOf(CommandSemanticException.class);
+    database.begin();
+    final ResultSet rs = database.command("opencypher",
+        "MATCH (a:Person {name:'A'}) WITH a LIMIT 1 WITH [a, a] AS ns CALL apoc.refactor.mergeNodes(ns) YIELD node RETURN node.name AS name");
+    final List<Result> rows = rs.stream().toList();
+    database.commit();
+
+    assertThat(rows).hasSize(1);
+    assertThat(rows.getFirst().<String>getProperty("name")).isEqualTo("A");
+    assertThat(database.lookupByRID(a.getIdentity(), true)).isNotNull();
   }
 
   @Test
