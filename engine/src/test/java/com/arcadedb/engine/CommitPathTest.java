@@ -263,16 +263,20 @@ class CommitPathTest extends BucketPageLayoutTestSupport {
     checkDatabase();
   }
 
-  /** A growth the page cannot host spills the record into a chunk chain, which makes no hole-free promise. */
-  // #9483
+  /**
+   * A growth the page cannot host spills the record into a chunk chain. Its head chunk fills exactly the slot the record
+   * had and its next-chunk pointer is written in place, so the page keeps no hole and stays on the shortcut (#11925).
+   */
+  // #9483, #11925
   @Test
-  void aGrowthThatSpillsOutOfThePageWithdrawsIt() {
+  void aGrowthThatSpillsIntoAChunkChainKeepsThePageOnTheShortcut() {
     final RID[] rids = insertRecords();
     final String huge = "g".repeat(bucketOf(TYPE).getPageSize() * 2);
 
     database.transaction(() -> {
       updateNow(rids[3], huge);
-      assertThat(onlyPackedWrites(rids[0])).isFalse();
+      assertThat(onlyPackedWrites(rids[0])).isTrue();
+      assertThat(commitCompressionSkipped(bucketOf(TYPE), rids[0])).as("the page is still proved packed").isTrue();
     });
 
     database.transaction(() -> {
@@ -330,19 +334,27 @@ class CommitPathTest extends BucketPageLayoutTestSupport {
     checkDatabase();
   }
 
-  /** A record too big for the page becomes a chunk chain through paths that make no hole-free promise: never skipped. */
-  // #9483
+  /**
+   * A record too big for any page becomes a chunk chain. The chunks it places on a page that has room are appended at that
+   * page's content end, which keeps the page on the shortcut (#11925).
+   */
+  // #9483, #11925
   @Test
-  void aMultiPageRecordWithdrawsThePageFromTheShortcut() {
+  void aMultiPageRecordWhoseChunksAreAppendedKeepsThePageOnTheShortcut() {
     final RID[] rids = insertRecords();
     final String huge = "h".repeat(bucketOf(TYPE).getPageSize() * 2);
+    final RID[] created = new RID[1];
 
     database.transaction(() -> {
-      database.newDocument(TYPE).set("v", huge).save();
-      assertThat(onlyPackedWrites(rids[0])).isFalse();
+      created[0] = database.newDocument(TYPE).set("v", huge).save().getIdentity();
+      assertThat(onlyPackedWrites(rids[0])).isTrue();
+      assertThat(commitCompressionSkipped(bucketOf(TYPE), rids[0])).as("the page is still proved packed").isTrue();
     });
 
-    database.transaction(() -> assertPacked(rids[0]));
+    database.transaction(() -> {
+      assertPacked(rids[0]);
+      assertThat(created[0].asDocument(true).getString("v")).isEqualTo(huge);
+    });
     checkDatabase();
   }
 

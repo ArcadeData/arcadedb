@@ -610,12 +610,15 @@ public class MutablePage extends BasePage implements TrackableContent {
   /**
    * Declares the writes that follow, until {@link #endPackedWrite(boolean)}, as ones that cannot leave a hole in a
    * bucket page that had none: a record appended at the end of the page's content, one overwritten in place by a
-   * value of the same footprint, one grown inside the page by shifting what follows it (#9483). A page whose every
-   * write was declared so (see {@link #hasOnlyPackedWrites()}) skips the commit-time compression, so a declared write
-   * also promises it reported the exact free tail it left to the free-space statistics: nothing re-measures the page.
-   * That is why a shrink or a delete stays undeclared even when it leaves no hole (the last record of a page), and
-   * why any write outside a declaration - a delete, a shrinking update, a record that moved or spilled - permanently
-   * withdraws the page from that shortcut. Under assertions the commit holds the page to both promises.
+   * value of the same footprint, one grown inside the page by shifting what follows it (#9483), the head chunk of a
+   * record that spills written into exactly the room its slot had, a continuation chunk appended at the content end of
+   * its page, and a chunk's next-chunk pointer rewritten in place (#11925). A page whose every write was declared so (see
+   * {@link #hasOnlyPackedWrites()}) skips the commit-time compression, so a declared write also promises it reported the
+   * exact free tail it left to the free-space statistics: nothing re-measures the page. That is why a shrink or a delete
+   * stays undeclared even when it leaves no hole (the last record of a page), and why any write outside a declaration -
+   * a delete, a shrinking update, a record moved behind a placeholder pointer - permanently withdraws the page from that
+   * shortcut.
+   * Under assertions the commit holds the page to both promises.
    *
    * Package-private: only the bucket's own write paths can know whether a write keeps a page packed.
    *
