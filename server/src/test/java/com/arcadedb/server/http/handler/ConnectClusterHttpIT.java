@@ -66,12 +66,15 @@ class ConnectClusterHttpIT {
      * {@code theAddressReachesTheSharedImplementationUnmodified}: a handler that dropped the argument
      * on either transport would otherwise be indistinguishable from one that passed it through, since
      * nothing else in the answer depends on it.
+     * <p>
+     * 400 since issue #12904: HA not being enabled is a permanent property of this server and the caller's to
+     * act on, not a server fault. It was 500, through the {@code CommandExecutionException} arm.
      */
     @Test
     void connectClusterIsRefusedAndNamesTheAddress() throws Exception {
       final HttpResponse<String> response = executeServerCommand("connect cluster " + PEER_ADDRESS);
 
-      assertThat(response.statusCode()).isEqualTo(500);
+      assertThat(response.statusCode()).isEqualTo(400);
       assertThat(response.body())
           .contains(PEER_ADDRESS)
           .contains("not running with High Availability module enabled");

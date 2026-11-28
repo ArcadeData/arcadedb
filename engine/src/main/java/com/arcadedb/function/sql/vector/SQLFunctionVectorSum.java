@@ -26,15 +26,14 @@ import com.arcadedb.query.sql.executor.CommandContext;
  * Aggregate function that computes element-wise sum of vectors.
  * Returns a vector where each component is the sum of corresponding components across all input vectors.
  * <p>
- * The accumulation uses simple float array operations which are already efficient.
- * For very large vectors, consider using multiple partial sums with VECTOR_AVG scaling.
+ * The sum is accumulated in double and narrowed once: a float running sum stops growing next to its addends (issue #12852).
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorSum extends SQLFunctionVectorAbstract {
   public static final String NAME = "vector.sum";
 
-  private float[] sumVector;
+  private double[] sumVector;
 
   public SQLFunctionVectorSum() {
     super(NAME);
@@ -68,7 +67,7 @@ public class SQLFunctionVectorSum extends SQLFunctionVectorAbstract {
 
     // Initialize on first call
     if (sumVector == null)
-      sumVector = new float[v.length];
+      sumVector = new double[v.length];
     else if (sumVector.length != v.length)
       throw new CommandSQLParsingException("All vectors must have the same dimension");
 
@@ -84,7 +83,11 @@ public class SQLFunctionVectorSum extends SQLFunctionVectorAbstract {
     if (sumVector == null)
       return null;
 
-    return sumVector.clone();
+    // Narrowed once: a sum beyond the float range is Infinity, as the true sum is
+    final float[] result = new float[sumVector.length];
+    for (int i = 0; i < result.length; i++)
+      result[i] = (float) sumVector[i];
+    return result;
   }
 
   public String getSyntax() {

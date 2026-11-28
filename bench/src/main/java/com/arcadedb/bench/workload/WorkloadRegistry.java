@@ -33,6 +33,6 @@ public final class WorkloadRegistry {
   public static List<Workload> all() {
     return List.of(new IngestionWorkload(), new GraphOltpWorkload(), new VectorWorkload(), new FullTextWorkload(),
         new FacetWorkload(), new TimeSeriesWorkload(), new CorrectnessWorkload(), new ProtocolsWorkload(),
-        new IssuesWorkload(), new RampWorkload());
+        new IssuesWorkload(), new RampWorkload(), new HaWorkload());
   }
 }

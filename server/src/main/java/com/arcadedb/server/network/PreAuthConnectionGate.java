@@ -25,6 +25,7 @@ import com.arcadedb.log.LogManager;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Metrics;
 
+import javax.net.ssl.SSLSocket;
 import java.io.IOException;
 import java.net.Socket;
 import java.util.Locale;
@@ -71,8 +72,9 @@ import java.util.logging.Level;
  * enough of them lock every other client out of the listener. A ticket handed the socket ({@link #accept(Socket)}) is
  * closed by the reaper when the deadline passes and it has not been released: the blocked read on the connection's own
  * thread then fails, and the connection ends as one that hung up. The reaper is one JVM-wide daemon thread, created on
- * first use, that walks the outstanding tickets once a second; closing a plain socket never blocks, so no peer can stall
- * it, and a listener speaking TLS hands over the raw socket the TLS one is layered on.</li>
+ * first use, that walks the outstanding tickets once a second; closing a plain socket never waits on the peer, so a
+ * listener speaking TLS hands over the plain socket the TLS one is layered on, and {@link #accept(Socket)} refuses a TLS
+ * socket.</li>
  * <li><b>A bounded log</b> ({@link Ticket#logProtocolError}): what an unauthenticated peer sends is under its control, so a
  * record per refused frame, or even per connection, lets it write the server log at the rate it can open connections, and
  * rotate the history out. At most one record per {@link #LOG_INTERVAL_MS} per listener, saying how many it held back.</li>
@@ -256,8 +258,15 @@ public class PreAuthConnectionGate {
   /**
    * Same as {@link #accept()}, for the accepted {@code socket}: when the gate has a pre-authentication deadline, the socket is
    * closed once it passes with the ticket still held.
+   *
+   * @param socket the plain socket of the connection, which a listener speaking TLS layers its TLS socket over
+   *
+   * @throws IllegalArgumentException when {@code socket} is a TLS socket; nothing is taken and the socket is left open
    */
   public Ticket accept(final Socket socket) {
+    if (socket instanceof SSLSocket)
+      throw new IllegalArgumentException("The plain socket is expected, not the TLS socket layered over it");
+
     if (permits != null && !permits.tryAcquire()) {
       refused.incrementAndGet();
       refusedCounter.increment();

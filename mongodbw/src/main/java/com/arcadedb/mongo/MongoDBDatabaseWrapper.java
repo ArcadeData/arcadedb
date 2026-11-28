@@ -332,7 +332,6 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     final long quota = profiledLimit();
     ProfiledLimitScope.enter();
     try {
-      this.clearLastStatus(query.getChannel());
       if (!(getCollection(query.getCollectionName()) instanceof MongoDBCollectionWrapper collection))
         return MongoFindCursor.empty();
 

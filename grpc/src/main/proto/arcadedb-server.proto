@@ -173,6 +173,12 @@ message QueryResult {
   int64  running_total_emitted  = 3;
   bool   is_last_batch          = 4;
   GrpcFacets facets             = 5; // FACETS queries only, on the terminal batch (is_last_batch=true)
+  // Column names of the first row, in projection order, when the rows are a projection (RETURN a, b, c). GrpcRecord.properties is a
+  // protobuf map, which carries no order guarantee: a client that needs positional access reads the order from here. A row that is a
+  // single node or relationship (RETURN n) is sent as that record: its one column name is the projection's. A record row a projection
+  // reshaped (SELECT *, x AS y) lists its projected columns. Empty when the result has no rows or its rows are plain records
+  // (SELECT FROM T). ExecuteQuery sets it on its result; StreamQuery sets the first row's names on every batch that carries rows.
+  repeated string column_names  = 6;
 }
 
 // -----------------------------------------------------------------------------
@@ -559,6 +565,9 @@ message ExecuteCommandResponse {
   QueryUpdateStats stats = 6; // present only for write commands that mutated data
 
   GrpcFacets facets = 7; // FACETS queries only
+
+  // Column names of the first row, in projection order (see QueryResult.column_names).
+  repeated string column_names = 8;
 }
 
 message QueryUpdateStats {

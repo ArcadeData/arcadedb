@@ -27,6 +27,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
+import com.arcadedb.utility.ShortTransferFileChannel;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
@@ -1064,6 +1065,393 @@ class TimeSeriesSealedWalkTest {
           expected.add((double) i);
       assertThat(merged[0]).isTrue();
       assertThat(values(rows)).isEqualTo(expected);
+    }
+  }
+
+  /**
+   * #12887: retention rewrites a block that straddles its cutoff from the samples it keeps, under a fresh identity. A walk that took
+   * its snapshot before the pass and meets that block must neither skip it - its kept rows are still in the store, and an answer
+   * without them would be silently short - nor refuse it: the rows it lost are gone for good, as those of a block retention drops
+   * whole. It follows the rewrite to the block that holds the kept rows, as it follows a merge of small blocks (#9488).
+   */
+  @Nested
+  class WalkAcrossRetentionTrim {
+
+    private static final String BASE_DIR   = "target/databases/Issue12887WalkAcrossRetentionTrimTest";
+    private static final String STORE_PATH = BASE_DIR + "/store";
+
+    /** Drops block A whole and keeps the last two of the four samples of block B. */
+    private static final long CUTOFF_TS = 4_500L;
+
+    private List<ColumnDefinition> columns;
+
+    @BeforeEach
+    void setUp() {
+      FileUtils.deleteRecursively(new File(BASE_DIR));
+      new File(BASE_DIR).mkdirs();
+
+      columns = List.of(
+          new ColumnDefinition("ts", Type.LONG, ColumnDefinition.ColumnRole.TIMESTAMP),
+          new ColumnDefinition("sensor_id", Type.STRING, ColumnDefinition.ColumnRole.TAG),
+          new ColumnDefinition("temperature", Type.DOUBLE, ColumnDefinition.ColumnRole.FIELD));
+    }
+
+    @AfterEach
+    void tearDown() {
+      TimeSeriesSealedStore.TEST_CHANNEL_DECORATOR = null;
+      TimeSeriesSealedStore.TEST_RETENTION_PLANNED_HOOK = null;
+      FileUtils.deleteRecursively(new File(BASE_DIR));
+    }
+
+    // #12887
+    @Test
+    void aWalkCrossingATrimReadsTheRowsTheTrimKept() throws Exception {
+      try (final TimeSeriesSealedStore store = threeBlockStore(STORE_PATH)) {
+        final BlockDirectorySnapshot snapshot = store.snapshotBlockDirectory(0L, Long.MAX_VALUE);
+
+        store.truncateBefore(CUTOFF_TS);
+
+        final AggregationMetrics metrics = new AggregationMetrics();
+        final List<Object[]> rows = new ArrayList<>();
+        assertThat(store.forEachRow(snapshot, 0L, Long.MAX_VALUE, null, null, metrics, rows::add)).isTrue();
+
+        assertThat(timestamps(rows)).containsExactly(5000L, 6000L, 7000L, 8000L);
+        assertThat(metrics.getVanishedBlocks()).as("block A, which retention dropped whole").isEqualTo(1);
+      }
+    }
+
+    // #12887
+    @Test
+    void aWalkThatIsHalfWayWhenTheTrimLandsEmitsEachKeptRowOnce() throws Exception {
+      try (final TimeSeriesSealedStore store = threeBlockStore(STORE_PATH)) {
+        final BlockDirectorySnapshot snapshot = store.snapshotBlockDirectory(0L, Long.MAX_VALUE);
+
+        final List<Object[]> rows = new ArrayList<>();
+        assertThat(store.forEachRow(snapshot, 0L, Long.MAX_VALUE, null, null, null, row -> {
+          rows.add(row);
+          // block A is already decoded: its rows are handed over even though the trim drops it
+          if (rows.size() == 1)
+            truncate(store);
+          return true;
+        })).isTrue();
+
+        assertThat(timestamps(rows)).containsExactly(1000L, 2000L, 5000L, 6000L, 7000L, 8000L);
+      }
+    }
+
+    // #12887
+    @Test
+    void aLazyIteratorThatIsHalfWayWhenTheTrimLandsEmitsEachKeptRowOnce() throws Exception {
+      try (final TimeSeriesSealedStore store = threeBlockStore(STORE_PATH)) {
+        final Iterator<Object[]> it = store.iterateRange(store.snapshotBlockDirectory(0L, Long.MAX_VALUE), 0L, Long.MAX_VALUE, null,
+            null, null);
+
+        final List<Object[]> rows = new ArrayList<>();
+        rows.add(it.next());
+        store.truncateBefore(CUTOFF_TS);
+        while (it.hasNext())
+          rows.add(it.next());
+
+        assertThat(timestamps(rows)).containsExactly(1000L, 2000L, 5000L, 6000L, 7000L, 8000L);
+      }
+    }
+
+    /** The trim and a merge that folds the trimmed block with the next one, both while the walk is inside block A. */
+    // #12887
+    @Test
+    void aWalkFollowsATrimAndThenAMergeOfTheTrimmedBlock() throws Exception {
+      try (final TimeSeriesSealedStore store = threeBlockStore(STORE_PATH)) {
+        final BlockDirectorySnapshot snapshot = store.snapshotBlockDirectory(0L, Long.MAX_VALUE);
+
+        final List<Object[]> rows = new ArrayList<>();
+        assertThat(store.forEachRow(snapshot, 0L, Long.MAX_VALUE, null, null, null, row -> {
+          rows.add(row);
+          if (rows.size() == 1) {
+            truncate(store);
+            merge(store);
+            assertThat(store.getBlockCount()).as("the trimmed block and the next one, merged").isEqualTo(1);
+          }
+          return true;
+        })).isTrue();
+
+        assertThat(timestamps(rows)).containsExactly(1000L, 2000L, 5000L, 6000L, 7000L, 8000L);
+      }
+    }
+
+    /**
+     * The other order, which a maintenance pass runs (merge, then retention): the three blocks are merged while the walk is inside
+     * block B, and the merged block is trimmed. The walk owes only block C's rows of the merged block, and the trim moved every
+     * kept row up by the four it dropped: reading the walk's rows at their old positions would hand over rows of B a second time.
+     */
+    // #12887
+    @Test
+    void aWalkFollowsAMergeAndThenATrimOfTheMergedBlock() throws Exception {
+      try (final TimeSeriesSealedStore store = threeBlockStore(STORE_PATH)) {
+        final BlockDirectorySnapshot snapshot = store.snapshotBlockDirectory(0L, Long.MAX_VALUE);
+
+        final List<Object[]> rows = new ArrayList<>();
+        assertThat(store.forEachRow(snapshot, 0L, Long.MAX_VALUE, null, null, null, row -> {
+          rows.add(row);
+          if ((long) row[0] == 3000L) {
+            merge(store);
+            truncate(store);
+            assertThat(store.getBlockCount()).isEqualTo(1);
+            assertThat(store.getTotalSampleCount()).isEqualTo(4L);
+          }
+          return true;
+        })).isTrue();
+
+        assertThat(timestamps(rows)).containsExactly(1000L, 2000L, 3000L, 4000L, 5000L, 6000L, 7000L, 8000L);
+      }
+    }
+
+    /**
+     * A downsample that also crossed the walk means the block the trim replaced may hold coarse rows the walk cannot join to the fine
+     * ones it handed over, so the walk is refused, as for any rewrite it cannot follow: never answered short.
+     */
+    // #12887
+    @Test
+    void aWalkCrossingATrimAndADownsampleIsRefused() throws Exception {
+      try (final TimeSeriesSealedStore store = threeBlockStore(STORE_PATH)) {
+        final BlockDirectorySnapshot snapshot = store.snapshotBlockDirectory(0L, Long.MAX_VALUE);
+
+        // coarsens block A alone, then the trim drops the coarse block and rebuilds block B
+        store.downsampleBlocks(2_500L, 10_000L, 0, List.of(1), List.of(2));
+        store.truncateBefore(CUTOFF_TS);
+
+        assertThatThrownBy(() -> store.forEachRow(snapshot, 0L, Long.MAX_VALUE, null, null, null, row -> true))
+            .isInstanceOf(TimeSeriesWalkCoarsenedException.class);
+      }
+    }
+
+    /**
+     * A follower adopts the leader's trimmed image wholesale, with no record of what replaced what: the walk cannot follow the
+     * rewrite, so it is refused rather than answered without the kept rows of the trimmed block.
+     */
+    // #12887
+    @Test
+    void aWalkCrossingAnInstallOfALeaderTrimmedImageIsRefusedNotAnsweredShort() throws Exception {
+      final byte[] leaderV1;
+      final byte[] leaderTrimmed;
+      try (final TimeSeriesSealedStore leader = threeBlockStore(BASE_DIR + "/leader")) {
+        leaderV1 = leader.readWholeSealedFile();
+        leader.truncateBefore(CUTOFF_TS);
+        leaderTrimmed = leader.readWholeSealedFile();
+      }
+
+      try (final TimeSeriesSealedStore follower = new TimeSeriesSealedStore(STORE_PATH, columns)) {
+        follower.installSealedFileBytes(leaderV1);
+        final BlockDirectorySnapshot snapshot = follower.snapshotBlockDirectory(0L, Long.MAX_VALUE);
+
+        follower.installSealedFileBytes(leaderTrimmed);
+
+        assertThatThrownBy(() -> follower.forEachRow(snapshot, 0L, Long.MAX_VALUE, null, null, null, row -> true))
+            .isInstanceOf(TimeSeriesWalkCoarsenedException.class);
+        assertThat(timestamps(readAll(follower))).as("a new read gets the trimmed store").containsExactly(5000L, 6000L, 7000L, 8000L);
+      }
+    }
+
+    /**
+     * The header write that follows the swap fails. The blocks the trim dropped and rebuilt are already gone from the live directory,
+     * so the retention boundary and the ledger must have moved with it: a walk in flight that met block B with neither moved skipped it
+     * as vanished, losing the two rows the rebuilt block still holds, and a retry found nothing left to remove that would repair it.
+     */
+    // #12887
+    @Test
+    void aWalkCrossingATrimWhoseHeaderWriteFailedStillReadsTheKeptRows() throws Exception {
+      try (final TimeSeriesSealedStore store = threeBlockStore(STORE_PATH)) {
+        final BlockDirectorySnapshot snapshot = store.snapshotBlockDirectory(0L, Long.MAX_VALUE);
+
+        final AtomicBoolean failHeader = failHeaderWritesWhile();
+        failHeader.set(true);
+        assertThatThrownBy(() -> store.truncateBefore(CUTOFF_TS)).isInstanceOf(IOException.class).hasMessageContaining("injected");
+        failHeader.set(false);
+
+        final AggregationMetrics metrics = new AggregationMetrics();
+        final List<Object[]> rows = new ArrayList<>();
+        assertThat(store.forEachRow(snapshot, 0L, Long.MAX_VALUE, null, null, metrics, rows::add)).isTrue();
+
+        assertThat(timestamps(rows)).containsExactly(5000L, 6000L, 7000L, 8000L);
+        assertThat(metrics.getVanishedBlocks()).as("block A, which retention dropped whole").isEqualTo(1);
+        assertThat(timestamps(readAll(store))).containsExactly(5000L, 6000L, 7000L, 8000L);
+      }
+    }
+
+    /**
+     * The same failure on a delete of samples, which rebuilds a block a walk cannot follow: the walk must be refused, as when the
+     * header write succeeds, and not answered without the rows of the rebuilt block.
+     */
+    // #12887
+    @Test
+    void aWalkCrossingADeleteWhoseHeaderWriteFailedIsRefusedNotAnsweredShort() throws Exception {
+      try (final TimeSeriesSealedStore store = threeBlockStore(STORE_PATH)) {
+        final BlockDirectorySnapshot snapshot = store.snapshotBlockDirectory(0L, Long.MAX_VALUE);
+
+        final AtomicBoolean failHeader = failHeaderWritesWhile();
+        failHeader.set(true);
+        assertThatThrownBy(() -> store.deleteSamples(3000L, 4000L, null)).isInstanceOf(IOException.class)
+            .hasMessageContaining("injected");
+        failHeader.set(false);
+
+        assertThatThrownBy(() -> store.forEachRow(snapshot, 0L, Long.MAX_VALUE, null, null, null, row -> true))
+            .isInstanceOf(TimeSeriesWalkCoarsenedException.class);
+        assertThat(timestamps(readAll(store))).containsExactly(1000L, 2000L, 5000L, 6000L, 7000L, 8000L);
+      }
+    }
+
+    /**
+     * Deciding whether a straddling block is worth rebuilding decodes its timestamps, and the maintenance pass does it every minute
+     * for every shard, usually to rebuild nothing. That decode runs under the directory READ lock, so a reader of the store answers
+     * while it runs; under the write lock the reader below would wait until the timeout.
+     */
+    // #12887
+    @Test
+    void aRetentionPassThatRebuildsNothingDoesNotHoldTheReaders() throws Exception {
+      final AtomicReference<TimeSeriesSealedStore> storeRef = new AtomicReference<>();
+      final AtomicBoolean armed = new AtomicBoolean();
+      final AtomicReference<Boolean> readerAnswered = new AtomicReference<>();
+      // installed before the store opens its channel, which it keeps
+      TimeSeriesSealedStore.TEST_CHANNEL_DECORATOR = channel -> new ShortTransferFileChannel(channel, Integer.MAX_VALUE) {
+        @Override
+        public int read(final ByteBuffer dst, final long position) throws IOException {
+          // the first block read of the planning: a reader on another thread takes the read lock meanwhile
+          if (position > 0 && armed.compareAndSet(true, false)) {
+            final Thread reader = new Thread(() -> storeRef.get().snapshotBlockDirectory(0L, Long.MAX_VALUE));
+            reader.start();
+            try {
+              reader.join(10_000L);
+            } catch (final InterruptedException e) {
+              Thread.currentThread().interrupt();
+            }
+            readerAnswered.set(!reader.isAlive());
+          }
+          return super.read(dst, position);
+        }
+      };
+
+      try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(STORE_PATH, columns)) {
+        storeRef.set(store);
+        appendBlock(store, new long[] { 3000L, 4000L, 5000L, 6000L }, "B");
+        appendBlock(store, new long[] { 7000L, 8000L }, "C");
+        store.flushHeader();
+        final List<Long> idsBefore = blockIds(store);
+
+        // one of B's four samples expired and none is older than staleBefore: B is read, and kept as it is
+        armed.set(true);
+        store.truncateBefore(3500L, Long.MIN_VALUE);
+
+        assertThat(readerAnswered.get()).as("the planning read a block").isNotNull();
+        assertThat(readerAnswered.get()).as("a reader answered while the pass decoded the straddling block").isTrue();
+        assertThat(blockIds(store)).as("nothing rewritten").isEqualTo(idsBefore);
+      }
+    }
+
+    /**
+     * The plan is made under the read lock and applied under the write lock, so a block can land in between. The pass sees the
+     * directory moved and plans again: applying the old plan would rewrite the file without the block that landed.
+     */
+    // #12887
+    @Test
+    void aBlockAppendedBetweenThePlanAndTheRewriteIsKept() throws Exception {
+      try (final TimeSeriesSealedStore store = threeBlockStore(STORE_PATH)) {
+        final AtomicInteger hookRuns = new AtomicInteger();
+        TimeSeriesSealedStore.TEST_RETENTION_PLANNED_HOOK = () -> {
+          if (hookRuns.getAndIncrement() == 0)
+            try {
+              appendBlock(store, new long[] { 9000L, 10_000L }, "D");
+            } catch (final Exception e) {
+              throw new IllegalStateException(e);
+            }
+        };
+
+        store.truncateBefore(CUTOFF_TS);
+
+        assertThat(hookRuns.get()).isEqualTo(1);
+        assertThat(timestamps(readAll(store))).containsExactly(5000L, 6000L, 7000L, 8000L, 9000L, 10_000L);
+        assertThat(store.getBlockCount()).isEqualTo(3);
+      }
+    }
+
+    // ---- Helpers ----
+
+    /**
+     * Makes the header write that follows the swap of a rewrite fail with an {@link IOException} while the flag answers {@code true}:
+     * the one-byte read of the header version at offset 4 that opens it is refused, which no other read of the store makes.
+     */
+    private static AtomicBoolean failHeaderWritesWhile() {
+      final AtomicBoolean armed = new AtomicBoolean();
+      TimeSeriesSealedStore.TEST_CHANNEL_DECORATOR = channel -> new ShortTransferFileChannel(channel, Integer.MAX_VALUE) {
+        @Override
+        public int read(final ByteBuffer dst, final long position) throws IOException {
+          if (armed.get() && position == 4 && dst.remaining() == 1)
+            throw new IOException("injected header write failure");
+          return super.read(dst, position);
+        }
+      };
+      return armed;
+    }
+
+    private static List<Long> blockIds(final TimeSeriesSealedStore store) {
+      final List<Long> ids = new ArrayList<>();
+      for (final TimeSeriesSealedStore.BlockEntry entry : store.snapshotBlockDirectory(Long.MIN_VALUE, Long.MAX_VALUE).blocks())
+        ids.add(entry.blockId);
+      return ids;
+    }
+
+    /** A [1000, 2000], B [3000 .. 6000] (four samples) and C [7000, 8000], one sensor each. */
+    private TimeSeriesSealedStore threeBlockStore(final String path) throws Exception {
+      final TimeSeriesSealedStore store = new TimeSeriesSealedStore(path, columns);
+      appendBlock(store, new long[] { 1000L, 2000L }, "A");
+      appendBlock(store, new long[] { 3000L, 4000L, 5000L, 6000L }, "B");
+      appendBlock(store, new long[] { 7000L, 8000L }, "C");
+      store.flushHeader();
+      return store;
+    }
+
+    private static void truncate(final TimeSeriesSealedStore store) {
+      try {
+        store.truncateBefore(CUTOFF_TS);
+      } catch (final IOException e) {
+        throw new IllegalStateException(e);
+      }
+    }
+
+    private static void merge(final TimeSeriesSealedStore store) {
+      try {
+        assertThat(store.commitMerge(store.prepareMerge(TimeSeriesShard.SEALED_BLOCK_SIZE, 0L, 1))).isTrue();
+      } catch (final IOException e) {
+        throw new IllegalStateException(e);
+      }
+    }
+
+    private static List<Object[]> readAll(final TimeSeriesSealedStore store) throws Exception {
+      final List<Object[]> rows = new ArrayList<>();
+      assertThat(store.forEachRow(store.snapshotBlockDirectory(0L, Long.MAX_VALUE), 0L, Long.MAX_VALUE, null, null, null,
+          rows::add)).isTrue();
+      return rows;
+    }
+
+    private static List<Long> timestamps(final List<Object[]> rows) {
+      final List<Long> out = new ArrayList<>(rows.size());
+      for (final Object[] row : rows)
+        out.add((Long) row[0]);
+      return out;
+    }
+
+    private static void appendBlock(final TimeSeriesSealedStore store, final long[] timestamps, final String tag) throws Exception {
+      final int n = timestamps.length;
+      final String[] tags = new String[n];
+      final double[] values = new double[n];
+      double sum = 0;
+      for (int i = 0; i < n; i++) {
+        tags[i] = tag;
+        values[i] = i + 1;
+        sum += values[i];
+      }
+      store.appendBlock(n, timestamps[0], timestamps[n - 1], new byte[][] {
+              DeltaOfDeltaCodec.encode(timestamps), DictionaryCodec.encode(tags), GorillaXORCodec.encode(values) },
+          new double[] { Double.NaN, Double.NaN, 1.0 }, new double[] { Double.NaN, Double.NaN, n },
+          new double[] { Double.NaN, Double.NaN, sum }, new long[] { 0, 0, n }, new String[][] { null, { tag }, null });
     }
   }
 

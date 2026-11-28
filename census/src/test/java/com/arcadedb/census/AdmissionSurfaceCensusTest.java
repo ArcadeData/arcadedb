@@ -71,6 +71,7 @@ class AdmissionSurfaceCensusTest {
           "server/src/test/java/com/arcadedb/server/http/handler/AdmissionSlotConformanceHttpTest.java"),
       entry("server/http/handler/PostBatchHandler",
           "server/src/test/java/com/arcadedb/server/http/handler/AdmissionSlotConformanceHttpTest.java"),
+      entry("server/ai/AiRunningQuery", "server/src/test/java/com/arcadedb/server/ai/AdmissionSlotConformanceAiTest.java"),
       entry("bolt/BoltNetworkExecutor", "bolt/src/test/java/com/arcadedb/bolt/AdmissionSlotConformanceBoltIT.java"),
       entry("server/gremlin/ArcadeGraphManager",
           "gremlin/src/test/java/com/arcadedb/server/gremlin/AdmissionSlotConformanceGremlinTest.java"),

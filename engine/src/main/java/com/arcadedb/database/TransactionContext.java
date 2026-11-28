@@ -167,6 +167,11 @@ public class TransactionContext implements Transaction {
   private static final int                           RECORDS_CACHE_CAPACITY = 1024;
   private static final int                           PAGES_CACHE_CAPACITY   = 64;
   private static final int                           DELETED_SET_CAPACITY   = 256;
+  // #13005: initial capacity of the per-file maps (fileStamps, bucketFirstWriteSequences, snapshotBucketCounts). They hold one
+  // entry per bucket or index file a transaction touched, a handful for almost every one, and grow on demand. The LongLongHashMap
+  // default (1024 slots, sized for its aggregation use) is two 8 KB arrays per map, allocated and filled by every writing
+  // transaction: 32 KB per autocommit write, more than the write itself.
+  private static final int                           SMALL_PER_FILE_MAP     = 16;
   // #10315: the two counters of a lightweight edge entry in lightEdgeEntryChanges
   private static final int                           REMOVED                = 0;
   private static final int                           APPENDED               = 1;
@@ -1217,6 +1222,11 @@ public class TransactionContext implements Transaction {
 
   int getNewRecordsCount() {
     return newRecords.size();
+  }
+
+  /** How many new records the context holds room for: what it keeps between transactions is bounded (issue #13479). */
+  int getNewRecordsCapacity() {
+    return newRecords.capacity();
   }
 
   int getInsertReservationCount() {
@@ -2429,7 +2439,7 @@ public class TransactionContext implements Transaction {
     if (!isRepeatableRead())
       return committedNow;
     if (snapshotBucketCounts == null)
-      snapshotBucketCounts = new LongLongHashMap();
+      snapshotBucketCounts = new LongLongHashMap(SMALL_PER_FILE_MAP);
     // Long.MIN_VALUE, NOT -1, FOR "NOT PINNED": A DRIFTED COUNTER CAN BE NEGATIVE, AND IT MUST BE PINNED LIKE ANY OTHER VALUE
     final long pinned = snapshotBucketCounts.get(bucketId, Long.MIN_VALUE);
     if (pinned != Long.MIN_VALUE)
@@ -4382,7 +4392,7 @@ public class TransactionContext implements Transaction {
   /** Counts a change of {@code fileId} that is not a write into a page the transaction already holds (issue #11472). */
   private void stampFile(final int fileId) {
     if (fileStamps == null)
-      fileStamps = new LongLongHashMap();
+      fileStamps = new LongLongHashMap(SMALL_PER_FILE_MAP);
     fileStamps.increment(fileId);
   }
 
@@ -6941,7 +6951,7 @@ public class TransactionContext implements Transaction {
       return;
     lastNotedBucket = bucketId;
     if (bucketFirstWriteSequences == null)
-      bucketFirstWriteSequences = new LongLongHashMap();
+      bucketFirstWriteSequences = new LongLongHashMap(SMALL_PER_FILE_MAP);
     if (bucketFirstWriteSequences.get(bucketId, -1L) < 0L)
       bucketFirstWriteSequences.put(bucketId, database.getTransactionManager().getIndexRegistrationSequence());
   }

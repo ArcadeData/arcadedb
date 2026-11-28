@@ -191,6 +191,38 @@ public class GrpcTimeSeriesRefusalAndMetricsIT extends BaseGrpcServerTest {
   }
 
   /**
+   * A stream that names a transaction runs against the database the transaction belongs to, and the database
+   * field of the request is not consulted for it. The counters are therefore filed under the name of that
+   * database, never under whatever string the request happens to carry in the field.
+   */
+  @Test
+  void anAggregatedStreamInATransactionReportsUnderTheDatabaseOfTheTransaction() {
+    final String statedName = "named-in-the-request-only";
+    final TransactionContext transaction = TransactionContext.newBuilder()
+        .setTransactionId(authenticatedStub.beginTransaction(
+            BeginTransactionRequest.newBuilder().setDatabase(getDatabaseName()).setCredentials(credentials()).build())
+            .getTransactionId())
+        .setDatabase(getDatabaseName())
+        .build();
+    final double before = blocksCounted("grpc");
+    try {
+      final int buckets = drain(aggregated("value", TimeSeriesAggregationType.TS_AGG_AVG).toBuilder()
+          .setDatabase(statedName)
+          .setTransaction(transaction)
+          .build());
+      assertThat(buckets).as("the stream read the series of the transaction's database").isPositive();
+    } finally {
+      authenticatedStub.rollbackTransaction(
+          RollbackTransactionRequest.newBuilder().setCredentials(credentials()).setTransaction(transaction).build());
+    }
+
+    assertThat(blocksCounted("grpc") - before)
+        .as("the read is counted under the database the transaction belongs to").isPositive();
+    assertThat(Search.in(Metrics.globalRegistry).name("arcadedb.timeseries.read.blocks").tag("db", statedName)
+        .meters()).as("a string of the request is not a database, so it is not a tag").isEmpty();
+  }
+
+  /**
    * Issue #8563 at the wire: a point carrying an empty tag key names no column, so storing it would drop the tag and
    * file the sample under another series. The write RPC refuses it as INVALID_ARGUMENT, with a description the client
    * can read, and stores nothing.

@@ -257,6 +257,63 @@ class SecurityEntryCapabilityGateTest {
     assertThat(SecurityEntryCapabilityGate.isOverridable(RaftLogEntryType.TX_ENTRY)).isFalse();
   }
 
+  // Regression for #13447: no peer withholds the security entries when every peer advertises both capabilities
+  /** The owed security seed is run again exactly when this is empty, so "nobody is missing" must read as empty. */
+  @Test
+  void noPeerWithholdsTheSecurityEntriesWhenEveryPeerAdvertisesBoth() {
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+
+    assertThat(SecurityEntryCapabilityGate.peersWithholdingSecurityEntries(serverWithGate(true), raft)).isEmpty();
+
+    assertThat(raft.calls("peersMissingCapability")).as("both security capabilities are asked of the registry").hasSize(2);
+    assertThat(raft.calls("peersMissingCapabilityNow")).as("asked on the monitor's own thread, so it must not probe").isEmpty();
+  }
+
+  // Regression for #13447: a peer missing only the group capability is named as withholding
+  @Test
+  void aPeerMissingOnlyTheGroupCapabilityIsNamedAsWithholding() {
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.on("peersMissingCapability", a -> Objects.equals(a[0], PeerCapabilities.SECURITY_GROUPS_ENTRY) ? List.of(LAGGING_PEER) : List.of());
+
+    assertThat(SecurityEntryCapabilityGate.peersWithholdingSecurityEntries(serverWithGate(true), raft))
+        .containsExactly(LAGGING_PEER);
+  }
+
+  // Regression for #13447: a peer missing only the API-token capability is named as withholding
+  @Test
+  void aPeerMissingOnlyTheTokenCapabilityIsNamedAsWithholding() {
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.on("peersMissingCapability", a -> Objects.equals(a[0], PeerCapabilities.SECURITY_API_TOKENS_ENTRY) ? List.of(LAGGING_PEER) : List.of());
+
+    assertThat(SecurityEntryCapabilityGate.peersWithholdingSecurityEntries(serverWithGate(true), raft))
+        .containsExactly(LAGGING_PEER);
+  }
+
+  // Regression for #13447: the peers missing either capability are named once each
+  /** A restarting peer has advertised neither capability, so it is in both answers and must be named once. */
+  @Test
+  void thePeersMissingEitherCapabilityAreNamedOnceEach() {
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.on("peersMissingCapability", a -> Objects.equals(a[0], PeerCapabilities.SECURITY_GROUPS_ENTRY) ?
+        List.of(LAGGING_PEER) :
+        List.of(LAGGING_PEER, "arcadedb3"));
+
+    assertThat(SecurityEntryCapabilityGate.peersWithholdingSecurityEntries(serverWithGate(true), raft))
+        .containsExactly(LAGGING_PEER, "arcadedb3");
+  }
+
+  // Regression for #13447: no peer withholds the security entries once the interlock is switched off
+  /** With the gate off a seed is let through whatever the peers say, so an owed seed must not wait for them. */
+  @Test
+  void noPeerWithholdsTheSecurityEntriesOnceTheInterlockIsSwitchedOff() {
+    final FakeRaftHAServer raft = FakeRaftHAServer.detached();
+    raft.on("peersMissingCapability", a -> List.of(LAGGING_PEER));
+
+    assertThat(SecurityEntryCapabilityGate.peersWithholdingSecurityEntries(serverWithGate(false), raft)).isEmpty();
+
+    assertThat(raft.calls("peersMissingCapability")).isEmpty();
+  }
+
   // -------------------------------------------------------------------------------------------------------
   // 4. The sentence an operator is left holding
   // -------------------------------------------------------------------------------------------------------

@@ -74,6 +74,10 @@ public interface Property {
    * @throws com.arcadedb.exception.SchemaException if a property named {@code newName} already exists (own or
    *                                                 inherited), if an index stands on this property, or if this
    *                                                 property is a declared TIMESERIES column
+   * @throws com.arcadedb.exception.ValidationException if a stored record would violate a constraint that moves to
+   *                                                    {@code newName} while its value stays under the old name
+   *                                                    (issue #12930), e.g. a MANDATORY property of a type with
+   *                                                    records whose values are not copied under the new name yet
    */
   Property rename(String newName);
 

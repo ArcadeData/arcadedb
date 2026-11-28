@@ -2603,15 +2603,21 @@ public final class SnapshotInstaller {
           continue;
         }
 
+        // An entry is one plain file name: the leader ships every file of the database directory under its own
+        // name. Two dots INSIDE a name are legal (a type or bucket may be called "a..b" and its component files
+        // carry the name), so the check is the engine's name rule, shared with the restore: it refuses an empty
+        // name, a path separator and the names "." and "..".
+        try {
+          FileUtils.checkValidName(entryName);
+        } catch (final IOException e) {
+          throw new ReplicationException("Invalid file name in snapshot ZIP: " + entryName, e);
+        }
+
         final Path targetFile = targetDir.resolve(entryName).normalize();
 
         // Zip-slip protection: normalized path must remain inside targetDir
         if (!targetFile.startsWith(targetDir))
           throw new ReplicationException("Zip slip detected in snapshot: " + entryName);
-
-        // Reject suspicious path components before touching the filesystem
-        if (entryName.contains(".."))
-          throw new ReplicationException("Suspicious path in snapshot ZIP: " + entryName);
 
         // Create parent directories and perform real-path symlink-escape check
         Files.createDirectories(targetFile.getParent());

@@ -47,6 +47,8 @@ public class FunctionAggregationContext implements AggregationContext, HeapBuffe
   private       OperationHeapLimit heapLimit;
   // THE DISTINCT VALUES ALREADY GIVEN TO THE FUNCTION - count(DISTINCT x) - OR NULL WHEN IT SEES EVERY VALUE (ISSUE #8889)
   private final Set<Object>      seen;
+  // WHETHER THE FUNCTION HOLDS A COPY OF ITS VALUES - THE TEXT OF concat() - WHICH THE DISTINCT VALUES DO NOT ACCOUNT FOR
+  private final boolean          holdsCopy;
   // WHAT A FUNCTION THAT KEEPS EVERY VALUE HOLDS, COUNTED AGAINST THE ELEMENT CAP (ISSUE #9793)
   private       long             held;
 
@@ -54,6 +56,7 @@ public class FunctionAggregationContext implements AggregationContext, HeapBuffe
     this.seen = distinct ? new HashSet<>() : null;
     this.aggregateFunction = function;
     this.aggregatedFunction = function instanceof SQLAggregatedFunction aggregated ? aggregated : null;
+    this.holdsCopy = aggregatedFunction != null && aggregatedFunction.holdsEveryValue() && aggregatedFunction.holdsACopyOfItsValues();
     this.params = params;
     if (this.params == null)
       this.params = new ArrayList<>();
@@ -104,8 +107,9 @@ public class FunctionAggregationContext implements AggregationContext, HeapBuffe
       return;
 
     applyArguments(next, paramValues, context);
-    // a DISTINCT call is charged through the set of distinct values it remembers, which share the function's own items
-    if (heapLimit != null && seen == null)
+    // a DISTINCT call is charged through the set of distinct values it remembers, which share the function's own items, unless
+    // the function holds a copy of them (the text of concat()), which the set does not cover
+    if (heapLimit != null && (seen == null || holdsCopy))
       held = aggregatedFunction.chargeHeld(heapLimit, held,
           paramValues.length == 1 ? paramValues[0] : new ArrayList<>(Arrays.asList(paramValues)));
   }

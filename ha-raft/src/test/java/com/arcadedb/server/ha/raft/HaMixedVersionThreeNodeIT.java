@@ -24,6 +24,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ClusterCapabilityNotReadyException;
 import com.arcadedb.server.ServerControlPlane;
+import com.arcadedb.utility.DedicatedThreadPool.PoolStats;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -58,7 +59,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * follower arm there has to be a follower that is NOT the lagging node, which needs a third node.
  * <p>
  * Sibling of {@link HaMixedVersionIT}, renamed from {@code Issue7511MixedVersionSecurityEntryIT}. It keeps a fresh cluster
- * per test because it runs on three servers, not two; with one test, sharing the cluster would save nothing.
+ * per test because it runs on three servers, not two, and because its second test (issue #13447) stops the API-token
+ * file watchers of its servers and leaves one of them withholding capabilities while it runs.
  *
  * @author Roberto Franchini (r.franchini@arcadedata.com)
  */
@@ -67,6 +69,12 @@ class HaMixedVersionThreeNodeIT extends BaseRaftHATest {
 
   /** How long a node is given to observe a peer's advertisement change (a few refresh rounds). */
   private static final long CAPABILITY_CONVERGENCE_TIMEOUT_MS = 30_000L;
+
+  /**
+   * A hang detector for the waits on the security seed, not a latency bound: the rejoining node's four attempts and
+   * their backoff take about half a minute when every one of them is refused.
+   */
+  private static final long SEED_WAIT_MS = 180_000L;
 
   /** What a build that predates #7373 advertises: it decodes schema deltas, and neither new entry type. */
   private static final Set<String> PRE_7373_BUILD = Set.of(PeerCapabilities.SCHEMA_DELTA);
@@ -149,7 +157,92 @@ class HaMixedVersionThreeNodeIT extends BaseRaftHATest {
           .isTrue();
   }
 
+  /**
+   * Issue #13447: a security seed the capability gate refused during a rolling restart is run again once the peer it was
+   * refused for advertises its capabilities, so the node that rejoined does not keep a revoked token.
+   * <p>
+   * The reported sequence, on its own timeline. A node rejoins holding a token the cluster no longer has (the stand-in
+   * for one revoked while it was away) and asks the leader to re-seed, while the NEXT peer of the rolling restart is
+   * still booting and has not advertised the two security entry capabilities. The gate refuses the group and API-token
+   * entries, the seed's retry budget runs out, and so do the rejoining node's own retries: the restarting peer answers
+   * only after all of that, as it did 25 s later in the report. Nothing ran the seed again, and the token went on
+   * authenticating on that node for two days.
+   * <p>
+   * The restarting peer is built the way the test above builds an old one: what the gate consults is the advertisement,
+   * and a peer that has not answered yet and a peer that answers without the capability are one "no" to it.
+   * <p>
+   * The peer is held back until the rejoining node has given up, on purpose: from there only the leader's own re-run
+   * can deliver the documents, which is the half of the fix a shorter wait would let the node's retries hide.
+   */
+  @Test
+  void aSeedRefusedWhileAPeerRestartsIsRunAgainOnceThatPeerAdvertises() throws InterruptedException {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
+    final int rejoinedIndex = (leaderIndex + 1) % getServerCount();
+    final int restartingIndex = (leaderIndex + 2) % getServerCount();
+    final String restartingPeerId = peerIdForIndex(restartingIndex);
+
+    final RaftHAServer rejoinedRaft = raftServerOf(rejoinedIndex);
+    final SecurityCatchUp catchUp = rejoinedRaft.getStateMachine().getSecurityCatchUp();
+    final MembershipSecuritySeeder leaderSeeder = raftServerOf(leaderIndex).getStateMachine().getMembershipSecuritySeeder();
+
+    // Whatever the servers' own startup asked for has to be over, so the request below is the one observed.
+    HaSecurityMutationRoutingTwoNodeIT.waitUntil(() -> {
+      final PoolStats pool = catchUp.getPoolStats();
+      return pool.activeThreads() == 0 && pool.queueDepth() == 0;
+    }, SEED_WAIT_MS, "the rejoined node's startup catch-up must finish");
+
+    // The servers of this fixture share one config directory, which three real nodes never do: without this, the
+    // other two would re-read the file the rejoined node is about to write and take its token for their own.
+    for (int i = 0; i < getServerCount(); i++)
+      getServer(i).getSecurity().getApiTokenConfiguration().stop();
+
+    // The node came back holding a token the cluster does not: on this node alone, with no replication.
+    final String staleToken = getServer(rejoinedIndex).getSecurity().getApiTokenConfiguration()
+        .createToken("revoked-while-away", "*", 0L, new JSONObject()).getString("token");
+    assertThat(tokenOn(rejoinedIndex, staleToken)).as("the stale token authenticates on the rejoined node").isNotNull();
+    assertThat(tokenOn(leaderIndex, staleToken)).as("and nowhere else").isNull();
+
+    // The next peer of the rolling restart is still booting: it has not advertised the security entry capabilities.
+    raftServerOf(restartingIndex).setAdvertisedCapabilities(PRE_7373_BUILD);
+    awaitObserved(leaderIndex, restartingPeerId, hasNeither(), "the leader must see peer '" + restartingPeerId
+        + "' without the security entry capabilities");
+
+    // The rejoined node's catch-up: its fingerprints do not match, so the leader seeds, and the gate refuses.
+    catchUp.rearmForTests();
+    catchUp.onFirstLeaderObserved(getServer(rejoinedIndex), rejoinedRaft);
+
+    HaSecurityMutationRoutingTwoNodeIT.waitUntil(() -> leaderSeeder.owedSeedReasonForTest() != null, SEED_WAIT_MS,
+        "the leader must keep the seed the capability gate refused as owed");
+    HaSecurityMutationRoutingTwoNodeIT.waitUntil(() -> {
+      final PoolStats pool = catchUp.getPoolStats();
+      return !catchUp.hasRequestedSinceStart() && pool.activeThreads() == 0 && pool.queueDepth() == 0;
+    }, SEED_WAIT_MS, "the rejoined node must run out of retries while the peer is still restarting");
+
+    assertThat(raftServerOf(leaderIndex).isLeader()).as("this test pins the leader it elected at the start").isTrue();
+    assertThat(tokenOn(rejoinedIndex, staleToken))
+        .as("nothing could be seeded while the peer withholds the capability, so the token is still good here")
+        .isNotNull();
+    assertThat(leaderSeeder.owedSeedReasonForTest()).as("and the seed is still owed").isNotNull();
+
+    // The restarting peer comes up. No operator step, no leader change, no new request from the rejoined node.
+    raftServerOf(restartingIndex).setAdvertisedCapabilities(PeerCapabilities.LOCAL);
+
+    HaSecurityMutationRoutingTwoNodeIT.waitUntil(() -> tokenOn(rejoinedIndex, staleToken) == null, SEED_WAIT_MS,
+        "the leader must run the owed seed again once the peer advertises, so the stale token stops authenticating "
+            + "on the rejoined node");
+    assertThat(getServer(rejoinedIndex).getSecurity().apiTokensFingerprint())
+        .as("the rejoined node holds the leader's API-token document")
+        .isEqualTo(getServer(leaderIndex).getSecurity().apiTokensFingerprint());
+    HaSecurityMutationRoutingTwoNodeIT.waitUntil(() -> leaderSeeder.owedSeedReasonForTest() == null, SEED_WAIT_MS,
+        "a seed that committed leaves nothing owed");
+  }
+
   // -----------------------------------------------------------------------------------------------------------
+
+  private JSONObject tokenOn(final int serverIndex, final String plaintextToken) {
+    return getServer(serverIndex).getSecurity().getApiTokenConfiguration().getToken(plaintextToken);
+  }
 
   private static Predicate<Set<String>> hasNeither() {
     return capabilities -> capabilities != null

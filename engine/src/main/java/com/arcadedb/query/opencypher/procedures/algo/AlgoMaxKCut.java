@@ -51,7 +51,8 @@ import java.util.stream.Stream;
  *     <ul>
  *       <li>{@code maxIterations} (int, default 100, minimum 1) – local-search passes per restart</li>
  *       <li>{@code restarts} (int, default 3, minimum 1) – number of random restarts</li>
- *       <li>{@code weightProperty} (String, default null) – edge weight property name</li>
+ *       <li>{@code weightProperty} (String, default null) – edge weight property name; every weight must be finite
+ *           and non-negative, or the call is refused</li>
  *       <li>{@code relTypes} (String, default all)</li>
  *       <li>{@code direction} (String, default BOTH)</li>
  *       <li>{@code seed} (long, default -1)</li>
@@ -115,10 +116,10 @@ public class AlgoMaxKCut extends AbstractAlgoProcedure {
     final Map<String, Object> config = extractConfig(argOrDefault(args, 1, null), "config", CONFIG_KEYS);
     final int maxIter = config != null && config.get("maxIterations") instanceof Number n ? extractInt(n, "maxIterations", 1) : 100;
     final int restarts = config != null && config.get("restarts") instanceof Number n ? extractInt(n, "restarts", 1) : 3;
-    final String weightProperty = config != null ? (String) config.get("weightProperty") : null;
+    final String weightProperty = configString(config, "weightProperty");
     final long seed = config != null && config.get("seed") instanceof Number n ? n.longValue() : -1L;
     final String[] relTypes = config != null ? extractRelTypes(config.get("relTypes"), context) : null;
-    final Vertex.DIRECTION dir = parseDirection(config != null ? (String) config.get("direction") : null);
+    final Vertex.DIRECTION dir = extractDirection(config != null ? config.get("direction") : null, Vertex.DIRECTION.BOTH);
 
     final Database db = context.getDatabase();
     final GraphData graph = loadGraph(db, null, relTypes, context);
@@ -140,6 +141,10 @@ public class AlgoMaxKCut extends AbstractAlgoProcedure {
     // neighbors[i][j] - see GraphData.weightedAdjacency and issue #6301, which converted the other
     // weighted algorithms off the same hand-rolled parallel array this one used to build.
     final GraphData.WeightedAdjacency weighted = graph.weightedAdjacency(guard, dir, weightProperty, relTypes);
+    // a NaN or infinite weight made the gains and the cut NaN or infinite, and the answer then depended on whether a view
+    // served the call; a negative one makes a cut below the -1.0 the search starts from (issue #12957)
+    if (weightProperty != null)
+      requireFiniteNonNegativeWeights(weighted, weightProperty, guard);
     final int[][] adj = weighted.neighbors();
     final double[][] adjW = weighted.weights();
 

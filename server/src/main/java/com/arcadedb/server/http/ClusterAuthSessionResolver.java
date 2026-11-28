@@ -219,14 +219,15 @@ public class ClusterAuthSessionResolver {
    * <p>
    * It never dials and never counts: a hash-map read under the session manager's read lock, and nothing at all on
    * a server that is not clustered. It is built from the very guards {@code resolve} and {@code renew} open with,
-   * so the two cannot drift apart. It errs towards {@code true} in one case it cannot see: with
-   * {@link #MAX_CONCURRENT_LOOKUPS} lookups already in flight the call would be skipped, which only costs the
-   * hand-off.
+   * so the two cannot drift apart. It is a question and not a use of the session: the session is read without being
+   * touched, so asking does not extend it, and one past its idle limit counts as not held. It errs towards
+   * {@code true} in one case it cannot see: with {@link #MAX_CONCURRENT_LOOKUPS} lookups already in flight the call
+   * would be skipped, which only costs the hand-off.
    */
   public boolean wouldDial(final String token) {
     if (server.getHA() == null)
       return false;
-    final HttpAuthSession session = sessions.getSessionByToken(token);
+    final HttpAuthSession session = sessions.peekSessionByToken(token);
     return session != null ? isRenewalDue(session) : peerIssuerOf(token) != null && !isRefusalCached(token);
   }
 
