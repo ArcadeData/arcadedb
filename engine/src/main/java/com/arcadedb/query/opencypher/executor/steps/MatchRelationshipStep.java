@@ -302,9 +302,10 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
               }
 
               lastResult = prevResults.next();
-              // A target an earlier OPTIONAL MATCH left null is bound, and a null vertex cannot be reached: the row has no
-              // source for this hop (#12728)
-              final Object sourceObj = isNullBoundTarget(lastResult) ? null : lastResult.getProperty(sourceVariable);
+              // A target an earlier clause bound to null (an OPTIONAL MATCH that found nothing) or to a value that is not a
+              // node (a link or a string a WITH projected) is bound, and no vertex is it: the row has no source for this hop
+              // (#12728, #13534)
+              final Object sourceObj = isUnmatchableBoundTarget(lastResult) ? null : lastResult.getProperty(sourceVariable);
 
               // Resolve source: accept both GAVVertex and Vertex
               int sourceNodeId = -1;
@@ -836,12 +837,19 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
   }
 
   /**
-   * Whether the target variable is bound by an earlier clause to null, as an OPTIONAL MATCH that found nothing leaves it. The plan-time
-   * name set also holds the names this MATCH is about to bind, so the row must hold the name, with no vertex, for it to count.
+   * Whether the target variable is bound by an earlier clause to something no vertex can be: null, as an OPTIONAL MATCH that found
+   * nothing leaves it (#12728), or a value that is not a node, such as a link or a string a WITH projected (#13534). Either way the
+   * hop matches nothing for the row, as a bare {@code (m)} over the same binding does ({@link BoundNodeCheckStep}). The plan-time
+   * name set also holds the names this MATCH is about to bind, so the row must hold the name for it to count. Asked once per
+   * source row, so the walk of the edges never pays for it.
    */
-  private boolean isNullBoundTarget(final Result lastResult) {
-    return boundVariableNames != null && boundVariableNames.contains(targetVariable) && lastResult.getProperty(targetVariable) == null
-        && lastResult.hasProperty(targetVariable);
+  private boolean isUnmatchableBoundTarget(final Result lastResult) {
+    if (boundVariableNames == null || !boundVariableNames.contains(targetVariable))
+      return false;
+    final Object boundValue = lastResult.getProperty(targetVariable);
+    if (boundValue == null)
+      return lastResult.hasProperty(targetVariable);
+    return !(boundValue instanceof Vertex);
   }
 
   /**
