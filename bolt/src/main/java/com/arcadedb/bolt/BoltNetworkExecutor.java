@@ -2591,10 +2591,6 @@ public class BoltNetworkExecutor extends Thread {
   }
 
   /**
-   * Neo4j's title for a name held by an index, by a constraint, or by anything else (issue #10153), and for an index or a
-   * constraint that exists already under another name, which is no name conflict but an equivalent schema rule (issue #11392).
-   */
-  /**
    * The code of a {@code SCHEMA} failure: a failed drop of an index or of a constraint is the DatabaseError Neo4j answers it with
    * (issue #13686), anything else the SemanticError of a statement that means nothing against the schema.
    */
@@ -2606,6 +2602,10 @@ public class BoltNetworkExecutor extends Thread {
     return BoltErrorCodes.SEMANTIC_ERROR;
   }
 
+  /**
+   * Neo4j's title for a name held by an index, by a constraint, or by anything else (issue #10153), and for an index or a
+   * constraint that exists already under another name, which is no name conflict but an equivalent schema rule (issue #11392).
+   */
   private static String alreadyExistsCode(final Throwable error) {
     if (CauseChain.contains(error, EquivalentIndexException.class))
       return BoltErrorCodes.SCHEMA_RULE_ALREADY_EXISTS_ERROR;
