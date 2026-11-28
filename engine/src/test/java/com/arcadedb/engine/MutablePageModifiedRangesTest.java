@@ -26,9 +26,12 @@ import org.junit.jupiter.api.Test;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.BitSet;
 import java.util.List;
+import java.util.Random;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * A page that is written at both ends (the layout of every index and bucket page) must be tracked as the disjoint
@@ -147,6 +150,110 @@ class MutablePageModifiedRangesTest extends TestHelper {
     for (final int[] segment : segments)
       for (int i = segment[0]; i <= segment[1]; i++)
         assertThat(replayed[i]).as("byte %d", i).isEqualTo(expected[i]);
+  }
+
+  /**
+   * Whatever the sequence of writes, the tracked intervals stay sorted, disjoint and non-adjacent, never fewer than the bytes
+   * written need, and never more than the budget. Within the budget they are EXACTLY the maximal runs of written bytes (nothing
+   * extra is shipped to the WAL); the write that goes over it merges one adjacent pair, one with the smallest gap, and nothing else.
+   */
+  @Test
+  void randomWritesTrackTheMaximalRunsAndMergeOnlyTheClosestPairPastTheBudget() {
+    for (int seed = 0; seed < 300; seed++) {
+      final Random random = new Random(seed);
+      final MutablePage page = newPage();
+      final BitSet written = new BitSet();
+      final int maxLength = seed % 3 == 0 ? 400 : 12;
+
+      for (int step = 0; step < 60; step++) {
+        final int start = random.nextInt(PAGE_SIZE);
+        final int end = Math.min(PAGE_SIZE - 1, start + random.nextInt(maxLength));
+
+        final List<int[]> expected = absorb(snapshot(page), start, end);
+        page.updateModifiedRange(start, end);
+        written.set(start, end + 1);
+        final List<int[]> actual = snapshot(page);
+
+        if (expected.size() <= 8)
+          assertThat(actual).as("seed %d step %d: write [%d,%d]", seed, step, start, end).usingRecursiveComparison().isEqualTo(expected);
+        else
+          assertThat(mergeOneClosestPair(expected)).as("seed %d step %d: write [%d,%d] went over the budget", seed, step, start, end)
+              .anySatisfy(candidate -> assertThat(actual).usingRecursiveComparison().isEqualTo(candidate));
+
+        assertThat(covers(page, start, end)).as("seed %d step %d: the write [%d,%d] is not tracked", seed, step, start, end).isTrue();
+      }
+
+      for (int b = written.nextSetBit(0); b >= 0; b = written.nextSetBit(b + 1))
+        assertThat(covers(page, b, b)).as("seed %d: byte %d is written but not tracked", seed, b).isTrue();
+    }
+  }
+
+  @Test
+  void aZeroLengthWriteTracksNothingAndAnInvertedOrOutOfPageRangeIsRefused() {
+    final MutablePage page = newPage();
+
+    page.updateModifiedRange(100, 99);
+    page.updateModifiedRange(PAGE_SIZE, PAGE_SIZE - 1);
+    assertThat(page.getModifiedRangeCount()).as("a zero-length write dirties no byte").isZero();
+
+    page.updateModifiedRange(0, 0);
+    page.updateModifiedRange(PAGE_SIZE - 1, PAGE_SIZE - 1);
+    assertThat(intervals(page)).as("the first and the last byte of the page are valid").containsExactly(0, 0, PAGE_SIZE - 1, PAGE_SIZE - 1);
+
+    assertThatThrownBy(() -> page.updateModifiedRange(-1, 5)).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> page.updateModifiedRange(PAGE_SIZE - 1, PAGE_SIZE)).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> page.updateModifiedRange(10, 8)).isInstanceOf(IllegalArgumentException.class);
+    assertThat(page.getModifiedRangeCount()).as("a refused range leaves the tracking as it was").isEqualTo(2);
+  }
+
+  private static List<int[]> snapshot(final MutablePage page) {
+    final List<int[]> intervals = new ArrayList<>();
+    final int[] ranges = page.getModifiedRanges();
+    for (int i = 0; i < page.getModifiedRangeCount(); i++)
+      intervals.add(new int[] { ranges[i * 2], ranges[i * 2 + 1] });
+    return intervals;
+  }
+
+  /** The sorted, disjoint, non-adjacent intervals that result from marking [start,end] as written on top of {@code intervals}. */
+  private static List<int[]> absorb(final List<int[]> intervals, final int start, final int end) {
+    final List<int[]> result = new ArrayList<>();
+    int from = start;
+    int to = end;
+    boolean placed = false;
+    for (final int[] interval : intervals) {
+      if (interval[1] < from - 1)
+        result.add(interval);
+      else if (interval[0] > to + 1) {
+        if (!placed) {
+          result.add(new int[] { from, to });
+          placed = true;
+        }
+        result.add(interval);
+      } else {
+        from = Math.min(from, interval[0]);
+        to = Math.max(to, interval[1]);
+      }
+    }
+    if (!placed)
+      result.add(new int[] { from, to });
+    return result;
+  }
+
+  /** Every layout that merges one adjacent pair of {@code intervals} with the smallest gap between them. */
+  private static List<List<int[]>> mergeOneClosestPair(final List<int[]> intervals) {
+    int smallestGap = Integer.MAX_VALUE;
+    for (int k = 0; k < intervals.size() - 1; k++)
+      smallestGap = Math.min(smallestGap, intervals.get(k + 1)[0] - intervals.get(k)[1]);
+
+    final List<List<int[]>> candidates = new ArrayList<>();
+    for (int k = 0; k < intervals.size() - 1; k++)
+      if (intervals.get(k + 1)[0] - intervals.get(k)[1] == smallestGap) {
+        final List<int[]> merged = new ArrayList<>(intervals);
+        merged.set(k, new int[] { intervals.get(k)[0], intervals.get(k + 1)[1] });
+        merged.remove(k + 1);
+        candidates.add(merged);
+      }
+    return candidates;
   }
 
   private MutablePage newPage() {
