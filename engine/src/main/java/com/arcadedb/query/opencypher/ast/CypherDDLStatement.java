@@ -18,7 +18,7 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.TypeMismatchException;
 
 import java.util.List;
 import java.util.Map;
@@ -137,17 +137,34 @@ public class CypherDDLStatement implements CypherStatement {
    * parameter's value. Neo4j types the name as a string: a null value is Neo.ClientError.Statement.TypeError {@code Expected
    * String, but got: NO_VALUE}, any other kind of value {@code Expected String, but got: Long}.
    *
-   * @throws CommandExecutionException if the parameter does not hold a string
+   * @throws TypeMismatchException if the parameter does not hold a string: the caller's error, which Bolt reports as
+   *                               Neo.ClientError.Statement.TypeError and HTTP as 400
    */
   public CypherDDLStatement resolveName(final Map<String, Object> parameters) {
     if (nameParameter == null)
       return this;
     final Object value = parameters == null ? null : parameters.get(nameParameter);
     if (!(value instanceof String name))
-      throw new CommandExecutionException("Expected String, but got: " + (value == null ? "NO_VALUE" : value.getClass().getSimpleName())
-          + " (the name of the schema command is the parameter $" + nameParameter + ")");
+      throw new TypeMismatchException(
+          "Expected String, but got: " + valueTypeName(value) + " (the name of the schema command is the parameter $"
+              + nameParameter + ")");
     return new CypherDDLStatement(kind, constraintKind, name, null, labelNames, propertyNames, ifNotExists, ifExists, forRelationship,
         typedName, indexKind, options);
+  }
+
+  /**
+   * The type of a value that is not a string, as Neo4j names it in the error: every integral value is a Long and every
+   * floating point one a Double whatever Java type the driver or the embedded caller passed, and null is NO_VALUE.
+   */
+  private static String valueTypeName(final Object value) {
+    return switch (value) {
+      case null -> "NO_VALUE";
+      case Integer ignored -> "Long";
+      case Short ignored -> "Long";
+      case Byte ignored -> "Long";
+      case Float ignored -> "Double";
+      default -> value.getClass().getSimpleName();
+    };
   }
 
   public Kind getKind() {

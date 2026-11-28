@@ -269,7 +269,6 @@ final class CypherCommandBuilder {
     throw new CommandParsingException("Password must be a string literal");
   }
 
-
   /** The literal name of a {@code symbolicNameOrStringParameter}, or null when it is a parameter or absent. */
   private static String literalName(final Cypher25Parser.SymbolicNameOrStringParameterContext ctx) {
     return ctx != null && ctx.symbolicNameString() != null ? CypherASTBuilder.stripBackticks(ctx.symbolicNameString().getText()) : null;

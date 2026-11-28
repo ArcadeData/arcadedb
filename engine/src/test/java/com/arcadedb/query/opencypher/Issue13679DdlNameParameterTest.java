@@ -19,11 +19,14 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandParameterMissingException;
+import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -84,12 +87,30 @@ class Issue13679DdlNameParameterTest extends TestHelper {
 
   @Test
   void aNameThatIsNotAStringIsATypeError() {
+    // TypeMismatchException is what Bolt reports as Neo.ClientError.Statement.TypeError (BoltErrorClassificationTest) and HTTP as 400
     assertThatThrownBy(() -> database.command("opencypher", "CREATE INDEX $n FOR (n:A) ON (n.p)", Map.of("n", 5L)).close())
+        .isInstanceOf(TypeMismatchException.class)
         .hasMessageContaining("Expected String, but got: Long");
-    final Map<String, Object> noValue = new java.util.HashMap<>();
+    // Neo4j has one integer type: an embedded caller's Integer is a Long too
+    assertThatThrownBy(() -> database.command("opencypher", "CREATE CONSTRAINT $n FOR (n:B) REQUIRE n.id IS UNIQUE", Map.of("n", 5)).close())
+        .isInstanceOf(TypeMismatchException.class)
+        .hasMessageContaining("Expected String, but got: Long");
+    final Map<String, Object> noValue = new HashMap<>();
     noValue.put("n", null);
     assertThatThrownBy(() -> database.command("opencypher", "DROP INDEX $n IF EXISTS", noValue).close())
+        .isInstanceOf(TypeMismatchException.class)
         .hasMessageContaining("Expected String, but got: NO_VALUE");
+    assertThat(indexNames()).isEmpty();
+    assertThat(rows("SHOW CONSTRAINTS YIELD name RETURN name", Map.of())).isEmpty();
+  }
+
+  @Test
+  void anUnboundNameParameterIsAMissingParameter() {
+    assertThatThrownBy(() -> database.command("opencypher", "CREATE INDEX $n FOR (n:A) ON (n.p)", Map.of()).close())
+        .isInstanceOf(CommandParameterMissingException.class)
+        .hasMessageContaining("n");
+    assertThatThrownBy(() -> database.command("opencypher", "DROP INDEX $n", Map.of("other", "idx_a")).close())
+        .isInstanceOf(CommandParameterMissingException.class);
     assertThat(indexNames()).isEmpty();
   }
 
