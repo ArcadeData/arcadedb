@@ -179,6 +179,8 @@ public class BoltNetworkExecutor extends Thread {
   private boolean transactionReadOnly;
   // System.nanoTime() past which the explicit transaction has timed out, or 0 for no timeout
   private long    transactionDeadlineNanos;
+  // The tx_metadata BEGIN declared (issue #13682), what CALL tx.getMetaData answers inside the explicit transaction. Read under the same rule
+  private Map<String, Object> transactionMetadata = Map.of();
 
   // GQL session state for this connection (SESSION SET/RESET/CLOSE parameters).
   private final BoltSession session = new BoltSession();
@@ -955,7 +957,7 @@ public class BoltNetworkExecutor extends Thread {
         txTimeoutMillis(message.getExtra());
 
     // Intercept known system queries (CALL dbms.components(), SHOW DATABASES, etc.)
-    if (handleSystemQuery(query, stream)) {
+    if (handleSystemQuery(query, stream, explicitTransaction ? transactionMetadata : txMetadata(message.getExtra()))) {
       // The command's own YIELD/WHERE tail, applied to the table it produced. Parsed and then dropped before
       // issue #7946, so SHOW DATABASES WHERE name = $dbName - Neo4j's bootstrap existence check - answered with
       // every database on the server no matter what was bound.
@@ -1156,6 +1158,12 @@ public class BoltNetworkExecutor extends Thread {
   /** Whether the Bolt {@code mode} of a BEGIN or an auto-commit RUN asks for READ access ({@code "r"}; the default is write). */
   private static boolean isReadAccessMode(final Map<String, Object> extra) {
     return "r".equals(extra.get("mode"));
+  }
+
+  /** The {@code tx_metadata} of a BEGIN or an auto-commit RUN, or an empty map when it sets none. */
+  @SuppressWarnings("unchecked")
+  private static Map<String, Object> txMetadata(final Map<String, Object> extra) {
+    return extra.get("tx_metadata") instanceof Map<?, ?> metadata ? (Map<String, Object>) metadata : Map.of();
   }
 
   /** The {@code tx_timeout} of a BEGIN or an auto-commit RUN, in milliseconds, or 0 when it sets none (absent, 0, negative). */
@@ -1361,6 +1369,7 @@ public class BoltNetworkExecutor extends Thread {
       transactionReadOnly = isReadAccessMode(beginMessage.getExtra());
       final long timeoutMs = txTimeoutMillis(beginMessage.getExtra());
       transactionDeadlineNanos = timeoutMs > 0 ? deadlineNanos(timeoutMs) : 0L;
+      transactionMetadata = txMetadata(beginMessage.getExtra());
 
       sendSuccess(Map.of());
       state = State.TX_READY;
@@ -1845,7 +1854,8 @@ public class BoltNetworkExecutor extends Thread {
    * Returns true if the query was handled as a system query - populating {@code stream} with the synthetic
    * fields and rows to serve - false if it should be executed normally.
    */
-  private boolean handleSystemQuery(final String query, final BoltQueryStream stream) throws IOException {
+  private boolean handleSystemQuery(final String query, final BoltQueryStream stream, final Map<String, Object> txMetadata)
+      throws IOException {
     final String normalized = BoltSystemProcedures.normalize(query);
 
     if (BoltSystemProcedures.isSystemCall(normalized, "dbms.components")) {
@@ -1899,6 +1909,13 @@ public class BoltNetworkExecutor extends Thread {
       stream.fields = List.of("id", "name", "creationDate");
       stream.syntheticResults = new ArrayList<>();
       stream.syntheticResults.add(List.of("arcadedb-" + server.getServerName(), server.getServerName(), ""));
+      return true;
+
+    } else if (BoltSystemProcedures.isSystemCall(normalized, "tx.getmetadata")) {
+      // CALL tx.getMetaData - the tx_metadata the open transaction was begun with, or the auto-commit statement was sent with (issue #13682)
+      stream.fields = List.of("metadata");
+      stream.syntheticResults = new ArrayList<>();
+      stream.syntheticResults.add(List.of(txMetadata));
       return true;
 
     } else if (BoltSystemProcedures.isSystemCall(normalized, "db.ping")) {
