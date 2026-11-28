@@ -291,14 +291,19 @@ public final class BenchRunner {
     final AtomicReference<Step> step = new AtomicReference<>(new Step("prepare", caseStart, prepareTimeout.toNanos()));
     // a flag of its own: a measure() that swallows the interrupt must not let the worker start another repetition
     final AtomicBoolean cancelled = new AtomicBoolean();
+    // what the worker ended with, read after a timeout once the worker has stopped: a cancelled future gives no value
+    final AtomicReference<CaseResult> outcome = new AtomicReference<>();
     final Future<CaseResult> future = executor.submit(() -> {
+      CaseResult r;
       try {
-        return execute(w, ctx, caseName, cancelled, step);
+        r = execute(w, ctx, caseName, cancelled, step);
       } catch (final CaseFailedWithMetrics e) {
-        return result(w, ctx, caseName, e.metrics(), CaseResult.Status.FAILED, e.getMessage());
+        r = result(w, ctx, caseName, e.metrics(), CaseResult.Status.FAILED, e.getMessage());
       } catch (final Throwable t) {
-        return result(w, ctx, caseName, List.of(), CaseResult.Status.FAILED, describe(t));
+        r = result(w, ctx, caseName, List.of(), CaseResult.Status.FAILED, describe(t));
       }
+      outcome.set(r);
+      return r;
     });
     final int dumpsBefore = watchdog.dumpsTaken();
     final int undumpedBefore = watchdog.stallsWithoutDump();
@@ -312,8 +317,13 @@ public final class BenchRunner {
       future.cancel(true);
       executor.shutdownNow();
       workerStopped = awaitStopped(executor);
-      result = result(w, ctx, caseName, List.of(), CaseResult.Status.TIMEOUT,
-          e.getMessage() + (workerStopped ? "" : "; " + WORKER_STILL_RUNNING));
+      final String error = e.getMessage() + (workerStopped ? "" : "; " + WORKER_STILL_RUNNING);
+      // a worker that stopped in the grace keeps what it measured (a soak cut short publishes its slopes); the status stays
+      // TIMEOUT, so the gate neither judges these metrics nor takes them as a baseline. A worker still running publishes none
+      final CaseResult measured = workerStopped ? outcome.get() : null;
+      result = measured != null && !measured.metrics().isEmpty() ?
+          measured.withStatus(CaseResult.Status.TIMEOUT, error) :
+          result(w, ctx, caseName, List.of(), CaseResult.Status.TIMEOUT, error);
     } catch (final InterruptedException e) {
       cancelled.set(true);
       future.cancel(true);

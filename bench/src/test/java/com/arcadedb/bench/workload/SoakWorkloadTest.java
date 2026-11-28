@@ -179,6 +179,33 @@ class SoakWorkloadTest {
   }
 
   @Test
+  void aDeadlineDuringTheCheckStillPublishesTheMetricsAndKeepsTheInterrupt() {
+    final AtomicInteger checks = new AtomicInteger();
+    // the runner's deadline lands while the check waits for the counts to settle
+    final SoakWorkload.Phase interrupted = new SoakWorkload.Phase() {
+      @Override
+      public MixedPhase.Result run(final Duration window) {
+        return window();
+      }
+
+      @Override
+      public void check() throws InterruptedException {
+        checks.incrementAndGet();
+        throw new InterruptedException("sleep interrupted");
+      }
+    };
+    final CaseFailedWithMetrics e = catchThrowableOfType(CaseFailedWithMetrics.class,
+        () -> SoakWorkload.soak(interrupted, soak(0, 0, 120), SoakWorkload.WINDOW));
+    final boolean kept = Thread.interrupted();
+    assertThat(e).isNotNull();
+    assertThat(kept).isTrue();
+    assertThat(checks).hasValue(1);
+    assertThat(e.getMessage()).isEqualTo("interrupted while waiting for the counts to settle");
+    assertThat(e.metrics()).extracting(Metric::name)
+        .contains("ingest_p99_ms", "heap_floor_slope_per_hour", "thread_slope_per_hour", "open_files_slope_per_hour");
+  }
+
+  @Test
   void aCleanSoakPassesItsCheck() throws Exception {
     final AtomicInteger checks = new AtomicInteger();
     final Measurement measurement = SoakWorkload.soak(phase(window(), () -> {

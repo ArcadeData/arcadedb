@@ -158,8 +158,8 @@ public class SoakWorkload implements Workload {
   /**
    * One soak: {@code phase} runs for {@code window} while {@code sampler} samples, and the check runs after a clean window only
    * (after a failed one it could only say that its expectations were lost), its message joining the problems. A window cut short
-   * by an interrupt (the runner's deadline) still publishes what it measured in a {@link CaseFailedWithMetrics}, and the
-   * interrupt stays set for the runner to see.
+   * or a check interrupted while it waits for the counts to settle (the runner's deadline) still publishes what it measured in a
+   * {@link CaseFailedWithMetrics}, and the interrupt stays set for the runner to see.
    */
   static Measurement soak(final Phase phase, final SoakSampler sampler, final Duration window) throws Exception {
     final MixedPhase.Result result;
@@ -176,6 +176,10 @@ public class SoakWorkload implements Workload {
         phase.check();
       } catch (final IllegalStateException e) {
         problems.add(e.getMessage());
+      } catch (final InterruptedException e) {
+        // the runner's deadline during the wait for the counts: the metrics measured are still published
+        problems.add("interrupted while waiting for the counts to settle");
+        Thread.currentThread().interrupt();
       }
     return judge(MixedWorkload.latencyMetrics(result, 3), sampler, problems);
   }

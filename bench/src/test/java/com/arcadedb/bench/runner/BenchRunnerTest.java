@@ -412,6 +412,63 @@ class BenchRunnerTest {
     final List<CaseResult> results = new BenchRunner(1, 0, Duration.ofMillis(200)).run(w, CTX, n -> true);
     assertThat(results).hasSize(1);
     assertThat(results.get(0).status()).isEqualTo(CaseResult.Status.TIMEOUT);
+    assertThat(results.get(0).metrics()).isEmpty();
+  }
+
+  @Test
+  void aTimedOutWorkerThatStopsInTheGraceKeepsWhatItMeasured() {
+    final Fake w = new Fake() {
+      @Override
+      public List<String> cases() {
+        return List.of("slow");
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) throws Exception {
+        try {
+          Thread.sleep(5_000);
+        } catch (final InterruptedException e) {
+          // a soak cut short by the deadline publishes what it measured and keeps the interrupt
+          Thread.currentThread().interrupt();
+          throw new CaseFailedWithMetrics("window: interrupted", m(7).perRep());
+        }
+        return m(1);
+      }
+    };
+    final List<CaseResult> results = new BenchRunner(1, 0, Duration.ofMillis(200)).run(w, CTX, n -> true);
+    assertThat(results).hasSize(1);
+    final CaseResult r = results.get(0);
+    assertThat(r.status()).isEqualTo(CaseResult.Status.TIMEOUT);
+    // the message is the runner's, not the worker's
+    assertThat(r.error()).isEqualTo("rep 1/1 exceeded 200 ms");
+    assertThat(r.metrics()).extracting(Metric::name).containsExactly("t");
+    assertThat(r.metrics().get(0).median()).isEqualTo(7.0);
+    assertThat(w.teardowns.get()).isEqualTo(1);
+  }
+
+  @Test
+  void aTimedOutWorkerThatOutlivesTheGracePublishesNoMetrics() {
+    final Fake w = new Fake() {
+      @Override
+      public List<String> cases() {
+        return List.of("stuck");
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) throws Exception {
+        // ignores the interrupt; once released, reports metrics the runner must no longer take
+        while (spin)
+          Thread.onSpinWait();
+        throw new CaseFailedWithMetrics("too late", m(7).perRep());
+      }
+    };
+    final List<CaseResult> results = new BenchRunner(1, 0, Duration.ofMillis(200), Duration.ofMillis(100)).run(w, CTX,
+        n -> true);
+    assertThat(results).hasSize(1);
+    final CaseResult r = results.get(0);
+    assertThat(r.status()).isEqualTo(CaseResult.Status.TIMEOUT);
+    assertThat(r.error()).contains("teardown skipped");
+    assertThat(r.metrics()).isEmpty();
   }
 
   @Test
