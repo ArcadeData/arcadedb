@@ -158,7 +158,7 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
    *
    * @param options the {@code {where, filter}} map of the procedure's fourth argument, {@code null} for none
    */
-  private static List<Result> search(final String indexSpec, final Object kArg, Object vectorArg, final Object options,
+  static List<Result> search(final String indexSpec, final Object kArg, Object vectorArg, final Object options,
       final Predicate<Document> filter, final CommandContext context, final String caller) {
     final int limit = extractLimit(kArg, caller);
 
@@ -337,7 +337,7 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
    * Resolves the index specification to a list of LSMVectorIndex instances.
    * Supports both ArcadeDB format (Type[property]) and direct index name.
    */
-  private static List<LSMVectorIndex> resolveVectorIndexes(final String indexSpec, final CommandContext context) {
+  static List<LSMVectorIndex> resolveVectorIndexes(final String indexSpec, final CommandContext context) {
     // A vector index over several labels (issue #10914) is one name for the per-type indexes it spans; they share the
     // similarity function, so their distances merge
     final List<TypeIndex> logical = MultiTypeIndexes.resolve(context.getDatabase().getSchema(), indexSpec);
