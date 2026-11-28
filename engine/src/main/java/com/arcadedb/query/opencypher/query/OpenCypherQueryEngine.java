@@ -154,7 +154,9 @@ public class OpenCypherQueryEngine implements QueryEngine {
       // evaluates a call to a function that is not confirmed to be a built-in one (see isPlanOnly()).
       final String stripped = stripLeadingComments(query);
       final boolean explain = stripped.regionMatches(true, 0, "EXPLAIN ", 0, 8);
-      final String actual = explain || stripped.regionMatches(true, 0, "PROFILE ", 0, 8) ? stripped.substring(8).trim() : query;
+      final String actual = explain || stripped.regionMatches(true, 0, "PROFILE ", 0, 8) ?
+          stripCypherPreparser(stripped.substring(8)).trim() :
+          stripCypherPreparser(query);
 
       // Use statement cache to avoid re-parsing
       // The same lookup the execution makes, so the literals of the text are extracted the same way and the cache holds one
@@ -240,9 +242,8 @@ public class OpenCypherQueryEngine implements QueryEngine {
    */
   @Override
   public DDLClassification classifyDDL(final String query) {
-    return database.getCypherStatementCache().getParameterized(query).statement().statement() instanceof CypherDDLStatement ?
-        DDLClassification.DDL :
-        DDLClassification.NOT_DDL;
+    return database.getCypherStatementCache().getParameterized(stripCypherPreparser(query)).statement().statement()
+        instanceof CypherDDLStatement ? DDLClassification.DDL : DDLClassification.NOT_DDL;
   }
 
   @Override
@@ -256,10 +257,10 @@ public class OpenCypherQueryEngine implements QueryEngine {
 
       if (upperQuery.startsWith("EXPLAIN ")) {
         explain = true;
-        actualQuery = actualQuery.substring(8).trim();
+        actualQuery = stripCypherPreparser(actualQuery.substring(8)).trim();
       } else if (upperQuery.startsWith("PROFILE ")) {
         profile = true;
-        actualQuery = actualQuery.substring(8).trim();
+        actualQuery = stripCypherPreparser(actualQuery.substring(8)).trim();
       }
 
       final boolean timeExecution = asksForTimedExecution(parameters);
@@ -331,19 +332,39 @@ public class OpenCypherQueryEngine implements QueryEngine {
   }
 
   /**
-   * Trims the query and removes the line and block comments that precede the first token, so a
-   * commented EXPLAIN or PROFILE statement is still recognised by its prefix.
+   * Trims the query and removes what precedes the first token of the statement: line and block comments, and Neo4j's
+   * {@code CYPHER [version] [option=value ...]} preparser prefix, so a commented EXPLAIN or PROFILE statement is still recognised
+   * by its prefix and a statement sent as {@code CYPHER 5 MATCH ...} (what the Neo4j drivers' consumers, such as
+   * {@code @neo4j/graphql}, send) parses as the statement it prefixes.
    */
   static String stripLeadingComments(final String query) {
-    int i = 0;
+    final int start = skipWhitespaceAndComments(query, 0);
+    return query.substring(skipCypherPreparser(query, start)).trim();
+  }
+
+  /**
+   * Removes Neo4j's {@code CYPHER [version] [option=value ...]} preparser prefix, the text that selects the Cypher version and the
+   * planner options of the statement that follows it (e.g. {@code CYPHER 5}, {@code CYPHER 25 runtime=slotted}), and the
+   * whitespace and comments that follow it. ArcadeDB has a single Cypher dialect and no planner options, so the prefix selects
+   * nothing and is dropped. Returns the query itself, with no copy, when it carries no such prefix.
+   */
+  public static String stripCypherPreparser(final String query) {
+    if (query == null)
+      return null;
+    final int start = skipWhitespaceAndComments(query, 0);
+    final int body = skipCypherPreparser(query, start);
+    return body == start ? query : query.substring(body);
+  }
+
+  /** The index of the first character that is neither whitespace nor part of a line or block comment, from {@code from}. */
+  private static int skipWhitespaceAndComments(final String query, final int from) {
+    int i = from;
     final int len = query.length();
-    boolean stripped = false;
     while (i < len) {
       final char c = query.charAt(i);
       if (Character.isWhitespace(c))
         i++;
       else if (c == '/' && i + 1 < len && query.charAt(i + 1) == '/') {
-        stripped = true;
         // a line comment ends at \n or at a bare \r
         i += 2;
         while (i < len && query.charAt(i) != '\n' && query.charAt(i) != '\r')
@@ -352,15 +373,51 @@ public class OpenCypherQueryEngine implements QueryEngine {
         final int end = query.indexOf("*/", i + 2);
         if (end < 0)
           break;
-        stripped = true;
         i = end + 2;
       } else
         break;
     }
-    // no leading comment: nothing to strip beyond the trim
-    if (!stripped)
-      return query.trim();
-    return query.substring(i).trim();
+    return i;
+  }
+
+  /**
+   * The index at which the statement starts after the {@code CYPHER [version] [option=value ...]} prefixes that begin at
+   * {@code from}, or {@code from} when the text there is not such a prefix. Neo4j accepts several in a row, and
+   * {@code @neo4j/graphql} sends two when it is given planner options ({@code CYPHER 5\nCYPHER runtime=interpreted\n...}).
+   * Whitespace and comments may separate every token of it, the {@code =} of an option included ({@code runtime = slotted}), as
+   * in Neo4j. The version is the number right after {@code CYPHER}; a word that is not followed by {@code =} is the first word of
+   * the statement (or of the next prefix).
+   */
+  private static int skipCypherPreparser(final String query, final int from) {
+    final int len = query.length();
+    int start = from;
+    while (query.regionMatches(true, start, "CYPHER", 0, 6) && start + 6 < len && Character.isWhitespace(query.charAt(start + 6))) {
+      int i = skipWhitespaceAndComments(query, start + 6);
+      // the Cypher version: a statement can never start with a number, so a number here is the version
+      int end = i;
+      while (end < len && (Character.isDigit(query.charAt(end)) || query.charAt(end) == '.'))
+        end++;
+      if (end > i)
+        i = skipWhitespaceAndComments(query, end);
+      // the options: name = value
+      while (true) {
+        int nameEnd = i;
+        while (nameEnd < len && (Character.isLetterOrDigit(query.charAt(nameEnd)) || query.charAt(nameEnd) == '_'))
+          nameEnd++;
+        final int equals = skipWhitespaceAndComments(query, nameEnd);
+        if (nameEnd == i || equals >= len || query.charAt(equals) != '=')
+          break;
+        final int value = skipWhitespaceAndComments(query, equals + 1);
+        int valueEnd = value;
+        while (valueEnd < len && !Character.isWhitespace(query.charAt(valueEnd)))
+          valueEnd++;
+        if (valueEnd == value)
+          break;
+        i = skipWhitespaceAndComments(query, valueEnd);
+      }
+      start = i;
+    }
+    return start;
   }
 
   /**
@@ -389,7 +446,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
     final boolean explain = actual.regionMatches(true, 0, "EXPLAIN ", 0, 8);
     final boolean profile = !explain && actual.regionMatches(true, 0, "PROFILE ", 0, 8);
     if (explain || profile)
-      actual = actual.substring(8).trim();
+      actual = stripCypherPreparser(actual.substring(8)).trim();
 
     final CypherStatement statement = (explain || profile ?
         database.getCypherStatementCache().getAsWritten(actual) :
@@ -435,10 +492,10 @@ public class OpenCypherQueryEngine implements QueryEngine {
 
       if (upperQuery.startsWith("EXPLAIN ")) {
         explain = true;
-        actualQuery = actualQuery.substring(8).trim();
+        actualQuery = stripCypherPreparser(actualQuery.substring(8)).trim();
       } else if (upperQuery.startsWith("PROFILE ")) {
         profile = true;
-        actualQuery = actualQuery.substring(8).trim();
+        actualQuery = stripCypherPreparser(actualQuery.substring(8)).trim();
       }
 
       final boolean timeExecution = asksForTimedExecution(parameters);
