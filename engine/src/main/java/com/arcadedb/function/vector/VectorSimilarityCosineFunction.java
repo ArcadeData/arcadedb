@@ -19,6 +19,7 @@
 package com.arcadedb.function.vector;
 
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.index.vector.VectorArgumentCache;
 import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.query.sql.executor.CommandContext;
 
@@ -47,9 +48,11 @@ public class VectorSimilarityCosineFunction implements StatelessFunction {
     checkArity(args);
     if (args[0] == null || args[1] == null)
       return null;
-    final float[] v1 = VectorUtils.toFloatArrayOfCoordinates(args[0]);
-    final float[] v2 = VectorUtils.toFloatArrayOfCoordinates(args[1]);
-    VectorUtils.validateSameDimension(v1, v2);
+    // The two arguments are prepared through the command's cache: a scan scores every row against
+    // the same query vector, and preparing that vector is the same work every row (issue #12568)
+    final VectorUtils.PreparedVector v1 = VectorArgumentCache.prepareCoordinates(args[0], context);
+    final VectorUtils.PreparedVector v2 = VectorArgumentCache.prepareCoordinates(args[1], context);
+    VectorUtils.validateSameDimension(v1.values(), v2.values());
     return (double) VectorUtils.cosineSimilarity(v1, v2);
   }
 }

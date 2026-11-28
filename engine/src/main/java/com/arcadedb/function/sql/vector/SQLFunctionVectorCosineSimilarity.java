@@ -20,6 +20,7 @@ package com.arcadedb.function.sql.vector;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.index.vector.VectorArgumentCache;
 import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.query.sql.executor.CommandContext;
 
@@ -61,12 +62,14 @@ public class SQLFunctionVectorCosineSimilarity extends SQLFunctionVectorAbstract
     if (vector1 == null || vector2 == null)
       return null;
 
-    final float[] v1 = toFloatArray(vector1);
-    final float[] v2 = toFloatArray(vector2);
+    // The two arguments are prepared through the command's cache: a scan scores every row against
+    // the same query vector, and preparing that vector is the same work every row (issue #12568)
+    final VectorUtils.PreparedVector v1 = VectorArgumentCache.prepare(vector1, context);
+    final VectorUtils.PreparedVector v2 = VectorArgumentCache.prepare(vector2, context);
 
-    validateSameDimension(v1, v2);
+    validateSameDimension(v1.values(), v2.values());
 
-    if (v1.length == 0)
+    if (v1.values().length == 0)
       throw new CommandSQLParsingException("Vectors cannot be empty");
 
     return VectorUtils.cosineSimilarity(v1, v2);
