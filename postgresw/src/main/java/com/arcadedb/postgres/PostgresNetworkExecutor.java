@@ -150,6 +150,19 @@ public class PostgresNetworkExecutor extends Thread {
 
   public static final String PG_SERVER_VERSION = "12.0";
 
+  /**
+   * The frontend protocol version this server speaks, as PostgreSQL names it: the major version in the high half of the
+   * 32-bit value the startup packet carries, the minor one in the low half. PostgreSQL refuses a startup packet that
+   * announces any other major version (issue #12974), and so does this one.
+   */
+  static final int PG_PROTOCOL_MAJOR = 3;
+  static final int PG_PROTOCOL_MINOR = 0;
+
+  /**
+   * protocol_violation: the SQLSTATE PostgreSQL answers an unsupported frontend protocol version with.
+   */
+  static final String SQLSTATE_PROTOCOL_VIOLATION = "08P01";
+
   /** cannot_connect_now: the server is up but the database cannot take the connection at the moment (issue #10533). */
   static final String SQLSTATE_CANNOT_CONNECT_NOW = "57P03";
   /**
@@ -4884,6 +4897,27 @@ public class PostgresNetworkExecutor extends Thread {
         }
 
         close();
+        return false;
+      }
+
+      // THE VERSION OF THE PROTOCOL THE CLIENT SPEAKS. The startup packet is the one message of the protocol that carries
+      // its own version, and the three values read above are not versions at all (they are the SSL request, the GSSAPI
+      // encryption request and the cancel request). Any other value is the version the client announces, and PostgreSQL
+      // refuses a startup packet whose major version is not the one it speaks (issue #12974): a client that announces a
+      // protocol the server does not implement must be told so while it can still read the answer, not left to discover
+      // the mismatch later, when the messages it sends are read as something else.
+      final int majorVersion = (int) ((protocolVersion >> 16) & 0xFFFF);
+      final int minorVersion = (int) (protocolVersion & 0xFFFF);
+      if (majorVersion != PG_PROTOCOL_MAJOR) {
+        // Read the rest of the packet (bounded by the length check above) before answering: closing a socket with unread
+        // data sends an RST that can make the client lose the error.
+        if (len > 8)
+          channel.readBytes(new byte[(int) (len - 8)]);
+        LogManager.instance().log(this, Level.FINE,
+            "PSQL: refusing a client that speaks the frontend protocol %d.%d: this server speaks %d.%d", majorVersion,
+            minorVersion, PG_PROTOCOL_MAJOR, PG_PROTOCOL_MINOR);
+        writeError(ERROR_SEVERITY.FATAL, "unsupported frontend protocol " + majorVersion + "." + minorVersion
+            + ": server supports " + PG_PROTOCOL_MAJOR + "." + PG_PROTOCOL_MINOR, SQLSTATE_PROTOCOL_VIOLATION);
         return false;
       }
 
