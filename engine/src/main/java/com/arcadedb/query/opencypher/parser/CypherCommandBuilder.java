@@ -22,6 +22,7 @@ import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.opencypher.ast.CypherAdminStatement;
 import com.arcadedb.query.opencypher.ast.CypherDDLStatement;
 import com.arcadedb.query.opencypher.ast.CypherSessionStatement;
+import com.arcadedb.query.opencypher.ast.CypherShowRoutinesStatement;
 import com.arcadedb.query.opencypher.ast.CypherShowSchemaStatement;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.ast.CypherTransactionStatement;
@@ -123,8 +124,23 @@ final class CypherCommandBuilder {
       return new CypherAdminStatement(CypherAdminStatement.Kind.SHOW_CURRENT_USER, null, null, false, false);
     if (ctx.showTransactions() != null)
       return handleShowTransactions(ctx.showTransactions());
-    throw new CommandParsingException(
-        "Only SHOW USERS, SHOW CURRENT USER, SHOW TRANSACTIONS, SHOW CONSTRAINTS and SHOW INDEXES are currently supported");
+    if (ctx.showProcedures() != null)
+      return new CypherShowRoutinesStatement(CypherShowRoutinesStatement.Kind.PROCEDURES, null);
+    if (ctx.showFunctions() != null)
+      return handleShowFunctions(ctx.showFunctions());
+    throw new CommandParsingException("Only SHOW USERS, SHOW CURRENT USER, SHOW TRANSACTIONS, SHOW CONSTRAINTS, SHOW INDEXES, "
+        + "SHOW PROCEDURES and SHOW FUNCTIONS are currently supported");
+  }
+
+  /** {@code SHOW [ALL | BUILT IN | USER DEFINED] FUNCTIONS} (#13541). */
+  private CypherShowRoutinesStatement handleShowFunctions(final Cypher25Parser.ShowFunctionsContext ctx) {
+    final Cypher25Parser.ShowFunctionsTypeContext type = ctx.showFunctionsType();
+    final CypherShowRoutinesStatement.FunctionFilter filter = type == null || type.ALL() != null ?
+        CypherShowRoutinesStatement.FunctionFilter.ALL :
+        type.BUILT() != null ?
+            CypherShowRoutinesStatement.FunctionFilter.BUILT_IN :
+            CypherShowRoutinesStatement.FunctionFilter.USER_DEFINED;
+    return new CypherShowRoutinesStatement(CypherShowRoutinesStatement.Kind.FUNCTIONS, filter);
   }
 
   /** {@code SHOW [ALL | [NODE | RELATIONSHIP] (UNIQUE | EXIST | KEY | PROPERTY TYPE)] CONSTRAINTS} (#9706). */

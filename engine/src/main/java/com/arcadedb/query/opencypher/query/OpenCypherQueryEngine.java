@@ -51,6 +51,7 @@ import com.arcadedb.query.opencypher.ast.ClauseEntry;
 import com.arcadedb.query.opencypher.ast.ConditionalStatement;
 import com.arcadedb.query.opencypher.ast.CypherAdminStatement;
 import com.arcadedb.query.opencypher.ast.CypherDDLStatement;
+import com.arcadedb.query.opencypher.ast.CypherShowRoutinesStatement;
 import com.arcadedb.query.opencypher.ast.CypherShowSchemaStatement;
 import com.arcadedb.query.opencypher.ast.CypherTypeName;
 import com.arcadedb.query.opencypher.ast.Expression;
@@ -303,6 +304,10 @@ public class OpenCypherQueryEngine implements QueryEngine {
       if (!explain && statement instanceof CypherShowSchemaStatement show)
         return CypherSchemaCommands.execute(database, show, actualQuery, effectiveParameters);
 
+      // SHOW PROCEDURES / SHOW FUNCTIONS are answered from the registries (issue #13541)
+      if (!explain && statement instanceof CypherShowRoutinesStatement show)
+        return CypherRoutineCommands.execute(database, show, actualQuery, effectiveParameters);
+
       return execute(planCacheKey(lookup), statement, configuration, effectiveParameters, explain, profile, timeExecution);
     } catch (final QueryNotIdempotentException | CommandExecutionException | CommandParsingException | SecurityException
              | NeedRetryException e) {
@@ -476,6 +481,10 @@ public class OpenCypherQueryEngine implements QueryEngine {
       // SHOW CONSTRAINTS / SHOW INDEXES are answered from the schema (issue #9706)
       if (statement instanceof CypherShowSchemaStatement show)
         return CypherSchemaCommands.execute(database, show, actualQuery, effectiveParameters);
+
+      // SHOW PROCEDURES / SHOW FUNCTIONS are answered from the registries (issue #13541)
+      if (statement instanceof CypherShowRoutinesStatement show)
+        return CypherRoutineCommands.execute(database, show, actualQuery, effectiveParameters);
 
       // Admin statements (user management) are executed directly against the security manager
       if (statement instanceof CypherAdminStatement)

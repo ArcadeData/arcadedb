@@ -67,6 +67,7 @@ import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.opencypher.ast.CypherDDLStatement;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
+import com.arcadedb.query.opencypher.query.CypherRoutineCommands;
 import com.arcadedb.query.opencypher.query.CypherSchemaCommands;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.opencypher.query.ShowCommandTail;
@@ -1914,18 +1915,15 @@ public class BoltNetworkExecutor extends Thread {
       stream.syntheticResults = new ArrayList<>();
       return true;
 
-    } else if (normalized.startsWith("show procedure")) {
-      // SHOW PROCEDURES YIELD * - return empty list
-      stream.fields = List.of("name", "description", "mode", "worksOnSystem", "argumentDescription",
-          "returnDescription", "admin", "option");
-      stream.syntheticResults = new ArrayList<>();
-      return true;
-
-    } else if (normalized.startsWith("show function")) {
-      // SHOW FUNCTIONS YIELD * - return empty list
-      stream.fields = List.of("name", "category", "description", "isBuiltIn", "argumentDescription",
-          "returnDescription", "aggregating");
-      stream.syntheticResults = new ArrayList<>();
+    } else if (normalized.startsWith("show ") && (normalized.contains(" procedure") || normalized.contains(" function"))) {
+      // SHOW PROCEDURES / SHOW [ALL | BUILT IN | USER DEFINED] FUNCTIONS: the rows are the engine's, from its registries (#13541), plus
+      // the dbms.* and db.ping calls this layer answers itself. Served here rather than run as a query so the columns are reported
+      // when no row comes back, as Neo4j drivers expect; the tail is applied below like on every other SHOW
+      final ShowCommandTail.Table table = CypherRoutineCommands.untailedTable((DatabaseInternal) database, query);
+      if (table == null)
+        return false;
+      stream.fields = table.fields();
+      stream.syntheticResults = BoltSystemProcedures.withBoltProcedures(table.fields(), table.rows());
       return true;
 
     } else if (BoltSystemProcedures.isSchemaProcedureQuery(normalized)) {
