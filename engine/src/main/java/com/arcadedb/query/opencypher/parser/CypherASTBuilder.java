@@ -208,6 +208,8 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     final List<Expression> conditions = new ArrayList<>(ctx.whenBranch().size());
     final List<CypherStatement> branches = new ArrayList<>(ctx.whenBranch().size());
     for (final Cypher25Parser.WhenBranchContext branch : ctx.whenBranch()) {
+      // The condition is a boolean position: a pattern used as anything else in it is refused as in a WHERE (issue #12657)
+      BooleanExpressionBuilder.rejectNonBooleanPatternExpressions(branch.expression());
       final Expression condition = expressionBuilder.parseExpression(branch.expression());
       final CypherReferencedVariables referenced = CypherReferencedVariables.of(condition);
       // Fail closed: a condition whose variables cannot all be listed (a subquery body, a pattern) would otherwise be
@@ -346,7 +348,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         expressionBuilder.parseExpressionText(indexCtx.getText()) :
         new LiteralExpression(stripBackticks(indexCtx.getText()), indexCtx.getText());
 
-    final Expression queryVector = expressionBuilder.parseExpression(ctx.forClause().expression());
+    final Expression queryVector = parseClauseExpression(ctx.forClause().expression());
     final WhereClause where = ctx.whereClause() != null ? visitWhereClause(ctx.whereClause()) : null;
     final Expression limit = visitLimit(ctx.limit());
     final String scoreVariable = ctx.scoreClause() != null ? stripBackticks(ctx.scoreClause().variable().getText()) : null;
@@ -539,7 +541,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
           // Check if the parenthesized expression contains just a variable
           final String innerText = baseExpr1.parenthesizedExpression().expression().getText().trim();
           // Try to parse as a complex expression (e.g., CASE WHEN ... THEN t END)
-          final Expression targetExpr = expressionBuilder.parseExpression(baseExpr1.parenthesizedExpression().expression());
+          final Expression targetExpr = parseClauseExpression(baseExpr1.parenthesizedExpression().expression());
           if (targetExpr instanceof VariableExpression) {
             items.add(new SetClause.SetItem(((VariableExpression) targetExpr).getVariableName(), propertyName.toString(), valueExpr));
           } else {
@@ -547,7 +549,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
           }
         } else {
           // Other expression types as base - parse as expression
-          final Expression targetExpr = expressionBuilder.parseExpressionFromText(baseExpr1);
+          final Expression targetExpr = parseTargetExpression(baseExpr1);
           items.add(new SetClause.SetItem(targetExpr, propertyName.toString(), valueExpr));
         }
       } else if (itemCtx instanceof Cypher25Parser.SetDynamicPropContext dynCtx) {
@@ -555,24 +557,24 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         if (BooleanExpressionBuilder.findBarePatternExpression(dynCtx.expression()) != null)
           throw new CommandParsingException("UnexpectedSyntax: Pattern expressions are not allowed in SET values");
         final Cypher25Parser.DynamicPropertyExpressionContext dynPropExpr = dynCtx.dynamicPropertyExpression();
-        final Expression keyExpr = expressionBuilder.parseExpression(dynPropExpr.dynamicProperty().expression());
+        final Expression keyExpr = parseClauseExpression(dynPropExpr.dynamicProperty().expression());
         final Expression valueExpr = expressionBuilder.parseExpression(dynCtx.expression());
         final Cypher25Parser.Expression1Context baseExpr1 = dynPropExpr.expression1();
         if (baseExpr1.variable() != null) {
           items.add(new SetClause.SetItem(baseExpr1.variable().getText(), null, keyExpr, valueExpr));
         } else {
-          final Expression targetExpr = expressionBuilder.parseExpressionFromText(baseExpr1);
+          final Expression targetExpr = parseTargetExpression(baseExpr1);
           items.add(new SetClause.SetItem(null, targetExpr, keyExpr, valueExpr));
         }
       } else if (itemCtx instanceof Cypher25Parser.SetPropsContext propsCtx) {
         // SET n = {map} — replace all properties
         final String variable = propsCtx.variable().getText();
-        final Expression valueExpr = expressionBuilder.parseExpression(propsCtx.expression());
+        final Expression valueExpr = parseClauseExpression(propsCtx.expression());
         items.add(new SetClause.SetItem(variable, valueExpr, SetClause.SetType.REPLACE_MAP));
       } else if (itemCtx instanceof Cypher25Parser.AddPropContext addCtx) {
         // SET n += {map} — merge properties
         final String variable = addCtx.variable().getText();
-        final Expression valueExpr = expressionBuilder.parseExpression(addCtx.expression());
+        final Expression valueExpr = parseClauseExpression(addCtx.expression());
         items.add(new SetClause.SetItem(variable, valueExpr, SetClause.SetType.MERGE_MAP));
       } else if (itemCtx instanceof Cypher25Parser.SetLabelsContext labelsCtx) {
         // SET n:Label / SET n:$(expr) — add labels
@@ -599,7 +601,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     final List<Expression> expressions = new ArrayList<>(ctx.expression().size());
     for (final Cypher25Parser.ExpressionContext exprCtx : ctx.expression()) {
       variables.add(exprCtx.getText());
-      expressions.add(expressionBuilder.parseExpression(exprCtx));
+      expressions.add(parseClauseExpression(exprCtx));
     }
 
     return new DeleteClause(variables, expressions, detach);
@@ -624,7 +626,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     for (final Cypher25Parser.LabelTypeContext labelType : ctx.labelType())
       labels.add(stripBackticks(labelType.symbolicNameString().getText()));
     for (final Cypher25Parser.DynamicLabelTypeContext dynamicLabel : ctx.dynamicLabelType())
-      labelExpressions.add(expressionBuilder.parseExpression(dynamicLabel.dynamicExpression().expression()));
+      labelExpressions.add(parseClauseExpression(dynamicLabel.dynamicExpression().expression()));
   }
 
   /**
@@ -637,11 +639,11 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     if (ctx.symbolicNameString() != null)
       labels.add(stripBackticks(ctx.symbolicNameString().getText()));
     if (ctx.dynamicExpression() != null)
-      labelExpressions.add(expressionBuilder.parseExpression(ctx.dynamicExpression().expression()));
+      labelExpressions.add(parseClauseExpression(ctx.dynamicExpression().expression()));
     for (final Cypher25Parser.LabelTypeContext labelType : ctx.labelType())
       labels.add(stripBackticks(labelType.symbolicNameString().getText()));
     for (final Cypher25Parser.DynamicLabelTypeContext dynamicLabel : ctx.dynamicLabelType())
-      labelExpressions.add(expressionBuilder.parseExpression(dynamicLabel.dynamicExpression().expression()));
+      labelExpressions.add(parseClauseExpression(dynamicLabel.dynamicExpression().expression()));
   }
 
   public RemoveClause visitRemoveClause(final Cypher25Parser.RemoveClauseContext ctx) {
@@ -671,7 +673,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         // REMOVE n[keyExpr] — dynamic property removal (issue #5141), or REMOVE (expr)[keyExpr] (issue #11754)
         final Cypher25Parser.DynamicPropertyExpressionContext dynPropExpr = dynCtx.dynamicPropertyExpression();
         final Cypher25Parser.Expression1Context baseExpr1 = dynPropExpr.expression1();
-        final Expression keyExpr = expressionBuilder.parseExpression(dynPropExpr.dynamicProperty().expression());
+        final Expression keyExpr = parseClauseExpression(dynPropExpr.dynamicProperty().expression());
         final Expression target = removeTarget(baseExpr1);
         if (target == null)
           items.add(new RemoveClause.RemoveItem(stripBackticks(baseExpr1.variable().getText()), keyExpr));
@@ -708,8 +710,8 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     if (baseExpr1.variable() != null)
       return null;
     if (baseExpr1.parenthesizedExpression() != null)
-      return expressionBuilder.parseExpression(baseExpr1.parenthesizedExpression().expression());
-    return expressionBuilder.parseExpressionFromText(baseExpr1);
+      return parseClauseExpression(baseExpr1.parenthesizedExpression().expression());
+    return parseTargetExpression(baseExpr1);
   }
 
   @Override
@@ -753,7 +755,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     // Parse arguments
     final List<Expression> arguments = new ArrayList<>();
     for (final Cypher25Parser.ProcedureArgumentContext argCtx : ctx.procedureArgument()) {
-      arguments.add(expressionBuilder.parseExpression(argCtx.expression()));
+      arguments.add(parseClauseExpression(argCtx.expression()));
     }
 
     // Parse YIELD items
@@ -813,7 +815,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         final Cypher25Parser.SubqueryInTransactionsBatchParametersContext batchCtx =
             txParams.subqueryInTransactionsBatchParameters(0);
         if (batchCtx.expression() != null)
-          batchSize = expressionBuilder.parseExpression(batchCtx.expression());
+          batchSize = parseClauseExpression(batchCtx.expression());
       }
       // ON ERROR CONTINUE | BREAK | FAIL (issue #11595)
       if (txParams.subqueryInTransactionsErrorParameters() != null && !txParams.subqueryInTransactionsErrorParameters().isEmpty()) {
@@ -918,7 +920,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
   @Override
   public UnwindClause visitUnwindClause(final Cypher25Parser.UnwindClauseContext ctx) {
     // Grammar: UNWIND expression AS variable
-    final Expression listExpression = expressionBuilder.parseExpression(ctx.expression());
+    final Expression listExpression = parseClauseExpression(ctx.expression());
     final String variable = stripBackticks(ctx.variable().getText());
     return new UnwindClause(listExpression, variable);
   }
@@ -931,7 +933,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
   public UnwindClause visitForUnwindClause(final Cypher25Parser.ForUnwindClauseContext ctx) {
     // Grammar: FOR variable IN expression
     final String variable = stripBackticks(ctx.variable().getText());
-    final Expression listExpression = expressionBuilder.parseExpression(ctx.expression());
+    final Expression listExpression = parseClauseExpression(ctx.expression());
     return new UnwindClause(listExpression, variable);
   }
 
@@ -948,7 +950,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
   public LoadCSVClause visitLoadCSVClause(final Cypher25Parser.LoadCSVClauseContext ctx) {
     // Grammar: LOAD CSV (WITH HEADERS)? FROM expression AS variable (FIELDTERMINATOR stringLiteral)?
     final boolean withHeaders = ctx.HEADERS() != null;
-    final Expression urlExpression = expressionBuilder.parseExpression(ctx.expression());
+    final Expression urlExpression = parseClauseExpression(ctx.expression());
     final String variable = stripBackticks(ctx.variable().getText());
     String fieldTerminator = ",";
     if (ctx.FIELDTERMINATOR() != null) {
@@ -961,7 +963,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
   public ForeachClause visitForeachClause(final Cypher25Parser.ForeachClauseContext ctx) {
     // Grammar: FOREACH LPAREN variable IN expression BAR clause+ RPAREN
     final String variable = stripBackticks(ctx.variable().getText());
-    final Expression listExpression = expressionBuilder.parseExpression(ctx.expression());
+    final Expression listExpression = parseClauseExpression(ctx.expression());
 
     // Parse inner clauses (CREATE, SET, DELETE, MERGE, FOREACH)
     final List<ClauseEntry> innerClauses = new ArrayList<>();
@@ -1029,7 +1031,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     for (final Cypher25Parser.OrderItemContext itemCtx : ctx.orderItem()) {
       final String expression = itemCtx.expression().getText();
       final boolean ascending = itemCtx.descToken() == null;
-      final Expression exprAST = expressionBuilder.parseExpression(itemCtx.expression());
+      final Expression exprAST = parseClauseExpression(itemCtx.expression());
 
       items.add(new OrderByClause.OrderByItem(expression, ascending, exprAST));
     }
@@ -1039,12 +1041,37 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
   @Override
   public Expression visitSkip(final Cypher25Parser.SkipContext ctx) {
-    return expressionBuilder.parseExpression(ctx.expression());
+    return parseClauseExpression(ctx.expression());
   }
 
   @Override
   public Expression visitLimit(final Cypher25Parser.LimitContext ctx) {
-    return expressionBuilder.parseExpression(ctx.expression());
+    return parseClauseExpression(ctx.expression());
+  }
+
+  /**
+   * Parses an expression a clause evaluates as a value (the list of an UNWIND, FOR or FOREACH, an ORDER BY key, SKIP,
+   * LIMIT, a DELETE target, a procedure argument, the URL of a LOAD CSV, the values of a property map, a dynamic property
+   * key or label, the target of a SET or REMOVE, the batch size of CALL IN TRANSACTIONS) after refusing the
+   * pattern expressions it holds outside a boolean position, as a WHERE does (issue #12657). Without the check
+   * {@code (p)-->()} evaluated as an existence boolean there: {@code UNWIND [(p)-->()]} answered a list of one boolean,
+   * {@code ORDER BY (p)-->()} sorted by it and {@code size((p)-->())} failed with a type mismatch that did not name
+   * {@code COUNT {}}. A pattern in a boolean position of the expression ({@code exists()}, an operand of NOT, AND, OR or
+   * XOR, a CASE WHEN condition, the WHERE of a comprehension), a pattern comprehension and the subquery expressions are
+   * accepted.
+   */
+  private Expression parseClauseExpression(final Cypher25Parser.ExpressionContext ctx) {
+    BooleanExpressionBuilder.rejectNonBooleanPatternExpressions(ctx);
+    return expressionBuilder.parseExpression(ctx);
+  }
+
+  /**
+   * Parses the base of a SET or REMOVE property target that is neither a variable nor a parenthesis (a function call, a
+   * list, a CASE: {@code SET head([(p)-->()]).v = 1}), with the same refusal as {@link #parseClauseExpression}.
+   */
+  private Expression parseTargetExpression(final Cypher25Parser.Expression1Context ctx) {
+    BooleanExpressionBuilder.rejectNonBooleanPatternExpressions(ctx);
+    return expressionBuilder.parseExpressionFromText(ctx);
   }
 
   public WhereClause visitWhereClause(final Cypher25Parser.WhereClauseContext ctx) {
@@ -1405,7 +1432,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     for (int i = 0; i < keys.size() && i < values.size(); i++) {
       final String key = stripBackticks(keys.get(i).getText());
       // Parse as Expression
-      final Expression expr = expressionBuilder.parseExpression(values.get(i));
+      final Expression expr = parseClauseExpression(values.get(i));
 
       // For literal expressions, extract the value immediately for backward compatibility
       // For dynamic expressions (property access, variables, etc.), keep as Expression for runtime evaluation
