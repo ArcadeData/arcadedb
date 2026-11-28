@@ -83,6 +83,7 @@ public class AlgoHITS extends AbstractAlgoProcedure {
     final String[] relTypes    = extractRelTypes(argOrDefault(args, 0, null), context);
     final int maxIterations    = extractInt(optionalNumberArg(args, 1, "maxIterations", 20), "maxIterations", 1);
     final double tolerance     = optionalNumberArg(args, 2, "tolerance", 1e-6).doubleValue();
+    requireNonNegativeFinite("tolerance", tolerance);
 
     final Database db = context.getDatabase();
     final WorkGuard guard = newWorkGuard(context);

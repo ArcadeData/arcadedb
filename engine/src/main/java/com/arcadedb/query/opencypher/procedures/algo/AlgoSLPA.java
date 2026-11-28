@@ -102,6 +102,7 @@ public class AlgoSLPA extends AbstractAlgoProcedure {
         extractInt(num, "iterations", 1) : 20;
     final double threshold = config != null && config.get("threshold") instanceof Number num ?
         num.doubleValue() : 0.1;
+    requireInterval("threshold", threshold, 0.0, 1.0);
     final long seedVal = config != null && config.get("seed") instanceof Number num ?
         num.longValue() : -1L;
     final Random rng = seedVal < 0 ? new Random() : new Random(seedVal);

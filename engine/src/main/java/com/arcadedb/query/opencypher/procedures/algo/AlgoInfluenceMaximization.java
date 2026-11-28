@@ -95,6 +95,7 @@ public class AlgoInfluenceMaximization extends AbstractAlgoProcedure {
     final String[] relTypes = extractRelTypes(argOrDefault(args, 1, null), context);
     final int simulations = extractInt(optionalNumberArg(args, 2, "simulations", 100), "simulations", 1);
     final double propagationProbability = optionalNumberArg(args, 3, "propagationProbability", 0.1).doubleValue();
+    requireInterval("propagationProbability", propagationProbability, 0.0, 1.0);
 
     final Database db = context.getDatabase();
 
