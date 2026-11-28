@@ -29,6 +29,8 @@ import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -85,8 +87,66 @@ final class BoltSystemProcedures {
   record Served(List<String> fields, List<List<Object>> rows) {
   }
 
+  /** A procedure that exists only in the Bolt interception: what {@code SHOW PROCEDURES} lists for it, as Neo4j describes it. */
+  private record BoltProcedure(String name, String description, String mode, List<String> yields) {
+  }
+
+  private static final List<BoltProcedure> BOLT_PROCEDURES = List.of(
+      new BoltProcedure("db.ping", "This procedure can be used by client side tooling to test whether they are correctly connected to a "
+          + "database. The procedure is available in all databases and always returns true. A faulty connection can be detected by not "
+          + "being able to call this procedure.", "READ", List.of("success")),
+      new BoltProcedure("dbms.clientConfig", "Returns the configuration settings of the server that clients may use.", "DBMS",
+          List.of("name", "value")),
+      new BoltProcedure("dbms.components", "List DBMS components and their versions.", "DBMS", List.of("name", "versions", "edition")),
+      new BoltProcedure("dbms.info", "Provides information regarding the DBMS.", "DBMS", List.of("id", "name", "creationDate")),
+      new BoltProcedure("dbms.licenseAgreementDetails", "Returns the license agreement the server runs under.", "DBMS",
+          List.of("name", "status", "version")),
+      new BoltProcedure("dbms.showCurrentUser", "Provides attributes for the current user.", "DBMS",
+          List.of("user", "roles", "passwordChangeRequired", "suspended", "home")));
+
   private BoltSystemProcedures() {
     // Utility class - prevent instantiation
+  }
+
+  /**
+   * The rows of the engine's {@code SHOW PROCEDURES} with the calls this layer answers itself added, in name order. A table that is
+   * not the procedures one - the {@code mode} column is theirs - is returned as it is, in a list the stream may consume.
+   *
+   * @param fields the columns of the table
+   * @param rows   its rows, each aligned with {@code fields}
+   */
+  static List<List<Object>> withBoltProcedures(final List<String> fields, final List<List<Object>> rows) {
+    final List<List<Object>> all = new ArrayList<>(rows);
+    if (!fields.contains("mode"))
+      return all;
+
+    for (final BoltProcedure procedure : BOLT_PROCEDURES) {
+      final List<String> signatureColumns = new ArrayList<>(procedure.yields().size());
+      final List<Map<String, Object>> returned = new ArrayList<>(procedure.yields().size());
+      for (final String field : procedure.yields()) {
+        signatureColumns.add(field + " :: ANY");
+        returned.add(Map.of("name", field, "description", "", "isDeprecated", false, "type", "ANY"));
+      }
+      final Map<String, Object> values = new HashMap<>();
+      values.put("name", procedure.name());
+      values.put("description", procedure.description());
+      values.put("mode", procedure.mode());
+      values.put("worksOnSystem", true);
+      values.put("signature", procedure.name() + "() :: (" + String.join(", ", signatureColumns) + ")");
+      values.put("argumentDescription", List.of());
+      values.put("returnDescription", returned);
+      values.put("admin", false);
+      values.put("isDeprecated", false);
+      values.put("option", Map.of("deprecated", false));
+      final List<Object> row = new ArrayList<>(fields.size());
+      for (final String field : fields)
+        row.add(values.get(field));
+      all.add(row);
+    }
+    final int nameColumn = fields.indexOf("name");
+    all.sort(Comparator.comparing((List<Object> row) -> ((String) row.get(nameColumn)).toLowerCase(Locale.ROOT))
+        .thenComparing(row -> (String) row.get(nameColumn)));
+    return all;
   }
 
   /**

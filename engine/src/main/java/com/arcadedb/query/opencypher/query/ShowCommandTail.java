@@ -33,6 +33,7 @@ import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.Token;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -149,8 +150,13 @@ public final class ShowCommandTail {
         // rather than re-derived from the query text so this cannot answer with a name the engine did not project
         // - which would read back as null for every row. The statically derived list is the fallback for an empty
         // result, where there is no row to ask and the column list still has to be reported.
-        if (rowFields == null)
+        if (rowFields == null) {
           rowFields = new ArrayList<>(row.getPropertyNames());
+          // A bare * projects every column in scope, which a row reports as a set: the command's own order is the one a client
+          // reads, as Neo4j lists them (a name the table does not have follows, in the order the row gave)
+          if (rewrite.projected() == null)
+            rowFields.sort(Comparator.comparingInt(name -> fields.contains(name) ? fields.indexOf(name) : fields.size()));
+        }
         outFields = rowFields;
 
         final List<Object> values = new ArrayList<>(outFields.size());
