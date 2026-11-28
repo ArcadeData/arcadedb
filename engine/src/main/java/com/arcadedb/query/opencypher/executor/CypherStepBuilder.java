@@ -280,7 +280,7 @@ final class CypherStepBuilder {
         case MERGE: {
           final MergeClause mergeClause = entry.getTypedClause();
           if (eagerness.needsBarrier(mergeClause, optimizerBoundVariables) || eagerness.needsBarrierAfterMerge(mergeClause)
-              || eagerness.needsBarrierForPropertyWrites(mergeClause))
+              || eagerness.needsBarrierForPropertyWrites(mergeClause) || eagerness.needsBarrierForLabelWrites(mergeClause))
             currentStep = EagerBarriers.withEagerBarrier(currentStep, context, eagerness);
           final MergeStep mergeStep = new MergeStep(mergeClause, context, functionFactory);
           mergeStep.setPrevious(currentStep);
@@ -781,7 +781,8 @@ final class CypherStepBuilder {
       case MERGE:
         final MergeClause mergeClause = entry.getTypedClause();
         if (currentStep != null && (eagerness.needsBarrier(mergeClause, boundVariables)
-            || eagerness.needsBarrierAfterMerge(mergeClause) || eagerness.needsBarrierForPropertyWrites(mergeClause)))
+            || eagerness.needsBarrierAfterMerge(mergeClause) || eagerness.needsBarrierForPropertyWrites(mergeClause)
+            || eagerness.needsBarrierForLabelWrites(mergeClause)))
           currentStep = EagerBarriers.withEagerBarrier(currentStep, context, eagerness);
         // A MERGE that starts the statement runs its lookup once: no later write can change what it finds (issue #10889)
         final boolean mergeRunsPerRow = currentStep != null && currentStep != singleRowSource;

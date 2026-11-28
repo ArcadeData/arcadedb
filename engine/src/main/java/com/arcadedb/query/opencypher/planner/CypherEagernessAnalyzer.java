@@ -28,6 +28,7 @@ import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.ForeachClause;
 import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
+import com.arcadedb.query.opencypher.ast.LabelCheckExpression;
 import com.arcadedb.query.opencypher.ast.ListIndexExpression;
 import com.arcadedb.query.opencypher.ast.LiteralExpression;
 import com.arcadedb.query.opencypher.ast.LoadCSVClause;
@@ -64,6 +65,7 @@ import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -138,6 +140,11 @@ public final class CypherEagernessAnalyzer {
   // row binds, so only a write that NAMES their key conflicts (an opaque map write is left streaming, see observeClause(), and
   // issue #11173)
   private final Set<PropertyReadSite> pendingMatchReads;
+  // The variables the clauses planned since the last barrier read the labels or the identity of per row (labels(n), n:L,
+  // elementId(n), ...), a null element for a read through an expression or a name bound locally. A label write rewrites the
+  // vertex under another type, so it changes both, and the read of a later row runs after the write of an earlier one (issue
+  // #13655). A MATCH's own pattern and WHERE are not among them: they are reads in flight, which anyRead already weighs
+  private final Set<String>           pendingLabelReads;
   // The variables bound to a different entity on every row: a write through one of them cannot reach a read of another row
   private final Set<String> rowUniqueVariables;
   // The variables known never to hold a record (a LOAD CSV row, an UNWIND of a literal list): no record
@@ -168,6 +175,7 @@ public final class CypherEagernessAnalyzer {
     if (tracksPropertyReads) {
       pendingPropertyReads = new HashSet<>();
       pendingMatchReads = new HashSet<>();
+      pendingLabelReads = new HashSet<>();
       rowUniqueVariables = new HashSet<>();
       nonRecordVariables = new HashSet<>();
       projectedProperties = new HashMap<>();
@@ -175,6 +183,7 @@ public final class CypherEagernessAnalyzer {
     } else {
       pendingPropertyReads = Collections.emptySet();
       pendingMatchReads = Collections.emptySet();
+      pendingLabelReads = Collections.emptySet();
       rowUniqueVariables = Collections.emptySet();
       nonRecordVariables = Collections.emptySet();
       projectedProperties = Collections.emptyMap();
@@ -358,6 +367,7 @@ public final class CypherEagernessAnalyzer {
     mergeKeyPairs.clear();
     pendingPropertyReads.clear();
     pendingMatchReads.clear();
+    pendingLabelReads.clear();
   }
 
   /**
@@ -681,7 +691,12 @@ public final class CypherEagernessAnalyzer {
    * that names it as a creation only ever keeps a barrier that is not strictly needed, never drops one.
    */
   public boolean needsBarrier(final ForeachClause foreachClause, final Set<String> boundVariables) {
-    if (!anyRead || foreachClause == null)
+    if (foreachClause == null)
+      return false;
+    // a label write of the body rewrites the vertex as a SET or a REMOVE of the outer query does (issue #13655)
+    if (foreachWritesConflictingLabel(foreachClause, Set.of()))
+      return true;
+    if (!anyRead)
       return false;
     for (final ClauseEntry innerClause : foreachClause.getInnerClauses()) {
       switch (innerClause.getType()) {
@@ -720,25 +735,93 @@ public final class CypherEagernessAnalyzer {
    * pattern still enumerating, or re-enumerating once per input row, reads from one type reappears in another, or is
    * gone before the scan reaches it (issue #8734: {@code OPTIONAL MATCH (), (n {..}) ... REMOVE n:l9:l8} lost one
    * row per relabelled node). Which record moves where depends on the row, so any read in flight conflicts.
-   * A property-only REMOVE rewrites the record in place and needs nothing.
+   * So does a read of the labels or the identity of a node that a clause ahead of it made for another row, after an
+   * aggregation drained the reads in flight: streamed, the rows of the second pull batch read the record the write of the
+   * first batch replaced the node with (issue #13655: {@code WITH *, labels(n1) AS l REMOVE n1:l9} grouped 100 rows with
+   * l9 and 555 without). A property-only REMOVE rewrites the record in place and needs nothing.
    */
   public boolean needsBarrier(final RemoveClause removeClause) {
-    if (!anyRead || removeClause == null)
-      return false;
-    for (final RemoveClause.RemoveItem item : removeClause.getItems())
-      if (item.getType() == RemoveClause.RemoveItem.RemoveType.LABELS)
-        return true;
-    return false;
+    return removeWritesConflictingLabel(removeClause, Set.of(), true);
   }
 
   /** True when a SET needs the barrier, i.e. when it writes a label: see {@link #needsBarrier(RemoveClause)}. */
   public boolean needsBarrier(final SetClause setClause) {
-    if (!anyRead || setClause == null || setClause.isEmpty())
+    return setWritesConflictingLabel(setClause, Set.of(), true);
+  }
+
+  /**
+   * Whether a REMOVE writes a label while a read is in flight, or a label a clause ahead of it read for another row: the
+   * write rewrites the vertex under another type, and a later row reads the replacement (issue #13655, see
+   * {@link #observeClause}).
+   *
+   * @param inFlight whether a read in flight conflicts too: not for the actions of a MERGE, whose pattern is weighed instead
+   */
+  private boolean removeWritesConflictingLabel(final RemoveClause removeClause, final Set<String> shadowed, final boolean inFlight) {
+    if (removeClause == null || !(inFlight && anyRead) && pendingLabelReads.isEmpty())
       return false;
-    for (final SetClause.SetItem item : setClause.getItems())
-      if (item.getType() == SetClause.SetType.LABELS)
+    for (final RemoveClause.RemoveItem item : removeClause.getItems())
+      if (item.getType() == RemoveClause.RemoveItem.RemoveType.LABELS && labelWriteConflicts(item.getVariable(), shadowed, inFlight))
         return true;
     return false;
+  }
+
+  /** The SET counterpart of {@link #removeWritesConflictingLabel}. */
+  private boolean setWritesConflictingLabel(final SetClause setClause, final Set<String> shadowed, final boolean inFlight) {
+    if (setClause == null || setClause.isEmpty() || !(inFlight && anyRead) && pendingLabelReads.isEmpty())
+      return false;
+    for (final SetClause.SetItem item : setClause.getItems())
+      if (item.getType() == SetClause.SetType.LABELS && labelWriteConflicts(item.getVariable(), shadowed, inFlight))
+        return true;
+    return false;
+  }
+
+  private boolean mergeWritesConflictingLabel(final MergeClause mergeClause, final Set<String> shadowed) {
+    return setWritesConflictingLabel(mergeClause.getOnCreateSet(), shadowed, false)
+        || setWritesConflictingLabel(mergeClause.getOnMatchSet(), shadowed, false);
+  }
+
+  /** A FOREACH whose body, at any nesting depth, writes a label that conflicts, see {@link #removeWritesConflictingLabel}. */
+  private boolean foreachWritesConflictingLabel(final ForeachClause foreachClause, final Set<String> shadowed) {
+    if (!anyRead && pendingLabelReads.isEmpty())
+      return false;
+    // the loop variable is a name of the body: a write through it is not a write through the outer variable it may shadow
+    final Set<String> bodyShadowed = new HashSet<>(shadowed);
+    bodyShadowed.add(foreachClause.getVariable());
+    for (final ClauseEntry innerClause : foreachClause.getInnerClauses()) {
+      final boolean conflicts = switch (innerClause.getType()) {
+        case SET -> setWritesConflictingLabel(innerClause.getTypedClause(), bodyShadowed, true);
+        case REMOVE -> removeWritesConflictingLabel(innerClause.getTypedClause(), bodyShadowed, true);
+        case MERGE -> mergeWritesConflictingLabel(innerClause.getTypedClause(), bodyShadowed);
+        case FOREACH -> foreachWritesConflictingLabel(innerClause.getTypedClause(), bodyShadowed);
+        default -> false;
+      };
+      if (conflicts)
+        return true;
+    }
+    return false;
+  }
+
+  /**
+   * Whether a label write through {@code variable} (null: an expression) conflicts: any read in flight does, as a pending label
+   * read of another row does. A read through the same variable is safe when that variable holds a different entity on every row.
+   */
+  private boolean labelWriteConflicts(final String variable, final Set<String> shadowed, final boolean inFlight) {
+    if (inFlight && anyRead)
+      return true;
+    final boolean ownRowOnly = variable != null && !shadowed.contains(variable) && rowUniqueVariables.contains(variable);
+    for (final String read : pendingLabelReads)
+      if (!ownRowOnly || !variable.equals(read))
+        return true;
+    return false;
+  }
+
+  /**
+   * True when the {@code ON CREATE SET} / {@code ON MATCH SET} of a MERGE writes a label a clause ahead of it read for another
+   * row, see {@link #removeWritesConflictingLabel}. A label write of a MERGE action while a read is in flight is weighed by the
+   * MERGE's own pattern, as before.
+   */
+  public boolean needsBarrierForLabelWrites(final MergeClause mergeClause) {
+    return mergeClause != null && !pendingLabelReads.isEmpty() && mergeWritesConflictingLabel(mergeClause, Set.of());
   }
 
   /**
@@ -902,6 +985,7 @@ public final class CypherEagernessAnalyzer {
           Set.of(((ForeachClause) entry.getClause()).getVariable()) :
           Set.of();
       CypherExpressionWalker.walk(entry, new PropertyReadCollector(pendingPropertyReads, false, shadowed, ownPatterns, Map.of()));
+      CypherExpressionWalker.walk(entry, new LabelReadCollector(false, shadowed, ownPatterns));
     }
 
     switch (entry.getType()) {
@@ -1256,6 +1340,17 @@ public final class CypherEagernessAnalyzer {
 
     forgetRenamedVariables(pendingPropertyReads, star, forwarded, rebound);
     forgetRenamedVariables(pendingMatchReads, star, forwarded, rebound);
+    // a label read through a name that no longer means the same entity is a read through an unknown one
+    boolean labelReadRenamed = false;
+    for (final Iterator<String> it = pendingLabelReads.iterator(); it.hasNext(); ) {
+      final String name = it.next();
+      if (name != null && isRenamed(name, star, forwarded, rebound)) {
+        it.remove();
+        labelReadRenamed = true;
+      }
+    }
+    if (labelReadRenamed)
+      pendingLabelReads.add(null);
   }
 
   private static void forgetRenamedVariables(final Set<PropertyReadSite> reads, final boolean star, final Set<String> forwarded,
@@ -1425,6 +1520,83 @@ public final class CypherEagernessAnalyzer {
     private void read(final String variable, final String key, final String pair) {
       final boolean known = !nested && variable != null && !shadowed.contains(variable);
       observePropertyRead(sink, known ? variable : null, key, known && pair != null && !shadowed.contains(pair) ? pair : null);
+    }
+  }
+
+  /**
+   * Collects into {@link #pendingLabelReads} what one clause reads per row that a label write changes: the labels of a node
+   * ({@code labels(n)}, a label predicate {@code n:L}, the labels a pattern predicate requires of a bound node) and, since the
+   * write moves the vertex to a record of another type, any function handed a whole entity ({@code elementId(n)},
+   * {@code toJson(n)}, ...). Inside a nested statement, or for a name bound locally, the variable is recorded as unknown.
+   */
+  private final class LabelReadCollector implements CypherExpressionWalker.Visitor {
+    private final boolean           nested;
+    private final Set<String>       shadowed;
+    // the patterns the clause itself creates or merges: their labels are written, not read
+    private final List<PathPattern> ownPatterns;
+
+    private LabelReadCollector(final boolean nested, final Set<String> shadowed, final List<PathPattern> ownPatterns) {
+      this.nested = nested;
+      this.shadowed = shadowed;
+      this.ownPatterns = ownPatterns;
+    }
+
+    @Override
+    public void visit(final Expression expression) {
+      if (!(expression instanceof FunctionCallExpression call) || call.isAggregation())
+        return;
+      final boolean readsLabels = call.getFunctionName() != null && call.getFunctionName().toLowerCase(Locale.ROOT).contains("label");
+      for (final Expression argument : call.getArguments())
+        if (argument instanceof VariableExpression variable)
+          read(variable.getVariableName());
+        else if (readsLabels && !(argument instanceof LiteralExpression))
+          read(null);
+    }
+
+    @Override
+    public void visitPredicate(final BooleanExpression predicate) {
+      if (predicate instanceof LabelCheckExpression labelCheck)
+        read(labelCheck.getVariableExpression() instanceof VariableExpression variable ? variable.getVariableName() : null);
+    }
+
+    @Override
+    public void visitPattern(final PathPattern pattern) {
+      for (final PathPattern own : ownPatterns)
+        if (own == pattern)
+          return;
+      for (final NodePattern node : pattern.getNodes())
+        if (node.hasLabels() || node.hasDynamicLabels())
+          read(node.getVariable());
+    }
+
+    @Override
+    public CypherExpressionWalker.Visitor forNestedStatement(final CypherStatement statement) {
+      return new LabelReadCollector(true, shadowed, List.of());
+    }
+
+    @Override
+    public CypherExpressionWalker.Visitor forLocalBindings(final String... variables) {
+      final Set<String> local = new HashSet<>(shadowed);
+      local.addAll(Arrays.asList(variables));
+      return new LabelReadCollector(nested, local, ownPatterns);
+    }
+
+    @Override
+    public CypherExpressionWalker.Visitor forClauseEntry(final ClauseEntry entry) {
+      if (entry.getType() == ClauseEntry.ClauseType.FOREACH) {
+        final Set<String> local = new HashSet<>(shadowed);
+        local.add(((ForeachClause) entry.getClause()).getVariable());
+        return new LabelReadCollector(nested, local, ownPatterns);
+      }
+      return this;
+    }
+
+    private void read(final String variable) {
+      if (variable != null && !nested && !shadowed.contains(variable)) {
+        if (!nonRecordVariables.contains(variable))
+          pendingLabelReads.add(variable);
+      } else
+        pendingLabelReads.add(null);
     }
   }
 
