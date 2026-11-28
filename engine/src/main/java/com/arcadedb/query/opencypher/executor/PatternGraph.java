@@ -270,7 +270,8 @@ final class PatternGraph {
     return new PathPattern(nodes.get(from), forward ? edges[e] : flipped(edges[e]), nodes.get(forward ? edgeTo[e] : edgeFrom[e]));
   }
 
-  private static PathPattern reversed(final PathPattern chain) {
+  /** The chain read from its last node: nodes in reverse order, every relationship read from its other end. */
+  static PathPattern reversed(final PathPattern chain) {
     final List<NodePattern> chainNodes = new ArrayList<>(chain.getNodes());
     Collections.reverse(chainNodes);
     final List<RelationshipPattern> chainRelationships = new ArrayList<>(chain.getRelationshipCount());

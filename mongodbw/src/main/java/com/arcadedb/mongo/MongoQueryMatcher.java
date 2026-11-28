@@ -68,7 +68,10 @@ import java.util.UUID;
  *   <li>a comparison only compares values of the same type bracket (every number is one bracket, compared exactly across int,
  *   long, double and decimal; NaN is only equal to NaN and neither greater nor less than anything); arrays and documents are
  *   compared element by element, in order;</li>
- *   <li>a regular expression only matches a string;</li>
+ *   <li>a regular expression ({@code /x/}, {@code $regex}, an item of {@code $in}, {@code $nin} or {@code $all}, {@code $not})
+ *   matches a string it is found in, and a stored regular expression with the same pattern and options; a regular expression
+ *   operand of {@code $eq}, or inside an array or an embedded document operand, is a value, equal only to such a stored regular
+ *   expression; {@code $ne} and the range operators refuse a regular expression operand (issue #12594);</li>
  *   <li>{@code $mod} computes on 64-bit integers, truncating a fractional value, and a value whose integer part does not fit
  *   in them matches nothing;</li>
  *   <li>an embedded document operand is equal to a document with the same fields in the same order, {@code {a: {}}} only to
@@ -132,19 +135,32 @@ final class MongoQueryMatcher {
         if (key.startsWith("$"))
           throw unknownTopLevelOperator(key);
         if (operand instanceof Document document && isOperatorDocument(document))
-          validateOperators(document);
+          validateOperators(key, document);
       }
       }
     }
   }
 
-  private void validateOperators(final Document operators) {
+  /**
+   * @param field the path the operators apply to, named by mongod's refusal of a regular expression under a range operator; for the
+   *              operators of a value-form {@code $elemMatch}, which apply to an element, the {@code (None)} mongod names
+   */
+  private void validateOperators(final String field, final Document operators) {
     for (final Map.Entry<String, Object> entry : operators.entrySet()) {
       final String operator = entry.getKey();
       final Object operand = entry.getValue();
       switch (operator) {
-      case "$eq", "$ne", "$gt", "$gte", "$lt", "$lte", "$exists" -> {
+      case "$eq", "$exists" -> {
         // any operand
+      }
+      case "$ne" -> {
+        // mongod refuses it, although $eq compares one as a value
+        if (operand instanceof BsonRegularExpression)
+          throw new BadValueException("Can't have regex as arg to $ne.");
+      }
+      case "$gt", "$gte", "$lt", "$lte" -> {
+        if (operand instanceof BsonRegularExpression)
+          throw new BadValueException("Can't have RegEx as arg to non-equality predicate over field '" + field + "'.");
       }
       case "$in" -> list(operand, "$in needs an array");
       case "$nin" -> list(operand, "$nin needs an array");
@@ -159,7 +175,7 @@ final class MongoQueryMatcher {
       case "$mod" -> modArguments(operand);
       case "$not" -> {
         if (operand instanceof Document document && isOperatorDocument(document))
-          validateOperators(document);
+          validateOperators(field, document);
         else if (!(operand instanceof BsonRegularExpression))
           throw new BadValueException("$not needs a regex or a document");
       }
@@ -177,7 +193,7 @@ final class MongoQueryMatcher {
   private void validateElemMatch(final Object operand) {
     final Document condition = elemMatchCondition(operand);
     if (isValueForm(condition))
-      validateOperators(condition);
+      validateOperators("(None)", condition);
     else
       validate(condition);
   }
@@ -499,7 +515,7 @@ final class MongoQueryMatcher {
     return switch (predicate) {
       case EQUALS -> valuesEqual(value, operand);
       case NULLISH -> value == null || value instanceof Missing;
-      case REGEX -> value instanceof String string && ((BsonRegularExpression) operand).matcher(string).find();
+      case REGEX -> regexMatches(value, (BsonRegularExpression) operand);
       case GT, GTE, LT, LTE -> ordered(predicate, value, operand);
       case TYPE -> !(value instanceof Missing) && typeMatches(value, operand);
       case SIZE -> value instanceof List<?> list && list.size() == ((Number) operand).doubleValue();
@@ -507,6 +523,13 @@ final class MongoQueryMatcher {
       case MOD -> modMatches(value, (long[]) operand);
       default -> throw new IllegalStateException("Unknown predicate " + predicate);
     };
+  }
+
+  /** A pattern matches a string it is found in, and a stored regular expression with the same pattern and options, as in mongod. */
+  private static boolean regexMatches(final Object value, final BsonRegularExpression regex) {
+    if (value instanceof String string)
+      return regex.matcher(string).find();
+    return value instanceof BsonRegularExpression stored && sameRegex(stored, regex);
   }
 
   /** A range predicate: NaN is neither greater nor less than anything, and is greater or less than or equal to NaN only. */
@@ -649,7 +672,31 @@ final class MongoQueryMatcher {
       return Arrays.equals(ba, bb);
     if (a instanceof Date || b instanceof Date)
       return instantOf(a).equals(instantOf(b));
+    // the class of the BSON library compares by identity: the value read back from storage is never the operand of the filter
+    if (a instanceof BsonRegularExpression ra && b instanceof BsonRegularExpression rb)
+      return sameRegex(ra, rb);
     return a.equals(b);
+  }
+
+  /**
+   * Two regular expressions are the same value with the same pattern and the same options in any order, as {@link MongoKeys} keys
+   * them; a repeated option counts, as it does in mongod: {@code ii} is not {@code i}.
+   */
+  private static boolean sameRegex(final BsonRegularExpression a, final BsonRegularExpression b) {
+    return a.getPattern().equals(b.getPattern()) && sortedOptions(a.getOptions()).equals(sortedOptions(b.getOptions()));
+  }
+
+  private static String sortedOptions(final String options) {
+    if (options == null)
+      return "";
+    for (int i = 1; i < options.length(); i++)
+      if (options.charAt(i) < options.charAt(i - 1)) {
+        final char[] chars = options.toCharArray();
+        Arrays.sort(chars);
+        return new String(chars);
+      }
+    // already in order, the usual case: the BSON specification has the options written sorted
+    return options;
   }
 
   private static Object instantOf(final Object value) {

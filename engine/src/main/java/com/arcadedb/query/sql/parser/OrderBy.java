@@ -23,6 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -53,14 +54,43 @@ public class OrderBy extends SimpleNode {
     }
   }
 
-  public int compare(final Result a, final Result b, final CommandContext context) {
-    for (final OrderByItem item : items) {
-      final int result = item.compare(a, b, context);
-      if (result != 0) {
-        return result > 0 ? 1 : -1;
-      }
+  /**
+   * The sort key of {@code row}, extracted once when the row enters the sort (issue #12860): the value of the one item, or the
+   * values of the items in an array when there are several. Compare keys with {@link #keyComparator}.
+   */
+  public Object extractKeys(final Result row, final CommandContext context) {
+    if (items.size() == 1)
+      return items.getFirst().extractKey(row, context);
+    final Object[] keys = new Object[items.size()];
+    for (int i = 0; i < keys.length; i++)
+      keys[i] = items.get(i).extractKey(row, context);
+    return keys;
+  }
+
+  /**
+   * Compares keys {@link #extractKeys} returned, item by item, each in its direction. The directions are resolved once, here,
+   * not at every comparison.
+   */
+  public Comparator<Object> keyComparator(final CommandContext context) {
+    final OrderByItem[] sortItems = items.toArray(new OrderByItem[0]);
+    final boolean[] descending = new boolean[sortItems.length];
+    for (int i = 0; i < sortItems.length; i++)
+      descending[i] = sortItems[i].isDescending(context);
+
+    if (sortItems.length == 1) {
+      final OrderByItem item = sortItems[0];
+      return descending[0] ? (a, b) -> -item.compareKeys(a, b) : item::compareKeys;
     }
-    return 0;
+    return (a, b) -> {
+      final Object[] aKeys = (Object[]) a;
+      final Object[] bKeys = (Object[]) b;
+      for (int i = 0; i < sortItems.length; i++) {
+        final int result = sortItems[i].compareKeys(aKeys[i], bKeys[i]);
+        if (result != 0)
+          return descending[i] ? -result : result;
+      }
+      return 0;
+    };
   }
 
   public OrderBy copy() {

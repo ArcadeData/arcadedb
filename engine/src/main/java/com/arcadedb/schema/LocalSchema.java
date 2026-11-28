@@ -648,6 +648,17 @@ public class LocalSchema implements Schema {
    */
   public void load(final ComponentFile.MODE mode, final boolean initialize, final boolean deferTimeSeriesEngines)
       throws IOException {
+    load(mode, initialize, deferTimeSeriesEngines, Collections.emptySet());
+  }
+
+  /**
+   * @param retiringFileIds files the new generation must not have, that the previous one still reads from until the barrier
+   *                        replaces it: those of a replicated compaction an HA replica retires only once this load has
+   *                        published (issue #12358). Left out of the components this load builds, as if already deleted
+   */
+  public void load(final ComponentFile.MODE mode, final boolean initialize, final boolean deferTimeSeriesEngines,
+      final Set<Integer> retiringFileIds) throws IOException {
+    Objects.requireNonNull(retiringFileIds, "retiringFileIds");
     // Claim the staging window FIRST. beginStagedPublication() refuses a load that overlaps another, and a refusal
     // has to leave the schema exactly as it found it.
     // stageFileIds=true: the previous generation keeps its file-id slots until the barrier, which is what keeps the
@@ -716,7 +727,7 @@ public class LocalSchema implements Schema {
         throw new ConfigurationException("Dictionary file not found in database directory");
 
       for (final ComponentFile file : filesToOpen) {
-        if (file != null && !Dictionary.DICT_EXT.equals(file.getFileExtension())) {
+        if (file != null && !Dictionary.DICT_EXT.equals(file.getFileExtension()) && !retiringFileIds.contains(file.getFileId())) {
           final Component pf = componentFactory.createComponent(file, mode);
 
           if (pf != null)
@@ -1721,7 +1732,10 @@ public class LocalSchema implements Schema {
    * directory scan re-registers it at the next open, but nothing references it anymore, leaking its space
    * forever. Every legitimate compacted component gets its mainIndex set by the owning mutable index while
    * reading its header (SUB-INDEX FILE ID), so a compacted component still unclaimed after the whole schema
-   * load is provably an orphan.
+   * load is provably an orphan. A claim counts only while the mutable file that made it is still registered: the orphan sweep
+   * ({@link #sweepOrphanBucketIndexFiles}) drops the mutable file of an interrupted rebuild in the same load, and the compacted
+   * file and bloom filter it pointed at went on until the next open, the whole new index of the bucket, because the
+   * back-pointer of the dropped mutable file still marked them claimed.
    * <p>
    * With one exception: a compacted file of the same index as a mutable file the load left out because its header page
    * has not arrived yet (issue #10046). That mutable is the one that would claim it, so the compacted file is kept - with
@@ -1729,6 +1743,10 @@ public class LocalSchema implements Schema {
    */
   private void sweepOrphanCompactedIndexFiles(final List<Component> snapshot) {
     final Set<String> awaitingHeader = headerlessMutableIndexBaseNames();
+    final Set<Integer> claimed = new HashSet<>();
+    for (final Component component : snapshot)
+      if (component instanceof LSMTreeIndexMutable mutable && mutable.getSubIndex() != null)
+        claimed.add(mutable.getSubIndex().getFileId());
     for (final Component component : snapshot) {
       if (component instanceof LSMTreeIndexBloomFilter filter) {
         // A filter is owned by exactly one compacted index; without it nothing can ever read the file again.
@@ -1736,7 +1754,8 @@ public class LocalSchema implements Schema {
         if (owner instanceof LSMTreeIndexCompacted compactedOwner && awaitingHeader.contains(
             LSMTreeIndexAbstract.compactionBaseName(compactedOwner.getName())))
           continue;
-        if (!(owner instanceof LSMTreeIndexCompacted compactedOwner) || compactedOwner.getMainIndex() == null) {
+        if (!(owner instanceof LSMTreeIndexCompacted compactedOwner) || compactedOwner.getMainIndex() == null
+            || !claimed.contains(compactedOwner.getFileId())) {
           LogManager.instance().log(this, Level.INFO,
               "Dropping orphan index bloom filter file '%s' (fileId=%d)", null, filter.getName(), filter.getFileId());
           filter.dropQuietly();
@@ -1744,7 +1763,7 @@ public class LocalSchema implements Schema {
         continue;
       }
 
-      if (!(component instanceof LSMTreeIndexCompacted compacted) || compacted.getMainIndex() != null)
+      if (!(component instanceof LSMTreeIndexCompacted compacted) || (compacted.getMainIndex() != null && claimed.contains(compacted.getFileId())))
         continue;
 
       if (awaitingHeader.contains(LSMTreeIndexAbstract.compactionBaseName(compacted.getName()))) {
@@ -2962,10 +2981,19 @@ public class LocalSchema implements Schema {
     // merely UPDATE_SCHEMA - mirroring the DEFINE FUNCTION ... LANGUAGE js gate (GHSA-vwjc-v7x7-cm6g) and closing
     // the UPDATE_SCHEMA -> server-admin escalation (GHSA-38pf-6hp2-pxww). A declarative SQL trigger is not host
     // code and keeps the standard schema-level protection.
+    // The trigger is a schema object too, so the schema permission is asked of the one that creates host code as well: the security
+    // permission is asked on top of it, never instead of it.
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
     if (definition.getActionType() == Trigger.ActionType.JAVASCRIPT || definition.getActionType() == Trigger.ActionType.JAVA)
       database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SECURITY);
-    else
-      database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+
+    // A body that does not parse is refused here, while the caller can still be told (issue #12904): accepted, it failed every
+    // later write on the type. Outside recordFileChanges, so the first JavaScript context is not built under the schema lock. A
+    // trigger loaded from the schema file is not checked, so one stored before the check existed still lets the database open
+    if (definition.getActionType() == Trigger.ActionType.SQL)
+      SQLTriggerExecutor.checkSyntax(database, definition.getName(), definition.getActionCode());
+    else if (definition.getActionType() == Trigger.ActionType.JAVASCRIPT)
+      ScriptTriggerExecutor.checkSyntax(database, definition.getName(), definition.getActionCode());
 
     recordFileChanges(() -> {
       // Validate trigger does not already exist
@@ -3315,7 +3343,7 @@ public class LocalSchema implements Schema {
     // Create executor
     final TriggerExecutor executor;
     if (trigger.getActionType() == Trigger.ActionType.SQL) {
-      executor = new SQLTriggerExecutor(trigger.getName(), trigger.getActionCode());
+      executor = new SQLTriggerExecutor(trigger);
     } else if (trigger.getActionType() == Trigger.ActionType.JAVASCRIPT) {
       executor = new ScriptTriggerExecutor(trigger.getName(), trigger.getActionCode());
     } else if (trigger.getActionType() == Trigger.ActionType.JAVA) {
@@ -3789,6 +3817,7 @@ public class LocalSchema implements Schema {
       try {
         final LocalDocumentType type = (LocalDocumentType) database.getSchema().getType(typeName);
         checkSubTypesCanBeReattached(type);
+        checkNoSubTypeIndexLosesItsProperty(type);
 
         // issue #10421: everything that can refuse is asked before the first change. The sub types are unlinked, the indexes
         // dropped and the buckets removed one after the other, and a refusal from any of them left the ones before it done
@@ -3836,8 +3865,11 @@ public class LocalSchema implements Schema {
     final List<Integer> filesOfTheDrop = new ArrayList<>();
     final List<Integer> indexFilesOfTheDrop = new ArrayList<>();
     final LocalDocumentType backingType = getTypeOrNull(backingTypeName);
-    if (backingType != null)
+    if (backingType != null) {
+      // #12318: a sub type linked to the backing type before #11204 can hold an index on a property only the backing type declares
+      checkNoSubTypeIndexLosesItsProperty(backingType);
       collectFilesOfTheDrop(backingType, filesOfTheDrop, indexFilesOfTheDrop);
+    }
     return executeDroppingFiles(statement, filesOfTheDrop, indexFilesOfTheDrop, mutation);
   }
 
@@ -3860,6 +3892,60 @@ public class LocalSchema implements Schema {
               + "). Take the link out first with ALTER TYPE `" + sub.getName() + "` SUPERTYPE -`" + type.getName() + "`", e);
         }
       }
+  }
+
+  /**
+   * Refuses the drop of {@code type} while an index of a type below it stands on a property that type would stop inheriting: one
+   * that only {@code type} declares (issue #12318). {@code DROP PROPERTY} refuses the same declaration while such an index stands,
+   * and the drop left the index keyed on a property its type no longer declares, so later writes were judged by the index's stale
+   * key type. A property the sub type still has after the drop does not count: one it declares itself, one it reaches through
+   * another super type, or one declared above {@code type}, which the sub type inherits once it is linked to {@code type}'s super
+   * types. Asked before anything changes.
+   */
+  private static void checkNoSubTypeIndexLosesItsProperty(final LocalDocumentType type) {
+    final Map<LocalDocumentType, Set<String>> memo = new IdentityHashMap<>();
+    final Deque<LocalDocumentType> toVisit = new ArrayDeque<>(type.subTypes);
+    final Set<LocalDocumentType> visited = Collections.newSetFromMap(new IdentityHashMap<>());
+    while (!toVisit.isEmpty()) {
+      final LocalDocumentType sub = toVisit.pop();
+      if (!visited.add(sub))
+        continue;
+      toVisit.addAll(sub.subTypes);
+
+      final Set<String> before = sub.getPolymorphicPropertyNames();
+      for (final TypeIndex index : sub.getAllIndexes(false))
+        for (final String indexProperty : index.getPropertyNames()) {
+          final String property = Index.basePropertyName(indexProperty);
+          if (before.contains(property) && !propertyNamesWithout(sub, type, memo).contains(property))
+            throw new SchemaException(
+                "Cannot drop the type '" + type.getName() + "' because the property '" + property + "' that type '" + sub.getName()
+                    + "' would no longer inherit is used by index '" + index.getName() + "'. Drop the index first, or declare the"
+                    + " property on '" + sub.getName() + "'");
+        }
+    }
+  }
+
+  /**
+   * The polymorphic property names {@code sub} will have once {@code dropped} is gone and its sub types are linked to its super
+   * types, computed without changing anything. Memoized in {@code memo} per type: a type reached twice (a diamond) is asked once.
+   */
+  private static Set<String> propertyNamesWithout(final LocalDocumentType sub, final LocalDocumentType dropped,
+      final Map<LocalDocumentType, Set<String>> memo) {
+    final Set<String> known = memo.get(sub);
+    if (known != null)
+      return known;
+    // published before the walk up, so a hierarchy that holds a cycle (a schema written before cycles were refused) ends
+    final Set<String> names = new HashSet<>(sub.getPropertyNames());
+    memo.put(sub, names);
+    for (final LocalDocumentType parent : sub.superTypes)
+      if (parent == dropped)
+        for (final LocalDocumentType grandParent : dropped.superTypes)
+          names.addAll(grandParent.getPolymorphicPropertyNames());
+      else if (parent.isSubTypeOf(dropped.getName()))
+        names.addAll(propertyNamesWithout(parent, dropped, memo));
+      else
+        names.addAll(parent.getPolymorphicPropertyNames());
+    return names;
   }
 
   /** The changes of {@link #dropType} once everything that can refuse has been asked (issue #10421). */
@@ -3894,8 +3980,19 @@ public class LocalSchema implements Schema {
     // DELETE ALL ASSOCIATED BUCKETS
     final List<Bucket> buckets = new ArrayList<>(type.getBuckets(false));
     for (final Bucket b : buckets) {
+      // THE PAIRED EXTERNAL-PROPERTY BUCKET OF A PRIMARY ONE GOES WITH IT, ITS FILE AND THE RECORDS OF EVERY EXTERNAL VALUE: IT IS NO
+      // BUCKET OF THE TYPE, SO THIS LOOP LEFT IT IN THE SCHEMA AND ON DISK, AND A TYPE CREATED LATER UNDER THE SAME NAME ADOPTED IT WITH
+      // THE RECORDS OF THE ONE DROPPED (issue #12995). Only the pair of a bucket the type OWNS: a bucket detached from the type earlier
+      // stays in the schema, and its records still point into its pair
+      final Integer externalBucketId = type.externalBucketIdByPrimaryBucketId.remove(b.getFileId());
       type.removeBucket(b);
       dropBucket(b.getName());
+
+      if (externalBucketId != null) {
+        final LocalBucket external = getBucketByIdIfExists(externalBucketId);
+        if (external != null)
+          dropBucket(external.getName());
+      }
     }
 
     if (type instanceof LocalTimeSeriesType tsType)
@@ -3975,6 +4072,11 @@ public class LocalSchema implements Schema {
             InternalBucketNaming.inEdgesBucketName(bucket.getName())))
           if (existsBucket(edgeBucketName))
             files.add(getBucketByName(edgeBucketName).getFileId());
+
+      // THE PAIRED EXTERNAL-PROPERTY BUCKET IS NO BUCKET OF THE TYPE, IT BELONGS TO ITS PRIMARY ONE (issue #12995)
+      final Integer externalBucketId = type.getExternalBucketIdFor(bucket.getFileId());
+      if (externalBucketId != null)
+        files.add(externalBucketId);
     }
   }
 
@@ -4794,7 +4896,9 @@ public class LocalSchema implements Schema {
   private void openTimeSeriesEngine(final LocalTimeSeriesType tsType) {
     try {
       tsType.initEngine();
-    } catch (final IOException e) {
+    } catch (final IOException | SchemaException e) {
+      // A SchemaException is the name of a stored type that the files of its engine cannot be built on (LocalTimeSeriesType.checkValidName),
+      // handled like the failure below.
       // Register the type anyway rather than letting it vanish from the schema (issue #6356): the
       // exception this catches means one derived file (a .ts.sealed most commonly, rebuildable under HA
       // by recompacting the replicated mutable pages) failed to open, not that the type or its mutable
@@ -5555,6 +5659,12 @@ public class LocalSchema implements Schema {
       // cluster's) state, so there is nothing to publish. Its one caller is the schema-file loader, which already
       // holds this schema's monitor
       return restoreSchemaMembersFromJSONLocked(root, source);
+
+    // Every member of a file handed to the engine is a schema object, exactly as when it is created by hand, so the schema
+    // permission is asked before any of them is installed: a principal narrowed to leave the schema as it found it (or one that
+    // never had the permission) gets the members of a file refused as it gets each of them refused one by one. The members of host
+    // code are asked UPDATE_SECURITY on top of this, one by one, below
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
     // Issue #9764: an imported file is a schema change, so it runs inside a schema recording session, which saves the
     // schema and, under Raft HA, ships it as a SCHEMA_ENTRY. A bare saveConfiguration() reached this node's schema.json
@@ -7617,15 +7727,36 @@ public class LocalSchema implements Schema {
   }
 
   /**
-   * Refuses to hand {@code bucket} to the type {@code typeName} when another type owns it. The one place the verdict and its
-   * wording live: {@code addBucket} gives it after the fact, and {@link TypeBuilder} asks for it before it registers a type,
-   * so a refusal leaves no half-built type behind (issue #10317).
+   * The type that keeps the bucket {@code bucketId} for its own use, in the published graph: the paired bucket of its EXTERNAL
+   * values, an edge-list bucket of one of its vertex buckets, a bucket of its super-node stripe pool. A bucket a type owns is
+   * the one the type's own list answers with, so it is found here as well. {@code null} while a load is assembling the graph:
+   * the load restores what was saved, and the maps it builds are not the ones a statement reads.
+   */
+  LocalDocumentType getBucketInvolvedBy(final int bucketId) {
+    if (isStagingPublication())
+      return null;
+    if (bucketTypeMapsStale)
+      rebuildBucketTypeMap();
+    return published.bucketId2InvolvedTypeMap().get(bucketId);
+  }
+
+  /**
+   * Refuses to hand {@code bucket} to the type {@code typeName} when another type owns it, or keeps it for its own use. The one
+   * place the verdict and its wording live: {@code addBucket} gives it after the fact, and {@link TypeBuilder} asks for it before
+   * it registers a type, so a refusal leaves no half-built type behind (issue #10317).
    */
   void checkBucketIsFree(final String typeName, final Bucket bucket) {
     final LocalDocumentType owner = getBucketOwner(bucket.getFileId());
     if (owner != null)
       throw new SchemaException("Cannot add the bucket '" + bucket.getName() + "' to the type '" + typeName
           + "', because the bucket is already associated to the type '" + owner.getName() + "'");
+
+    // An internal bucket of a type answers to that type for the per-file permissions only while no type owns it: taking it as
+    // a bucket of its own would hand it to the new type
+    final LocalDocumentType user = getBucketInvolvedBy(bucket.getFileId());
+    if (user != null)
+      throw new SchemaException("Cannot add the bucket '" + bucket.getName() + "' to the type '" + typeName
+          + "', because the bucket is an internal bucket of the type '" + user.getName() + "'");
   }
 
   /** What the published bucket maps hold that a full rebuild would not, or null when they agree (checked under -ea). */

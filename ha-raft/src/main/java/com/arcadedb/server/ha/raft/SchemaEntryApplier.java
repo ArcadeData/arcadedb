@@ -28,6 +28,10 @@ import com.arcadedb.engine.timeseries.TimeSeriesSealedInstallLock;
 import com.arcadedb.engine.timeseries.TimeSeriesSealedStore;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.WALVersionGapException;
+import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexInternal;
+import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.ContinuousAggregateImpl;
 import com.arcadedb.schema.FullSchemaLoadReason;
@@ -51,6 +55,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Lock;
 import java.util.logging.Level;
@@ -67,6 +72,19 @@ import java.util.zip.CRC32;
  */
 final class SchemaEntryApplier {
   private final ArcadeStateMachine sm;
+
+  /**
+   * Per database, the ids of the files created by the delivery-only entries of a schema change still being delivered (issue
+   * #13484). A change too large for one Raft entry names the files it creates on its FIRST chunk only
+   * ({@link RaftTransactionBroker#splitSchemaEntry}), and a recording session that ships its WAL in instalments drains the files
+   * it created so far into each instalment: in both shapes the entry that publishes the change no longer names them, and it is
+   * the one that has to know which vector graphs the change shipped. Collected here and handed to the publishing entry, which
+   * takes them out, and a drop of the database forgets them ({@link #forgetUnpublishedChange}), so the map holds at most one
+   * change per database this node holds. A sequence cut short (a leadership change, a quarantine that skips the rest) leaves
+   * its ids until the next publishing entry of the database, which is harmless: a graph is certified only on its own evidence
+   * (see {@link LSMVectorIndex#certifyGraphShippedByReplicatedCompaction}).
+   */
+  private final Map<String, Set<Integer>> filesCreatedByUnpublishedChunks = new ConcurrentHashMap<>();
 
   SchemaEntryApplier(final ArcadeStateMachine sm) {
     this.sm = sm;
@@ -161,6 +179,9 @@ final class SchemaEntryApplier {
     // standalone DDL that adds files without changing the schema version - and skipping the reload for
     // that would leave the new files unregistered in the schema.
     final boolean deliveryOnlyEntry = decoded.moreChunksFollow();
+
+    // The files the whole change creates, whichever of its entries named them (issue #13484): asked by the publishing entry below
+    final Set<Integer> filesCreatedByTheChange = filesCreatedByTheChange(decoded, deliveryOnlyEntry);
 
     final SchemaEntryRecorder schemaEntryRecorder = ArcadeStateMachine.TEST_SCHEMA_ENTRY_COUNTER;
     if (schemaEntryRecorder != null && !deliveryOnlyEntry)
@@ -281,14 +302,17 @@ final class SchemaEntryApplier {
       // "Invalid sub-index for index '...' (error=File with id 'NNN' was not found)" over a state that was
       // purely transient, and the old self-repair in LSMTreeIndexMutable.onAfterLoad then tried to DROP
       // the index - a schema write a replica may not perform - which failed the apply and escalated the
-      // whole database to a snapshot resync. Retiring last closes that window: by then page 0 already
-      // names the new file.
-      if (!appliedBefore && decoded.filesToRemove() != null)
-        for (final Map.Entry<Integer, String> fileEntry : decoded.filesToRemove().entrySet()) {
-          db.getPageManager().deleteFile(db, fileEntry.getKey());
-          db.getFileManager().dropFile(fileEntry.getKey());
-          db.getSchema().getEmbedded().removeFile(fileEntry.getKey());
-        }
+      // whole database to a snapshot resync.
+      //
+      // And only AFTER the reload below has published the generation that no longer reads them (issue #12358). The
+      // previous generation stays published for the whole of a full load, so the queries running meanwhile keep
+      // resolving its indexes (issue #7963) - and those indexes read through the files this entry retires. Deleted
+      // first, every lookup on them failed for the length of the load (up to 1.4 s on a database with many vector
+      // indexes) with "File with id NNN was not found". The load leaves them out of the components it builds instead,
+      // as if they were already gone, which keeps #4743 closed.
+      final Set<Integer> retiring = !appliedBefore && decoded.filesToRemove() != null ?
+          decoded.filesToRemove().keySet() :
+          Collections.emptySet();
 
       // Reload schema after WAL pages are on disk so new index files have valid content
       // and are correctly registered (page counts, type links, in-memory structures).
@@ -319,11 +343,28 @@ final class SchemaEntryApplier {
               walTouchedFileIds);
 
         if (refusal != null)
-          loadSchemaInFull(schema, decoded, entryIndex, refusal);
+          loadSchemaInFull(schema, decoded, entryIndex, refusal, retiring);
 
         // The reload read the index and dictionary files again, on the apply thread (issue #11518): a copy that turns up
         // damaged here is quarantined before the next entry is applied to it, as the startup scan does for one found at open
         sm.quarantine.quarantineIfLocalCopyDamaged(decoded.databaseName(), db);
+
+        // A vector compaction shipped its graph without the manifest and the ordinal map that certify it (plain files next to
+        // it). This is the one moment the follower can certify it exactly, before a later entry writes on top of the rewrite
+        // (issue #13484): otherwise the first deletion sends every compacted piece to a rebuild from scratch on this node. After
+        // the damage check, and never on a quarantined copy: the resync replaces it, and what it holds certifies nothing
+        if (!filesCreatedByTheChange.isEmpty() && !sm.isDatabaseDiverged(decoded.databaseName()))
+          certifyGraphsShippedByCompaction(schema, filesCreatedByTheChange);
+      }
+
+      // Whichever path published above: the incremental refresh refuses every entry that retires a file (FILE_RETIRED), so a
+      // non-empty set here always follows a full load that left these ids out. A load that throws leaves them in place: the
+      // entry is not applied, so its retry or replay (appliedBefore false) retires them after its own load. Scans of the previous generation
+      // that still read them end with a retryable IndexReplacedException rather than a bad request.
+      for (final Integer fileId : retiring) {
+        db.getPageManager().deleteFile(db, fileId);
+        db.getFileManager().dropFile(fileId);
+        db.getSchema().getEmbedded().removeFile(fileId);
       }
 
     } catch (final IOException e) {
@@ -341,13 +382,13 @@ final class SchemaEntryApplier {
    * ({@code arcadedb.ha.schema.full_load}) are what a dashboard alerts on.
    */
   private void loadSchemaInFull(final LocalSchema schema, final RaftLogEntryCodec.DecodedEntry decoded, final long entryIndex,
-      final IncrementalLoadRefusal refusal) throws IOException {
+      final IncrementalLoadRefusal refusal, final Set<Integer> retiringFileIds) throws IOException {
     final SchemaFullLoadRecorder recorder = sm.schemaFullLoadRecorder;
     // Counted before the load, so one that throws is still seen
     recorder.started(refusal.reason());
 
     final long startNanos = System.nanoTime();
-    schema.load(ComponentFile.MODE.READ_WRITE, true);
+    schema.load(ComponentFile.MODE.READ_WRITE, true, false, retiringFileIds);
     final long elapsedNanos = System.nanoTime() - startNanos;
     recorder.completed(refusal.reason(), elapsedNanos);
 
@@ -357,6 +398,60 @@ final class SchemaEntryApplier {
             + "was re-instantiated on the apply thread in %d ms",
         entryIndex, decoded.databaseName(), refusal.reason().getDescription(), refusal, sizeOf(decoded.filesToAdd()),
         sizeOf(decoded.filesToRemove()), sizeOf(decoded.filesToRename()), TimeUnit.NANOSECONDS.toMillis(elapsedNanos));
+  }
+
+  /**
+   * The ids of the files the schema change {@code decoded} belongs to creates, over all of its entries (issue #13484). A
+   * delivery-only entry adds the files it names to those of its database's change in progress and answers an empty set: nothing
+   * is published yet. The publishing entry takes them out and answers them with its own.
+   */
+  // @VisibleForTesting
+  Set<Integer> filesCreatedByTheChange(final RaftLogEntryCodec.DecodedEntry decoded, final boolean deliveryOnlyEntry) {
+    final String databaseName = decoded.databaseName();
+    final Map<Integer, String> named = decoded.filesToAdd();
+    if (deliveryOnlyEntry) {
+      if (!isEmptyMap(named) && databaseName != null)
+        filesCreatedByUnpublishedChunks.computeIfAbsent(databaseName, k -> new HashSet<>()).addAll(named.keySet());
+      return Collections.emptySet();
+    }
+
+    final Set<Integer> delivered = databaseName != null ? filesCreatedByUnpublishedChunks.remove(databaseName) : null;
+    if (delivered == null)
+      return isEmptyMap(named) ? Collections.emptySet() : named.keySet();
+    if (!isEmptyMap(named))
+      delivered.addAll(named.keySet());
+    return delivered;
+  }
+
+  /**
+   * Forgets the files the delivery-only entries of a change of {@code databaseName} created, for a database being dropped, whose
+   * change will never be published (issue #13484). Without it the ids of a dropped database would stay for the life of the
+   * node, one set per name ever dropped mid-change.
+   */
+  void forgetUnpublishedChange(final String databaseName) {
+    if (databaseName != null)
+      filesCreatedByUnpublishedChunks.remove(databaseName);
+  }
+
+  /**
+   * Asks every vector index whose graph file the published change created to certify the graph that came with it (issue
+   * #13484), whether the change came in one entry or in several (see {@link #filesCreatedByTheChange}). An index whose graph
+   * file is not among them answers at once, so the cost is one look per vector index for a change that adds files. A failure
+   * here only costs the index a rebuild on first use, as before, and never fails the apply.
+   */
+  private void certifyGraphsShippedByCompaction(final LocalSchema schema, final Set<Integer> addedFileIds) {
+    try {
+      for (final Index index : schema.getIndexes())
+        if (index instanceof LSMVectorIndex vectorIndex)
+          vectorIndex.certifyGraphShippedByReplicatedCompaction(addedFileIds);
+        else if (index instanceof TypeIndex typeIndex)
+          for (final IndexInternal bucketIndex : typeIndex.getIndexesOnBuckets())
+            if (bucketIndex instanceof LSMVectorIndex vectorIndex)
+              vectorIndex.certifyGraphShippedByReplicatedCompaction(addedFileIds);
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(sm, Level.WARNING, "Could not certify the vector graphs a replicated compaction shipped: %s",
+          e.toString());
+    }
   }
 
   private static int sizeOf(final Map<?, ?> map) {
@@ -961,7 +1056,8 @@ final class SchemaEntryApplier {
    * for a sealed entry while a range is pending on the leader, which lasts until its next refresh.
    */
   static boolean carriesAContinuousAggregateRecordNotHeldHere(final DatabaseInternal db, final String schemaJson) {
-    if (schemaJson == null || !schemaJson.contains(ArcadeStateMachine.INVALIDATED_FROM_KEY))
+    if (schemaJson == null || !(schemaJson.contains(ContinuousAggregateImpl.INVALIDATED_FROM_KEY)
+        || schemaJson.contains(ContinuousAggregateImpl.LATE_INVALIDATED_FROM_KEY)))
       return false;
     final JSONObject aggregates = new JSONObject(schemaJson).getJSONObject("continuousAggregates", null);
     // the key elsewhere in the document (a property or type named after it) is no record: the entry stays a compaction's
@@ -970,19 +1066,38 @@ final class SchemaEntryApplier {
     final Schema schema = db.getSchema();
     for (final String name : aggregates.keySet()) {
       final JSONObject definition = aggregates.getJSONObject(name, null);
-      if (definition == null || !definition.has(ArcadeStateMachine.INVALIDATED_FROM_KEY) || !definition.has(ArcadeStateMachine.INVALIDATED_TO_KEY))
+      if (definition == null)
+        continue;
+      // the keys every build reads, and the ones of the late appends since #13049: the definition holds a range under each pair
+      final boolean carriesDeleted = definition.has(ContinuousAggregateImpl.INVALIDATED_FROM_KEY)
+          && definition.has(ContinuousAggregateImpl.INVALIDATED_TO_KEY);
+      final boolean carriesLate = definition.has(ContinuousAggregateImpl.LATE_INVALIDATED_FROM_KEY)
+          && definition.has(ContinuousAggregateImpl.LATE_INVALIDATED_TO_KEY);
+      if (!carriesDeleted && !carriesLate)
         continue;
       if (!schema.existsContinuousAggregate(name)
           || !(schema.getContinuousAggregate(name) instanceof ContinuousAggregateImpl held))
         return true;
-      final ContinuousAggregateImpl.Invalidation record = held.getInvalidation();
-      if (record == null || record.fromTs() != definition.getLong(ArcadeStateMachine.INVALIDATED_FROM_KEY, Long.MIN_VALUE)
-          || record.toTs() != definition.getLong(ArcadeStateMachine.INVALIDATED_TO_KEY, Long.MIN_VALUE))
+      // the record as this node would write it: compared with the leader's, key by key, so the two spell the same hull
+      final JSONObject heldDefinition = held.toJSON();
+      if (carriesDeleted && differsFromRecordHeld(heldDefinition, definition, ContinuousAggregateImpl.INVALIDATED_FROM_KEY,
+          ContinuousAggregateImpl.INVALIDATED_TO_KEY))
+        return true;
+      if (carriesLate && differsFromRecordHeld(heldDefinition, definition, ContinuousAggregateImpl.LATE_INVALIDATED_FROM_KEY,
+          ContinuousAggregateImpl.LATE_INVALIDATED_TO_KEY))
         return true;
     }
     // A record this node holds and the document does not is left alone: the leader cleared it with a refresh, whose plain schema save
     // is not shipped (issue #10634), and a promoted leader holding it only recomputes those buckets once more
     return false;
+  }
+
+  /** Whether the range {@code definition} holds under {@code fromKey} and {@code toKey} is not the one {@code heldDefinition} holds. */
+  private static boolean differsFromRecordHeld(final JSONObject heldDefinition, final JSONObject definition, final String fromKey,
+      final String toKey) {
+    return !heldDefinition.has(fromKey) || !heldDefinition.has(toKey)
+        || heldDefinition.getLong(fromKey, Long.MIN_VALUE) != definition.getLong(fromKey, Long.MIN_VALUE)
+        || heldDefinition.getLong(toKey, Long.MIN_VALUE) != definition.getLong(toKey, Long.MIN_VALUE);
   }
 
   private static boolean isEmptyMap(final Map<?, ?> map) {

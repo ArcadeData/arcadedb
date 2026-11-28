@@ -63,6 +63,10 @@ import java.util.Set;
  * An index is used only when the value can be keyed by it the way the walk compares it ({@link #isKeyableBy}): the seek only
  * narrows the candidates, the step still evaluates the pattern on each of them, so what it must never do is miss a vertex the walk
  * would have answered.
+ * <p>
+ * A pattern pinned to a list of values ({@code WHERE n.uuid IN $keys}, issue #12546) is planned the same way, by {@link #ofInList}:
+ * the buckets, the choice of the index of each one and the seek that drops the buckets another index answers for are the ones of the
+ * equality. What differs is the key: the index must stand on that one property, and every key of the list must be keyable by it.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -126,6 +130,36 @@ final class MultiTypeNodeIndexPlan {
    */
   static MultiTypeNodeIndexPlan of(final Schema schema, final List<String> labels, final boolean disjunction,
       final Map<String, Object> pinned) {
+    return plan(schema, labels, disjunction, (index, unkeyable) -> coverOf(index, pinned, unkeyable));
+  }
+
+  /**
+   * The plan of a pattern whose property is pinned to a list of values ({@code n.uuid IN $keys}, issue #12546): the same plan as
+   * {@link #of}, with the same buckets and the same index choice, but an index answers only when it stands on that one property
+   * alone, and only when EVERY key of the list can be keyed by it. One key that cannot is enough to leave the buckets to the walk,
+   * since the seek of the other keys would miss what the walk finds for that one.
+   *
+   * @param property the property the list pins
+   * @param keys     the distinct keys of the list, none of them null, each one a one-element array as the seek of the list reads
+   *                 them: an empty list is a plan too, whose seeks are never opened
+   * @return null when no index answers the property, {@link #UNKEYABLE} when one does but not with these keys
+   */
+  static MultiTypeNodeIndexPlan ofInList(final Schema schema, final List<String> labels, final boolean disjunction, final String property,
+      final List<Object[]> keys) {
+    // whether every key can be keyed depends on the type of the key of the index only, and many indexes share one
+    final Boolean[] keyableByKeyType = new Boolean[Type.values().length];
+    return plan(schema, labels, disjunction, (index, unkeyable) -> coverOfInList(index, property, keys, keyableByKeyType, unkeyable));
+  }
+
+  /** What tells whether an index can answer the pattern, and what it covers when it can. */
+  @FunctionalInterface
+  private interface CoverFinder {
+    /** The cover of the index, null if it cannot answer; {@code unkeyable[0]} is set when it could with other values. */
+    Cover coverOf(TypeIndex index, boolean[] unkeyable);
+  }
+
+  private static MultiTypeNodeIndexPlan plan(final Schema schema, final List<String> labels, final boolean disjunction,
+      final CoverFinder finder) {
     final List<DocumentType> types = Labels.matchingVertexTypes(schema, labels, disjunction);
     if (types.isEmpty())
       return null;
@@ -144,7 +178,7 @@ final class MultiTypeNodeIndexPlan {
       for (final TypeIndex index : type.getAllIndexes(!everyType)) {
         if (seen != null && !seen.add(index))
           continue;
-        final Cover cover = coverOf(index, pinned, unkeyable);
+        final Cover cover = finder.coverOf(index, unkeyable);
         if (cover != null)
           covers.add(cover);
       }
@@ -252,14 +286,61 @@ final class MultiTypeNodeIndexPlan {
           unkeyable[0] = true;
           return null;
         }
-      final IndexInternal[] subIndexes = index.getIndexesOnBuckets();
-      final int[] bucketIds = new int[subIndexes.length];
-      for (int i = 0; i < bucketIds.length; i++)
-        bucketIds[i] = subIndexes[i].getAssociatedBucketId();
-      return new Cover(index, names, bucketIds);
+      return coverOfBuckets(index, names);
     } catch (final IndexException e) {
       return null; // dropped or rebuilt since it was listed: not a candidate, the walk answers for its buckets
     }
+  }
+
+  /**
+   * What the index covers if it can answer a list of keys of one property, null otherwise: it is ready for queries, it is a key
+   * index on that property alone, and every key can be keyed by it. {@code unkeyable[0]} is set when the index is one that would
+   * answer if every key could be keyed by it.
+   */
+  private static Cover coverOfInList(final TypeIndex index, final String property, final List<Object[]> keys,
+      final Boolean[] keyableByKeyType, final boolean[] unkeyable) {
+    try {
+      if (!index.isReadyForQueries())
+        return null; // an index a concurrent DDL is rebuilding answers nothing yet
+      final List<String> properties = index.getPropertyNamesIfExactKeyLookup();
+      // not a key index (a FULL_TEXT index answers by token, issue #8439), dropped meanwhile, or a key that is more than the
+      // property: a list is no equality on the whole key of an index on more columns
+      if (properties == null || properties.size() != 1 || !properties.getFirst().equals(property))
+        return null;
+      final Type[] keyTypes = index.getKeyTypes();
+      if (keyTypes == null || keyTypes.length < 1)
+        return null; // an index that does not say what its key holds cannot be asked with a value
+      if (!allKeyableBy(keyTypes[0], keys, keyableByKeyType)) {
+        unkeyable[0] = true;
+        return null;
+      }
+      return coverOfBuckets(index, new String[] { property });
+    } catch (final IndexException e) {
+      return null; // dropped or rebuilt since it was listed: not a candidate, the walk answers for its buckets
+    }
+  }
+
+  private static Cover coverOfBuckets(final TypeIndex index, final String[] propertyNames) {
+    final IndexInternal[] subIndexes = index.getIndexesOnBuckets();
+    final int[] bucketIds = new int[subIndexes.length];
+    for (int i = 0; i < bucketIds.length; i++)
+      bucketIds[i] = subIndexes[i].getAssociatedBucketId();
+    return new Cover(index, propertyNames, bucketIds);
+  }
+
+  /** True when every key can be keyed by an index of this key type, which is asked once per key type and not once per index. */
+  private static boolean allKeyableBy(final Type keyType, final List<Object[]> keys, final Boolean[] keyableByKeyType) {
+    if (keyType == null)
+      return keys.isEmpty();
+    Boolean all = keyableByKeyType[keyType.ordinal()];
+    if (all == null) {
+      boolean every = true;
+      for (int i = 0; every && i < keys.size(); i++)
+        every = isKeyableBy(keyType, keys.get(i)[0]);
+      all = every;
+      keyableByKeyType[keyType.ordinal()] = all;
+    }
+    return all;
   }
 
   /**

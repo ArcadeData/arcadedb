@@ -163,6 +163,16 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     return arg.toString();
   }
 
+  /** A string option of a config map: null when absent or null; anything else than a string is refused, by name. */
+  protected String configString(final Map<String, Object> config, final String key) {
+    final Object value = config == null ? null : config.get(key);
+    if (value == null)
+      return null;
+    if (value instanceof String text)
+      return text;
+    throw new IllegalArgumentException(getName() + "(): " + key + " must be a string, got " + value.getClass().getSimpleName());
+  }
+
   /**
    * Parses a relationship-type filter (a name, a comma- or pipe-separated list, or a collection; null or blank means every
    * type) and checks every name against the schema. A name that is not an edge type is refused rather than answered with
@@ -1047,6 +1057,34 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
   }
 
   /**
+   * Refuses the edge weights of an algorithm that distributes or sums them (rank shares, weighted degrees, cut weights)
+   * when one of them is negative, NaN or infinite. One such weight does not make a wrong answer for one node: it reaches
+   * every total it is summed into and from there every result, so {@code algo.pagerank} answered NaN for every node,
+   * {@code algo.louvain} a NaN modularity, and {@code algo.maxKCut} an infinite cut, or none at all, without an error
+   * (issue #12957). The weighted path finders skip such an edge instead (issue #9443), since leaving an edge out of a path
+   * is a meaningful answer; leaving it out of a distribution is not.
+   * <p>
+   * Called only for a caller-named weight property: the unit weights of an unweighted call are valid by construction.
+   * One pass over the arrays already built, nothing allocated.
+   *
+   * @param adjacency      the weighted adjacency the algorithm is about to run on
+   * @param weightProperty the edge property the weights were read from, for the exception message
+   * @param guard          checkpoint for the pass, which visits every edge entry of the graph
+   */
+  protected void requireFiniteNonNegativeWeights(final GraphData.WeightedAdjacency adjacency, final String weightProperty,
+      final WorkGuard guard) {
+    final double[][] weights = adjacency.weights();
+    for (int i = 0; i < weights.length; i++) {
+      guard.checkPeriodically(i);
+      for (final double w : weights[i])
+        // NaN fails both comparisons, so it is caught by the isFinite test; -0.0 is not below 0.0 and is accepted as 0
+        if (w < 0.0 || !Double.isFinite(w))
+          throw new IllegalArgumentException(
+              getName() + "(): the edge weights of '" + weightProperty + "' must be finite and non-negative, got " + w);
+    }
+  }
+
+  /**
    * Creates a {@link WorkGuard} sharing this command's {@link GlobalConfiguration#COMMAND_TIMEOUT} deadline.
    * <p>
    * The knobs that drive the CPU-bound loops of the algorithm procedures ({@code iterations}, {@code restarts},
@@ -1878,10 +1916,10 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
      * <p>
      * CSR-backed, this reads the count straight off {@link GraphTraversalProvider#getDegrees}, which for a
      * {@code GraphAnalyticalView} is an O(1)-per-node offset subtraction rather than an O(degree) walk - no
-     * neighbour-id array is ever allocated. {@code getDegrees} takes one edge type at a time (issue #6316: its
-     * other caller, {@code DegreeProductOp}, also calls it once per type), so an "all/several types" request is
-     * resolved to the provider's materialised types and summed per type, the same resolution
-     * {@link #weightedAdjacency} uses for its columnar path.
+     * neighbour-id array is ever allocated. The types are handed over in ONE call, none for all of them, so that the
+     * provider resolves them together and counts each edge once: summed here one type at a time, a type and its sub-type
+     * (which every "all types" request lists both of) counted the sub-type's edges twice, since a type's degree includes
+     * its sub-types' edges (issue #12075).
      */
     public int[] degrees(final Vertex.DIRECTION dir, final String... relTypes) {
       // Reserved before allocating, not after - the same "reserve while counting, not after" ordering
@@ -1889,24 +1927,15 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
       memory.reserve(saturatingProduct(nodeCount, INT_BYTES), "the degree buffer", nodeCount + " nodes");
       final int[] degrees = new int[nodeCount];
       if (provider != null) {
-        final String[] types = relTypes != null && relTypes.length > 0 ? relTypes : provider.getMaterializedEdgeTypes();
-        // types empty/null here means the graph genuinely has no materialised edges of any type - loadGraph's
-        // findProvider already required this provider to be isReady() and to cover every requested type before
-        // selecting it, so an empty result is "no edges exist", not "the provider couldn't answer": degrees
-        // staying all-zero is the correct answer for that graph, not a silent wrong one.
-        if (types != null && types.length > 0) {
-          // perType is a second nodeCount-sized scratch buffer, previously allocated with no reservation of its
-          // own at all - reserved here, separately, right before it is actually needed.
+        // A provider sums several slices through a second nodeCount-sized scratch buffer, and reads a single one straight into the
+        // result: the scratch is reserved only when more than one slice is asked for. The count is the provider's own resolution
+        // of the request, an upper bound of what it sums (it drops a type listed twice).
+        final String[] slices = relTypes != null && relTypes.length > 0 ?
+            provider.resolveEdgeTypes(relTypes) :
+            provider.getMaterializedEdgeTypes();
+        if (slices != null && slices.length > 1)
           memory.reserve(saturatingProduct(nodeCount, INT_BYTES), "the per-type degree scratch buffer", nodeCount + " nodes");
-          final int[] perType = new int[nodeCount];
-          for (final String type : types) {
-            // getDegrees() overwrites perType (it Arrays.fill(..., 0)s it before writing), never accumulates
-            // into it, so summing its result per type here is correct rather than double-counting.
-            provider.getDegrees(perType, dir, type);
-            for (int i = 0; i < nodeCount; i++)
-              degrees[i] += perType[i];
-          }
-        }
+        provider.getDegrees(degrees, dir, relTypes);
         return degrees;
       }
       // countEdges() returns long, narrowed here without an overflow check: this array is int[] because every

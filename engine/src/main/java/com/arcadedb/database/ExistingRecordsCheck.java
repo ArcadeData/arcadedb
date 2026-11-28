@@ -28,9 +28,11 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
+import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.utility.TimeBoundRegex;
 
 import java.io.IOException;
+import java.util.Collection;
 import java.util.Iterator;
 import java.util.List;
 
@@ -121,8 +123,29 @@ public final class ExistingRecordsCheck {
    * the type.
    */
   public static void requireDeclaration(final Database db, final DocumentType type, final Property property) {
+    requireDeclaration(db, type, property, "Cannot create property '" + type.getName() + "." + property.getName() + "'",
+        "Fix or delete the non-conforming records first");
+  }
+
+  /**
+   * The declaration a rename moves to the new name, held to what the records store under it (issue #12930). A rename relabels the
+   * schema and leaves every value under the old name (#7589), so a MANDATORY property of a type with records, or a constraint a
+   * value already stored under the new name breaks, would leave records violating it, each of them refused at its next update.
+   *
+   * @param renamed the property as it would be after the rename, carrying the new name and every constraint of the old one. Asked
+   *                before the rename changes anything, so it must be a copy that did not register the new name in the dictionary
+   *                (a commit of its own that a refusal would leave behind, issues #12958, #13092)
+   */
+  public static void requireRename(final Database db, final DocumentType type, final String oldName, final Property renamed) {
+    requireDeclaration(db, type, renamed, "Cannot rename property '" + type.getName() + "." + oldName + "' to '" + renamed.getName() + "'",
+        "A rename leaves the values under '" + oldName + "': copy them first (UPDATE `" + type.getName() + "` SET `" + renamed.getName()
+            + "` = `" + oldName + "`), or fix or delete the non-conforming records");
+  }
+
+  private static void requireDeclaration(final Database db, final DocumentType type, final Property property, final String refused,
+      final String remedy) {
     final DocumentValidator.StoredValueConstraints constraints = DocumentValidator.StoredValueConstraints.of(db, property);
-    // Nothing a stored record holds can violate this declaration (e.g. a plain LINK with no flags): skip the full read
+    // Nothing a stored record holds can violate this declaration (e.g. a BINARY with no flags): skip the full read
     if (!property.isMandatory() && !property.isNotNull() && !constraints.canBeViolatedOn(property))
       return;
 
@@ -133,11 +156,77 @@ public final class ExistingRecordsCheck {
       final DocumentValidator.ExistenceConstraint unmet = DocumentValidator.unmetExistenceConstraint(document, property);
       if (unmet != null)
         throw new ValidationException(kindOf(unmet),
-            createRefusal(type, property, document, DocumentValidator.describeUnmetExistenceConstraint(document, property)));
+            refusal(refused, document, DocumentValidator.describeUnmetExistenceConstraint(document, property), remedy));
       try {
         DocumentValidator.validateStoredValue(document, property, constraints);
       } catch (final ValidationException e) {
-        throw new ValidationException(e.getKind(), createRefusal(type, property, document, e.getMessage()), e);
+        throw new ValidationException(e.getKind(), refusal(refused, document, e.getMessage(), remedy), e);
+      }
+    }
+  }
+
+  /**
+   * The declarations a type is about to inherit from a new super type, held against its stored records and those of its sub types
+   * (issue #12030): {@code ALTER TYPE T SUPERTYPE +S} accepted a super type whose MANDATORY, NOTNULL, MIN, MAX, REGEXP or declared type
+   * the stored records of {@code T} violate, and every later write to them failed. One pass over the type, polymorphically, that stops
+   * at the first record violating any of {@code properties} and names it, as the other checks of this class do: the scan runs under the
+   * write lock of the schema change, so it must not pay for every offender of a type whose records all violate.
+   * <p>
+   * A record whose own type already sees a property is governed by that declaration, not by the inherited one, and is passed over for
+   * it. "Sees" is what the write path validates, the polymorphic properties of the record's type, a set that holds one entry for the
+   * properties that are equal (same name, declared type and element type) and both of two that differ in the declared type.
+   *
+   * @param superTypeName the super type about to be linked, for the message
+   * @param properties    the properties of the super type the type does not see yet
+   *
+   * @throws ValidationException naming the first violating record
+   */
+  public static void requireInheritedDeclarations(final Database db, final DocumentType type, final String superTypeName,
+      final List<Property> properties) {
+    final Property[] checked = new Property[properties.size()];
+    final DocumentValidator.StoredValueConstraints[] constraints = new DocumentValidator.StoredValueConstraints[checked.length];
+    int count = 0;
+    for (final Property property : properties) {
+      final DocumentValidator.StoredValueConstraints c = DocumentValidator.StoredValueConstraints.of(db, property);
+      // Nothing a stored record holds can violate this declaration (e.g. a plain LINK with no flags)
+      if (!property.isMandatory() && !property.isNotNull() && !c.canBeViolatedOn(property))
+        continue;
+      checked[count] = property;
+      constraints[count++] = c;
+    }
+    if (count == 0)
+      return;
+
+    // What a record type sees is asked once per type, not per record: the records come bucket by bucket, so a run of records shares it
+    final boolean[] seen = new boolean[count];
+    DocumentType seenBy = null;
+    final Iterator<Record> records = db.iterateType(type.getName(), true);
+    while (records.hasNext()) {
+      if (!(records.next() instanceof Document document))
+        continue;
+
+      final DocumentType recordType = document.getType();
+      if (recordType != seenBy) {
+        final Collection<? extends Property> visible = recordType.getPolymorphicProperties();
+        for (int i = 0; i < count; i++)
+          seen[i] = visible.contains(checked[i]);
+        seenBy = recordType;
+      }
+
+      for (int i = 0; i < count; i++) {
+        if (seen[i])
+          continue;
+
+        final Property property = checked[i];
+        final DocumentValidator.ExistenceConstraint unmet = DocumentValidator.unmetExistenceConstraint(document, property);
+        if (unmet != null)
+          throw new ValidationException(kindOf(unmet),
+              inheritRefusal(type, superTypeName, document, DocumentValidator.describeUnmetExistenceConstraint(document, property)));
+        try {
+          DocumentValidator.validateStoredValue(document, property, constraints[i]);
+        } catch (final ValidationException e) {
+          throw new ValidationException(e.getKind(), inheritRefusal(type, superTypeName, document, e.getMessage()));
+        }
       }
     }
   }
@@ -155,11 +244,15 @@ public final class ExistingRecordsCheck {
    * @param requiredBy the existence constraint being declared (MANDATORY or NOTNULL), or null for a MIN, a MAX or a REGEXP; when it is
    *                   set, {@code what} is the keyword of that constraint, which the column check names in its reason
    * @param what       what is being declared, for the message
+   *
+   * @throws SecurityException when the current user may not read the type, before any sample is looked at
    */
   private static void requireSamples(final Database db, final LocalTimeSeriesType type, final String propertyName,
       final ValidationException.Kind requiredBy, final String min, final String max, final String regexp, final String what) {
     final boolean required = requiredBy != null;
-    final TimeSeriesEngine engine = type.getEngine();
+    // a read of every sample of the type, so it is held to the per-type read check first, as the scan of the records of any other type
+    // is by their buckets: a TIMESERIES type owns no bucket, so this is the only check the samples have
+    final TimeSeriesEngine engine = type.getEngine(SecurityDatabaseUser.ACCESS.READ_RECORD);
     final Property property = type.getPolymorphicPropertyIfExists(propertyName);
     if (engine == null || property == null)
       return;
@@ -221,10 +314,14 @@ public final class ExistingRecordsCheck {
     }
   }
 
-  private static String createRefusal(final DocumentType type, final Property property, final Document document,
+  private static String inheritRefusal(final DocumentType type, final String superTypeName, final Document document,
       final String reason) {
-    return "Cannot create property '" + type.getName() + "." + property.getName() + "': record " + document.getIdentity()
-        + " violates it, " + reason + ". Fix or delete the non-conforming records first";
+    return "Cannot make type '" + type.getName() + "' a sub type of '" + superTypeName + "': record " + document.getIdentity()
+        + " violates the properties it would inherit, " + reason + ". Fix or delete the non-conforming records first";
+  }
+
+  private static String refusal(final String refused, final Document document, final String reason, final String remedy) {
+    return refused + ": record " + document.getIdentity() + " violates it, " + reason + ". " + remedy;
   }
 
   private static ValidationException.Kind kindOf(final DocumentValidator.ExistenceConstraint unmet) {

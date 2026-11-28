@@ -76,6 +76,8 @@ public class RedisNetworkExecutor extends Thread {
   private volatile boolean             shutdown         = false;
   private          int                 posInBuffer      = 0;
   private final    StringBuilder       value            = new StringBuilder();
+  /** The heap the reply in {@link #value} takes, given back once it is sent, see {@link #queueReply}. */
+  private final    RedisReplyHeap      replyHeap        = new RedisReplyHeap("HMGET reply");
   private final    byte[]              buffer           = new byte[32 * 1024];
   private          int                 bytesRead        = 0;
   /** Replies written to the channel's buffer and not flushed yet, see {@link #queueReply}. */
@@ -97,6 +99,9 @@ public class RedisNetworkExecutor extends Thread {
   private final    int                 maxMultiBulkDepth;
   private final    int                 maxMultiBulkLength;
   private final    int                 maxBulkLength;
+  // what a connection is held to until it authenticates: the configured limit, or the smaller bound below
+  private final    int                 maxMultiBulkLengthBeforeAuth;
+  private final    int                 maxBulkLengthBeforeAuth;
 
   // A misconfigured protocol-limit setting is re-read (and re-validated) on every new connection, since the
   // value can change at runtime; this only bounds the WARNING about it to once per setting per JVM, so a busy
@@ -113,6 +118,11 @@ public class RedisNetworkExecutor extends Thread {
   // The longest inline command line accepted, the bound Redis itself applies (PROTO_INLINE_MAX_SIZE): a client that sends
   // no LF is refused once this much has arrived (issue #10597)
   private static final int MAX_INLINE_LENGTH = 64 * 1024;
+
+  // The bounds Redis itself applies to a client that has not authenticated yet (networking.c): a command of at most 10 words,
+  // none longer than 16KB. AUTH and HELLO, the only commands such a client can run, fit well within them.
+  private static final int MAX_MULTIBULK_LENGTH_BEFORE_AUTH = 10;
+  private static final int MAX_BULK_LENGTH_BEFORE_AUTH      = 16 * 1024;
 
   /**
    * Bound of the buffer the replies of a batch are encoded into before they leave together: a larger reply is encoded into
@@ -140,6 +150,8 @@ public class RedisNetworkExecutor extends Thread {
     this.maxMultiBulkDepth = sanitizedLimit(server.getConfiguration(), GlobalConfiguration.REDIS_MAX_MULTIBULK_DEPTH, 2);
     this.maxMultiBulkLength = sanitizedLimit(server.getConfiguration(), GlobalConfiguration.REDIS_MAX_MULTIBULK_LENGTH, 1);
     this.maxBulkLength = sanitizedLimit(server.getConfiguration(), GlobalConfiguration.REDIS_MAX_BULK_LENGTH, 1);
+    this.maxMultiBulkLengthBeforeAuth = Math.min(maxMultiBulkLength, MAX_MULTIBULK_LENGTH_BEFORE_AUTH);
+    this.maxBulkLengthBeforeAuth = Math.min(maxBulkLength, MAX_BULK_LENGTH_BEFORE_AUTH);
 
     // Bound the pre-authentication window (issue #5912): without a read timeout, a client that opens a
     // connection and never completes AUTH/HELLO - or trickles bytes arbitrarily slowly - can hold this
@@ -253,6 +265,8 @@ public class RedisNetworkExecutor extends Thread {
       // Whatever ended the loop, the listener's permit must go back: a connection that dies without ever
       // authenticating would otherwise keep its slot for the life of the server (issue #6412).
       releasePreAuthTicket();
+      // a reply the connection was building when it ended is gone with it, and so is what it was charged
+      replyHeap.close();
     }
   }
 
@@ -267,33 +281,42 @@ public class RedisNetworkExecutor extends Thread {
    * command took. The replies go out when the input runs dry ({@link #fill()}), which is exactly when the client is waiting
    * for them, and in the order the commands arrived. Those are the only flush points with {@link #replyToClient}: a new code
    * path that can block after queuing a reply (other than by reading) must flush first, or the client waits for nothing.
+   * <p>
+   * The reply is gone from the builder when this returns, or fails: the heap it was charged is given back, and the array a large reply
+   * grew the builder to with it, so a connection that once read a large value does not hold that array for the rest of its life.
    */
   private void queueReply(final StringBuilder response) throws IOException {
-    if (LogManager.instance().isLoggable(this, Level.FINE))
-      LogManager.instance().log(this, Level.FINE, "Redis wrapper: Sending response back to the client '%s'...", response);
+    try {
+      if (LogManager.instance().isLoggable(this, Level.FINE))
+        LogManager.instance().log(this, Level.FINE, "Redis wrapper: Sending response back to the client '%s'...", response);
 
-    final int chars = response.length();
-    // Encoded straight into the connection's output buffer when every char is ASCII, the common case; the channel's own
-    // buffer holds 8KB, so writing through it flushed every second 4KB reply and undid the batching for larger values
-    if (chars <= MAX_PENDING_REPLY_BYTES) {
-      if (pendingReplyLength + chars > pendingReplies.length) {
-        if (pendingReplyLength + chars > MAX_PENDING_REPLY_BYTES)
-          writePendingReplies();
-        if (pendingReplyLength + chars > pendingReplies.length)
-          pendingReplies = Arrays.copyOf(pendingReplies,
-              Math.min(MAX_PENDING_REPLY_BYTES, Math.max(pendingReplyLength + chars, pendingReplies.length * 2)));
-      }
-      final int length = RedisBinaryCodec.encodeAscii(response, pendingReplies, pendingReplyLength);
-      if (length >= 0)
-        pendingReplyLength += length;
-      else
+      final int chars = response.length();
+      // Encoded straight into the connection's output buffer when every char is ASCII, the common case; the channel's own
+      // buffer holds 8KB, so writing through it flushed every second 4KB reply and undid the batching for larger values
+      if (chars <= MAX_PENDING_REPLY_BYTES) {
+        if (pendingReplyLength + chars > pendingReplies.length) {
+          if (pendingReplyLength + chars > MAX_PENDING_REPLY_BYTES)
+            writePendingReplies();
+          if (pendingReplyLength + chars > pendingReplies.length)
+            pendingReplies = Arrays.copyOf(pendingReplies,
+                Math.min(MAX_PENDING_REPLY_BYTES, Math.max(pendingReplyLength + chars, pendingReplies.length * 2)));
+        }
+        final int length = RedisBinaryCodec.encodeAscii(response, pendingReplies, pendingReplyLength);
+        if (length >= 0)
+          pendingReplyLength += length;
+        else
+          writeReplyBytes(RedisBinaryCodec.encode(response));
+      } else
         writeReplyBytes(RedisBinaryCodec.encode(response));
-    } else
-      writeReplyBytes(RedisBinaryCodec.encode(response));
 
-    batchReplyBytes += chars;
-    repliesPending = true;
-    response.setLength(0);
+      batchReplyBytes += chars;
+      repliesPending = true;
+    } finally {
+      response.setLength(0);
+      if (response.capacity() > MAX_PENDING_REPLY_BYTES)
+        response.trimToSize();
+      replyHeap.close();
+    }
   }
 
   /** A reply that does not go through the output buffer: what the buffer holds goes first, to keep the order. */
@@ -533,6 +556,9 @@ public class RedisNetworkExecutor extends Thread {
       } catch (final Exception e) {
         // the span is failed (issue #11638) before it is closed below: the client gets its error reply, the trace the error status
         span.error(e);
+        // what the command wrote before it failed is not a reply: the client gets the error alone (HMGET writes its entries as it
+        // reads them)
+        value.setLength(0);
         value.append('-');
         value.append(respErrorPrefix(e));
         value.append(' ');
@@ -798,48 +824,56 @@ public class RedisNetworkExecutor extends Thread {
     }
   }
 
+  /**
+   * One entry per key, in order, a key with nothing behind it (or a RID with no record, issue #9055) keeping its place as a null
+   * entry. Each entry is written straight into the reply as it is read, without a copy of it kept beside, and is charged to
+   * {@link #replyHeap}, which refuses the command once the reply does not fit the budget the queries share, instead of building it.
+   * <p>
+   * The header can go first, since it is the number of keys. A key that fails after some entries were written leaves a reply shorter
+   * than its header: {@link #executeCommand} drops what a failed command wrote, so the client gets the error alone, as it did when
+   * every key was resolved before the header was written (issue #9055).
+   */
   private void hMGet(final List<Object> list) {
     final String bucketName = (String) list.get(1);
     final List<Object> keys = list.subList(2, list.size());
 
+    value.append("*");
+    value.append(keys.size());
+
     // Check for transient mode: no dot in bucketName
     final int pos = bucketName.indexOf(".");
     if (pos < 0) {
-      // Transient mode: resolve every key BEFORE writing the array header, so a failure can never leave a reply that is
-      // shorter than its header announces (issue #9055). A RID with no record keeps its place as a null entry.
-      final List<String> values = new ArrayList<>(keys.size());
       Database database = null;
       for (final Object keyObj : keys) {
+        final int before = value.length();
         final String key = keyObj.toString();
+        appendCrLf();
         if (key.startsWith("#")) {
           // BY RID - persistent mode
           if (database == null)
             database = getAuthorizedDatabase(bucketName);
           final Record record = RedisRecords.lookupByRid(database, RedisRecords.parseRid(key));
-          values.add(record != null ? record.toJSON(true).toString() : null);
+          respondValue(record != null ? record.toJSON(true) : null, true);
         } else
-          values.add(getTransientValue(bucketName, key));
-      }
-
-      value.append("*");
-      value.append(values.size());
-      for (final String v : values) {
-        appendCrLf();
-        respondValue(v, true);
+          respondValue(getTransientValue(bucketName, key), true);
+        replyHeap.add(value.length() - before);
       }
     } else {
-      // Persistent mode: get records from database
-      final List<Record> records = getRecordsByIndex(bucketName, keys);
+      // Persistent mode: get records from database, by the index the bucket names. A key that is not there is a null entry
+      final String databaseName = bucketName.substring(0, pos);
+      final String keyType = bucketName.substring(pos + 1);
 
-      value.append("*");
-      value.append(records.size());
+      final DatabaseInternal database = getAuthorizedDatabase(databaseName);
 
-      for (int i = 0; i < records.size(); i++) {
+      for (final Object key : keys) {
+        final int before = value.length();
         appendCrLf();
-        final Record record = records.get(i);
-        respondValue(record != null ? record.toJSON(true) : null, true);
+        final Identifiable found = RedisIndexKeys.lookup(database, keyType, key.toString());
+        respondValue(found != null ? found.asDocument().toJSON(true) : null, true);
+        replyHeap.add(value.length() - before);
       }
     }
+    replyHeap.flush();
   }
 
   private void hSet(final List<Object> list) {
@@ -1392,9 +1426,9 @@ public class RedisNetworkExecutor extends Thread {
         // error branch for no behavioral benefit over just treating it the same as the one negative value
         // that is defined.
         return null;
-      if (size > maxBulkLength)
-        throw new RedisProtocolLimitException(
-            "Protocol error: invalid bulk length " + size + " (maximum allowed is " + maxBulkLength + ")");
+      final int bulkLimit = authenticatedUser != null ? maxBulkLength : maxBulkLengthBeforeAuth;
+      if (size > bulkLimit)
+        throw lengthRefused("bulk", size, bulkLimit, bulkLimit < maxBulkLength);
 
       final String value = parseChars(size);
       skipLF();
@@ -1405,9 +1439,9 @@ public class RedisNetworkExecutor extends Thread {
       if (arraySize <= 0)
         // RESP2 null array (*-1) or an explicit empty array (*0): nothing to read.
         return new ArrayList<>();
-      if (arraySize > maxMultiBulkLength)
-        throw new RedisProtocolLimitException(
-            "Protocol error: invalid multibulk length " + arraySize + " (maximum allowed is " + maxMultiBulkLength + ")");
+      final int multiBulkLimit = authenticatedUser != null ? maxMultiBulkLength : maxMultiBulkLengthBeforeAuth;
+      if (arraySize > multiBulkLimit)
+        throw lengthRefused("multibulk", arraySize, multiBulkLimit, multiBulkLimit < maxMultiBulkLength);
 
       final List<Object> array = new ArrayList<>();
       for (int i = 0; i < arraySize; ++i)
@@ -1423,6 +1457,18 @@ public class RedisNetworkExecutor extends Thread {
       // Inside an array RESP has no framing to resynchronize to: logging and reading on wrote two SEVERE records per
       // byte, for as long as the client kept writing (issue #10597)
       throw new RedisProtocolLimitException("Protocol error: expected '$', got '" + printable(b) + "'");
+  }
+
+  /**
+   * The refusal of a declared length above {@code limit}, in the words Redis gives; {@code beforeAuth} when the limit is the one
+   * of a connection that has not authenticated yet, which is lower than the configured one.
+   */
+  private static RedisProtocolLimitException lengthRefused(final String what, final long declared, final int limit,
+      final boolean beforeAuth) {
+    return new RedisProtocolLimitException(
+        "Protocol error: invalid " + what + " length " + declared + " (maximum allowed is " + limit + (beforeAuth ?
+            " before authentication" :
+            "") + ")");
   }
 
   /**
@@ -1450,10 +1496,10 @@ public class RedisNetworkExecutor extends Thread {
     if (length > 0 && line[length - 1] == '\r')
       --length;
     final List<Object> args = splitInlineArguments(line, length);
-    // the configured bound on a command's arguments holds for the inline form too, not only for a RESP array
-    if (args.size() > maxMultiBulkLength)
-      throw new RedisProtocolLimitException(
-          "Protocol error: invalid multibulk length " + args.size() + " (maximum allowed is " + maxMultiBulkLength + ")");
+    // the bound on a command's arguments holds for the inline form too, not only for a RESP array
+    final int multiBulkLimit = authenticatedUser != null ? maxMultiBulkLength : maxMultiBulkLengthBeforeAuth;
+    if (args.size() > multiBulkLimit)
+      throw lengthRefused("multibulk", args.size(), multiBulkLimit, multiBulkLimit < maxMultiBulkLength);
     // An HTTP request sent to this port (a browser form posting cross-protocol) would otherwise be read line by line as
     // commands: refused at its first line, as Redis refuses it
     if (!args.isEmpty() && args.getFirst() instanceof String name && (name.equalsIgnoreCase("POST") || name.equalsIgnoreCase(
@@ -1679,15 +1725,22 @@ public class RedisNetworkExecutor extends Thread {
    * {@link StringBuilder} one UTF-16 char at a time and copying it via {@code toString()} - also keeps the
    * transient cost close to the wire size instead of roughly double it. {@code size} is assumed
    * non-negative: the RESP2 null bulk string ({@code $-1}) is handled by the caller before this is reached.
+   * <p>
+   * {@code size} is what the client declared, not what it has sent: the array starts at the size of the read buffer at most and
+   * doubles, once more bytes have arrived, up to {@code size}, so the memory held follows the bytes received. A value that fits
+   * the read buffer, the common case, is still read into one array of its own size.
    */
   private String parseChars(final int size) throws IOException {
-    final byte[] bytes = new byte[size];
+    byte[] bytes = new byte[Math.min(size, buffer.length)];
     int read = 0;
     // copied a buffer at a time rather than a byte at a time: a 100-byte value used to be 100 calls
     while (read < size && !shutdown) {
       if (posInBuffer >= bytesRead)
         fill();
-      final int chunk = Math.min(size - read, bytesRead - posInBuffer);
+      if (read == bytes.length)
+        // after the read above, so the bigger array is only made for bytes that are there to go in it
+        bytes = Arrays.copyOf(bytes, (int) Math.min(size, 2L * bytes.length));
+      final int chunk = Math.min(bytes.length - read, bytesRead - posInBuffer);
       System.arraycopy(buffer, posInBuffer, bytes, read, chunk);
       posInBuffer += chunk;
       read += chunk;
@@ -1745,7 +1798,7 @@ public class RedisNetworkExecutor extends Thread {
       final String databaseName = bucketName.substring(0, pos);
       final String keyType = bucketName.substring(pos + 1);
 
-      final Database database = getAuthorizedDatabase(databaseName);
+      final DatabaseInternal database = getAuthorizedDatabase(databaseName);
 
       // "not found" only for a key that is not there: never for one a concurrent CREATE or DROP INDEX hid (#9811)
       final Identifiable found = RedisIndexKeys.lookup(database, keyType, key);
@@ -1762,25 +1815,5 @@ public class RedisNetworkExecutor extends Thread {
     final DatabaseInternal database = getAuthorizedDatabase(databaseName);
     final Object value = database.getGlobalVariableStore().get(key);
     return value != null ? value.toString() : null;
-  }
-
-  /**
-   * Gets the records an index maps {@code keys} to, null for a key that is not there. Only HMGET's {@code <database>.<index>} form
-   * reaches it: the RID form is answered by HMGET's own loop, which also resolves the transient keys mixed with the RIDs.
-   */
-  private List<Record> getRecordsByIndex(final String bucketName, final List<Object> keys) {
-    final List<Record> records = new ArrayList<>(keys.size());
-
-    final int pos = bucketName.indexOf(".");
-    final String databaseName = bucketName.substring(0, pos);
-    final String keyType = bucketName.substring(pos + 1);
-
-    final Database database = getAuthorizedDatabase(databaseName);
-
-    for (final Object key : keys) {
-      final Identifiable found = RedisIndexKeys.lookup(database, keyType, key.toString());
-      records.add(found != null ? found.asDocument() : null);
-    }
-    return records;
   }
 }

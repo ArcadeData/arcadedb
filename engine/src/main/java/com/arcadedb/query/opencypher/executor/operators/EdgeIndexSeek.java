@@ -40,7 +40,7 @@ import java.util.Locale;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class EdgeIndexSeek extends AbstractPhysicalOperator {
+public class EdgeIndexSeek extends AbstractPhysicalOperator implements RelationshipAnchor {
   private final List<EdgeIndexSeedPlanner.TypeSeek> seeks;
   private final Direction                           direction;
   private final String                              sourceVariable;
@@ -78,7 +78,7 @@ public class EdgeIndexSeek extends AbstractPhysicalOperator {
         targetFilter, null, context);
   }
 
-  /** The variables a row of this operator binds: both endpoints and the relationship. */
+  @Override
   public List<String> getBoundVariables() {
     final List<String> bound = new ArrayList<>(3);
     bound.add(sourceVariable);

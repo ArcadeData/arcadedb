@@ -331,9 +331,33 @@ class DefaultDatabasesTest {
       assertThatThrownBy(() -> DefaultDatabaseCredential.parse("jay::admin")).hasMessageContaining("empty password");
     }
 
+    /** A credential with a password creates the user, so its name is held to the rule every creation of a user is held to. */
+    @Test
+    void aUserNameThatCannotBeStoredIsRefusedWhenTheCredentialCarriesAPassword() {
+      assertThatThrownBy(() -> DefaultDatabaseCredential.parse("jay%20:miner")).isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("user name that starts or ends with whitespace");
+      assertThatThrownBy(() -> DefaultDatabaseCredential.parse("%20jay:miner:admin")).hasMessageContaining("starts or ends with whitespace");
+      assertThatThrownBy(() -> DefaultDatabaseCredential.parse("ja%20%20y:miner")).hasMessageContaining("consecutive whitespace");
+      assertThat(DefaultDatabaseCredential.parse("jay%20miner:miner").user()).as("one inner space is a name like any other")
+          .isEqualTo("jay miner");
+      assertThat(DefaultDatabaseCredential.parse("jay%20")).as("a credential that only names a user creates none")
+          .isEqualTo(new DefaultDatabaseCredential("jay ", null, null));
+    }
+
     // ---------------------------------------------------------------------------------------------
     // What the server does with it at startup
     // ---------------------------------------------------------------------------------------------
+
+    @Test
+    void aUserNameThatCannotBeStoredCreatesNoUserAtStartup() {
+      startWith(DATABASE + "[" + USER + "%20:pass11269:admin]");
+
+      assertThat(server.getStatus()).isEqualTo(ArcadeDBServer.STATUS.ONLINE);
+      assertThat(server.getSecurity().existsUser(USER + " ")).isFalse();
+      assertThat(server.getSecurity().existsUser(USER)).isFalse();
+      assertThat(warnings).anySatisfy(line -> assertThat(line).contains("starts or ends with whitespace"));
+      assertThat(warnings).noneMatch(line -> line.contains("pass11269"));
+    }
 
     @Test
     void aPasswordWithEncodedSeparatorsAuthenticatesAsWritten() {

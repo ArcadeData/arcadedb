@@ -644,6 +644,11 @@ public class BaseExpression extends MathExpression {
   public void extractSubQueries(final SubQueryCollector collector) {
     if (this.identifier != null)
       this.identifier.extractSubQueries(collector);
+    // A PARENTHESIZED EXPRESSION ((SELECT max(x) FROM U)[0].m + 1) OR A MAP LITERAL: ITS
+    // SUB-QUERIES RAN ONCE PER ROW, UNSEEN BY THE PLANNER (ISSUE #12714). CASE BRANCHES AND ARRAY ITEMS ARE NOT REACHED
+    // THROUGH HERE: THEIR NODES DO NOT LIFT, SO A BRANCH NOT TAKEN STILL RUNS NOTHING
+    if (this.expression != null)
+      this.expression.extractSubQueries(collector);
   }
 
   /**

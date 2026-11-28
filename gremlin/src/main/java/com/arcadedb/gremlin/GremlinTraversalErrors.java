@@ -41,7 +41,10 @@ import java.util.regex.Pattern;
  *   {@link UnsupportedOperationException} or {@link NullPointerException} is the traversal's fault only when TinkerPop's code
  *   raised it, read from the first frame of its stack that is not the JDK's (a {@code checkcast} in a step, a
  *   {@code String.compareTo} the step called). The same exception raised by ArcadeDB's code under a step is a fault of the server
- *   and keeps its classification, which is also why the root decides and not some exception along the chain.</li>
+ *   and keeps its classification, which is also why the root decides and not some exception along the chain. A
+ *   {@link ClassCastException} or {@link NullPointerException} with no frames at all is the one the JVM stripped of its trace after
+ *   a few thousand throws from the same site ({@code OmitStackTraceInFastThrow}, issue #12526): it is read as the traversal's, so
+ *   that the verdict on a request does not change with the traffic that came before it.</li>
  * </ul>
  * A wrong value type becomes a {@link TypeMismatchException}, as the other query languages report one, and a traversal of the wrong
  * shape a {@link CommandParsingException}, the failed semantic validation that category stands for. Both keep TinkerPop's message,
@@ -55,6 +58,9 @@ public final class GremlinTraversalErrors {
   private static final String  TINKERPOP_PACKAGE = "org.apache.tinkerpop.gremlin.";
   // THE MODULE AND CLASS LOADER A ClassCastException APPENDS: "(x is in unnamed module of loader 'app'; y is in module java.base ...)"
   private static final Pattern CAST_LOADER_DETAIL = Pattern.compile("\\s*\\([^()]*\\b(?:module|loader)\\b[^()]*\\)\\s*$");
+  // THE PREALLOCATED EXCEPTION OF HOTSPOT'S OmitStackTraceInFastThrow HAS NO MESSAGE: SAY WHAT A TRAVERSAL CAN MAKE OF IT (#12526)
+  private static final String  OMITTED_CAST_TEXT = "a step met a value of a type it is not defined for";
+  private static final String  NULL_TEXT         = "a step met a null it does not accept";
 
   private GremlinTraversalErrors() {
   }
@@ -68,16 +74,17 @@ public final class GremlinTraversalErrors {
       return new CommandParsingException(PREFIX + root.getMessage(), error);
 
     if (!(root instanceof ClassCastException || root instanceof IllegalStateException || root instanceof IllegalArgumentException
-        || root instanceof UnsupportedOperationException || root instanceof NullPointerException) || !raisedByTinkerPop(root))
+        || root instanceof UnsupportedOperationException || root instanceof NullPointerException) || !isTraversalFault(root))
       return null;
 
-    final String message = root.getMessage() != null ? root.getMessage() : root.getClass().getSimpleName();
+    final String message = root.getMessage();
     if (root instanceof ClassCastException)
-      return new TypeMismatchException(PREFIX + CAST_LOADER_DETAIL.matcher(message).replaceFirst(""), error);
+      return new TypeMismatchException(PREFIX + (message != null ? CAST_LOADER_DETAIL.matcher(message).replaceFirst("") : OMITTED_CAST_TEXT),
+          error);
     if (root instanceof NullPointerException)
       // THE HELPFUL NPE TEXT NAMES A JDK FIELD ("anotherString"), NOT WHAT THE CALLER WROTE: SAY WHAT IT MEANS FIRST
-      return new CommandParsingException(PREFIX + "a step met a null it does not accept (" + message + ")", error);
-    return new CommandParsingException(PREFIX + message, error);
+      return new CommandParsingException(PREFIX + NULL_TEXT + (message != null ? " (" + message + ")" : ""), error);
+    return new CommandParsingException(PREFIX + (message != null ? message : root.getClass().getSimpleName()), error);
   }
 
   /** {@code error} as the client error it stands for, or unchanged when it is none. */
@@ -86,9 +93,28 @@ public final class GremlinTraversalErrors {
     return clientError != null ? clientError : error;
   }
 
-  /** Whether the first frame of the stack that is not the JDK's belongs to TinkerPop. */
-  static boolean raisedByTinkerPop(final Throwable error) {
+  /**
+   * Whether the traversal, and not the server, is at fault for {@code error}, the root of a cause chain that is one of the
+   * exceptions a step raises.
+   * <p>
+   * An empty stack trace is the one case that cannot be read from the frames (issue #12526): HotSpot's
+   * {@code OmitStackTraceInFastThrow}, on by default, replaces an implicit {@link ClassCastException} or
+   * {@link NullPointerException} thrown a few thousand times from the same site with a preallocated instance that has no frames and
+   * no message, for as long as the JVM runs. Left to the frames, a traversal type error answered as a client error would turn into
+   * a server fault under sustained traffic. Such an exception cannot be attributed to ArcadeDB's code either, and what a repeated
+   * implicit cast or null in a traversal means is nearly always the type or the null of a value the request brought, so it is read as
+   * the traversal's. Only these two are read so: the others are raised with {@code new}, which fills the trace in, so an empty one
+   * on them leaves the origin unknown and the server answerable for it.
+   */
+  private static boolean isTraversalFault(final Throwable error) {
     final StackTraceElement[] frames = error.getStackTrace();
+    if (frames.length == 0)
+      return error instanceof ClassCastException || error instanceof NullPointerException;
+    return raisedByTinkerPop(frames);
+  }
+
+  /** Whether the first frame of the stack that is not the JDK's belongs to TinkerPop. */
+  private static boolean raisedByTinkerPop(final StackTraceElement[] frames) {
     int first = 0;
     while (first < frames.length && isJdkClass(frames[first].getClassName()))
       first++;

@@ -176,24 +176,23 @@ class ContainsAnyAllLookupTest extends TestHelper {
 
   /**
    * Pairs of numbers "=" does not compare by value, which no key of a value can answer: the operand that holds one is walked
-   * (issue #11703 review). A {@code Short} on the left narrows to a {@code Byte} on the right, so {@code (short) 256} equals
-   * {@code (byte) 0}; a {@code Double} narrows to a {@code Float} it meets, so {@code 16777217d} equals {@code 16777216f}; and a
+   * (issue #11703 review). A {@code Double} narrows to a {@code Float} it meets, so {@code 16777217d} equals {@code 16777216f}; and a
    * {@code Float} at or above 2^24 meets an integer through its shortest decimal, so {@code 33554448f} reads as 33554450.
    */
   @ParameterizedTest
   @ValueSource(ints = { 3, 100 })
   void numberPairsCompareAsTheWalkDoes(final int size) {
-    // SHORT ON THE LEFT, BYTE ON THE RIGHT: THE SHORT IS NARROWED
-    check("v CONTAINSANY $p", List.of((short) 256), padded(size, true, (byte) 0), true);
-    check("$p CONTAINSANY v", List.of((byte) 0), padded(size, true, (short) 256), true);
+    // A SHORT AND A BYTE COMPARE BY VALUE, whichever side each stands on: the byte widens, the short is never narrowed (issue #12681)
+    check("v CONTAINSANY $p", List.of((short) 256), padded(size, true, (byte) 0), false);
+    check("$p CONTAINSANY v", List.of((byte) 0), padded(size, true, (short) 256), false);
     final List<Object> bytes = padded(size, true, (byte) 0);
     final List<Object> shortRow = new ArrayList<>(bytes);
     shortRow.set(shortRow.size() - 1, (short) 256);
-    check("v CONTAINSALL $p", shortRow, bytes, true);
-    check("$p CONTAINSALL v", List.of((byte) 0), padded(size, true, (short) 256), true);
-    // a byte on the left is widened, and a short in the range of a byte is that byte
+    check("v CONTAINSALL $p", shortRow, bytes, false);
+    check("$p CONTAINSALL v", List.of((byte) 0), padded(size, true, (short) 256), false);
     check("v CONTAINSANY $p", List.of((byte) 0), padded(size, true, (short) 256), false);
     check("v CONTAINSANY $p", List.of((short) 5), padded(size, true, (byte) 5), true);
+    check("v CONTAINSANY $p", List.of((byte) 5), padded(size, true, (short) 5), true);
 
     // A FLOAT MEETS A DOUBLE IT IS THE NARROWING OF
     check("v CONTAINSANY $p", List.of(16777216f), padded(size, true, 16777217d), true);
@@ -213,14 +212,13 @@ class ContainsAnyAllLookupTest extends TestHelper {
     check("v CONTAINSANY $p", List.of(16777215f), padded(size, true, 16777214L), false);
     check("$p CONTAINSANY v", List.of(-3), padded(size, true, -3f), true);
 
-    // A FLOAT NEGATIVE ZERO: a byte or a short zero converts to the float 0.0f, which Float.equals separates from it, while an
-    // int or a long zero, another float zero and both double zeros equal it
+    // A FLOAT NEGATIVE ZERO is one value with every zero: a byte or a short zero, which "=" converts to the float 0.0f, as well
+    // as an int or a long zero, another float zero and both double zeros (issue #12984)
     for (final Object zero : List.of((byte) 0, (short) 0, 0, 0L, 0f, 0.0d, -0.0d, -0.0f)) {
-      final boolean equal = !(zero instanceof Byte || zero instanceof Short);
-      check("v CONTAINSANY $p", List.of(-0.0f), padded(size, true, zero), equal);
-      check("v CONTAINSANY $p", List.of(zero), padded(size, true, -0.0f), equal);
-      check("$p CONTAINSANY v", List.of(-0.0f), padded(size, true, zero), equal);
-      check("$p CONTAINSANY v", List.of(zero), padded(size, true, -0.0f), equal);
+      check("v CONTAINSANY $p", List.of(-0.0f), padded(size, true, zero), true);
+      check("v CONTAINSANY $p", List.of(zero), padded(size, true, -0.0f), true);
+      check("$p CONTAINSANY v", List.of(-0.0f), padded(size, true, zero), true);
+      check("$p CONTAINSANY v", List.of(zero), padded(size, true, -0.0f), true);
     }
   }
 

@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.RangeIndex;
 import com.arcadedb.query.sql.parser.*;
@@ -126,12 +127,13 @@ public class TraverseExecutionPlanner {
       handleInputParamAsTarget(result, target.getInputParam(), context);
     } else if (target.getIndex() != null) {
       handleIndexAsTarget(result, target.getIndex(), context);
-    } else if (target.getRids() != null && !target.getRids().isEmpty()) {
+    } else if (target.getRids() != null) {
+      // #12733: the literal empty list (FROM []) is an empty target, FetchFromRidsStep answers no rows for it
       handleRidsAsTarget(result, target.getRids(), context);
     } else if (target.getResultSet() != null) {
       result.chain(new FetchFromResultsetStep(target.getResultSet(), context));
     } else {
-      throw new UnsupportedOperationException("Target '" + target + "'");
+      throw new CommandSemanticException("Unsupported target '" + target + "'");
     }
   }
 
@@ -188,7 +190,7 @@ public class TraverseExecutionPlanner {
       }
       handleRidsAsTarget(result, rids, context);
     } else
-      throw new CommandExecutionException("Invalid target: " + paramValue);
+      throw SelectExecutionPlanner.invalidParameterTarget(inputParam, paramValue);
   }
 
   private void handleNoTarget(final SelectExecutionPlan result, final CommandContext context) {

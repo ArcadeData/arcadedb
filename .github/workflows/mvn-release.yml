@@ -1,24 +1,374 @@
+# Release in seven jobs, so nothing leaves the building before the release passed the vulnerability gate and the
+# jars are on Maven Central, and no job that runs a build holds `id-token: write`.
+#
+# Before the split, one `mvn deploy -Pdocker` pushed the Docker images from the `deploy` phase of `package`, while
+# central-publishing-maven-plugin uploads its bundle only at the end of the reactor. A Central failure then left a
+# Docker image (and its `latest` tag) for a release whose jars did not exist.
+#
+#   credentials checks, in parallel with `preflight`, that the GPG key, the Central token, the Docker Hub token and the
+#               release tag are all ready (.github/scripts/check-release-credentials.sh). Publishes nothing.
+#   preflight   builds the release exactly as `central` will and scans its SBOMs and the JVM image of each platform
+#               the release publishes (package/pom.xml `docker-maven-plugin.platform`) with grype. Fails on a
+#               CRITICAL vulnerability that has a fix and is not marked not_affected in vex/arcadedb.openvex.json.
+#               Publishes nothing.
+#   central     runs only once `preflight` and `credentials` passed. Deploys to Maven Central and waits until
+#               Sonatype reports the deployment PUBLISHED. No Docker, nothing pushed to git.
+#   attest      runs once `central` succeeded: build provenance for the jars, archives and SBOMs, and the SBOM
+#               attestations of the two distributions, over the files `central` uploaded.
+#   docker      runs only once `central` and `attest` succeeded: builds the same release version again with
+#               `-Pdocker` and pushes the images, then checks that `latest` and the release tag name one digest.
+#               Holds no `id-token`: it runs the Maven build, and any code in it could otherwise mint a certificate
+#               with the release signer identity.
+#   sign-image  signs the digest `docker` pushed with cosign, attests its SBOM and build provenance, and uploads the
+#               image SBOMs as the `release-image-sbom` artifact. Runs no code from the repository (no checkout).
+#   tag         commits and tags the release, then commits the next development version.
+#
+# Dispatch it from main ("Use workflow from: main"), for a release and for a fork's rehearsal alike: `preflight` refuses
+# any other ref, because the signer identity every verifier accepts is refs/heads/main.
+#
+# Recovery:
+#   - `preflight` failed: nothing was published. Fix the dependency (or record a justified not_affected statement in
+#     vex/arcadedb.openvex.json) and dispatch again.
+#   - `central` failed: nothing was published anywhere. Fix and dispatch again. If it failed while waiting for
+#     PUBLISHED (timeout, FAILED status, Portal errors), check the Central Portal first: the deployment may still
+#     publish, and a new dispatch with the same version is then rejected as a duplicate.
+#   - `central` failed AFTER the deployment reported PUBLISHED (the "List release subjects" step or one of the two
+#     upload-artifact steps): the jars are on Central and `attest` never ran. Their CI provenance cannot be produced
+#     by hand: an attestation made outside this workflow carries the wrong signer identity, and every verifier
+#     rejects it. That release ships its JVM jars and archives WITHOUT provenance, and verify-release.sh (run by
+#     release-assets.yml) reports it. The fix is a new patch release. Never dispatch the same version again (Central
+#     rejects the duplicate) and do not re-run `central` (its deploy step would repeat and be rejected).
+#   - `attest` failed: use "Re-run failed jobs". Only `attest` (and the jobs after it) runs again, attesting is
+#     idempotent. Never dispatch.
+#   - `docker` failed: use "Re-run failed jobs" on this run. Never dispatch again, Central would reject the duplicate
+#     version. The re-run builds and pushes the images again; the fabric8 build is not byte for byte reproducible, so
+#     the digest may differ from the first attempt's, which is fine: `sign-image` signs the digest of the push it
+#     follows.
+#   - `sign-image` failed: use "Re-run failed jobs". It signs the same digest again (signing and attesting are
+#     idempotent), nothing is rebuilt. No tag exists yet.
+#   - `tag` failed: use "Re-run failed jobs" if it failed before pushing the tag. If "Commit next development version"
+#     failed (a merge conflict with what reached main meanwhile), the release is tagged and complete: finish the
+#     version bump by hand (set the next version, commit, push to main). release-assets.yml still works, because it
+#     needs only this run's successful `attest` and `sign-image` jobs, not a green run.
+#
+# Rehearsal: ticking `rehearsal` runs `preflight`, and in `central` the same build with `package` instead of `deploy`,
+# without credentials and without -Pdeploy-central, then attests the result. It never reaches Maven Central. It
+# uploads the `release-dist` artifact, so what a release would ship can be inspected first. `docker` and `sign-image`
+# push, sign and attest the images in the fork's own Docker Hub namespace (repository variable DOCKER_NAMESPACE,
+# required for a rehearsal), and `tag` tags the fork and commits the release and next versions to the fork's main,
+# so the GitHub release created from that tag runs native-image.yml, publish-contract.yml and release-assets.yml on
+# the fork exactly as on a release. It runs only on a fork: its attestations would carry the ArcadeData/arcadedb
+# signer identity. Rehearse on a fork after ANY change to this workflow, the release itself is the only other test it
+# gets. Never give the fork Docker Hub credentials that can push to arcadedata.
 name: release-to-maven-central
+run-name: release ${{ inputs.releaseversion }}${{ inputs.rehearsal && ' (rehearsal)' || '' }}
 on:
   workflow_dispatch:
     inputs:
       releaseversion:
-        description: "Release version"
+        description: "Release version (dispatch from main: any other ref is refused)"
         required: true
       nextversion:
         description: "Next development version (e.g. 30.1.1-SNAPSHOT)"
         required: true
+      rehearsal:
+        description: "Rehearsal (forks only): never publishes to Maven Central; pushes images to DOCKER_NAMESPACE and tags the fork"
+        type: boolean
+        default: false
+
+env:
+  RELEASE_VERSION: ${{ github.event.inputs.releaseversion }}
+  NEXT_VERSION: ${{ github.event.inputs.nextversion }}
+  MAVEN_OPTS: "--add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.text=ALL-UNNAMED --add-opens=java.desktop/java.awt.font=ALL-UNNAMED"
 
 jobs:
-  publish:
+  # A release with a fixable critical vulnerability must stop before the first irreversible step: Central rejects a
+  # second deployment of the same version, so finding it afterwards means burning a version number.
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      # Every signature and attestation of the release carries the ref this workflow was dispatched from, and every
+      # verifier (release-assets.sh, verify-release.sh) accepts only refs/heads/main or a release tag. A dispatch from
+      # any other branch would publish to Central and then leave a release nobody can verify, so it stops here, before
+      # anything is published. A fork rehearses from its own main too.
+      - name: Refuse a dispatch from a ref other than main
+        if: ${{ github.ref != 'refs/heads/main' }}
+        run: |
+          echo "::error::dispatch mvn-release.yml from main (got ${GITHUB_REF}); the release signer identity accepts only refs/heads/main" >&2
+          exit 1
+
+      # A rehearsal attests, and an attestation is signed with this repository's identity, which then vouches for a
+      # build that is not a release. Only a fork may rehearse.
+      - name: Refuse a rehearsal in the main repository
+        if: ${{ inputs.rehearsal && github.repository == 'ArcadeData/arcadedb' }}
+        run: |
+          echo "::error::rehearsal runs only on a fork; its attestations would carry the ArcadeData/arcadedb signer identity" >&2
+          exit 1
+
+      # A fork without DOCKER_NAMESPACE would rehearse against arcadedata/arcadedb in `docker`: the push fails
+      # on credentials at best, and at worst overwrites `latest` of the real image with a rehearsal build. Checked
+      # here so it fails before the build, not after it.
+      - name: Refuse a rehearsal into the arcadedata namespace
+        if: ${{ inputs.rehearsal && (vars.DOCKER_NAMESPACE || 'arcadedata') == 'arcadedata' }}
+        run: |
+          echo "::error::a rehearsal needs the repository variable DOCKER_NAMESPACE set to the fork's own Docker Hub namespace" >&2
+          exit 1
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: "temurin"
+          java-version: 21
+          cache: "maven"
+
+      - name: Set release version
+        run: .github/scripts/set-release-version.sh "${RELEASE_VERSION}"
+
+      # An unpinned scanner changes its verdicts between the preflight and the rerun after a fix. The tarball is
+      # pinned by version and checked against its published SHA-256, so a replaced release asset fails.
+      - name: Install grype
+        run: |
+          curl -sSfL -o grype.tar.gz https://github.com/anchore/grype/releases/download/v0.122.1/grype_0.122.1_linux_amd64.tar.gz
+          echo "f1ba7e2917ee1395618de20a98da0aa7c0fb1788927797651047c50502a37538  grype.tar.gz" | sha256sum -c -
+          sudo tar -xzf grype.tar.gz -C /usr/local/bin grype
+
+      - name: Scan the release
+        run: .github/scripts/release-scan.sh "${RELEASE_VERSION}"
+
+      - name: Upload scan reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: preflight-scan
+          path: package/target/scan/*.json
+          if-no-files-found: ignore
+
+  # The credentials of every later job, checked before `preflight`'s build finishes: a wrong passphrase, an expired
+  # Central token or a read-only Docker Hub token would otherwise surface in `central` or, worse, in `docker` after the
+  # jars are already on Central. Publishes nothing. A rehearsal skips Central and the keyservers (it never publishes
+  # and signs with a test key) and checks push on its own DOCKER_NAMESPACE.
+  credentials:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - name: Check release credentials
+        run: .github/scripts/check-release-credentials.sh "${RELEASE_VERSION}"
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+          RELEASE_GPG_FINGERPRINT: ${{ vars.RELEASE_GPG_FINGERPRINT }}
+          SKIP_CENTRAL: ${{ inputs.rehearsal }}
+          CENTRAL_USERNAME: ${{ !inputs.rehearsal && secrets.MAVEN_CENTRAL_USERNAME || '' }}
+          CENTRAL_PASSWORD: ${{ !inputs.rehearsal && secrets.MAVEN_CENTRAL_PASSWORD || '' }}
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+          DOCKER_REPOSITORY: ${{ vars.DOCKER_NAMESPACE || 'arcadedata' }}/arcadedb
+          GITHUB_TOKEN: ${{ github.token }}
+
+  central:
+    needs: [ preflight, credentials ]
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      packages: write
-      attestations: write
-      id-token: write
+      contents: read
     steps:
-      - run: echo "Will start a Maven Central upload with version ${{ github.event.inputs.releaseversion }}"
+      - run: echo "Will start a Maven Central upload with version ${RELEASE_VERSION}"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: "temurin"
+          java-version: 21
+          cache: "maven"
+          server-id: central
+          server-username: MAVEN_USERNAME
+          server-password: MAVEN_PASSWORD
+          gpg-private-key: ${{ !inputs.rehearsal && secrets.MAVEN_GPG_PRIVATE_KEY || '' }}
+          gpg-passphrase: MAVEN_GPG_PASSPHRASE
+
+      - name: Set release version
+        run: .github/scripts/set-release-version.sh "${RELEASE_VERSION}"
+
+      # -Dmaven.repository.credentialScope=id (#10023): Maven 3.10 lets a repository transfer use the
+      # credentials of server 'central' only against Maven Central's own origin, which is what broke the
+      # snapshot deploy in mvn-deploy.yml. A release bundle goes through the Central Portal API instead,
+      # which reads the server entry directly, but any transfer to a Sonatype URL under that id would
+      # fail with the same 401 - and this workflow only runs on a release, where that costs the release.
+      # ./mvnw, not the runner's mvn: the runner image moved to Maven 3.10.0 underneath this workflow,
+      # and central-publishing-maven-plugin 0.11.0 then put maven-metadata-local.xml and
+      # _remote.repositories into the bundle, so the Central Portal rejected the whole 26.10.2
+      # deployment (fixed in plugin 0.12.0). The wrapper pins the Maven that actually publishes, so a
+      # Maven upgrade arrives as a reviewable wrapper bump, not silently with a runner image.
+      #
+      # -DwaitUntil=published is the gate `docker` relies on: without it the plugin returns once the bundle
+      # is VALIDATED, before it is published. It is set here and not in pom.xml so the snapshot deploy does not wait.
+      # -DwaitMaxTime=3600 (default 1800 s) keeps a slow Portal from failing a deployment that will still publish.
+      # No -Pdocker: the images are built and pushed by `docker`.
+      - name: Publish package
+        if: ${{ !inputs.rehearsal }}
+        run: ./mvnw -Pdeploy,deploy-central -DwaitUntil=published -DwaitMaxTime=3600 --batch-mode --errors --fail-at-end --show-version --file pom.xml -DskipTests=true -pl !e2e -Dmaven.repository.credentialScope=id deploy
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MAVEN_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          MAVEN_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+
+      # A rehearsal stops where a release would first touch the network: no credentials, no -Pdeploy-central (so no
+      # GPG signing either), -DskipPublishing=true so central-publishing-maven-plugin cannot upload even by accident.
+      - name: Rehearse package
+        if: ${{ inputs.rehearsal }}
+        run: ./mvnw -Pdeploy -DskipPublishing=true --batch-mode --errors --fail-at-end --show-version --file pom.xml -DskipTests=true -pl !e2e package
+
+      # The explicit list of what a release ships. A glob over `*/target/*.jar` would also attest the jars of the
+      # modules that are built but never published (a provenance statement for a jar nobody can download is noise
+      # that hides a real mismatch), and the test jars. Empty means the build layout changed under us: fail here
+      # rather than attest nothing.
+      - name: List release subjects
+        id: subjects
+        run: |
+          set -euo pipefail
+          # Hand-maintained mirror of what Central does not receive: pom.xml `excludeArtifacts` of
+          # central-publishing-maven-plugin plus the modules with a `maven.deploy.skip` property or a skipped
+          # maven-deploy-plugin (bench, load-tests). Update it together with those.
+          not_published=" census coverage gremlin-it gremlin-consumer-it native bench load-tests e2e e2e-perf e2e-ha "
+          jars=""
+          for jar in */target/arcadedb-*.jar; do
+            [[ -f "${jar}" ]] || continue
+            module="${jar%%/*}"
+            [[ "${not_published}" == *" ${module} "* ]] && continue
+            case "${jar}" in *-tests.jar) continue ;; esac
+            jars+="${jar}"$'\n'
+          done
+          if [[ -z "${jars}" ]]; then
+            echo "::error::no published jar found under */target, nothing to attest" >&2
+            exit 1
+          fi
+          for f in "package/target/arcadedb-${RELEASE_VERSION}.tar.gz" "package/target/arcadedb-${RELEASE_VERSION}.zip" \
+                   "package/target/arcadedb-${RELEASE_VERSION}-base.tar.gz" "package/target/arcadedb-${RELEASE_VERSION}-base.zip" \
+                   "package/target/sbom/full/arcadedb-${RELEASE_VERSION}.cdx.json" \
+                   "package/target/sbom/base/arcadedb-${RELEASE_VERSION}-base.cdx.json"; do
+            if [[ ! -f "${f}" ]]; then
+              echo "::error::expected release file ${f} is missing" >&2
+              exit 1
+            fi
+          done
+          {
+            echo "jars<<SUBJECTS_EOF"
+            printf '%s' "${jars}"
+            echo "SUBJECTS_EOF"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Upload release distribution
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-dist
+          path: |
+            package/target/arcadedb-*.tar.gz
+            package/target/arcadedb-*.zip
+            package/target/arcadedb-*.sha256
+            package/target/sbom/**
+          if-no-files-found: error
+          retention-days: 90
+
+      # The published jars, for `attest`. Same list as the subjects step, so exactly what Central received.
+      - name: Upload release jars
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-jars
+          path: ${{ steps.subjects.outputs.jars }}
+          if-no-files-found: error
+          retention-days: 90
+
+  # Its own job so that a failed attestation, which can only happen once the jars are PUBLISHED, is recovered with
+  # "Re-run failed jobs" that re-runs this job alone. Inside `central` the re-run would repeat the deploy and Central
+  # would reject the duplicate. It attests the files `central` built and uploaded, so the digests are the ones Central
+  # received. A rehearsal attests too: it exercises the permissions and paths a release needs.
+  attest:
+    needs: central
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download the distributions and SBOMs
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-dist
+          path: dist
+
+      - name: Download the jars
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-jars
+          path: jars
+
+      - name: Attest build provenance of the jars
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: jars/**/*.jar
+
+      - name: Attest build provenance of the distributions and SBOMs
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/arcadedb-*.tar.gz
+            dist/arcadedb-*.zip
+            dist/sbom/*/*.cdx.json
+
+      # Binds each archive to the SBOM that describes exactly its contents, so a consumer verifying the archive finds
+      # the SBOM with it.
+      - name: Attest the full distribution SBOM
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        with:
+          subject-path: dist/arcadedb-${{ inputs.releaseversion }}.tar.gz
+          sbom-path: dist/sbom/full/arcadedb-${{ inputs.releaseversion }}.cdx.json
+
+      - name: Attest the base distribution SBOM
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        with:
+          subject-path: dist/arcadedb-${{ inputs.releaseversion }}-base.tar.gz
+          sbom-path: dist/sbom/base/arcadedb-${{ inputs.releaseversion }}-base.cdx.json
+
+  # Builds and pushes. No `id-token`: the Maven build and its plugins run here.
+  docker:
+    needs: [central, attest]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      # Docker Hub namespace the images are pushed to. Unset in ArcadeData/arcadedb, so arcadedata; a fork sets the
+      # repository variable to its own scratch namespace before rehearsing.
+      NS: ${{ vars.DOCKER_NAMESPACE || 'arcadedata' }}
+    outputs:
+      digest: ${{ steps.image.outputs.digest }}
+    steps:
+      # Same guard as in `preflight`, repeated because "Re-run failed jobs" re-reads the variable: if it was deleted
+      # between the run and the re-run, the rehearsal would push to arcadedata/arcadedb.
+      - name: Refuse a rehearsal into the arcadedata namespace
+        if: ${{ inputs.rehearsal && env.NS == 'arcadedata' }}
+        run: |
+          echo "::error::a rehearsal needs the repository variable DOCKER_NAMESPACE set to the fork's own Docker Hub namespace" >&2
+          exit 1
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -40,85 +390,187 @@ jobs:
           distribution: "temurin"
           java-version: 21
           cache: "maven"
-          server-id: central
-          server-username: MAVEN_USERNAME
-          server-password: MAVEN_PASSWORD
-          gpg-private-key: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
-          gpg-passphrase: MAVEN_GPG_PASSPHRASE
 
-      - name: Set projects Maven version to GitHub Action GUI set version
-        run: ./mvnw versions:set "-DnewVersion=${{ github.event.inputs.releaseversion }}" --no-transfer-progress
+      - name: Set release version
+        run: .github/scripts/set-release-version.sh "${RELEASE_VERSION}"
 
-      - name: Update studio package.json version
-        run: |
-          cd studio
-          jq --arg version "${{ github.event.inputs.releaseversion }}" '.version = $version' package.json > package.json.tmp
-          mv package.json.tmp package.json
-
-      # server.json is the manifest the MCP registry publishes this server from. It is not a Maven artifact, so
-      # versions:set never reaches it and it silently drifted six releases behind HEAD (#6838). Rewrite it here, and
-      # only here: it names the last RELEASE, so the next-development step below deliberately leaves it alone rather
-      # than pinning a -SNAPSHOT container tag that was never pushed.
-      - name: Update server.json MCP registry manifest version
-        run: |
-          jq --arg version "${{ github.event.inputs.releaseversion }}" \
-            '.version = $version | .packages |= map(.identifier |= sub(":[^:]+$"; ":" + $version))' \
-            server.json > server.json.tmp
-          mv server.json.tmp server.json
-          cat server.json
-
-      # -Dmaven.repository.credentialScope=id (#10023): Maven 3.10 lets a repository transfer use the
-      # credentials of server 'central' only against Maven Central's own origin, which is what broke the
-      # snapshot deploy in mvn-deploy.yml. A release bundle goes through the Central Portal API instead,
-      # which reads the server entry directly, but any transfer to a Sonatype URL under that id would
-      # fail with the same 401 - and this workflow only runs on a release, where that costs the release.
-      # ./mvnw, not the runner's mvn: the runner image moved to Maven 3.10.0 underneath this workflow,
-      # and central-publishing-maven-plugin 0.11.0 then put maven-metadata-local.xml and
-      # _remote.repositories into the bundle, so the Central Portal rejected the whole 26.10.2
-      # deployment (fixed in plugin 0.12.0). The wrapper pins the Maven that actually publishes, so a
-      # Maven upgrade arrives as a reviewable wrapper bump, not silently with a runner image.
-      - name: Publish package
-        run: |
-          export MAVEN_OPTS="--add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.text=ALL-UNNAMED --add-opens=java.desktop/java.awt.font=ALL-UNNAMED"
-          ./mvnw -Pdeploy,deploy-central -Pdocker  --batch-mode  --errors --fail-at-end --show-version  --file pom.xml -DskipTests=true -pl !e2e -Dmaven.repository.credentialScope=id deploy
+      # Builds `package` and the modules it needs from this tree (-am), so nothing is resolved from Maven Central,
+      # where PUBLISHED does not yet mean downloadable. The `docker` profile builds the images in `package` and pushes
+      # them in `deploy`. -DskipPublishing=true: central-publishing-maven-plugin is part of the default build and
+      # would otherwise try to upload the release to Central a second time.
+      # -Ddocker.image.prefix: the image is ${NS}/arcadedb (package/pom.xml defaults to arcadedata).
+      - name: Build and push Docker images
+        run: ./mvnw -Pdocker -DskipPublishing=true "-Ddocker.image.prefix=${NS}" --batch-mode --errors --show-version -DskipTests=true -pl package -am deploy
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          MAVEN_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
-          MAVEN_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
           DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
           DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
-          MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+
+      # `sign-image` signs and attests one digest, never a tag: a tag can be moved after signing, a digest cannot.
+      # fabric8 pushes `latest` and the release tag from one buildx build, so both name the same index. If they do not,
+      # `latest` points at something this run would not sign, and the release stops here, before any git tag exists.
+      - name: Resolve image digest
+        id: image
+        run: |
+          set -euo pipefail
+          digest=$(docker buildx imagetools inspect "${NS}/arcadedb:${RELEASE_VERSION}" --format '{{json .Manifest}}' | jq -r .digest)
+          latest=$(docker buildx imagetools inspect "${NS}/arcadedb:latest" --format '{{json .Manifest}}' | jq -r .digest)
+          if [[ ! "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::could not resolve the digest of ${NS}/arcadedb:${RELEASE_VERSION} (got '${digest}')" >&2
+            exit 1
+          fi
+          if [[ "${latest}" != "${digest}" ]]; then
+            echo "::error::${NS}/arcadedb:latest is ${latest} but ${NS}/arcadedb:${RELEASE_VERSION} is ${digest}; latest would point at an unsigned image" >&2
+            exit 1
+          fi
+          echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
+
+  # Signs and attests what `docker` pushed. It holds `id-token: write`, so it runs nothing from the repository: no
+  # checkout, only pinned actions and cosign against the registry. The whole workflow is a release (manual dispatch
+  # only, rehearsals refused in ArcadeData/arcadedb), so the job needs no release gate of its own.
+  sign-image:
+    needs: docker
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      NS: ${{ vars.DOCKER_NAMESPACE || 'arcadedata' }}
+      DIGEST: ${{ needs.docker.outputs.digest }}
+    steps:
+      - name: Refuse a rehearsal into the arcadedata namespace
+        if: ${{ inputs.rehearsal && env.NS == 'arcadedata' }}
+        run: |
+          echo "::error::a rehearsal needs the repository variable DOCKER_NAMESPACE set to the fork's own Docker Hub namespace" >&2
+          exit 1
+
+      # An empty or garbled output fails here instead of a `cosign` call on `@`.
+      - name: Check the image digest
+        run: |
+          if [[ ! "${DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::docker passed no valid image digest (got '${DIGEST}')" >&2
+            exit 1
+          fi
+
+      # cosign writes the signature and the attestations to the registry with these credentials.
+      - name: Login to Docker Hub
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@881c63bd87e38389154debd8331404ce7ca8a3ab # v4.1.4
+
+      # Keyless: the signature binds the digest to this workflow's identity through the run's OIDC token.
+      # The JVM image is an index: package/pom.xml's `multiplatform` profile activates on the Linux runner, so it holds
+      # linux/amd64 and linux/arm64. --recursive signs the index and every manifest in it, so a consumer pulling by
+      # a per-platform manifest digest finds a signature too.
+      - name: Sign the image
+        run: cosign sign --yes --recursive "${NS}/arcadedb@${DIGEST}"
+
+      # Uploads switched off: the files go into `release-image-sbom` below, and a dependency snapshot of a Docker
+      # image would replace the repository's Maven dependency graph.
+      - name: Generate the image SBOM (CycloneDX)
+        uses: anchore/sbom-action@dfcb83b97731532d72be422cbc51ee64adb6fd56 # v0.24.4
+        with:
+          image: ${{ env.NS }}/arcadedb@${{ env.DIGEST }}
+          format: cyclonedx-json
+          output-file: arcadedb-image-${{ inputs.releaseversion }}.cdx.json
+          upload-artifact: false
+          upload-release-assets: false
+          dependency-snapshot: false
+
+      - name: Generate the image SBOM (SPDX)
+        uses: anchore/sbom-action@dfcb83b97731532d72be422cbc51ee64adb6fd56 # v0.24.4
+        with:
+          image: ${{ env.NS }}/arcadedb@${{ env.DIGEST }}
+          format: spdx-json
+          output-file: arcadedb-image-${{ inputs.releaseversion }}.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+          dependency-snapshot: false
+
+      - name: Attest the image SBOM
+        run: cosign attest --yes --type cyclonedx --predicate "arcadedb-image-${RELEASE_VERSION}.cdx.json" "${NS}/arcadedb@${DIGEST}"
+
+      - name: Attest build provenance of the image
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: index.docker.io/${{ env.NS }}/arcadedb
+          subject-digest: ${{ env.DIGEST }}
+          push-to-registry: true
+          # A storage record needs `artifact-metadata: write`, which this job does not grant; without this the action
+          # warns on every release.
+          create-storage-record: false
+
+      # release-assets.yml takes the image SBOMs from here, and treats this artifact as the proof that the image was
+      # signed: keep the name.
+      - name: Upload the image SBOMs
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-image-sbom
+          path: |
+            arcadedb-image-${{ inputs.releaseversion }}.cdx.json
+            arcadedb-image-${{ inputs.releaseversion }}.spdx.json
+          if-no-files-found: error
+          retention-days: 90
+
+  # Tags only after the image is signed: a signing failure must not leave a tagged, unsigned release. A rehearsal tags
+  # and commits too, on the fork (rehearsals are refused in ArcadeData/arcadedb), so the fork's GitHub release can be
+  # created from a real tag and run the rest of the chain.
+  tag:
+    needs: sign-image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # Full history: the next-version push merges whatever reached main meanwhile, which needs the merge base.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: "temurin"
+          java-version: 21
+          cache: "maven"
+
+      - name: Set release version
+        run: .github/scripts/set-release-version.sh "${RELEASE_VERSION}"
 
       - name: Tag and commit release version
-        if: success()
         run: |
           git config user.email "actions@github.com"
           git config user.name "GitHub Actions"
-          git commit -am "Set release version to ${{ github.event.inputs.releaseversion }}"
-          git tag ${{ github.event.inputs.releaseversion }}
-          git push origin ${{ github.event.inputs.releaseversion }}
+          git commit -am "Set release version to ${RELEASE_VERSION}"
+          git tag "${RELEASE_VERSION}"
+          git push origin "${RELEASE_VERSION}"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set next development version
-        if: success()
-        run: ./mvnw versions:set "-DnewVersion=${{ github.event.inputs.nextversion }}" --no-transfer-progress
+        run: ./mvnw versions:set "-DnewVersion=${NEXT_VERSION}" --no-transfer-progress
 
       - name: Update studio package.json to next development version
-        if: success()
         run: |
           cd studio
-          jq --arg version "${{ github.event.inputs.nextversion }}" '.version = $version' package.json > package.json.tmp
-          jq --arg version "${{ github.event.inputs.nextversion }}" '.version = $version' package-lock.json > package-lock.json.tmp
+          jq --arg version "${NEXT_VERSION}" '.version = $version' package.json > package.json.tmp
+          jq --arg version "${NEXT_VERSION}" '.version = $version | .packages[""].version = $version' package-lock.json > package-lock.json.tmp
           mv package.json.tmp package.json
           mv package-lock.json.tmp package-lock.json
 
+      # If this fails (a merge conflict with what reached main meanwhile), the release is complete and tagged: finish
+      # the version bump by hand. See "Recovery" at the top.
       - name: Commit next development version
-        if: success()
         run: |
           git config user.email "actions@github.com"
           git config user.name "GitHub Actions"
-          git commit -am "Set next development version to ${{ github.event.inputs.nextversion }}"
+          git commit -am "Set next development version to ${NEXT_VERSION}"
+          # PRs merged to main while this run waited on Central would reject a plain push. Merge rather than rebase:
+          # a rebase would rewrite the release commit and leave the tag unreachable from main.
+          git pull --no-rebase --no-edit origin main
           git push origin main
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

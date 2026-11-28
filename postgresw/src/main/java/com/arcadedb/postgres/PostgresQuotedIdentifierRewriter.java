@@ -46,13 +46,16 @@ import java.util.Set;
  * engine: the parsers of this module (catalog queries, {@code COPY}) read PostgreSQL's own forms.
  * <p>
  * Both are purely lexical: line comments, block comments, dollar-quoted literals and back-tick identifiers are copied
- * verbatim. The same holds for anything nested in a JSON object or collection literal
- * ({@code INSERT INTO T CONTENT {"k": "v"}}, {@code SET tags = ["a", "b"]}): those constructs only exist in the
- * ArcadeDB dialect, have no Postgres counterpart, and there the double quote keeps its ArcadeDB meaning of string
- * literal. A single-quoted literal keeps its ArcadeDB meaning inside a JSON object only: square brackets are also
- * PostgreSQL's (an {@code ARRAY['a', 'b']} constructor, a subscript), so a literal between them is read as PostgreSQL
- * reads it. A double-quoted record attribute (such as {@code "@rid"}) is written bare, {@code @rid}, the form ArcadeDB SQL
- * reads as the attribute; double-quoted, it was a string literal (issue #11392).
+ * verbatim. Anything nested in a JSON object or collection literal
+ * ({@code INSERT INTO T CONTENT {"k": "v"}}, {@code SET tags = ["a", "b"]}) is ArcadeDB dialect, which has no Postgres
+ * counterpart, and there the double quote keeps its ArcadeDB meaning of string literal. A single-quoted literal is a
+ * PostgreSQL literal wherever it stands, inside a JSON object or a collection too: a client that composes the statement
+ * text itself (psycopg2, the official JDBC driver with {@code preferQueryMode=simple}) writes a value as a PostgreSQL
+ * literal, and the three passes have to agree with it on where the literal ends. A hand-written ArcadeDB escape inside a
+ * JSON object is written {@code E'...'} on this protocol, as at the top level. A double-quoted record attribute (such as
+ * {@code "@rid"}) is written bare, {@code @rid}, the form ArcadeDB SQL reads as the attribute; double-quoted, it was a
+ * string literal (issue #11392). Any other double-quoted name, one starting with {@code @} included, is an identifier like
+ * the rest and is written back-ticked, so that every pass reads it as one token.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -141,12 +144,8 @@ public class PostgresQuotedIdentifierRewriter {
       final char c = sql.charAt(i);
       switch (c) {
       case '\'' -> {
-        if (braceDepth > 0)
-          i = endOfBackslashQuoted(sql, i, len);
-        else {
-          final int end = endOfStringLiteral(sql, i, len, isEscapeStringPrefix(sql, i) || !standardConformingStrings);
-          i = end < 0 ? len : end;
-        }
+        final int end = endOfStringLiteral(sql, i, len, isEscapeStringPrefix(sql, i) || !standardConformingStrings);
+        i = end < 0 ? len : end;
       }
       case '$' -> i = endOfDollarQuotedLiteral(sql, i, len);
       case '-' -> i = endOfLineComment(sql, i, len);
@@ -218,14 +217,11 @@ public class PostgresQuotedIdentifierRewriter {
       final char c = sql.charAt(i);
       switch (c) {
       case '\'' -> {
-        if (braceDepth > 0)
-          // INSIDE AN ARCADEDB JSON OBJECT THE LITERAL KEEPS ITS ARCADEDB MEANING
-          i = copyEngineStringLiteral(sql, i, len, out);
-        else {
-          final boolean escapeString = isEscapeStringPrefix(sql, i);
-          final boolean escapes = escapeString || !standardConformingStrings;
-          i = literals ? translateStringLiteral(sql, i, len, out, escapes, escapeString) : copyStringLiteral(sql, i, len, out, escapes);
-        }
+        // A SINGLE-QUOTED LITERAL IS A POSTGRESQL LITERAL WHEREVER IT STANDS, INSIDE AN ARCADEDB JSON OBJECT TOO: A CLIENT
+        // THAT COMPOSES THE STATEMENT TEXT WRITES ITS VALUES WITH POSTGRESQL'S RULES
+        final boolean escapeString = isEscapeStringPrefix(sql, i);
+        final boolean escapes = escapeString || !standardConformingStrings;
+        i = literals ? translateStringLiteral(sql, i, len, out, escapes, escapeString) : copyStringLiteral(sql, i, len, out, escapes);
       }
       case '$' -> i = copyDollarQuotedLiteral(sql, i, len, out);
       case '-' -> i = copyLineComment(sql, i, len, out);
@@ -433,17 +429,9 @@ public class PostgresQuotedIdentifierRewriter {
   }
 
   /**
-   * Copies a single-quoted literal of the ArcadeDB dialect verbatim, honouring the back-slash escape of its lexer while
-   * scanning for the closing quote.
-   */
-  private static int copyEngineStringLiteral(final String sql, final int start, final int len, final StringBuilder out) {
-    return copyRange(sql, start, endOfBackslashQuoted(sql, start, len), out);
-  }
-
-  /**
    * The index right after the quote closing the token opened at {@code start} by the quote character found there, a
-   * backslash escaping the character after it: an ArcadeDB single-quoted literal, a back-tick name, a JSON string. The
-   * length of {@code sql} when it is unterminated, for the parser to report.
+   * backslash escaping the character after it: a back-tick name, a JSON string. The length of {@code sql} when it is
+   * unterminated, for the parser to report.
    */
   private static int endOfBackslashQuoted(final String sql, final int start, final int len) {
     final char quote = sql.charAt(start);
@@ -594,12 +582,14 @@ public class PostgresQuotedIdentifierRewriter {
       return i;
     }
 
-    if (!closed || identifier.isEmpty() || identifier.charAt(0) == '@') {
-      // UNTERMINATED, EMPTY OR NOT A PLAIN ATTRIBUTE NAME AFTER THE @: LEAVE THE ORIGINAL TEXT UNCHANGED
+    if (!closed || identifier.isEmpty()) {
+      // UNTERMINATED OR EMPTY: LEAVE THE ORIGINAL TEXT UNCHANGED
       out.append(sql, start, i);
       return i;
     }
 
+    // ANY OTHER NAME, ONE STARTING WITH @ INCLUDED, IS WRITTEN AS A BACK-TICK NAME, THE FORM THE ENGINE LEXER READS WITH THE SAME
+    // TOKEN BOUNDARIES AS THIS PASS
     out.append('`');
     for (int k = 0; k < identifier.length(); k++) {
       final char c = identifier.charAt(k);

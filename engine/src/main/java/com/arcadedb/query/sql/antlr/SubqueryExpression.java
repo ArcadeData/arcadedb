@@ -96,6 +96,18 @@ public class SubqueryExpression extends BaseExpression {
     // NOTHING TO LIFT
   }
 
+  /**
+   * The statement is part of this operand, so a {@code $parent} read anywhere in it ties the operand to the row it is
+   * evaluated for, as the {@code IN (SELECT ...)} form ({@code ParenthesisExpression}) already answers. The inherited answer
+   * only looked at the modifier, so a lifted sub-query whose only outer-row read sits in a sub-query of its own projection
+   * ({@code (SELECT (SELECT $parent.$parent.$current.id AS v FROM M)[0].v AS m FROM M)}) was planned as a global LET, and
+   * every row got the first row's value (issue #12714).
+   */
+  @Override
+  public boolean refersToParent() {
+    return statement.refersToParent() || super.refersToParent();
+  }
+
   private Object executeSubquery(final CommandContext context) {
     final ResultSet rs = statement.execute(context.getDatabase(), context.getInputParameters(), context);
 

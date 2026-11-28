@@ -93,6 +93,11 @@ public class MutablePage extends BasePage implements TrackableContent {
   // which nothing may write to it again, so the read cache can share its array instead of copying the whole page.
   // Written before the hand-off (a concurrent map/queue insertion) and read only after it, which orders the two.
   private              boolean published                  = false;
+  // #13441: set when a synchronous commit wrote a NEWER image of the same page straight to its file while this copy was still in
+  // the asynchronous flush pipeline. The flush thread can still be holding this copy (polled but not yet published as in
+  // flight), so it checks the flag under the page's I/O lock and skips the write: written after the synchronous image, it
+  // would revert the page on disk. Volatile because it is written by the committer and read by the flush thread.
+  private volatile     boolean supersededOnDisk           = false;
   // #9483: whether EVERY write this transaction made to the page was a hole-free one (see beginPackedWrite), so the
   // commit may skip the proof that the page has no hole. Same single-owner contract as the fields above. The sticky
   // flag is the dangerous direction, which is why it is opt-IN: a write is presumed to be able to leave a hole until its
@@ -135,6 +140,10 @@ public class MutablePage extends BasePage implements TrackableContent {
   // a read taken back with its statement costs at most a retry. The bit set is allocated at the first read of a single slot.
   private              BitSet  slotsRead;
   private              boolean wholePageRead;
+  // #13572: whether one of those reads was made when the image was ALREADY stale, another transaction having committed to the page
+  // after this transaction's first write to it. A read made while the image was still the committed page plus this transaction's own
+  // writes is a valid READ_COMMITTED read: a commit landing after it is an ordinary phantom and must not refuse the merge
+  private              boolean staleReadRecorded;
   // #11590: the owning transaction read, through a page a scan kept from an earlier batch, an older version of the page than the one
   // this image was taken from: those reads missed a commit this image already holds, so no comparison with the committed page at
   // commit can vouch for them, and the commit is refused
@@ -406,6 +415,15 @@ public class MutablePage extends BasePage implements TrackableContent {
     return published;
   }
 
+  /** #13441: a newer image of this page was written to the file synchronously, so this pending copy must never be. */
+  void markSupersededOnDisk() {
+    this.supersededOnDisk = true;
+  }
+
+  boolean isSupersededOnDisk() {
+    return supersededOnDisk;
+  }
+
   public void updateMetadata() {
     checkNotPublished();
     content.putInt(PAGE_VERSION_OFFSET, version);
@@ -647,6 +665,19 @@ public class MutablePage extends BasePage implements TrackableContent {
   /** Whether the owning transaction read this image as a whole (#11590). */
   public boolean isWholePageRead() {
     return wholePageRead;
+  }
+
+  /**
+   * Records that the owning transaction read this image after another transaction had committed to the page it was taken from
+   * (#13572): only such a read can rest on what the image misses.
+   */
+  public void markStaleReadRecorded() {
+    staleReadRecorded = true;
+  }
+
+  /** Whether the owning transaction read this image after another transaction had committed to its page (#13572). */
+  public boolean isStaleReadRecorded() {
+    return staleReadRecorded;
   }
 
   /** Records that the owning transaction read this page, kept by a scan, at an older version than this image's (#11590). */

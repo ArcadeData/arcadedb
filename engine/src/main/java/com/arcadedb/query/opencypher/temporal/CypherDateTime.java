@@ -18,6 +18,8 @@
  */
 package com.arcadedb.query.opencypher.temporal;
 
+import com.arcadedb.exception.ArithmeticErrorException;
+
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -120,7 +122,8 @@ public class CypherDateTime implements CypherTemporalValue {
     if (map.containsKey("datetime")) {
       if (map.containsKey("date") || map.containsKey("time"))
         throw new IllegalArgumentException("datetime cannot be selected together with date or time.");
-      final Object dtVal = map.get("datetime");
+      // A native temporal (a parameter a driver sent) is the Cypher temporal its literal is, its zone included (issue #13569)
+      final Object dtVal = TemporalUtil.fromCoreJavaType(map.get("datetime"));
       final boolean baseHasTimezone = dtVal instanceof CypherDateTime;
       // A local datetime has no zone: it is read in UTC, or in the map's timezone below
       final ZonedDateTime base = baseHasTimezone ?
@@ -145,7 +148,7 @@ public class CypherDateTime implements CypherTemporalValue {
     ZoneId timeZone = null;
     boolean timeHasTimezone = false;
     if (map.containsKey("time")) {
-      final Object timeVal = map.get("time");
+      final Object timeVal = TemporalUtil.fromCoreJavaType(map.get("time"));
       baseTime = TemporalMapFields.timeOf(timeVal);
       if (timeVal instanceof CypherTime ct) {
         timeZone = ct.getValue().getOffset();
@@ -216,9 +219,18 @@ public class CypherDateTime implements CypherTemporalValue {
       case "offsetSeconds" -> (long) value.getOffset().getTotalSeconds();
       // Epoch properties
       case "epochSeconds" -> value.toEpochSecond();
-      case "epochMillis" -> value.toInstant().toEpochMilli();
+      case "epochMillis" -> epochMillis();
       default -> null;
     };
+  }
+
+  /** The instant in milliseconds; a datetime past year 292278994 has none, which is the caller's value and not a server fault (issue #12706). */
+  private long epochMillis() {
+    try {
+      return value.toInstant().toEpochMilli();
+    } catch (final ArithmeticException e) {
+      throw new ArithmeticErrorException("Temporal overflow: epochMillis of " + this + " does not fit a long", e);
+    }
   }
 
   @Override

@@ -63,6 +63,7 @@ import com.arcadedb.query.opencypher.executor.operators.NodeByLabelScan;
 import com.arcadedb.query.opencypher.executor.operators.NodeIndexRangeScan;
 import com.arcadedb.query.opencypher.executor.operators.NodeIndexSeek;
 import com.arcadedb.query.opencypher.executor.operators.PhysicalOperator;
+import com.arcadedb.query.opencypher.executor.steps.AggregationStep;
 import com.arcadedb.query.opencypher.executor.steps.CSRCountStep;
 import com.arcadedb.query.opencypher.executor.steps.CallStep;
 import com.arcadedb.query.opencypher.executor.steps.ConstantCountStep;
@@ -71,18 +72,28 @@ import com.arcadedb.query.opencypher.executor.steps.CountEdgesStep;
 import com.arcadedb.query.opencypher.executor.steps.CountOp;
 import com.arcadedb.query.opencypher.executor.steps.CreateStep;
 import com.arcadedb.query.opencypher.executor.steps.DeleteStep;
+import com.arcadedb.query.opencypher.executor.steps.FilterPropertiesStep;
+import com.arcadedb.query.opencypher.executor.steps.FinalProjectionStep;
 import com.arcadedb.query.opencypher.executor.steps.GAVOneHopScanStep;
+import com.arcadedb.query.opencypher.executor.steps.GroupByAggregationStep;
 import com.arcadedb.query.opencypher.executor.steps.LimitStep;
 import com.arcadedb.query.opencypher.executor.steps.MatchNodeStep;
+import com.arcadedb.query.opencypher.executor.steps.MatchRelationshipStep;
 import com.arcadedb.query.opencypher.executor.steps.MergeStep;
+import com.arcadedb.query.opencypher.executor.steps.OptionalMatchStep;
+import com.arcadedb.query.opencypher.executor.steps.OrderByStep;
 import com.arcadedb.query.opencypher.executor.steps.ParallelRowSource;
 import com.arcadedb.query.opencypher.executor.steps.ProductCountStep;
+import com.arcadedb.query.opencypher.executor.steps.ProjectReturnStep;
 import com.arcadedb.query.opencypher.executor.steps.PropagateChainOp;
 import com.arcadedb.query.opencypher.executor.steps.RemoveStep;
 import com.arcadedb.query.opencypher.executor.steps.SetStep;
 import com.arcadedb.query.opencypher.executor.steps.SkipStep;
 import com.arcadedb.query.opencypher.executor.steps.UnionStep;
+import com.arcadedb.query.opencypher.executor.steps.UnwindStep;
 import com.arcadedb.query.opencypher.executor.steps.VariableProjectionStep;
+import com.arcadedb.query.opencypher.executor.steps.WithStep;
+import com.arcadedb.query.opencypher.executor.steps.ZeroLengthPathStep;
 import com.arcadedb.query.opencypher.optimizer.AnchorSelector;
 import com.arcadedb.query.opencypher.optimizer.plan.AnchorSelection;
 import com.arcadedb.query.opencypher.optimizer.plan.LogicalNode;
@@ -143,6 +154,20 @@ public class CypherExecutionPlan {
   public static final int SEEDED_BATCH_SIZE = 100;
 
   /**
+   * The steps a seeded chain may be built of to be run again for the next outer row (issue #12136). Each one keeps the
+   * state of a run in the result set its {@code syncPull} returns, opens what it reads again on the next call, and gives
+   * back on {@code close()} what one run held, which is what lets {@link OptionalMatchStep} already run its inner chain
+   * once per input row. Anything else - a count push-down answering for the seed's own vertex, an eager barrier holding the
+   * rows of the first run, a nested {@code CALL { }}, a step whose class this list does not name exactly - is built again
+   * for every outer row as before.
+   */
+  private static final Set<Class<? extends AbstractExecutionStep>> RE_RUNNABLE_STEPS = Set.of(
+      MatchNodeStep.class, MatchRelationshipStep.class, ZeroLengthPathStep.class,
+      OptionalMatchStep.class, FilterPropertiesStep.class, UnwindStep.class, WithStep.class, ProjectReturnStep.class,
+      VariableProjectionStep.class, AggregationStep.class, GroupByAggregationStep.class, OrderByStep.class, SkipStep.class,
+      LimitStep.class, FinalProjectionStep.class);
+
+  /**
    * How much smaller than its label an index seek's estimated rows must be for a count to be left to the ordinary plan rather than
    * pushed down (issue #11680). The pipeline pays more per row than a push-down pays per vertex it walks: on the issue's graph an
    * anchored chain walked a Record in about 0.25 us and a Section in about 2 us, while the seek plus expansion produced a row in
@@ -181,6 +206,20 @@ public class CypherExecutionPlan {
    * (issue #11680). Set before the folded plan is published.
    */
   private CypherExecutionPlan pipelinePlan = this;
+
+  /**
+   * The step chain the last seeded run of this body built, kept to run the next outer row of the same statement execution on
+   * (issue #12136). Set only under {@link SubqueryPlans}, so only for a statement that cannot write, and only for a chain
+   * {@link #canRunAgain} accepts. Read and written by the thread the statement runs on.
+   */
+  private SeededChain seededChain;
+  /**
+   * The seed names for which {@link #tryCountRowsPushDown} found no push-down, so the next outer row skips asking again
+   * (issue #12136). Under {@link SubqueryPlans} only, like {@link #seededChain}.
+   */
+  private Set<String> countRowsPushDownDeclinedFor;
+  /** The branch plans of a UNION body, built on its first seeded run and run again for every later one (issue #12136). */
+  private List<CypherExecutionPlan> seededBranchPlans;
 
   // UNION support
   private final List<CypherExecutionPlan> unionSubqueryPlans;
@@ -456,9 +495,11 @@ public class CypherExecutionPlan {
     // transaction's copies of the records they hold (issue #12565)
     context.setCurrentRecordsOnly(WrittenCopy.holdsCurrentRecordsOnly(statement.isReadOnly(), outerContext));
     setupFunctionResolver(context);
+    installCommandDeadline(context, outerContext);
     CypherFunctionHelper.inheritStatementTime(context, outerContext);
     inheritIncomingEdgeLookup(context, outerContext);
     inheritGraphViewPins(context, outerContext);
+    SubqueryPlans.install(context, outerContext, statement);
     // A branch of a write UNION shares the label replacements of the whole statement: a later branch's label write deletes
     // the records the rows of an earlier branch hold, and the UNION redirects them with that map (issue #10614)
     if (outerContext != null && !statement.isReadOnly() && LabelReplacements.existing(outerContext) != null)
@@ -590,6 +631,46 @@ public class CypherExecutionPlan {
   }
 
   /**
+   * The deadline a plan's context starts with: the enclosing statement's for a nested plan (a UNION branch included, which runs on
+   * a context of its own), and for a top-level statement the one the {@code readTimeout} of its user's groups gives it.
+   */
+  private void installCommandDeadline(final BasicCommandContext context, final CommandContext outerContext) {
+    if (outerContext != null)
+      inheritCommandDeadline(context, outerContext);
+    else
+      boundByReadTimeout(context);
+  }
+
+  /**
+   * Bounds a top-level statement that reads by the {@code readTimeout} of the groups of the user running it, as a SQL SELECT or
+   * MATCH is: the whole statement shares one deadline, every guarded loop of every step reads it, and the nested plans inherit it
+   * (see {@link #inheritCommandDeadline}). The bucket scans carried that timeout alone until now, each on a clock of its own, so
+   * an index seek, an expansion, an UNWIND, an aggregation or a procedure ran past it.
+   * <p>
+   * Resolved from the user at the moment the statement starts and kept on its context, never on the plan: the physical plan is
+   * shared through the plan cache by every user of the same text. The earlier of this deadline and the command's own
+   * ({@code arcadedb.command.timeout}) wins, and a timeout that is not positive adds no bound, as a {@code TIMEOUT 0} clause adds
+   * none. A statement that writes keeps the pace it had, as a SQL UPDATE or DELETE does.
+   */
+  private void boundByReadTimeout(final BasicCommandContext context) {
+    if (!statement.isReadOnly())
+      return;
+
+    final long readTimeout = database.getReadTimeout();
+    if (readTimeout <= 0)
+      return;
+
+    // Saturating, and one below Long.MAX_VALUE, which stands for "no deadline at all"
+    final long now = System.currentTimeMillis();
+    final long deadline = readTimeout > Long.MAX_VALUE - 1 - now ? Long.MAX_VALUE - 1 : now + readTimeout;
+    // The command's own bound is the stricter one, and it carries its own description
+    if (context.getCommandDeadline() <= deadline)
+      return;
+
+    context.setCommandDeadline(deadline, "group readTimeout of " + readTimeout + "ms", false);
+  }
+
+  /**
    * Makes a nested plan read the enclosing query's scans of the unidirectional edge types instead of taking its own:
    * a correlated {@code COUNT { }} or {@code CALL { }} body runs once per outer row, each time on a context of its own,
    * and would otherwise scan the type once per row (issue #8625).
@@ -640,9 +721,13 @@ public class CypherExecutionPlan {
   public ResultSet executeWithSeedRow(final Result seedRow, final CommandContext outerContext, final int batchSize) {
     // Handle UNION inside CALL subqueries: execute each branch with the seed row
     if (statement instanceof UnionStatement unionStmt) {
-      final List<CypherExecutionPlan> branchPlans = new ArrayList<>();
-      for (final CypherStatement branch : unionStmt.getQueries())
-        branchPlans.add(new CypherExecutionPlan(database, branch, parameters, configuration, null, expressionEvaluator));
+      List<CypherExecutionPlan> branchPlans = seededBranchPlans;
+      if (branchPlans == null) {
+        branchPlans = new ArrayList<>();
+        for (final CypherStatement branch : unionStmt.getQueries())
+          branchPlans.add(new CypherExecutionPlan(database, branch, parameters, configuration, null, expressionEvaluator));
+        seededBranchPlans = branchPlans;
+      }
 
       final boolean removeDuplicates = !unionStmt.isAllUnionAll();
       final BasicCommandContext ctx = new BasicCommandContext();
@@ -670,6 +755,16 @@ public class CypherExecutionPlan {
       return unionStep.syncPull(ctx, batchSize);
     }
 
+    final Set<String> seedNames = seedRow.getPropertyNames();
+    // The chain an earlier outer row of this statement built, run again for this one (issue #12136)
+    final SubqueryPlans subqueryPlans = statement.isReadOnly() ? SubqueryPlans.of(outerContext) : null;
+    final SeededChain reusable = seededChain;
+    if (subqueryPlans != null && reusable != null && reusable.serves(seedNames, outerContext)) {
+      subqueryPlans.chainReused();
+      reusable.seedStep.seed(seedRow);
+      return reusable.rootStep.syncPull(reusable.context, batchSize);
+    }
+
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
     context.setInputParameters(parameters);
@@ -694,52 +789,107 @@ public class CypherExecutionPlan {
     CypherFunctionHelper.inheritStatementTime(context, outerContext);
     inheritIncomingEdgeLookup(context, outerContext);
     inheritGraphViewPins(context, outerContext);
+    SubqueryPlans.install(context, outerContext, statement);
 
-    // Create a seed step that returns the seed row
-    final AbstractExecutionStep seedStep = new AbstractExecutionStep(context) {
-      private boolean consumed = false;
-
-      @Override
-      public ResultSet syncPull(final CommandContext ctx, final int nRecords) {
-        if (consumed)
-          return new IteratorResultSet(List.<ResultInternal>of().iterator());
-        consumed = true;
-        // Copy the seed row into a ResultInternal
-        final ResultInternal seedResult = new ResultInternal();
-        for (final String prop : seedRow.getPropertyNames())
-          seedResult.setProperty(prop, seedRow.getProperty(prop));
-        return new IteratorResultSet(List.of(seedResult).iterator());
-      }
-
-      @Override
-      public String getName() {
-        return "SubquerySeedRowStep";
-      }
-
-      @Override
-      public String getType() {
-        return getName();
-      }
-
-      @Override
-      public String prettyPrint(final int depth, final int indent) {
-        return "  ".repeat(Math.max(0, depth * indent)) + "+ SUBQUERY SEED ROW";
-      }
-    };
+    final SeedRowStep seedStep = new SeedRowStep(context);
+    seedStep.seed(seedRow);
 
     // Build execution steps with the seed as the initial step
     final List<ClauseEntry> clausesInOrder = statement.getClausesInOrder();
+    final SeedCorrelation correlation = seedCorrelationOf(seedRow);
     final AbstractExecutionStep rootStep;
     if (clausesInOrder != null && !clausesInOrder.isEmpty())
-      rootStep = stepBuilder.buildExecutionStepsWithOrder(context, clausesInOrder, seedStep, seedCorrelationOf(seedRow),
-          seedRow.getPropertyNames());
+      rootStep = stepBuilder.buildExecutionStepsWithOrder(context, clausesInOrder, seedStep, correlation, seedNames);
     else
       rootStep = seedStep; // Fallback: just return the seed
 
     if (rootStep == null)
       return new IteratorResultSet(new ArrayList<ResultInternal>().iterator());
 
+    if (subqueryPlans != null) {
+      subqueryPlans.chainBuilt();
+      if (canRunAgain(rootStep, seedStep) && seedValuesCannotChangeThePlan(correlation))
+        seededChain = new SeededChain(Set.copyOf(seedNames), outerContext, context, seedStep, rootStep);
+    }
+
     return rootStep.syncPull(context, batchSize);
+  }
+
+  /** Whether every step from {@code rootStep} down to the seed is one {@link #RE_RUNNABLE_STEPS} names. */
+  private static boolean canRunAgain(final AbstractExecutionStep rootStep, final SeedRowStep seedStep) {
+    AbstractExecutionStep step = rootStep;
+    while (step != seedStep) {
+      if (step == null || !RE_RUNNABLE_STEPS.contains(step.getClass()) || !(step.getPrev() instanceof AbstractExecutionStep previous))
+        return false;
+      step = previous;
+    }
+    return true;
+  }
+
+  /**
+   * Whether the chain built for this seed row is the chain every other row with the same names would get. Apart from the
+   * names, the build reads the seed only in the correlated count push-downs, and only to ask whether a read name holds a
+   * vertex ({@link CountStarShapeDetector#boundVertexRid}): a chain built where one holds null or a scalar may have been denied
+   * a push-down the next row would get, so it is not kept.
+   */
+  private boolean seedValuesCannotChangeThePlan(final SeedCorrelation correlation) {
+    if (!correlation.isSeedable() || !correlation.isCorrelated())
+      return true;
+    for (final String name : correlation.readNames())
+      if (CountStarShapeDetector.boundVertexRid(database, CountStarShapeDetector.boundElement(correlation.boundValue(name))) == null)
+        return false;
+    return true;
+  }
+
+  /** A seeded chain kept for the next outer row: valid for the same seed names, under the same enclosing context. */
+  private record SeededChain(Set<String> seedNames, CommandContext outerContext, BasicCommandContext context,
+                             SeedRowStep seedStep, AbstractExecutionStep rootStep) {
+    boolean serves(final Set<String> names, final CommandContext outer) {
+      return outer == outerContext && seedNames.equals(names);
+    }
+  }
+
+  /** The first step of a seeded body: hands on the outer row it was last given, once per run. */
+  private static final class SeedRowStep extends AbstractExecutionStep {
+    private Result  seedRow;
+    private boolean consumed;
+
+    private SeedRowStep(final CommandContext context) {
+      super(context);
+    }
+
+    /** Starts a run of the chain for {@code row}. */
+    void seed(final Result row) {
+      this.seedRow = row;
+      this.consumed = false;
+    }
+
+    @Override
+    public ResultSet syncPull(final CommandContext ctx, final int nRecords) {
+      if (consumed)
+        return new IteratorResultSet(List.<ResultInternal>of().iterator());
+      consumed = true;
+      // Copy the seed row into a ResultInternal
+      final ResultInternal seedResult = new ResultInternal();
+      for (final String prop : seedRow.getPropertyNames())
+        seedResult.setProperty(prop, seedRow.getProperty(prop));
+      return new IteratorResultSet(List.of(seedResult).iterator());
+    }
+
+    @Override
+    public String getName() {
+      return "SubquerySeedRowStep";
+    }
+
+    @Override
+    public String getType() {
+      return getName();
+    }
+
+    @Override
+    public String prettyPrint(final int depth, final int indent) {
+      return "  ".repeat(Math.max(0, depth * indent)) + "+ SUBQUERY SEED ROW";
+    }
   }
 
   /**
@@ -789,6 +939,11 @@ public class CypherExecutionPlan {
     if (statement.getSkip() != null || statement.getLimit() != null)
       return null;
 
+    // Declined for an earlier outer row with the same names, and the values cannot change that (issue #12136)
+    final SubqueryPlans subqueryPlans = SubqueryPlans.of(outerContext);
+    if (subqueryPlans != null && seedRow != null && seedRow.getPropertyNames().equals(countRowsPushDownDeclinedFor))
+      return null;
+
     final SeedCorrelation correlation = seedCorrelationOf(seedRow);
     if (!correlation.isSeedable())
       return null;
@@ -806,8 +961,11 @@ public class CypherExecutionPlan {
     inheritGraphViewPins(context, outerContext);
 
     final AbstractExecutionStep countStep = tryCountPushDown(context, true, correlation);
-    if (countStep == null)
+    if (countStep == null) {
+      if (subqueryPlans != null && seedRow != null && seedValuesCannotChangeThePlan(correlation))
+        countRowsPushDownDeclinedFor = Set.copyOf(seedRow.getPropertyNames());
       return null;
+    }
 
     try (final ResultSet resultSet = countStep.syncPull(context, 1)) {
       if (!resultSet.hasNext())
@@ -932,11 +1090,13 @@ public class CypherExecutionPlan {
     context.setProfiling(profile != null);
     context.setCurrentRecordsOnly(WrittenCopy.holdsCurrentRecordsOnly(statement.isReadOnly(), outerContext));
     setupFunctionResolver(context);
+    installCommandDeadline(context, outerContext);
     // Every branch runs on a context of its own, so the statement clock has to travel from here into each of
     // them - and into here from an enclosing statement when this UNION is a CALL body (issue #7052).
     CypherFunctionHelper.inheritStatementTime(context, outerContext);
     inheritIncomingEdgeLookup(context, outerContext);
     inheritGraphViewPins(context, outerContext);
+    SubqueryPlans.install(context, outerContext, statement);
 
     final UnionStep unionStep =
         new UnionStep(unionSubqueryPlans, unionRemoveDuplicates, context);
@@ -1277,8 +1437,10 @@ public class CypherExecutionPlan {
     context.setDatabase(database);
     context.setInputParameters(parameters);
     setupFunctionResolver(context);
+    installCommandDeadline(context, null);
     context.setProfiling(true);
     context.openGraphViewPins();
+    SubqueryPlans.install(context, null, statement);
 
     final InternalResultSet results = new InternalResultSet();
     AbstractExecutionStep rootStep = null;
@@ -1377,6 +1539,9 @@ public class CypherExecutionPlan {
       profileOutput.append("CSR-accelerated via Graph Analytical View\n");
     profileOutput.append(String.format(Locale.ROOT, "Execution Time: %.3f ms\n", elapsedNanos / 1_000_000.0));
     profileOutput.append(String.format(Locale.ROOT, "Rows Returned: %d\n", rowCount));
+    final String subqueryChains = SubqueryPlans.describe(context);
+    if (subqueryChains != null)
+      profileOutput.append(subqueryChains);
 
     // Collect execution steps for structured plan data
     final List<ExecutionStep> executionSteps = stepChainOf(rootStep);

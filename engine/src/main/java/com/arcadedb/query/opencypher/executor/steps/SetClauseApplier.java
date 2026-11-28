@@ -21,11 +21,13 @@ package com.arcadedb.query.opencypher.executor.steps;
 import com.arcadedb.database.BaseRecord;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.DocumentValidator;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VirtualVertex;
 import com.arcadedb.query.opencypher.Labels;
@@ -43,6 +45,8 @@ import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Property;
+import com.arcadedb.schema.Type;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -93,6 +97,10 @@ public final class SetClauseApplier {
   // Lines up the records the row's lists and maps hold with what the statement wrote (issue #11754): the statement's own,
   // shared by every clause, resolved at the start of each apply()
   private       HeldCollectionRefresher heldCollections;
+  // The records the current clause has written and not saved yet, in the order it first wrote them (issue #12824): each is
+  // saved once, after every item of the clause has been applied, so an UPDATE trigger fires once and sees the final state.
+  // Reused across rows, and not thread-safe for the same reason as reloadedRids
+  private final List<MutableDocument> pendingSaves = new ArrayList<>();
 
   private SetClauseApplier(final CommandContext context, final ExpressionEvaluator evaluator,
       final boolean reloadLatestTarget, final boolean skipUnchangedPropertyWrites, final SelectionPredicates selection) {
@@ -155,12 +163,64 @@ public final class SetClauseApplier {
     if (reloadedRids != null)
       reloadedRids.clear();
 
-    // Phase 1: evaluate all right-hand-side expressions against the graph state *before* the SET clause runs.
-    // openCypher / Neo4j SET is a simultaneous assignment: every read must observe the pre-clause value, never a
-    // value written by an earlier item in the same clause (issue #5190). E.g. "SET a.x = a.y, a.y = a.x" must swap
-    // rather than copy.
+    // The items are applied in order, and each group of them sees the effect of every earlier group (issue #12832): a run of
+    // consecutive property items on the same variable is one simultaneous assignment (issue #5190), and a map item, a label
+    // item or a property item on another variable starts the next group. "SET a.x = a.y, a.y = a.x" swaps, while
+    // "SET m.a = 5, n.l = m.a", "SET n += {b: 1}, n += {c: n.b}" and "SET n.b = 5, n:L, n.c = n.b" read the value written
+    // before them. Every observed answer of the reference implementation follows this rule, which is how it plans the
+    // clause: consecutive property writes on one entity in one operator, every other item in an operator of its own.
+    // A value is refused (a type mismatch, a NOTNULL null, a target that is not an entity) before any item of ITS group is
+    // written, but after the earlier groups were, exactly as between two SET clauses of one statement: the statement fails,
+    // and the rollback of its transaction (its own, or the caller's that the failure leads to) undoes the earlier groups too.
+    int from = 0;
+    // The variable the current run of property items writes: the first one a plain item of the run names
+    String runVariable = items.get(0).getVariable();
+    for (int i = 1; i < items.size(); i++) {
+      final SetClause.SetItem item = items.get(i);
+      if (continuesRun(items.get(i - 1), item, runVariable)) {
+        if (runVariable == null)
+          runVariable = item.getVariable();
+        continue;
+      }
+      applyGroup(items.subList(from, i), result, writtenDocs, labelReplacements);
+      // The next group reads what this one wrote, through the row's lists and maps and through a moved vertex too
+      heldCollections.refresh(result);
+      labelReplacements.redirect(result);
+      from = i;
+      runVariable = item.getVariable();
+    }
+    applyGroup(from == 0 ? items : items.subList(from, items.size()), result, writtenDocs, labelReplacements);
+
+    // The row's own aliases follow each write as it lands (RowAliases.propagateUpdate); a node the row holds in a list or
+    // a map, such as the collect() the target was read from, follows it here, once per row (issue #11754). A label write
+    // above already moved those to the replacement vertex, and the redirect keeps a copy shared with earlier rows there too
+    heldCollections.refresh(result);
+    labelReplacements.redirect(result);
+  }
+
+  /**
+   * Whether {@code item}, which follows {@code previous} in the clause, joins the simultaneous run of {@link #apply} that
+   * writes {@code runVariable} instead of starting a new group: only property items on one variable form a run. An expression
+   * target ({@code SET (CASE ... THEN n END).p = ...}) names no variable and joins the run it follows.
+   */
+  private static boolean continuesRun(final SetClause.SetItem previous, final SetClause.SetItem item, final String runVariable) {
+    if (item.getType() != SetClause.SetType.PROPERTY || previous.getType() != SetClause.SetType.PROPERTY)
+      return false;
+    return item.getVariable() == null || runVariable == null || runVariable.equals(item.getVariable());
+  }
+
+  /**
+   * Applies one group of items (see {@link #apply}): every right-hand side of the group is evaluated against the state the
+   * earlier groups left, and only then are the writes of the group applied.
+   */
+  private void applyGroup(final List<SetClause.SetItem> items, final Result result, final Map<RID, MutableDocument> writtenDocs,
+      final LabelReplacements labelReplacements) {
+    // Phase 1: evaluate all right-hand-side expressions of the group against the graph state *before* the group runs.
+    // A run of property items on one variable is a simultaneous assignment: every read must observe the value from before
+    // the run, never a value written by an earlier item of the same run (issue #5190). E.g. "SET a.x = a.y, a.y = a.x" must
+    // swap rather than copy.
     //
-    // #5227: for a stand-alone SET the pre-clause snapshot must be the LATEST COMMITTED state (what a locked read
+    // #5227: for a stand-alone SET the pre-group snapshot must be the LATEST COMMITTED state (what a locked read
     // would observe), NOT the possibly-stale record snapshot the MATCH loaded. reloadTarget() below reloads each
     // variable target to its current committed version before its right-hand side is evaluated, so a concurrent
     // transaction that committed between the MATCH read and this write is observed here instead of being silently
@@ -189,35 +249,85 @@ public final class SetClauseApplier {
       evaluateRightHandSides(items, result, writtenDocs, false, values, targets, keys, keyIsNull);
     }
 
-    // Phase 2: apply the writes using the pre-computed snapshot values.
-    for (int i = 0; i < items.size(); i++) {
-      final SetClause.SetItem item = items.get(i);
-      switch (item.getType()) {
-      case PROPERTY:
-        applyPropertySet(item, result, writtenDocs, labelReplacements, values[i], targets[i], keys[i], keyIsNull[i]);
-        break;
-      case REPLACE_MAP:
-        applyReplaceMap(item, result, writtenDocs, asPropertyMap(values[i]));
-        break;
-      case MERGE_MAP:
-        applyMergeMap(item, result, writtenDocs, asPropertyMap(values[i]));
-        break;
-      case LABELS:
-        applyLabels(item, result, writtenDocs, labelReplacements, asLabelList(values[i]));
-        break;
-      }
-    }
+    // A null written to a NOTNULL property is refused here, before any item of the group is written (issue #13227)
+    refuseNullsOnNotNullProperties(items, result, writtenDocs, values, targets, keys, keyIsNull);
 
-    // The row's own aliases follow each write as it lands (RowAliases.propagateUpdate); a node the row holds in a list or
-    // a map, such as the collect() the target was read from, follows it here, once per row (issue #11754). A label write
-    // above already moved those to the replacement vertex, and the redirect keeps a copy shared with earlier rows there too
-    heldCollections.refresh(result);
-    labelReplacements.redirect(result);
+    // Phase 2: apply the writes using the pre-computed snapshot values. A record is saved once, after every item of the
+    // clause has been applied to it (issue #12824): saving it per item fired its BEFORE/AFTER UPDATE triggers once per item,
+    // each time on a half-applied record, while SQL UPDATE with the same assignments saves it once
+    try {
+      for (int i = 0; i < items.size(); i++) {
+        final SetClause.SetItem item = items.get(i);
+        switch (item.getType()) {
+        case PROPERTY:
+          applyPropertySet(item, result, writtenDocs, labelReplacements, values[i], targets[i], keys[i], keyIsNull[i]);
+          break;
+        case REPLACE_MAP:
+          applyReplaceMap(item, result, writtenDocs, asPropertyMap(values[i]));
+          break;
+        case MERGE_MAP:
+          applyMergeMap(item, result, writtenDocs, asPropertyMap(values[i]));
+          break;
+        case LABELS:
+          applyLabels(item, result, writtenDocs, labelReplacements, asLabelList(values[i]));
+          break;
+        }
+      }
+      savePending();
+    } finally {
+      // A refused save leaves nothing behind for the next row
+      pendingSaves.clear();
+    }
   }
 
   /**
-   * Phase 1 of {@link #apply}: evaluates every right-hand side (and every computed target and key) of the clause against
-   * the pre-clause state, into the given arrays.
+   * Refuses the group when one of its items writes a null to a NOTNULL property of its target (issue #13227). openCypher
+   * never stores a null, it removes the property ({@code SET n.p = null}, {@code SET n += {p: null}}) or leaves it out
+   * ({@code SET n = {p: null}}), so the presence-based rule of the validator would never see the null that SQL refuses.
+   * Asked between the two phases, so a refused group has written nothing. The properties {@code SET n = map} leaves out
+   * are removals, not null writes, and stay accepted like {@code REMOVE n.p}.
+   */
+  private void refuseNullsOnNotNullProperties(final List<SetClause.SetItem> items, final Result result,
+      final Map<RID, MutableDocument> writtenDocs, final Object[] values, final Object[] targets, final String[] keys,
+      final boolean[] keyIsNull) {
+    for (int i = 0; i < items.size(); i++) {
+      final SetClause.SetItem item = items.get(i);
+      switch (item.getType()) {
+      case PROPERTY: {
+        if (values[i] != null || keyIsNull[i])
+          break;
+        final Object target = item.getTargetExpression() != null ? targets[i] : resolveLatestDoc(item.getVariable(), result, writtenDocs);
+        if (target instanceof Document doc)
+          DocumentValidator.requireNullAllowed(doc.getType(), item.getKeyExpression() != null ? keys[i] : item.getProperty(), doc);
+        break;
+      }
+      case REPLACE_MAP:
+      case MERGE_MAP: {
+        final Map<String, Object> map = asPropertyMap(values[i]);
+        if (map == null || !map.containsValue(null))
+          break;
+        if (resolveLatestDoc(item.getVariable(), result, writtenDocs) instanceof Document doc)
+          requireNullsAllowed(doc.getType(), map, doc);
+        break;
+      }
+      default:
+        break;
+      }
+    }
+  }
+
+  /** Refuses the null entries of a property map written to a record of {@code type} that are NOTNULL properties (#13227). */
+  static void requireNullsAllowed(final DocumentType type, final Map<String, Object> map, final Document record) {
+    if (map == null)
+      return;
+    for (final Map.Entry<String, Object> entry : map.entrySet())
+      if (entry.getValue() == null)
+        DocumentValidator.requireNullAllowed(type, entry.getKey(), record);
+  }
+
+  /**
+   * Phase 1 of {@link #applyGroup}: evaluates every right-hand side (and every computed target and key) of the group against
+   * the state before the group, into the given arrays.
    *
    * @param reload whether each variable target is first reloaded to its latest committed version (issue #5227)
    */
@@ -233,17 +343,18 @@ public final class SetClauseApplier {
         if (reload)
           reloadTarget(item.getVariable(), result, writtenDocs);
         if (item.getTargetExpression() != null) {
-          // WHICH record an expression target names is a read of the graph too, so it is answered from the
-          // pre-clause state like every other read: "SET n.enabled = false, (CASE WHEN n.enabled THEN n END).flag = 1"
-          // writes the flag, because n.enabled was true when the clause began. Phase 2 re-resolves the captured
-          // record through labelReplacements, so a label write earlier in the clause still moves the write with it.
+          // WHICH record an expression target names is a read of the graph too, so it is answered from the state
+          // before its group like every other read: "SET n.enabled = false, (CASE WHEN n.enabled THEN n END).flag = 1"
+          // writes the flag, because the target joins the run of n and n.enabled was true when it began. Phase 2
+          // re-resolves the captured record through labelReplacements, so a label write earlier in the clause still
+          // moves the write with it.
           targets[i] = evaluator.evaluate(item.getTargetExpression(), result, context);
           // #5795: the CASE branch (or bracket-syntax base) can itself resolve to a variable that was deleted
           // earlier in the same query, e.g. SET (CASE WHEN true THEN t END).v = 99 after DELETE t. Unlike the
           // plain-variable branch, this path never goes through resolveLatestDoc(), so the check happens here.
           DeletedEntityMarker.checkNotDeleted(targets[i]);
           // #11693: only a node or a relationship holds properties. A map (or any other value) is refused here, before
-          // any item of the clause is written, instead of being skipped as if the write had happened.
+          // any item of the group is written, instead of being skipped as if the write had happened.
           if (targets[i] != null && !(targets[i] instanceof Document))
             throw new TypeMismatchException("TypeError: Type mismatch: expected Node or Relationship but was "
                 + CypherFunctionHelper.cypherTypeName(targets[i]));
@@ -254,9 +365,8 @@ public final class SetClauseApplier {
           keyIsNull[i] = keyValue == null;
           keys[i] = keyIsNull[i] ? null : keyValue.toString();
         }
-        // Coerce and validate HERE so an invalid value rejects the clause before any of it has been written: the
-        // step rolls back only a transaction it opened itself, so a value refused halfway through would otherwise
-        // leave the earlier items behind in the caller's transaction.
+        // Coerce and validate HERE so an invalid value rejects the group before any of it has been written (the
+        // earlier groups are undone by the rollback of the failed statement's transaction, see apply()).
         // The property name is the static one when the clause spells it (SET n.m2 = ...), the resolved key when it
         // computes it (SET n[$k] = ...); either way it is what a refusal has to be able to name (issue #7729).
         values[i] = coerceAndValidate(evaluator.evaluate(item.getValueExpression(), result, context),
@@ -267,16 +377,16 @@ public final class SetClauseApplier {
         if (reload)
           reloadTarget(item.getVariable(), result, writtenDocs);
         // Materialise the properties HERE, not at write time: an entity right-hand side evaluates to the live record,
-        // so deferring the copy to phase 2 would let an earlier item of this same clause be read back through it
-        // ("SET b.name = 'new', a = b" must copy b's PRE-clause name). Resolving the shape now also means a
-        // right-hand side that is neither an entity nor a map fails the clause before any of it has been written.
+        // and the copy is what the item read when it was evaluated, never what a later write makes of it
+        // ("SET a += b, b.name = 'new'" copies b's old name, issue #12832). Resolving the shape now also means a
+        // right-hand side that is neither an entity nor a map fails the group before any of it has been written.
         values[i] = toPropertyMap(evaluator.evaluate(item.getValueExpression(), result, context),
             item.getType() == SetClause.SetType.REPLACE_MAP ? "=" : "+=", item.getValueExpression());
         break;
       case LABELS:
-        // A Cypher 25 dynamic label - SET n:$(expr) - is a read of the row, so it is answered from the pre-clause
-        // state like every other right-hand side, and it is validated here so an unusable label rejects the clause
-        // before any of it has been written (issue #7059).
+        // A Cypher 25 dynamic label - SET n:$(expr) - is a read of the row, so it is answered from the state before
+        // its group like every other right-hand side, and it is validated here so an unusable label is refused
+        // before the label is written (issue #7059).
         values[i] = resolveLabels(item, result);
         break;
       }
@@ -440,7 +550,27 @@ public final class SetClauseApplier {
   private static boolean writesProperty(final Document doc, final String propertyName, final Object value) {
     if (value == null)
       return doc.has(propertyName);
-    return !CypherValues.equalValues(doc.get(propertyName), value);
+    return !CypherValues.equalValues(doc.get(propertyName), asStored(doc, propertyName, value));
+  }
+
+  /**
+   * A number written to a property declared with a type is stored as that type ({@code SET n.price = 1} over a DOUBLE
+   * column stores 1.0), so it is compared in the form the write will give it: the INTEGER 1 is no new value for a stored
+   * 1.0 of a DOUBLE column, while it is for an undeclared property, whose kind the write keeps (issue #12981).
+   */
+  private static Object asStored(final Document doc, final String propertyName, final Object value) {
+    if (!(value instanceof Number))
+      return value;
+    final DocumentType type = doc.getType();
+    final Property property = type != null ? type.getPolymorphicPropertyIfExists(propertyName) : null;
+    if (property == null)
+      return value;
+    try {
+      return Type.convert(doc.getDatabase(), value, property.getType().getJavaImplementation(doc.getDatabase()), property);
+    } catch (final RuntimeException e) {
+      // a value the declared type cannot take: the write reports why
+      return value;
+    }
   }
 
   private void applyPropertySet(final SetClause.SetItem item, final Result result,
@@ -451,8 +581,8 @@ public final class SetClauseApplier {
     final String variableToUpdate;
 
     if (item.getTargetExpression() != null) {
-      // Expression target: SET (CASE WHEN ... THEN t END).prop = value, resolved in phase 1 against the pre-clause
-      // state. A label write earlier in this clause replaced the record it named, so follow that move: the captured
+      // Expression target: SET (CASE WHEN ... THEN t END).prop = value, resolved in phase 1 against the state before
+      // its group. A label write earlier in this clause replaced the record it named, so follow that move: the captured
       // vertex is the one the rewrite deleted.
       obj = precomputedTarget instanceof Vertex vertex ? labelReplacements.resolve(vertex) : precomputedTarget;
       if (obj == null)
@@ -465,8 +595,11 @@ public final class SetClauseApplier {
         return;
     }
 
-    if (!(obj instanceof Document doc))
+    if (!(obj instanceof Document target))
       return;
+    // An expression target can name, through an instance of its own, a record an earlier item of this clause wrote and has
+    // not saved yet: the write goes on that copy, or it would start from the record without that item and be saved over it
+    final Document doc = pendingCopyOf(target);
 
     // Resolve the property name. For dynamic bracket syntax (SET n[keyExpr] = value) the name is computed at runtime
     // (snapshotted in phase 1); otherwise it is the static dot-syntax name.
@@ -479,6 +612,10 @@ public final class SetClauseApplier {
       propertyName = item.getProperty();
 
     final Object value = precomputedValue;
+    // Asked again here, on the record the write lands on: a label written earlier in the clause can have moved it to
+    // another type than the one the check before the writes saw (issue #13227)
+    if (value == null)
+      DocumentValidator.requireNullAllowed(doc.getType(), propertyName, doc);
 
     // Issue #4474: a MERGE action never re-asserts a value the record already holds, because the write would bump
     // the MVCC version and invalidate the record for every concurrent reader that had matched it. The statistic is
@@ -506,7 +643,7 @@ public final class SetClauseApplier {
       mutableDoc.set(propertyName, value);
       propertyExisted = true;
     }
-    mutableDoc.save();
+    markWritten(mutableDoc);
 
     // Neo4j counts both a property assignment and a genuine (existing-property) null-valued removal under
     // "properties set".
@@ -534,6 +671,8 @@ public final class SetClauseApplier {
     final Document doc = resolveLatestDoc(item.getVariable(), result, writtenDocs);
     if (doc == null)
       return;
+    // issue #13227, asked again on the record the write lands on, see applyPropertySet()
+    requireNullsAllowed(doc.getType(), map, doc);
 
     final MutableDocument mutableDoc = doc.modify();
     if (mutableDoc != doc)
@@ -559,7 +698,7 @@ public final class SetClauseApplier {
     // re-set with a non-null value), matching applyPropertySet/applyMergeMap.
     propertiesSet += CypherStatisticsHelper.countRemovedProperties(existingProps, map);
 
-    mutableDoc.save();
+    markWritten(mutableDoc);
     context.getStatistics().addPropertiesSet(propertiesSet);
     final RID savedRid = mutableDoc.getIdentity();
     if (savedRid != null)
@@ -578,6 +717,8 @@ public final class SetClauseApplier {
     final Document doc = resolveLatestDoc(item.getVariable(), result, writtenDocs);
     if (doc == null)
       return;
+    // issue #13227, asked again on the record the write lands on, see applyPropertySet()
+    requireNullsAllowed(doc.getType(), map, doc);
 
     final MutableDocument mutableDoc = doc.modify();
     if (mutableDoc != doc)
@@ -598,7 +739,7 @@ public final class SetClauseApplier {
       }
     }
 
-    mutableDoc.save();
+    markWritten(mutableDoc);
     context.getStatistics().addPropertiesSet(propertiesSet);
     final RID savedRid = mutableDoc.getIdentity();
     if (savedRid != null)
@@ -607,6 +748,84 @@ public final class SetClauseApplier {
     RowAliases.propagateUpdate(result, doc, mutableDoc);
     if (doc.getIdentity() == null)
       ((ResultInternal) result).setProperty(item.getVariable(), mutableDoc);
+  }
+
+  /**
+   * Queues {@code doc}, which an item of the clause has just written, for the save {@link #apply} performs once every item has
+   * been applied (issue #12824). A record with no identity yet is saved now, as before: its save creates it, which is no
+   * update, and gives it the identity later items and rows find it by.
+   */
+  private void markWritten(final MutableDocument doc) {
+    if (doc.getIdentity() == null) {
+      doc.save();
+      return;
+    }
+    for (int i = 0; i < pendingSaves.size(); i++)
+      if (pendingSaves.get(i) == doc)
+        return;
+    pendingSaves.add(doc);
+  }
+
+  /** The unsaved copy an earlier item of the clause wrote of the record {@code doc} names, or {@code doc} itself. */
+  private Document pendingCopyOf(final Document doc) {
+    final RID rid = doc.getIdentity();
+    if (rid != null)
+      for (int i = 0; i < pendingSaves.size(); i++) {
+        final MutableDocument pending = pendingSaves.get(i);
+        if (pending != doc && rid.equals(pending.getIdentity()))
+          return pending;
+      }
+    return doc;
+  }
+
+  /**
+   * Readies the records the clause has written and not saved yet for the label write that moves {@code vertex} to another type
+   * (issue #12824), and answers the instance the move has to copy.
+   * <ul>
+   *   <li>the vertex's own unsaved copy is what the move copies, and it is dropped from the queue unsaved: the move deletes the
+   *       record, so saving it first only fired its UPDATE triggers on a half-applied record about to disappear;</li>
+   *   <li>a record the move rewrites is saved first: an edge of the vertex (re-created from what the transaction holds, which is
+   *       only what was saved) and a vertex at the other end of one (whose edge list the move rewrites on the saved copy, so
+   *       its own unsaved copy, saved later, would overwrite the re-attached edges);</li>
+   *   <li>every other record stays queued and is saved once at the end of the clause.</li>
+   * </ul>
+   */
+  private Vertex prepareForLabelMove(final Vertex vertex) {
+    if (pendingSaves.isEmpty())
+      return vertex;
+    final RID rid = vertex.getIdentity();
+    Vertex toMove = vertex;
+    int kept = 0;
+    for (int i = 0; i < pendingSaves.size(); i++) {
+      final MutableDocument pending = pendingSaves.get(i);
+      if (pending instanceof Vertex pendingVertex && rid.equals(pending.getIdentity()))
+        toMove = pendingVertex;
+      else if (isRewrittenByLabelMove(pending, vertex, rid))
+        pending.save();
+      else
+        pendingSaves.set(kept++, pending);
+    }
+    for (int i = pendingSaves.size() - 1; i >= kept; i--)
+      pendingSaves.remove(i);
+    return toMove;
+  }
+
+  /** Whether moving {@code vertex} (whose RID is {@code rid}) to another type rewrites {@code pending}. */
+  private static boolean isRewrittenByLabelMove(final MutableDocument pending, final Vertex vertex, final RID rid) {
+    if (pending instanceof Edge edge)
+      return rid.equals(edge.getOut()) || rid.equals(edge.getIn());
+    if (pending instanceof Vertex other)
+      // An edge of a unidirectional type that ends in the vertex is stored on its source only
+      return vertex.isConnectedTo(other) || other.isConnectedTo(vertex, Vertex.DIRECTION.OUT);
+    // A document is no part of the graph the move rewrites
+    return false;
+  }
+
+  /** Saves every record the clause has written since the last call, once each, in the order the clause first wrote them. */
+  private void savePending() {
+    for (int i = 0; i < pendingSaves.size(); i++)
+      pendingSaves.get(i).save();
+    pendingSaves.clear();
   }
 
   @SuppressWarnings("unchecked")
@@ -765,8 +984,8 @@ public final class SetClauseApplier {
       return;
 
     // Rewrite the vertex under the composite type: the record moves, and the replacement is recorded so this row and
-    // every later one follow it.
-    labelReplacements.replace(vertex, newTypeName);
+    // every later one follow it. The move copies what the clause wrote to the vertex so far (issue #12824).
+    labelReplacements.replace(prepareForLabelMove(vertex), newTypeName);
     if (newLabelsCount > 0)
       context.getStatistics().addLabelsAdded(newLabelsCount);
 

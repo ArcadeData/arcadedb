@@ -19,6 +19,7 @@
 package com.arcadedb.function.rel;
 
 import com.arcadedb.graph.Edge;
+import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
@@ -49,6 +50,9 @@ public class RelId extends AbstractRelFunction {
 
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
+    // A relationship the statement deleted keeps the id it had, as id() does (issue #13582)
+    if (args[0] instanceof DeletedEntityMarker deleted)
+      return deleted.getRelationshipType() != null && deleted.getIdentity() != null ? deleted.getIdentity().toString() : null;
     final Edge edge = toEdge(args[0]);
     if (edge == null)
       return null;

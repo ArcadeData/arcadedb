@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.util.*;
+import java.util.concurrent.ConcurrentSkipListMap;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -493,6 +494,29 @@ class CollectionUtilsTest {
     assertThat(CollectionUtils.addBounded(retained, 0, "a")).isEqualTo(CollectionUtils.BoundedAdd.DROPPED);
     assertThat(CollectionUtils.addBounded(retained, 0, "a")).isEqualTo(CollectionUtils.BoundedAdd.DROPPED);
     assertThat(retained).isEmpty();
+  }
+
+  /** Issue #12590: a map that cannot be asked for a key has no entry under it, it does not fail the probe. */
+  @Test
+  void getOrNullIfKeyRefusedAnswersNullForAMapThatRefusesTheKey() {
+    final Map<Character, Integer> natural = new TreeMap<>(Map.of('a', 1, 'b', 2));
+    final Map<Character, Integer> reversed = new TreeMap<>(Comparator.reverseOrder());
+    reversed.putAll(natural);
+    final Map<Integer, String> concurrent = new ConcurrentSkipListMap<>(Map.of(1, "one"));
+
+    assertThat(CollectionUtils.getOrNullIfKeyRefused(natural, "@type")).isNull();
+    assertThat(CollectionUtils.getOrNullIfKeyRefused(reversed, "@type")).isNull();
+    assertThat(CollectionUtils.getOrNullIfKeyRefused(concurrent, "@type")).isNull();
+  }
+
+  /** A map that takes the key answers as {@link Map#get} does, whichever its class. */
+  @Test
+  void getOrNullIfKeyRefusedAnswersTheEntryOfAMapThatTakesTheKey() {
+    assertThat(CollectionUtils.getOrNullIfKeyRefused(new TreeMap<>(Map.of("@type", "Address")), "@type")).isEqualTo("Address");
+    assertThat(CollectionUtils.getOrNullIfKeyRefused(new LinkedHashMap<>(Map.of("@type", "Address")), "@type")).isEqualTo("Address");
+    assertThat(CollectionUtils.getOrNullIfKeyRefused(new TreeMap<>(Map.of("city", "Rome")), "@type")).isNull();
+    assertThat(CollectionUtils.getOrNullIfKeyRefused(new TreeMap<Character, Integer>(), "@type")).isNull();
+    assertThat(CollectionUtils.getOrNullIfKeyRefused(new LinkedHashMap<>(Map.of('a', 1)), "@type")).isNull();
   }
 
   /** Only a duplicate is not a first sighting - the property both CHECK DATABASE counters tick on. */

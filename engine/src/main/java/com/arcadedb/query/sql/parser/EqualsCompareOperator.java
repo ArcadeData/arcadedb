@@ -35,12 +35,23 @@ public class EqualsCompareOperator extends SimpleNode implements BinaryCompareOp
   }
 
   @Override
+  public boolean execute(final DatabaseInternal database, final Object iLeft, final Object iRight,
+      final ConstantOperandConversion rightConversion) {
+    return QueryOperatorEquals.equals(iLeft, iRight, rightConversion);
+  }
+
+  @Override
   public String toString() {
     return doubleEquals ? "==" : "=";
   }
 
   @Override
   public EqualsCompareOperator copy() {
+    return this;
+  }
+
+  @Override
+  public EqualsCompareOperator mirrored() {
     return this;
   }
 

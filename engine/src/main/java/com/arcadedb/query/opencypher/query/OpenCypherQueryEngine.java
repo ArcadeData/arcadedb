@@ -150,7 +150,8 @@ public class OpenCypherQueryEngine implements QueryEngine {
     try {
       // EXPLAIN/PROFILE are prefixes the query()/command() paths strip before parsing, so the grammar never sees them.
       // PROFILE executes what it wraps, so it is classified exactly as the wrapped statement; EXPLAIN only plans, so
-      // it stays idempotent while still reporting the wrapped statement's operation types (issue #9313).
+      // it stays idempotent while still reporting the wrapped statement's operation types (issue #9313), unless planning
+      // evaluates a call to a function that is not confirmed to be a built-in one (see isPlanOnly()).
       final String stripped = stripLeadingComments(query);
       final boolean explain = stripped.regionMatches(true, 0, "EXPLAIN ", 0, 8);
       final String actual = explain || stripped.regionMatches(true, 0, "PROFILE ", 0, 8) ? stripped.substring(8).trim() : query;
@@ -163,7 +164,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
       return new AnalyzedQuery() {
         @Override
         public boolean isIdempotent() {
-          return explain || statement.isReadOnly();
+          return statement.isReadOnly() || isPlanOnly(explain, statement);
         }
 
         @Override
@@ -208,27 +209,14 @@ public class OpenCypherQueryEngine implements QueryEngine {
           if (statement.isReadOnly())
             return CollectionUtils.singletonSet(OperationType.READ);
 
+          // Every write the statement can run, read from the whole clause tree: what a subquery, a FOREACH body or a union branch
+          // writes counts as what the top-level clauses write. A schema-changing procedure is a SCHEMA operation as its SQL
+          // statement is, not the CREATE/UPDATE/DELETE fallback below; data writes next to it keep their own types (issue #11438)
           final EnumSet<OperationType> ops = EnumSet.noneOf(OperationType.class);
-          // A schema-changing procedure is a SCHEMA operation as its SQL statement is, not the CREATE/UPDATE/DELETE fallback
-          // below; data writes next to it keep their own types (issue #11438)
-          final boolean schemaProcedureCall = statement.hasSchemaProcedureCall();
-          if (schemaProcedureCall)
-            ops.add(OperationType.SCHEMA);
-          if (statement.hasCreate())
-            ops.add(OperationType.CREATE);
-          if (statement.hasMerge()) {
-            ops.add(OperationType.CREATE);
-            ops.add(OperationType.UPDATE);
-          }
-          if (statement.hasDelete())
-            ops.add(OperationType.DELETE);
-          if (statement.hasSet())
-            ops.add(OperationType.UPDATE);
-          if (statement.hasRemove())
-            ops.add(OperationType.UPDATE);
+          statement.collectWriteOperations(ops);
           if (ops.isEmpty())
             return Set.of(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE);
-          return schemaProcedureCall && ops.size() == 1 ? CollectionUtils.singletonSet(OperationType.SCHEMA) : Set.copyOf(ops);
+          return Set.copyOf(ops);
         }
       };
     } catch (final CommandParsingException e) {
@@ -300,10 +288,11 @@ public class OpenCypherQueryEngine implements QueryEngine {
       if (!explain)
         checkParametersAreBound(parsed.parameters(), effectiveParameters);
 
-      // EXPLAIN never executes the underlying query, so the idempotency rule does not apply. PROFILE does execute it,
-      // so a write under PROFILE is refused here exactly like the bare write (issue #9313); Studio and the command
-      // path (database.command) are where a profiled write is legitimate (issue #4366).
-      if (!explain && !statement.isReadOnly())
+      // EXPLAIN does not execute the underlying query, so the idempotency rule does not apply to what it only plans. PROFILE
+      // does execute it, so a write under PROFILE is refused here exactly like the bare write (issue #9313); Studio and the
+      // command path (database.command) are where a profiled write is legitimate (issue #4366). The EXPLAIN of a statement
+      // whose planning evaluates a function that is not confirmed to be a built-in one is refused as the bare statement is.
+      if (!statement.isReadOnly() && !isPlanOnly(explain, statement))
         throw new QueryNotIdempotentException("Query '" + query + "' is not idempotent");
 
       // SHOW/TERMINATE TRANSACTIONS read no data and are answered by the server's registry, not by a plan (issue #9689)
@@ -314,7 +303,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
       if (!explain && statement instanceof CypherShowSchemaStatement show)
         return CypherSchemaCommands.execute(database, show, actualQuery, effectiveParameters);
 
-      return execute(lookup.cacheKey(), statement, configuration, effectiveParameters, explain, profile, timeExecution);
+      return execute(planCacheKey(lookup), statement, configuration, effectiveParameters, explain, profile, timeExecution);
     } catch (final QueryNotIdempotentException | CommandExecutionException | CommandParsingException | SecurityException
              | NeedRetryException e) {
       // A NeedRetryException keeps its type: Database.transaction(..., retries) retries on it, and SQL lets it through (#9487)
@@ -327,6 +316,18 @@ public class OpenCypherQueryEngine implements QueryEngine {
   @Override
   public ResultSet query(final String query, final ContextConfiguration configuration, final Object... parameters) {
     return query(query, configuration, convertPositionalParameters(parameters));
+  }
+
+  /**
+   * Whether the statement is only planned, so it is answered as a read whatever it wraps: an EXPLAIN builds the steps of the
+   * statement and runs none of them. Building them still evaluates the expressions the steps need up front (SKIP, LIMIT, the
+   * top-K bound of an ORDER BY, the conditions of a conditional query), so a statement calling a function that is not confirmed
+   * to be a built-in one, which can be a {@code DEFINE FUNCTION} body, runs it while it is planned and is classified as it is
+   * when run (issue #6418). The answer is deliberately conservative: a call anywhere in the statement counts, not only one in
+   * the expressions evaluated up front, so that no shape of the statement has to be modelled here.
+   */
+  private static boolean isPlanOnly(final boolean explain, final CypherStatement statement) {
+    return explain && !statement.hasUnconfirmedFunctionCall();
   }
 
   /**
@@ -490,7 +491,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
       if (statement instanceof CypherSessionStatement)
         return executeSession((CypherSessionStatement) statement, session, effectiveParameters);
 
-      return execute(lookup.cacheKey(), statement, configuration, effectiveParameters, explain, profile, timeExecution);
+      return execute(planCacheKey(lookup), statement, configuration, effectiveParameters, explain, profile, timeExecution);
     } catch (final CommandExecutionException | CommandParsingException | SecurityException | NeedRetryException e) {
       // See query(): a retryable conflict must reach Database.transaction(..., retries) with its own type (#9487)
       throw e;
@@ -580,9 +581,18 @@ public class OpenCypherQueryEngine implements QueryEngine {
   }
 
   /**
+   * The key the plan of a looked-up statement is cached under, or null when it must not be cached: a text with more literals than
+   * a shape records is keyed as written, so only an exact resend could hit its entry, while the plan holds the whole statement
+   * (issue #12605). Such a text is kept out of the statement cache for the same reason (issue #12350).
+   */
+  private static String planCacheKey(final Lookup<ParsedQuery> lookup) {
+    return lookup.statement().bulk() ? null : lookup.cacheKey();
+  }
+
+  /**
    * Executes a parsed Cypher statement.
    *
-   * @param queryString   the original query string (for plan cache key)
+   * @param queryString   the plan cache key (see {@link #planCacheKey}), null to plan without the cache
    * @param statement     the parsed Cypher statement
    * @param configuration context configuration
    * @param parameters    query parameters
@@ -625,11 +635,11 @@ public class OpenCypherQueryEngine implements QueryEngine {
       final BasicCommandContext conditionContext = conditionContext(parameters);
       for (int i = 0; i < branches.size(); i++)
         if (isConditionTrue(conditional.getConditions().get(i), conditionContext))
-          return executeStatement(WHEN_BRANCH_KEY_PREFIX + i + "\u0000" + queryString, branches.get(i), configuration, parameters,
-              explain, profile, timeExecution);
+          return executeStatement(queryString == null ? null : WHEN_BRANCH_KEY_PREFIX + i + "\u0000" + queryString, branches.get(i),
+              configuration, parameters, explain, profile, timeExecution);
       if (conditional.getElseBranch() != null)
-        return executeStatement(ELSE_BRANCH_KEY_PREFIX + queryString, conditional.getElseBranch(), configuration, parameters, explain,
-            profile, timeExecution);
+        return executeStatement(queryString == null ? null : ELSE_BRANCH_KEY_PREFIX + queryString, conditional.getElseBranch(),
+            configuration, parameters, explain, profile, timeExecution);
       return new InternalResultSet();
     }
 
@@ -639,7 +649,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
 
     // A transaction holding uncommitted changes gets no Graph Analytical View: a cached plan may carry one it would
     // read past those changes, and a plan built now carries none, so it must not reach the cache either
-    if (!explain && !profile && !GraphTraversalProviderRegistry.isWithheld(execDb)) {
+    if (!explain && !profile && queryString != null && !GraphTraversalProviderRegistry.isWithheld(execDb)) {
       // Only use plan cache for normal execution (not explain/profile)
       final PhysicalPlan physicalPlan = database.getCypherPlanCache().get(queryString);
       // A cached plan that reads a view no longer usable (gone stale, dropped), or that walks the records because a view was
@@ -666,7 +676,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
         }
       }
     } else {
-      // explain/profile mode, or views withheld: always create new plan without caching
+      // explain/profile mode, a bulk text (no key), or views withheld: always create new plan without caching
       final CypherExecutionPlanner planner = new CypherExecutionPlanner(execDb, statement, parameters,
           EXPRESSION_EVALUATOR);
       plan = planner.createExecutionPlan(configuration);
@@ -1517,12 +1527,14 @@ public class OpenCypherQueryEngine implements QueryEngine {
       break;
     }
     case DROP_USER: {
-      if (admin.isIfExists()) {
+      if (!admin.isIfExists() && !security.existsUser(admin.getUserName()))
+        throw missingUser(admin.getUserName());
+      try {
         security.dropUser(admin.getUserName());
-      } else {
-        if (!security.existsUser(admin.getUserName()))
-          throw missingUser(admin.getUserName());
-        security.dropUser(admin.getUserName());
+      } catch (final IllegalArgumentException e) {
+        // A user the security manager refuses to drop (the server administrator, issue #12813): the caller's mistake, and
+        // the reason has to reach it. Left to the rewrap of command(), the message would be "Error executing Cypher command"
+        throw new CommandExecutionException(e.getMessage(), e);
       }
       break;
     }

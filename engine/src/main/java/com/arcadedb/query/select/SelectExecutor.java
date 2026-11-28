@@ -31,6 +31,7 @@ import com.arcadedb.index.IntegralKeyBound;
 import com.arcadedb.index.MultiIndexCursor;
 import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.log.LogManager;
@@ -115,7 +116,9 @@ public class SelectExecutor {
       SelectOperator.ge, SelectOperator.lt, SelectOperator.le);
 
   /** What {@link #integralLowerBound} and {@link #integralUpperBound} answer when no key of the index can satisfy the bound. */
-  private static final Object NO_KEY = new Object();
+  private static final Object NO_KEY  = new Object();
+  /** What {@link #decimalLowerBound} and {@link #decimalUpperBound} answer when every key of the index satisfies the bound. */
+  private static final Object ANY_KEY = new Object();
 
   static class IndexInfo {
     public final Index   index;
@@ -189,19 +192,36 @@ public class SelectExecutor {
    * would keep a retired compacted file undroppable until the next restart.
    */
   long executeCount() {
+    return countMatches(Long.MAX_VALUE);
+  }
+
+  /**
+   * #5662: same as {@link #executeCount()}, and more acutely so - this method stops on the FIRST match, so the
+   * cursor is abandoned partway on every positive answer. It is the count loop capped at one: whether a row is left
+   * after the SKIP and the duplicates of a multi-cursor plan are skipped is the same question for both (#12685).
+   */
+  boolean executeExists() {
+    return countMatches(1L) > 0;
+  }
+
+  /**
+   * The records the select returns, counted with the SKIP and LIMIT of {@link SelectIterator} and at most {@code cap}.
+   */
+  private long countMatches(final long cap) {
     startTimeout();
     final MultiIndexCursor iteratorFromIndexes = lookForIndexes();
     try {
       final Iterator<? extends Identifiable> iterator = buildIterator(iteratorFromIndexes);
       final Set<RID> filterOutRecords = iteratorFromIndexes != null && iteratorFromIndexes.getCursors() > 1
           ? ConcurrentHashMap.newKeySet() : null;
+      final long limit = select.limit > -1 ? Math.min(select.limit, cap) : cap;
 
       long count = 0;
       int skipped = 0;
       while (iterator.hasNext()) {
         // #6815: count() NEVER BUILDS A SelectIterator, IT DRAINS THE SOURCE IN THIS LOOP, SO THE DEADLINE HAS TO BE
         // CHECKED HERE TOO. A NON-THROWING TIMEOUT RETURNS THE PARTIAL TALLY, MATCHING THE TRUNCATED RESULT SET THE
-        // STREAMING PATH RETURNS
+        // STREAMING PATH RETURNS (exists() ANSWERS false: NO MATCH WAS FOUND WITHIN THE BUDGET)
         if (checkForTimeout())
           break;
 
@@ -209,6 +229,10 @@ public class SelectExecutor {
         if (filterOutRecords != null && filterOutRecords.contains(record.getIdentity()))
           continue;
         if (select.rootTreeElement == null || evaluateWhere(record)) {
+          // #12685: BEFORE THE SKIP TEST, AS SelectIterator.fetchNext() DOES. A SKIPPED RECORD THAT ANOTHER CURSOR DELIVERS
+          // AGAIN WAS COUNTED, AS IF IT WERE A NEW ROW
+          if (filterOutRecords != null)
+            filterOutRecords.add(record.getIdentity());
           if (skipped < select.skip) {
             skipped++;
             continue;
@@ -221,46 +245,17 @@ public class SelectExecutor {
           // ONCE THE LIMIT IS REACHED THE LOOP CAN ONLY BREAK ON THE *NEXT* MATCHING RECORD - VIA THE break BEING
           // NESTED INSIDE THIS evaluateWhere() BRANCH - SO A SELECTIVE WHERE WITH NO (limit+1)TH MATCH DEGRADES A
           // BOUNDED count() INTO A FULL SCAN OF THE REST OF THE TYPE)
-          if (select.limit > -1 && count >= select.limit)
+          if (count >= limit)
             break;
-          if (filterOutRecords != null)
-            filterOutRecords.add(record.getIdentity());
           count++;
-          if (select.limit > -1 && count >= select.limit)
+          if (count >= limit)
             break;
         }
       }
       return count;
     } finally {
-      // only the index cursor is released: the alternatives buildIterator() can return (a type or bucket scan, a
+      // #5662: only the index cursor is released: the alternatives buildIterator() can return (a type or bucket scan, a
       // MultiIterator over several buckets) hold no per-series file registration and are not closeable at all
-      if (iteratorFromIndexes != null)
-        iteratorFromIndexes.close();
-    }
-  }
-
-  /**
-   * #5662: same as {@link #executeCount()}, and more acutely so - this method returns on the FIRST match, so the
-   * cursor is abandoned partway on every positive answer.
-   */
-  boolean executeExists() {
-    startTimeout();
-    final MultiIndexCursor iteratorFromIndexes = lookForIndexes();
-    try {
-      final Iterator<? extends Identifiable> iterator = buildIterator(iteratorFromIndexes);
-
-      while (iterator.hasNext()) {
-        // #6815: SAME AS executeCount(). A NON-THROWING TIMEOUT ANSWERS false - THE SCAN NEVER FOUND A MATCH WITHIN
-        // THE BUDGET IT WAS GIVEN, WHICH IS THE PARTIAL ANSWER THE CALLER ASKED TO BE GIVEN RATHER THAN AN EXCEPTION
-        if (checkForTimeout())
-          return false;
-
-        final Document record = iterator.next().asDocument();
-        if (select.rootTreeElement == null || evaluateWhere(record))
-          return true;
-      }
-      return false;
-    } finally {
       if (iteratorFromIndexes != null)
         iteratorFromIndexes.close();
     }
@@ -1013,27 +1008,38 @@ public class SelectExecutor {
     } else if (node.operator == SelectOperator.between) {
       // BETWEEN: range scan
       if (rightValue instanceof Object[] range && range.length == 2) {
-        final Object from = integralLowerBound(node.index, range[0]);
-        final Object to = integralUpperBound(node.index, range[1]);
+        final Object from = decimalLowerBound(node.index, integralLowerBound(node.index, range[0]));
+        final Object to = decimalUpperBound(node.index, integralUpperBound(node.index, range[1]));
         // 12.2 BETWEEN 12.7 maps to [13, 12]: an empty range, which the index is not asked to read backwards, as in SQL and Cypher
-        cursor = from == NO_KEY || to == NO_KEY || ((from != range[0] || to != range[1]) && from instanceof Number lower
-            && to instanceof Number upper && lower.longValue() > upper.longValue()) ?
-            new TempIndexCursor(Collections.emptyList()) :
-            node.index.range(ascendingOrder, new Object[] { from }, true, new Object[] { to }, true);
+        if (from == NO_KEY || to == NO_KEY || ((from != range[0] || to != range[1]) && from instanceof Number lower
+            && to instanceof Number upper && lower.longValue() > upper.longValue()))
+          cursor = new TempIndexCursor(Collections.emptyList());
+        else if (from == ANY_KEY)
+          cursor = node.index.range(ascendingOrder, keysPastTheNullKeys(node.index), false, to == ANY_KEY ? null : new Object[] { to },
+              true);
+        else
+          cursor = node.index.range(ascendingOrder, new Object[] { from }, true, to == ANY_KEY ? null : new Object[] { to }, true);
       } else
         return;
     } else if (node.operator == SelectOperator.gt || node.operator == SelectOperator.ge) {
       // A bound no integral key equals (12.5, 1e19) is moved onto the smallest key above it, inclusive (issue #9021)
-      final Object from = integralLowerBound(node.index, rightValue);
-      cursor = from == NO_KEY ?
-          new TempIndexCursor(Collections.emptyList()) :
-          node.index.range(ascendingOrder, new Object[] { from }, from != rightValue || node.operator == SelectOperator.ge, null, false);
+      final Object from = decimalLowerBound(node.index, integralLowerBound(node.index, rightValue));
+      if (from == NO_KEY)
+        cursor = new TempIndexCursor(Collections.emptyList());
+      else if (from == ANY_KEY)
+        cursor = node.index.range(ascendingOrder, keysPastTheNullKeys(node.index), false, null, false);
+      else
+        // a mapped bound is a key, read inclusive
+        cursor = node.index.range(ascendingOrder, new Object[] { from },
+            node.operator == SelectOperator.ge || isInexactIntegralBound(node.index, rightValue), null, false);
     } else if (node.operator == SelectOperator.lt || node.operator == SelectOperator.le) {
-      // ... and the greatest key below it
-      final Object to = integralUpperBound(node.index, rightValue);
+      // ... and the greatest key below it. The range starts past the null keys, which sort first: a candidate cap (a limit) was
+      // spent on them, and the condition then dropped every one
+      final Object to = decimalUpperBound(node.index, integralUpperBound(node.index, rightValue));
       cursor = to == NO_KEY ?
           new TempIndexCursor(Collections.emptyList()) :
-          node.index.range(ascendingOrder, null, false, new Object[] { to }, to != rightValue || node.operator == SelectOperator.le);
+          node.index.range(ascendingOrder, keysPastTheNullKeys(node.index), false, to == ANY_KEY ? null : new Object[] { to },
+              node.operator == SelectOperator.le || isInexactIntegralBound(node.index, rightValue));
     } else
       return;
 
@@ -1134,8 +1140,10 @@ public class SelectExecutor {
         // DROPPING IS NULL (#9331)
         TypeIndex propertyIndex = found != null && found.getPropertyNamesIfExactKeyLookup() != null ? found : null;
         // A COLLATE ci index holds lower-cased keys: a range over it is not the case sensitive range the leaf asks for and
-        // loses rows no residual filter can bring back, so the scan answers it (#9302)
-        if (propertyIndex != null && RANGE_OPERATORS.contains(node.operator) && SelectExecutionPlanner.holdsFoldedKeys(propertyIndex))
+        // loses rows no residual filter can bring back, so the scan answers it (#9302). A HASH index answers by key only and
+        // refuses a range, which is a scan as well (#12677)
+        if (propertyIndex != null && RANGE_OPERATORS.contains(node.operator)
+            && (!propertyIndex.supportsOrderedIterations() || SelectExecutionPlanner.holdsFoldedKeys(propertyIndex)))
           propertyIndex = null;
 
         if (propertyIndex != null)
@@ -1211,6 +1219,45 @@ public class SelectExecutor {
       return bound;
     final Number mapped = IntegralKeyBound.floor(keyType, (Number) bound);
     return mapped == null ? NO_KEY : mapped;
+  }
+
+  /**
+   * The lower bound to seek an index with once a DECIMAL key meets an infinite or NaN {@code double}/{@code float} bound, which
+   * has no decimal form, so the index would refuse it and answer no row (issue #12694). A scan orders it against a decimal in
+   * {@code double}: negative infinity holds for every key ({@link #ANY_KEY}), positive infinity and NaN for none
+   * ({@link #NO_KEY}). Any other bound is returned as it is.
+   */
+  private static Object decimalLowerBound(final TypeIndex index, final Object bound) {
+    if (!isNonFiniteDecimalBound(index, bound))
+      return bound;
+    return ((Number) bound).doubleValue() == Double.NEGATIVE_INFINITY ? ANY_KEY : NO_KEY;
+  }
+
+  /** The upper-bound twin of {@link #decimalLowerBound}: positive infinity and NaN hold for every key, negative infinity for none. */
+  private static Object decimalUpperBound(final TypeIndex index, final Object bound) {
+    if (!isNonFiniteDecimalBound(index, bound))
+      return bound;
+    return ((Number) bound).doubleValue() == Double.NEGATIVE_INFINITY ? NO_KEY : ANY_KEY;
+  }
+
+  private static boolean isNonFiniteDecimalBound(final TypeIndex index, final Object bound) {
+    if (!(bound instanceof Number number) || Type.isFinite(number))
+      return false;
+    final Type[] keyTypes = index.getKeyTypes();
+    return keyTypes != null && keyTypes.length > 0 && keyTypes[0] == Type.DECIMAL;
+  }
+
+  /**
+   * The exclusive lower bound of a range with no lower bound of its own: past the null keys where the index holds them, as they
+   * sort lowest and a comparison with null is never true, so they would only spend the candidate cap; else no bound.
+   */
+  private static Object[] keysPastTheNullKeys(final TypeIndex index) {
+    return index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.INDEX ? new Object[] { null } : null;
+  }
+
+  /** Whether {@link #integralLowerBound}/{@link #integralUpperBound} replace {@code bound} with a key of the index. */
+  private static boolean isInexactIntegralBound(final TypeIndex index, final Object bound) {
+    return IntegralKeyBound.isInexact(leadingIntegralKeyType(index), bound);
   }
 
   private static byte leadingIntegralKeyType(final TypeIndex index) {

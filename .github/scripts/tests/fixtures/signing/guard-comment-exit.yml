@@ -1,0 +1,17 @@
+name: x
+on:
+  workflow_dispatch:
+    inputs:
+      attach_to_release:
+        type: boolean
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require main
+        if: ${{ github.ref != 'refs/heads/main' }}
+        run: |
+          echo "::error::not main"
+          # exit 1
+      - name: Sign
+        run: cosign sign --yes img

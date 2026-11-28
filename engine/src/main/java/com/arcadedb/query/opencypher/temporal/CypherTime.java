@@ -62,7 +62,8 @@ public class CypherTime implements CypherTemporalValue {
     OffsetTime base = null;
     boolean baseHasTimezone = false;
     if (map.containsKey("time")) {
-      final Object timeVal = map.get("time");
+      // A native temporal (a parameter a driver sent) is the Cypher temporal its literal is, its offset included (issue #13569)
+      final Object timeVal = TemporalUtil.fromCoreJavaType(map.get("time"));
       if (timeVal instanceof CypherTime time) {
         base = time.value;
         baseHasTimezone = true;

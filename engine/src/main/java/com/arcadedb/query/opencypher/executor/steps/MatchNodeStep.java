@@ -21,7 +21,6 @@ package com.arcadedb.query.opencypher.executor.steps;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
-import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
@@ -35,7 +34,9 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.Labels;
+import com.arcadedb.query.opencypher.executor.DistinctKeySeek;
 import com.arcadedb.query.opencypher.executor.PartitionPruning;
+import com.arcadedb.query.opencypher.executor.RidTextKeys;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.ComparisonExpression;
 import com.arcadedb.query.opencypher.ast.CypherReferencedVariables;
@@ -55,17 +56,15 @@ import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
-import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.security.SecurityHelper;
-import com.arcadedb.utility.RidHashSet;
 import com.arcadedb.utility.ScanPressureReporter;
 
 import java.util.ArrayList;
@@ -114,8 +113,8 @@ public class MatchNodeStep extends AbstractExecutionStep {
   private       String              usedIndexName; // Track which index was used (if any)
   private final Set<String>         usedIndexNames = new LinkedHashSet<>(); // the indexes sought by the plan of a node with no single type, once each
   // TRUE WHEN THE CANDIDATES OF THE LAST COMPUTED ITERATOR DEPEND ON THE INPUT ROW: a node pattern that names no single
-  // type (no label, or several) pinned by a value the row decides is answered by index seeks that are made again for
-  // every row, so its candidates are not the same for every row and must not be cached (issue #12522)
+  // type (no label, or several) pinned by a value, or a list of values, the row decides is answered by index seeks that are made
+  // again for every row, so its candidates are not the same for every row and must not be cached (issues #12522, #12546)
   private       boolean             candidatesDependOnTheRow = false;
   // The label whose vertices the user was found allowed to read, so that a chained MATCH, which re-opens the scan per outer row,
   // asks the permission of a static label once (issue #12663)
@@ -569,10 +568,10 @@ public class MatchNodeStep extends AbstractExecutionStep {
    * post-fetch per-row filters (see {@code matchesProperties}/the {@code whereFilter.evaluate} call in this
    * step's chained-mode fetch loop), which does not affect what the candidate set is.
    * <p>
-   * It takes one other branch, the seek of the indexes that cover the pinned properties
-   * ({@link #tryFindAndUseIndexAcrossTypes}, issue #12522), and a value the input row decides makes its candidates differ from
-   * row to row: that branch says so in {@link #candidatesDependOnTheRow}, which is what is read first below. The values that
-   * pin it are the same for every row otherwise, and so are the candidates.
+   * It takes one other branch, the seek of the indexes that cover the pinned properties, or the list of values the WHERE filter
+   * pins one to ({@link #tryFindAndUseIndexAcrossTypes}, issues #12522 and #12546), and a value the input row decides makes its
+   * candidates differ from row to row: that branch says so in {@link #candidatesDependOnTheRow}, which is what is read first
+   * below. The values that pin it are the same for every row otherwise, and so are the candidates.
    * <p>
    * {@code whereFilter} itself is checked structurally rather than just for {@code != null}:
    * {@code tryFindAndUseIndexFromWhere} only ever acts on a {@code variable.property = <expr>} (or reversed)
@@ -1032,7 +1031,9 @@ public class MatchNodeStep extends AbstractExecutionStep {
    * The candidates of a node pinned to values whose pattern names no single type (no label, or several), read from the indexes that
    * cover the vertex buckets of the types the labels select, and from a walk of the buckets that none covers; or null when no index
    * answers the pattern and the walk of the types does (issue #12522). Which index answers which bucket is decided by
-   * {@link MultiTypeNodeIndexPlan}, before anything is read.
+   * {@link MultiTypeNodeIndexPlan}, before anything is read. The equalities of the pattern and of the WHERE filter are tried first;
+   * when none of them is answered by an index, a list of values the WHERE filter pins the node to is
+   * ({@link #tryInListSeekAcrossTypes}, issue #12546).
    * <p>
    * A value the input row decides makes the candidates differ from row to row, so the seeks are made again for every row and the
    * candidates are not cached, as for a labelled node. The buckets that are walked would then be walked again for every row, where
@@ -1072,28 +1073,86 @@ public class MatchNodeStep extends AbstractExecutionStep {
         if (pinned.putIfAbsent(entry.getKey(), entry.getValue()) == null)
           rowDependent |= whereEqualities.usedDependOnTheRow;
     }
-    if (pinned.isEmpty()) {
+    if (pinned.isEmpty())
       // the walk answers this row, and a row whose value the row decides is not the one every row after it will have
       candidatesDependOnTheRow = whereEqualities.anyDependsOnTheRow;
+    else {
+      final MultiTypeNodeIndexPlan plan =
+          MultiTypeNodeIndexPlan.of(context.getDatabase().getSchema(), labels, pattern.isLabelDisjunction(), pinned);
+      if (plan == MultiTypeNodeIndexPlan.UNKEYABLE)
+        // an index answers the pattern, but not with this row's value: the walk answers this row, and the rows after it may be sought
+        candidatesDependOnTheRow = rowDependent || whereEqualities.anyDependsOnTheRow;
+      else if (plan != null) {
+        plan.checkReadable(context.getDatabase());
+        if (rowDependent) {
+          if (plan.walksARecord(context.getDatabase()))
+            return null;
+          candidatesDependOnTheRow = true; // the candidates of this row are not the candidates of the next one
+        }
+        return new PlannedCandidates(plan.parts(), pinned, null);
+      }
+      // else no index answers the equalities for any row: the walk is cached as it always was
+    }
+
+    // No equality of the node is answered by an index: a list of values it is pinned to may be (issue #12546)
+    return inListSeeks.isEmpty() ? null : tryInListSeekAcrossTypes(currentInputResult, labels);
+  }
+
+  /**
+   * The candidates of a node pinned to a LIST of values ({@code WHERE n.uuid IN $keys}) whose pattern names no single type, read
+   * from the indexes that cover the vertex buckets of the types the labels select, the way {@link #tryFindAndUseIndexAcrossTypes}
+   * reads those of an equality; or null when no index answers the list and the walk of the types does (issue #12546). The index of a
+   * bucket is chosen by {@link MultiTypeNodeIndexPlan#ofInList}, for the list with the fewest distinct keys when the WHERE filter
+   * holds several, and each index is read one key at a time as the caller pulls, so a LIMIT that a few keys satisfy stops there.
+   * <p>
+   * The WHERE filter still decides every candidate: the seek only narrows them, so a list that is not answered here is answered by
+   * the walk with the same rows. A list the input row decides makes the candidates differ from row to row, and is handled as an
+   * equality that the row decides is.
+   */
+  private Iterator<Identifiable> tryInListSeekAcrossTypes(final Result currentInputResult, final List<String> labels) {
+    final Schema schema = context.getDatabase().getSchema();
+    InListSeek bestSeek = null;
+    List<Object[]> bestKeys = null;
+    MultiTypeNodeIndexPlan bestPlan = null;
+    boolean walkDependsOnTheRow = false;
+
+    for (final InListSeek seek : inListSeeks) {
+      // no key type here: a RID spelled as text is not keyable by a numeric column (MultiTypeNodeIndexPlan), so the walk answers it
+      // with the same reading of = (issue #11933)
+      final List<Object[]> keys = resolveInListKeys(seek.in(), currentInputResult, null);
+      if (keys == null) {
+        // a list this row cannot resolve (an element that is a list, a value that is not one): the walk answers this row, and the
+        // list of the next row may be one a seek answers
+        walkDependsOnTheRow |= !seek.rowIndependent();
+        continue;
+      }
+      if (bestKeys != null && keys.size() >= bestKeys.size())
+        continue; // not narrower than the list already chosen
+
+      final MultiTypeNodeIndexPlan plan = MultiTypeNodeIndexPlan.ofInList(schema, labels, pattern.isLabelDisjunction(), seek.propertyName(), keys);
+      if (plan == MultiTypeNodeIndexPlan.UNKEYABLE)
+        // an index answers the property, but not with every key of this row's list: the next row's list may be keyable
+        walkDependsOnTheRow |= !seek.rowIndependent();
+      else if (plan != null) {
+        bestSeek = seek;
+        bestKeys = keys;
+        bestPlan = plan;
+      }
+    }
+
+    if (bestPlan == null) {
+      candidatesDependOnTheRow |= walkDependsOnTheRow;
       return null;
     }
 
-    final MultiTypeNodeIndexPlan plan =
-        MultiTypeNodeIndexPlan.of(context.getDatabase().getSchema(), labels, pattern.isLabelDisjunction(), pinned);
-    if (plan == null)
-      return null; // no index answers the pattern for any row: the walk is cached as it always was
-    if (plan == MultiTypeNodeIndexPlan.UNKEYABLE) {
-      // an index answers the pattern, but not with this row's value: the walk answers this row, and the rows after it may be sought
-      candidatesDependOnTheRow = rowDependent || whereEqualities.anyDependsOnTheRow;
-      return null;
-    }
-    plan.checkReadable(context.getDatabase());
-    if (rowDependent) {
-      if (plan.walksARecord(context.getDatabase()))
+    bestPlan.checkReadable(context.getDatabase());
+    if (!bestSeek.rowIndependent()) {
+      if (!bestKeys.isEmpty() && bestPlan.walksARecord(context.getDatabase()))
         return null;
       candidatesDependOnTheRow = true; // the candidates of this row are not the candidates of the next one
     }
-    return new PlannedCandidates(plan.parts(), pinned);
+    // No element can equal anything (an empty list, or only nulls): the predicate is never true
+    return bestKeys.isEmpty() ? Collections.emptyIterator() : new PlannedCandidates(bestPlan.parts(), null, bestKeys);
   }
 
   /**
@@ -1104,12 +1163,19 @@ public class MatchNodeStep extends AbstractExecutionStep {
   private final class PlannedCandidates implements Iterator<Identifiable> {
     private final List<MultiTypeNodeIndexPlan.Part> parts;
     private final Map<String, Object>                pinned;
+    private final List<Object[]>                     inListKeys;
     private       int                                nextPart = 0;
     private       Iterator<Identifiable>             current  = Collections.emptyIterator();
 
-    private PlannedCandidates(final List<MultiTypeNodeIndexPlan.Part> parts, final Map<String, Object> pinned) {
+    /**
+     * @param pinned     the values the pattern is pinned to, which the seeks are asked with; null for a list
+     * @param inListKeys the keys of the list the pattern is pinned to, which every seek is asked with, one at a time; null for values
+     */
+    private PlannedCandidates(final List<MultiTypeNodeIndexPlan.Part> parts, final Map<String, Object> pinned,
+        final List<Object[]> inListKeys) {
       this.parts = parts;
       this.pinned = pinned;
+      this.inListKeys = inListKeys;
     }
 
     @Override
@@ -1132,12 +1198,16 @@ public class MatchNodeStep extends AbstractExecutionStep {
 
       final TypeIndex index = part.index();
       final String[] propertyNames = part.propertyNames();
-      final Object[] propertyValues = new Object[propertyNames.length];
-      for (int i = 0; i < propertyNames.length; i++)
-        propertyValues[i] = TemporalUtil.toIndexKey(pinned.get(propertyNames[i]));
-
       // The index is the type's own: its declaring type is the label it is asked with, so it is not an inherited seek to filter by label
-      final Iterator<Identifiable> seek = lookupByKey(index, index.getTypeName(), propertyNames, propertyValues);
+      final Iterator<Identifiable> seek;
+      if (inListKeys != null)
+        seek = seekKeys(index, index.getTypeName(), inListKeys);
+      else {
+        final Object[] propertyValues = new Object[propertyNames.length];
+        for (int i = 0; i < propertyNames.length; i++)
+          propertyValues[i] = TemporalUtil.toIndexKey(pinned.get(propertyNames[i]));
+        seek = lookupByKey(index, index.getTypeName(), propertyNames, propertyValues);
+      }
       if (seek == null)
         return walkBucketsOf(part); // a concurrent DDL took the index away: the buckets it answered for are walked instead
 
@@ -1161,7 +1231,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
         if (bucket != null)
           walks.add(MultiTypeNodeIndexPlan.Part.walkOf(bucket.getName()));
       }
-      return new PlannedCandidates(walks, pinned);
+      return new PlannedCandidates(walks, pinned, inListKeys);
     }
   }
 
@@ -1238,7 +1308,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
     }
     Iterator<Identifiable> result = found.iterator();
     if (rest != null) {
-      final DistinctKeySeek tail = new DistinctKeySeek(index, List.of(), rest, 0, false);
+      final DistinctKeySeek tail = new DistinctKeySeek(context, "MatchNodeStep", index, List.of(), rest, 0, false);
       openSeek = tail;
       result = new HeadThenTail(result, tail);
     }
@@ -1337,8 +1407,11 @@ public class MatchNodeStep extends AbstractExecutionStep {
     if (best != null) {
       final String[] propertyNames = best.matchedProperties().toArray(new String[0]);
       final Object[] propertyValues = new Object[propertyNames.length];
+      // The WHERE compares with =, which reads a RID spelled as text as the id it stands for: that id is the key in a numeric
+      // column (issue #11933). The inline property map above compares through InlineProperties, which does not, and keeps the text
+      final Type[] keyTypes = best.index().getKeyTypes();
       for (int i = 0; i < propertyNames.length; i++)
-        propertyValues[i] = TemporalUtil.toIndexKey(equalityPredicates.get(propertyNames[i]));
+        propertyValues[i] = RidTextKeys.keyFor(TemporalUtil.toIndexKey(equalityPredicates.get(propertyNames[i])), keyTypes, i);
       return seekChosenIndex(best, label, propertyNames, propertyValues);
     }
 
@@ -1410,7 +1483,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
       if (index == null)
         continue;
 
-      final List<Object[]> keys = resolveInListKeys(seek.in(), currentInputResult);
+      final List<Object[]> keys = resolveInListKeys(seek.in(), currentInputResult, index.getKeyTypes());
       if (keys != null && (bestKeys == null || keys.size() < bestKeys.size())) {
         bestIndex = index;
         bestProperty = seek.propertyName();
@@ -1439,10 +1512,11 @@ public class MatchNodeStep extends AbstractExecutionStep {
 
   /**
    * The distinct index keys of the IN-list's elements, evaluated as {@code InExpression} evaluates them; null elements are
-   * dropped because they equal nothing. Null when the list cannot be resolved here or holds an element that is not a plain
-   * scalar, so the scan and the WHERE filter answer it (and raise the error a non-list right side deserves).
+   * dropped because they equal nothing. A RID spelled as text is the id it stands for in a numeric column (issue #11933). Null
+   * when the list cannot be resolved here or holds an element that is not a plain scalar, so the scan and the WHERE filter answer
+   * it (and raise the error a non-list right side deserves).
    */
-  private List<Object[]> resolveInListKeys(final InExpression in, final Result currentInputResult) {
+  private List<Object[]> resolveInListKeys(final InExpression in, final Result currentInputResult, final Type[] keyTypes) {
     final List<Expression> list = in.getList();
     final List<Object> elements = new ArrayList<>();
     try {
@@ -1462,125 +1536,20 @@ public class MatchNodeStep extends AbstractExecutionStep {
       return null;
     }
 
-    final Set<Object> distinct = new LinkedHashSet<>();
-    for (final Object element : elements) {
-      if (element == null)
-        continue;
-      if (element instanceof Collection<?> || element instanceof Map<?, ?> || element.getClass().isArray())
-        return null;
-      distinct.add(TemporalUtil.toIndexKey(element));
-    }
-
-    final List<Object[]> keys = new ArrayList<>(distinct.size());
-    for (final Object key : distinct)
-      keys.add(new Object[] { key });
-    return keys;
+    return DistinctKeySeek.keysOf(elements, keyTypes);
   }
 
   /**
-   * Every record the keys select, each once. Up to {@link ConsistentKeyLookup#MAX_ENTRIES} entries are read whole against
-   * one committed state; past that the keys are sought one at a time as the caller pulls, so a LIMIT stops the seek early,
-   * as in {@code NodeIndexSeek}. Null when a concurrent DDL dropped or rebuilt the index before the first cursor opened,
-   * for the scan to answer; once records have been returned, such a failure surfaces as it does on the optimizer path.
+   * Every record the keys select, each once ({@link DistinctKeySeek#open}). Null when a concurrent DDL dropped or rebuilt the
+   * index before the first cursor opened, for the scan to answer.
    */
   private Iterator<Identifiable> seekKeys(final TypeIndex index, final String label, final List<Object[]> keys) {
-    final IndexInternal[] subIndexes = index.getIndexesOnBuckets();
-    final IndexCursor first;
-    final int nextKey;
-    try {
-      final IndexCursor consistent = ConsistentKeyLookup.lookupCursor(context.getDatabase(), index, keys);
-      first = consistent != null ? consistent : index.get(keys.getFirst());
-      nextKey = consistent != null ? keys.size() : 1;
-      if (!index.isUnchangedSince(subIndexes)) {
-        first.close();
-        return null;
-      }
-    } catch (final IndexException e) {
+    final DistinctKeySeek distinct = DistinctKeySeek.open(context, "MatchNodeStep", index, keys);
+    if (distinct == null)
       return null;
-    } catch (final IllegalArgumentException e) {
-      if (TypeIndex.isStaleRead(index, e) || !index.isReadyForQueries())
-        return null;
-      throw e;
-    }
     // A new seek is only opened once the one before it is drained, so there is never more than one to close
-    final DistinctKeySeek distinct = new DistinctKeySeek(index, keys, first, nextKey, true);
     openSeek = distinct;
     return Labels.isInheritedIndex(index, label) ? Labels.filterByLabel(distinct, context.getDatabase(), label) : distinct;
-  }
-
-  /**
-   * Streams the records of the seek keys, opening the next key's cursor only when the current one is drained and
-   * returning each RID once. The RIDs remembered are charged to the heap budget all queries share, as in
-   * {@code NodeIndexSeek}.
-   */
-  private final class DistinctKeySeek implements Iterator<Identifiable> {
-    private final TypeIndex          index;
-    private final List<Object[]>     keys;
-    private final WorkGuard          guard         = WorkGuard.forCommandDeadline(context);
-    private final OperationHeapLimit seenHeapLimit = OperationHeapLimit.of(context, "record addresses", "MatchNodeStep");
-    private       RidHashSet         seen;
-    private       IndexCursor        cursor;
-    private       int                nextKey;
-    private       Identifiable       next;
-
-    /** @param dedupe false for one range whose entries are distinct already: nothing is remembered then */
-    private DistinctKeySeek(final TypeIndex index, final List<Object[]> keys, final IndexCursor first, final int nextKey,
-        final boolean dedupe) {
-      this.index = index;
-      this.keys = keys;
-      this.cursor = first;
-      this.nextKey = nextKey;
-      this.seen = dedupe ? new RidHashSet() : null;
-    }
-
-    @Override
-    public boolean hasNext() {
-      while (next == null && cursor != null) {
-        guard.check();
-        if (cursor.hasNext()) {
-          final Identifiable identifiable = cursor.next();
-          if (seen == null) {
-            if (identifiable != null)
-              next = identifiable;
-          } else if (seen.add(identifiable.getIdentity())) {
-            seenHeapLimit.charge(RidHashSet.BYTES_PER_ENTRY);
-            next = identifiable;
-          }
-        } else {
-          cursor.close();
-          cursor = nextKey < keys.size() ? index.get(keys.get(nextKey++)) : null;
-          if (cursor == null)
-            releaseSeen();
-        }
-      }
-      return next != null;
-    }
-
-    /** Gives back the cursor and the heap the RIDs seen hold, whether the seek is drained or abandoned. Safe to call twice. */
-    private void close() {
-      if (cursor != null) {
-        cursor.close();
-        cursor = null;
-      }
-      next = null;
-      releaseSeen();
-    }
-
-    private void releaseSeen() {
-      if (seen != null) {
-        seen = null;
-        seenHeapLimit.release();
-      }
-    }
-
-    @Override
-    public Identifiable next() {
-      if (!hasNext())
-        throw new NoSuchElementException();
-      final Identifiable result = next;
-      next = null;
-      return result;
-    }
   }
 
   /**

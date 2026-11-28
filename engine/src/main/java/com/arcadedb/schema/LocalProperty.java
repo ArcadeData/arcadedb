@@ -55,6 +55,10 @@ public class LocalProperty extends AbstractProperty implements TypeNameDependant
     super(owner, name, type, owner.schema.dictionaryIdOfPropertyName(name));
   }
 
+  private LocalProperty(final LocalDocumentType owner, final String name, final Type type, final int id) {
+    super(owner, name, type, id);
+  }
+
   /**
    * Enforces the UPDATE_SCHEMA permission for any property-level schema mutation. No-op in embedded mode or when no
    * current user is bound to the thread (e.g. schema load at startup, replication apply).
@@ -158,8 +162,19 @@ public class LocalProperty extends AbstractProperty implements TypeNameDependant
     checkForSchemaMutation();
     final boolean changed = !Objects.equals(this.ofType, ofType);
     if (changed) {
-      final String newOfType = resolveOfType((LocalSchema) owner.getSchema(), owner.getName(), name, type, ofType);
-      publish(() -> this.ofType = newOfType);
+      final LocalSchema schema = (LocalSchema) owner.getSchema();
+      final String newOfType = resolveOfType(schema, owner.getName(), name, type, ofType);
+      publish(() -> {
+        // Inside the schema frame, which the hierarchy walk needs: a declaration of the name elsewhere in the hierarchy keeps its OF
+        // type, so the two cannot drift apart (issue #12732). The load restores what the file says
+        if (!schema.isReadingFromFile() && owner instanceof LocalDocumentType localOwner) {
+          final Property otherKind = localOwner.findDeclarationOfAnotherKind(name, type, newOfType, this);
+          if (otherKind != null)
+            throw new SchemaException("Cannot set the OF type of the property '" + owner.getName() + "." + name + "' to " + newOfType
+                + LocalDocumentType.otherKindReason(otherKind));
+        }
+        this.ofType = newOfType;
+      });
     }
     forgetUnrestoredAttribute("of");
     return this;
@@ -630,7 +645,20 @@ public class LocalProperty extends AbstractProperty implements TypeNameDependant
    * its own, which is what makes a write under the new name land under a different key than the old one ever did.
    */
   LocalProperty copyWithName(final String newName) {
-    final LocalProperty copy = new LocalProperty((LocalDocumentType) owner, newName, type);
+    return copyAttributesTo(new LocalProperty((LocalDocumentType) owner, newName, type));
+  }
+
+  /**
+   * The property as {@link #copyWithName} would build it, for the checks a rename asks BEFORE it changes anything (issue
+   * #12930): the name is not registered in the dictionary (its id is -1), because registering it commits a page change of
+   * its own that a refused rename would leave behind (issues #12958, #13092). Never published in a type, never written:
+   * nothing in the checks reads the id, they look the values up by name.
+   */
+  LocalProperty unregisteredCopyWithName(final String newName) {
+    return copyAttributesTo(new LocalProperty((LocalDocumentType) owner, newName, type, -1));
+  }
+
+  private LocalProperty copyAttributesTo(final LocalProperty copy) {
     // unmodifiable, so the two properties can share it
     copy.custom = custom;
     copy.readonly = readonly;

@@ -458,4 +458,106 @@ class PromQLParserTest {
     assertThat(plusOne.returnBool()).isFalse();
     assertThat(((BinaryExpr) plusOne.left()).returnBool()).isTrue();
   }
+
+  private static String matcherValue(final String query) {
+    final VectorSelector selector = (VectorSelector) new PromQLParser(query).parse();
+    assertThat(selector.matchers()).hasSize(1);
+    return selector.matchers().getFirst().value();
+  }
+
+  // #12680
+  @Test
+  void aBacktickStringIsReadVerbatim() {
+    // "No escaping is processed inside backticks": the backslash stays, which is what makes the form the way to write a regex
+    assertThat(matcherValue("m{l=~`a\\d+`}")).isEqualTo("a\\d+");
+    assertThat(matcherValue("m{l=~`a\\.b`}")).isEqualTo("a\\.b");
+    assertThat(matcherValue("m{l=`a\\nb`}")).isEqualTo("a\\nb");
+    assertThat(matcherValue("m{l=`a\\\\b`}")).isEqualTo("a\\\\b");
+    assertThat(matcherValue("m{l=`a\"b'c`}")).isEqualTo("a\"b'c");
+    assertThat(matcherValue("m{l=`line\nbreak`}")).isEqualTo("line\nbreak");
+  }
+
+  // #12680
+  @Test
+  void aBacktickStringIsAStringLiteralExpression() {
+    assertThat(((StringLiteral) new PromQLParser("`a\\d`").parse()).value()).isEqualTo("a\\d");
+  }
+
+  // #12680
+  @Test
+  void aQuotedStringReadsTheGoEscapes() {
+    assertThat(matcherValue("m{l=\"\\a\\b\\f\\n\\r\\t\\v\\\\\"}")).isEqualTo("\u0007\b\f\n\r\t\u000B\\");
+    assertThat(matcherValue("m{l='\\a\\b\\f\\n\\r\\t\\v\\\\'}")).isEqualTo("\u0007\b\f\n\r\t\u000B\\");
+    // the string's own quote, and only that one
+    assertThat(matcherValue("m{l=\"a\\\"b\"}")).isEqualTo("a\"b");
+    assertThat(matcherValue("m{l='a\\'b'}")).isEqualTo("a'b");
+    // hexadecimal and Unicode escapes
+    assertThat(matcherValue("m{l=\"\\x41\\x62\"}")).isEqualTo("Ab");
+    assertThat(matcherValue("m{l=\"\\u00e9\\u4e2d\"}")).isEqualTo("\u00e9\u4e2d");
+    assertThat(matcherValue("m{l=\"\\U0001F600\"}")).isEqualTo(new String(Character.toChars(0x1F600)));
+    // octal: three digits, one byte; the bytes of one code point written as escapes make it
+    assertThat(matcherValue("m{l=\"\\101\\060\"}")).isEqualTo("A0");
+    assertThat(matcherValue("m{l=\"\\xc3\\xa9\"}")).isEqualTo("\u00e9");
+    assertThat(matcherValue("m{l=\"\\303\\251\"}")).isEqualTo("\u00e9");
+    // a string with no escape is unchanged
+    assertThat(matcherValue("m{l=\"caf\u00e9 \u4e2d \uD83D\uDE00\"}")).isEqualTo("caf\u00e9 \u4e2d \uD83D\uDE00");
+  }
+
+  // #12680
+  @Test
+  void anUnknownOrMalformedEscapeIsRefused() {
+    for (final String query : new String[] { //
+        "m{l=\"a\\.b\"}", // not an escape
+        "m{l=\"a\\d\"}", //
+        "m{l='a\\\"b'}", // the other quote
+        "m{l=\"a\\'b\"}", //
+        "m{l=\"\\x4\"}", // short hexadecimal
+        "m{l=\"\\xZZ\"}", //
+        "m{l=\"\\u12\"}", //
+        "m{l=\"\\U00110000\"}", // beyond the Unicode range
+        "m{l=\"\\ud800\"}", // a surrogate half
+        "m{l=\"\\400\"}", // octal above 255
+        "m{l=\"\\18\"}", // 8 is not an octal digit
+        "m{l=\"\\1\"}", // short octal
+        "m{l=\"abc\\\"}" // the escape is cut by the end of the string
+    })
+      assertThatThrownBy(() -> new PromQLParser(query).parse()).as(query).isInstanceOf(IllegalArgumentException.class);
+  }
+
+  // #12680
+  @Test
+  void aLineBreakInsideAQuotedStringIsRefused() {
+    // Prometheus: "unterminated quoted string". Only a backtick string spans lines, the escape \n is how a quoted one holds one
+    for (final String query : new String[] { "m{l=\"a\nb\"}", "m{l='a\nb'}", "\"a\nb\"" })
+      assertThatThrownBy(() -> new PromQLParser(query).parse()).as(query).isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("Unterminated quoted string");
+    assertThat(matcherValue("m{l=\"a\\nb\"}")).isEqualTo("a\nb");
+    assertThat(matcherValue("m{l=`a\nb`}")).isEqualTo("a\nb");
+  }
+
+  // #12680
+  @Test
+  void escapedBytesThatAreNotUtf8AreRefused() {
+    // Go keeps the raw bytes, a Java string cannot: refusing beats matching against U+FFFD, a value the query never wrote
+    for (final String query : new String[] { //
+        "m{l=\"\\xff\"}", // never a UTF-8 byte
+        "m{l=\"\\xc3\"}", // a lead byte with no continuation
+        "m{l=\"\\xc3a\"}", // ... cut by a plain character
+        "m{l=\"\\xc3\\n\"}", // ... or by another escape
+        "m{l=\"\\xc3\\u00a9\"}", //
+        "m{l=\"\\251\"}", // a continuation byte alone
+        "m{l=\"\\xed\\xa0\\x80\"}" // a surrogate half spelled in bytes
+    })
+      assertThatThrownBy(() -> new PromQLParser(query).parse()).as(query).isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("not valid UTF-8");
+    // a run that is valid text is one, wherever it stands
+    assertThat(matcherValue("m{l=\"a\\xc3\\xa9b\\xe4\\xb8\\xad\"}")).isEqualTo("a\u00e9b\u4e2d");
+    assertThat(matcherValue("m{l=\"\\xf0\\x9f\\x98\\x80\"}")).isEqualTo(new String(Character.toChars(0x1F600)));
+  }
+
+  // #12680
+  @Test
+  void anUnterminatedBacktickStringIsRefused() {
+    assertThatThrownBy(() -> new PromQLParser("m{l=`abc}").parse()).isInstanceOf(IllegalArgumentException.class);
+  }
 }

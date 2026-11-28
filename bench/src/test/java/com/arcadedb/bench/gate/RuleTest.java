@@ -114,4 +114,60 @@ class RuleTest {
     assertThat(Rule.spread(10, new double[] { 10 })).isEqualTo(0);
     assertThat(Rule.spread(100, new double[] { 80, 100, 120 })).isEqualTo(0.4);
   }
+
+  @Test
+  void factorWobbleIsNotReported() {
+    assertThat(Rule.absoluteFloor("factor")).isEqualTo(1.0);
+    assertThat(cmp(factor(1.1), factor(1.9))).isEqualTo(Verdict.Kind.SAME);
+  }
+
+  @Test
+  void factorJumpIsReported() {
+    assertThat(cmp(factor(1.1), factor(4.0))).isEqualTo(Verdict.Kind.WORSE);
+  }
+
+  @Test
+  void exponentFloor() {
+    assertThat(Rule.absoluteFloor("exponent")).isEqualTo(0.25);
+    assertThat(cmp(exponent(0.45), exponent(0.6))).isEqualTo(Verdict.Kind.SAME);
+    assertThat(cmp(exponent(0.45), exponent(1.2))).isEqualTo(Verdict.Kind.WORSE);
+  }
+
+  @Test
+  void recallRatioKeepsNoFloor() {
+    assertThat(Rule.absoluteFloor("ratio")).isEqualTo(0.0);
+    assertThat(cmp(point(0.99, new double[] { 0.99, 0.99 }, "ratio", "higher"), point(0.85, new double[] { 0.85, 0.85 }, "ratio", "higher")))
+        .isEqualTo(Verdict.Kind.WORSE);
+  }
+
+  @Test
+  void informationalUnitsAreNeverJudged() {
+    assertThat(Rule.absoluteFloor("flag")).isEqualTo(Double.POSITIVE_INFINITY);
+    assertThat(Rule.absoluteFloor("steps")).isEqualTo(Double.POSITIVE_INFINITY);
+    assertThat(Rule.absoluteFloor("changes")).isEqualTo(Double.POSITIVE_INFINITY);
+    assertThat(Rule.absoluteFloor("operations")).isEqualTo(Double.POSITIVE_INFINITY);
+    // a leader change from a zero baseline is a failover to look at, never a regression verdict
+    assertThat(cmp(point(0, new double[] { 0, 0 }, "changes", "lower"), point(1, new double[] { 1, 1 }, "changes", "lower")))
+        .isEqualTo(Verdict.Kind.SAME);
+    // a flag from a zero baseline either way, in either direction of better
+    assertThat(cmp(point(0, new double[] { 0, 0 }, "flag", "lower"), point(1, new double[] { 1, 1 }, "flag", "lower")))
+        .isEqualTo(Verdict.Kind.SAME);
+    assertThat(cmp(point(1, new double[] { 1, 1 }, "flag", "lower"), point(0, new double[] { 0, 0 }, "flag", "lower")))
+        .isEqualTo(Verdict.Kind.SAME);
+    // more steps is a higher knee, not a regression: +13% is over the 10% band of any other unit
+    assertThat(cmp(point(23, new double[] { 23, 23 }, "steps", "lower"), point(26, new double[] { 26, 26 }, "steps", "lower")))
+        .isEqualTo(Verdict.Kind.SAME);
+    // the judged units keep their floors
+    assertThat(Rule.absoluteFloor("ms")).isEqualTo(1.0);
+    assertThat(cmp(factor(1.1), factor(4.0))).isEqualTo(Verdict.Kind.WORSE);
+    assertThat(cmp(ms(10), ms(20))).isEqualTo(Verdict.Kind.WORSE);
+  }
+
+  private static Point factor(final double v) {
+    return point(v, new double[] { v, v }, "factor", "lower");
+  }
+
+  private static Point exponent(final double v) {
+    return point(v, new double[] { v, v }, "exponent", "lower");
+  }
 }

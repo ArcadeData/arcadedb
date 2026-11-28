@@ -116,6 +116,12 @@ public class TransactionIndexContext {
 
   /** The cached stand-in for "this transaction has written nothing to this index". See {@link #cacheIndexView}. */
   public static final Object NO_VIEW = new Object();
+  /**
+   * The holders of the reusable undo journal kept when a statement or a transaction ends: what the entries of one record need.
+   * A statement that journals more regrows the journal, allocating about 40 bytes for each holder past this bound, which a bulk
+   * statement of thousands of records pays once per statement, a small fraction of the records it writes (measured in issue #13107).
+   */
+  static final int RECORD_UNDO_RETAINED = 256;
 
   /**
    * The journal of what one record's indexing added, so it can be taken back exactly (issue #7467).
@@ -137,7 +143,9 @@ public class TransactionIndexContext {
    * holders once rather than once per record. Nothing is recorded while disarmed, which is every path but the one
    * that is about to have to undo.
    */
-  private final List<RecordUndoEntry>                                        recordUndo       = new ArrayList<>();
+  private       RecordUndoEntry[]                                            recordUndo       = new RecordUndoEntry[0];
+  /** How many holders {@link #recordUndo} has been given, the first of its slots: the others are null. */
+  private       int                                                          recordUndoHolders;
   /** How many entries {@link #recordUndo} holds right now; -1 when nothing is journalled. */
   private       int                                                          recordUndoSize   = -1;
   /** Where the entries of the record being indexed right now begin: the ones before it belong to the statement (issue #10346). */
@@ -518,9 +526,30 @@ public class TransactionIndexContext {
     }
     unorderedEntries.clear();
 
+    // The RIDs whose vectors a dense vector index retires, replayed together with that index's ADDs below, in one exclusive
+    // section (issue #13229): replayed here, apart from them, a search running between the two passes found neither the old vector
+    // of an updated record nor its new one, and dropped a record that is in the index before and after the commit.
+    Map<LSMVectorIndex, List<RID>> vectorRemovals = null;
+
     for (final Map.Entry<String, TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> entry : indexEntries.entrySet()) {
       final IndexInternal index = resolveIndex(entry.getKey());
       final Map<ComparableKey, Map<IndexKey, IndexKey>> keys = entry.getValue();
+
+      if (index instanceof LSMVectorIndex vectorIndex) {
+        if (vectorRemovals == null)
+          vectorRemovals = new IdentityHashMap<>();
+        final List<RID> removed = vectorRemovals.computeIfAbsent(vectorIndex, i -> new ArrayList<>());
+        for (final Map<IndexKey, IndexKey> keyValueEntries : keys.values())
+          for (final IndexKey key : keyValueEntries.values()) {
+            if (key.operation == IndexKey.IndexKeyOperation.REMOVE) {
+              removed.add(key.rid);
+              if (key.oldRid != null && !key.oldRid.equals(key.rid))
+                removed.add(key.oldRid);
+            } else if (key.operation == IndexKey.IndexKeyOperation.REPLACE && key.oldRid != null)
+              removed.add(key.oldRid);
+          }
+        continue;
+      }
 
       for (final Map.Entry<ComparableKey, Map<IndexKey, IndexKey>> keyValueEntries : keys.entrySet()) {
         final Collection<IndexKey> values = keyValueEntries.getValue().values();
@@ -537,11 +566,11 @@ public class TransactionIndexContext {
       }
     }
 
-    // SECOND PASS over indexEntries, and it handles only the ADDs. Every REMOVE - for a vector index as much as for
-    // any other - was already replayed through index.removeReplay() by the pass above, which is why the vector
-    // batch below can skip a RID whose last entry is a REMOVE without leaving it untombstoned: the tombstone has
-    // happened, and skipping only avoids adding it straight back (PR #8001 review asked for this to be said here
-    // rather than only at the skip itself).
+    // SECOND PASS over indexEntries, and it handles only the ADDs. Every REMOVE of a non-vector index was already
+    // replayed through index.removeReplay() by the pass above; those of a dense vector index were collected there and
+    // are replayed by replayRemovalsAndBatch() BEFORE its ADDs, which is why the vector batch below can skip a RID
+    // whose last entry is a REMOVE without leaving it untombstoned: the tombstone happens, and skipping only avoids
+    // adding it straight back (PR #8001 review asked for this to be said here rather than only at the skip itself).
     //
     // Per dense vector index, the winning entry per RID across ALL of that index's lanes. Identity-keyed for the
     // same reason the lane map is: which index a batch belongs to is a question about the object.
@@ -613,22 +642,19 @@ public class TransactionIndexContext {
     // nothing measurable next to the page write and WAL append each row already pays for.
     for (final Map.Entry<LSMVectorIndex, Map<RID, IndexKey>> batch : vectorBatches.entrySet()) {
       final Map<RID, IndexKey> winners = batch.getValue();
-      if (winners.isEmpty())
-        continue;
+      final List<RID> removed = vectorRemovals != null ? vectorRemovals.get(batch.getKey()) : null;
 
       final List<Object[]> batchKeys = new ArrayList<>(winners.size());
       final List<RID> batchRids = new ArrayList<>(winners.size());
       for (final IndexKey key : winners.values()) {
         if (key.operation == IndexKey.IndexKeyOperation.REMOVE)
-          // The transaction's last word on this RID was a removal, and the pass above has already replayed it.
+          // The transaction's last word on this RID was a removal, replayed with the removals of this index.
           // Re-adding it here is what made a record deleted after being added come back (PR #8001 review).
           continue;
         batchKeys.add(key.keyValues);
         batchRids.add(key.rid);
       }
-      if (batchKeys.isEmpty())
-        continue;
-      batch.getKey().putBatch(batchKeys, batchRids);
+      batch.getKey().replayRemovalsAndBatch(removed != null ? removed : List.of(), batchKeys, batchRids);
     }
 
     indexEntries.clear();
@@ -985,13 +1011,41 @@ public class TransactionIndexContext {
     statementJournalBroken = false;
     if (recordUndoSize > 0)
       for (int i = 0; i < recordUndoSize; i++)
-        recordUndo.get(i).clear();
+        recordUndo[i].clear();
     recordUndoSize = -1;
+    trimRecordUndo();
+  }
+
+  /** How many holders the reusable journal keeps right now, for the test that holds {@link #trimRecordUndo()} to its bound. */
+  int recordUndoHolders() {
+    return recordUndoHolders;
+  }
+
+  /** How many holders the reusable journal has room for right now: what the array backing it keeps on the heap, whatever it holds. */
+  int recordUndoCapacity() {
+    return recordUndo.length;
+  }
+
+  /**
+   * Gives back the holders a bulk statement grew the journal by. The journal is reused across the records of a statement, but a
+   * statement of a few hundred records journals tens of thousands of entries, and the holders were kept for as long as the thread
+   * lived: with a thread per transaction in a pool that is millions of empty holders on the heap, scanned by every collection, for a
+   * depth only the largest statement ever reached. What a record needs stays, so a small statement still allocates nothing.
+   */
+  private void trimRecordUndo() {
+    if (recordUndoHolders > RECORD_UNDO_RETAINED) {
+      Arrays.fill(recordUndo, RECORD_UNDO_RETAINED, recordUndoHolders, null);
+      recordUndoHolders = RECORD_UNDO_RETAINED;
+    }
+    // The slots too, whatever the number of holders is: a statement that went past the journal limit drops the holders of the
+    // records it already indexed, which leaves few holders in an array as long as the limit
+    if (recordUndo.length > RECORD_UNDO_RETAINED)
+      recordUndo = Arrays.copyOf(recordUndo, RECORD_UNDO_RETAINED);
   }
 
   private void undoJournalDownTo(final int mark) {
     for (int i = recordUndoSize - 1; i >= mark; i--) {
-      final RecordUndoEntry undo = recordUndo.get(i);
+      final RecordUndoEntry undo = recordUndo[i];
 
       if (undo.lane != null) {
         // Append-only lane: our entry is the one we appended, and nothing was displaced to restore.
@@ -1036,9 +1090,15 @@ public class TransactionIndexContext {
   private RecordUndoEntry nextUndoEntry() {
     if (statementJournal && recordUndoSize >= statementJournalLimit)
       abandonStatementJournal();
-    if (recordUndoSize == recordUndo.size())
-      recordUndo.add(new RecordUndoEntry());
-    return recordUndo.get(recordUndoSize++);
+    if (recordUndoSize == recordUndoHolders) {
+      if (recordUndoHolders == recordUndo.length)
+        // Below the bound the array doubles up to it and never past it, so a statement that stays inside the bound leaves an array
+        // trimRecordUndo() has nothing to give back from
+        recordUndo = Arrays.copyOf(recordUndo, recordUndoHolders < RECORD_UNDO_RETAINED ?
+            Math.min(RECORD_UNDO_RETAINED, Math.max(16, recordUndoHolders * 2)) : recordUndoHolders + (recordUndoHolders >> 1));
+      recordUndo[recordUndoHolders++] = new RecordUndoEntry();
+    }
+    return recordUndo[recordUndoSize++];
   }
 
   /**
@@ -1048,9 +1108,12 @@ public class TransactionIndexContext {
    */
   private void abandonStatementJournal() {
     for (int i = 0; i < recordUndoMark; i++)
-      recordUndo.get(i).clear();
+      recordUndo[i].clear();
     if (recordUndoMark > 0) {
-      recordUndo.subList(0, recordUndoMark).clear();
+      // The holders of the records already indexed go, and the slots they leave are released with the array when the statement ends
+      System.arraycopy(recordUndo, recordUndoMark, recordUndo, 0, recordUndoHolders - recordUndoMark);
+      Arrays.fill(recordUndo, recordUndoHolders - recordUndoMark, recordUndoHolders, null);
+      recordUndoHolders -= recordUndoMark;
       recordUndoSize -= recordUndoMark;
       recordUndoMark = 0;
     }
@@ -1070,9 +1133,10 @@ public class TransactionIndexContext {
       cachedViews.clear();
     // The holders stay - they are the reusable journal - but not the maps and keys they point at, which the
     // three clears above have just made garbage.
-    for (int i = 0; i < recordUndo.size(); i++)
-      recordUndo.get(i).clear();
+    for (int i = 0; i < recordUndoHolders; i++)
+      recordUndo[i].clear();
     recordUndoSize = -1;
+    trimRecordUndo();
     statementJournal = false;
     statementJournalBroken = false;
   }
@@ -1195,28 +1259,21 @@ public class TransactionIndexContext {
 
   /**
    * Called at commit time in the middle of the lock to avoid concurrent insertion of the same key.
+   *
+   * @return true when the check repaired the index (it removed a dangling entry), which writes into the pages of a bucket index while
+   * the commit runs: a {@link TypeIndex.KeyProbe} snapshot of them taken before or after that write no longer describes them
    */
-  private void checkUniqueIndexKeys(final Index index, final TypeIndex typeIndex, final IndexKey key, final Set<RID> deleted) {
-    // CHECK UNIQUENESS ACROSS ALL THE INDEXES FOR ALL THE BUCKETS.
-    // A MANUAL index has no type (#5765): nothing else indexes its keys, so it IS the whole search space and the
-    // polymorphic lookup below has nothing to widen it to. Resolving getTypeName() as a type name threw a
-    // NullPointerException here, which is where a unique manual index failed to commit its first entry.
-    // THE TYPE INDEX THE ENTRY BELONGS TO IS THE SEARCH SPACE (#12724): a sub type holds a bucket index for the index it declares and one
-    // for each it inherits, and (type name, properties) resolves to one of them - the sub type's own - for all, so the entries of an
-    // inherited UNIQUE index were checked against an index that does not cover the bucket of the type declaring it
-    final Index idx;
-    if (typeIndex != null)
-      idx = typeIndex;
-    else if (index.getTypeName() == null)
-      idx = index;
-    else
-      idx = database.getSchema().getType(index.getTypeName()).getPolymorphicIndexByProperties(index.getPropertyNames());
-
+  private boolean checkUniqueIndexKeys(final Index idx, final TypeIndex.KeyProbe probe, final IndexKey key, final TypeIndex typeIndex,
+      final TxDeletedKeys deletedKeys) {
     if (idx != null) {
+      // NEARLY EVERY KEY IS NEW: ASK THE PAGES WHETHER ANY BUCKET INDEX HOLDS IT BEFORE BUILDING AN ANSWER FOR IT
+      if (probe != null && probe.holdsNoEntryFor(key.keyValues))
+        return false;
+
       // #5662: try-with-resources - the cursor stops after at most two entries, so it is never drained
       try (final IndexCursor found = idx.get(key.keyValues, 2)) {
         if (!found.hasNext())
-          return;
+          return false;
 
         final Identifiable firstEntry = found.next();
         int totalEntries = 1;
@@ -1224,9 +1281,10 @@ public class TransactionIndexContext {
           ++totalEntries;
 
         if (found.hasNext() || (totalEntries == 1 && !firstEntry.equals(key.rid))) {
+          final Set<RID> deleted = deletedKeys.of(typeIndex, key.keyValues);
           if (deleted != null && deleted.contains(firstEntry.getIdentity()))
             // DELETED IN TX
-            return;
+            return false;
 
           try {
             // PROBE THE EXISTING RECORD: IF IT LOADS, THE KEY IS A REAL DUPLICATE; OTHERWISE THE INDEX ENTRY IS DANGLING (e.g. it
@@ -1252,10 +1310,30 @@ public class TransactionIndexContext {
                     idx.getName(), Arrays.toString(key.keyValues), firstEntry.getIdentity());
 
             idx.remove(key.keyValues, firstEntry.getIdentity());
+            return true;
           }
         }
       }
     }
+    return false;
+  }
+
+  /**
+   * The index the uniqueness of {@code index} is checked across: all the buckets of its type, and its sub-types. Null when the type
+   * has no index on these properties.
+   */
+  private Index uniqueCheckIndexOf(final IndexInternal index, final TypeIndex typeIndex) {
+    // THE TYPE INDEX THE ENTRY BELONGS TO IS THE SEARCH SPACE (#12724): a sub type holds a bucket index for the index it declares and one
+    // for each it inherits, and (type name, properties) resolves to one of them - the sub type's own - for all, so the entries of an
+    // inherited UNIQUE index were checked against an index that does not cover the bucket of the type declaring it
+    if (typeIndex != null)
+      return typeIndex;
+    // A MANUAL index has no type (#5765): nothing else indexes its keys, so it IS the whole search space and the
+    // polymorphic lookup has nothing to widen it to. Resolving getTypeName() as a type name threw a
+    // NullPointerException here, which is where a unique manual index failed to commit its first entry.
+    if (index.getTypeName() == null)
+      return index;
+    return database.getSchema().getType(index.getTypeName()).getPolymorphicIndexByProperties(index.getPropertyNames());
   }
 
   /**
@@ -1330,7 +1408,14 @@ public class TransactionIndexContext {
    * Checks unique indexes integrity. Since a type index is composed by multiple bucket indexes, the deleted keys are first collected across all the indexes.
    */
   private void checkUniqueIndexKeys() {
-    final Map<TypeIndex, Map<ComparableKey, Set<RID>>> deletedKeys = getTxDeletedEntries();
+    // WALKED ONLY WHEN A KEY IS FOUND IN THE INDEX: A COMMIT OF NEW KEYS NEVER NEEDS IT
+    final TxDeletedKeys deletedKeys = new TxDeletedKeys();
+    // one probe per type index for the whole commit: the pages it probes are not written by anyone else until the commit ends
+    final Map<Index, TypeIndex.KeyProbe> probes = new IdentityHashMap<>();
+    // ...except by this check itself, when it repairs a dangling entry: the write lands in the mutable page in place, so a snapshot of
+    // that page holds a stale entry count (and entries shifted past it). Bucket indexes are shared across type indexes (#12724), so
+    // after a repair, rare by nature, every key left in the commit goes through get()
+    boolean probing = true;
 
     for (final Map.Entry<String, TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> indexEntries : indexEntries.entrySet()) {
       final IndexInternal index = resolveIndex(indexEntries.getKey());
@@ -1338,6 +1423,11 @@ public class TransactionIndexContext {
         final TypeIndex typeIndex = index.getTypeIndex();
         // once per index and commit: null, and no cost per key, unless an index of the type was written by an older build
         final List<LSMTreeIndex> withLegacyKeys = indexesWithLegacyKeys(index);
+        // once per index and commit, not per key: the lookup of the type and its index by properties
+        final Index uniqueCheckIndex = uniqueCheckIndexOf(index, typeIndex);
+        TypeIndex.KeyProbe probe = null;
+        if (probing && uniqueCheckIndex instanceof final TypeIndex uniqueCheckTypeIndex)
+          probe = probes.computeIfAbsent(uniqueCheckIndex, k -> uniqueCheckTypeIndex.newKeyProbe());
 
         final Map<ComparableKey, Map<IndexKey, IndexKey>> txEntriesPerIndex = indexEntries.getValue();
         for (final Map.Entry<ComparableKey, Map<IndexKey, IndexKey>> txEntriesPerKey : txEntriesPerIndex.entrySet()) {
@@ -1348,9 +1438,11 @@ public class TransactionIndexContext {
               // Skip uniqueness check for NULL keys - SQL standard: NULL != NULL (multiple NULLs allowed in unique index)
               if (LSMTreeIndexAbstract.isKeyNull(entry.keyValues))
                 continue;
-              final Map<ComparableKey, Set<RID>> deletedEntries = deletedKeys.get(typeIndex);
-              final Set<RID> deleted = deletedEntries != null ? deletedEntries.get(new ComparableKey(entry.keyValues)) : null;
-              checkUniqueIndexKeys(index, typeIndex, entry, deleted);
+              if (checkUniqueIndexKeys(uniqueCheckIndex, probe, entry, typeIndex, deletedKeys) && probing) {
+                probing = false;
+                probe = null;
+                probes.clear();
+              }
               if (withLegacyKeys != null)
                 checkUniqueLegacyKeys((LSMTreeIndex) index, entry, withLegacyKeys);
             }
@@ -1374,6 +1466,19 @@ public class TransactionIndexContext {
     final String typeName = typeIndex != null ? typeIndex.getTypeName() : index.getTypeName();
     return typeName != null && database.getSchema().getType(typeName) instanceof LocalDocumentType type
         && type.isUniqueCheckDeferred(index.getPropertyNames());
+  }
+
+  /** The keys this transaction takes off, {@link #getTxDeletedEntries()}, collected at the first question about one. */
+  private final class TxDeletedKeys {
+    private Map<TypeIndex, Map<ComparableKey, Set<RID>>> deletedKeys;
+
+    /** The RIDs this transaction takes off {@code keyValues} in the type index, or null when it takes none. */
+    Set<RID> of(final TypeIndex typeIndex, final Object[] keyValues) {
+      if (deletedKeys == null)
+        deletedKeys = getTxDeletedEntries();
+      final Map<ComparableKey, Set<RID>> deletedEntries = deletedKeys.get(typeIndex);
+      return deletedEntries != null ? deletedEntries.get(new ComparableKey(keyValues)) : null;
+    }
   }
 
   private Map<TypeIndex, Map<ComparableKey, Set<RID>>> getTxDeletedEntries() {

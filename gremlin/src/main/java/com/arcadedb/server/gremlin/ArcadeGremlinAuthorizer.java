@@ -19,6 +19,7 @@
 package com.arcadedb.server.gremlin;
 
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 import org.apache.tinkerpop.gremlin.process.traversal.Bytecode;
 import org.apache.tinkerpop.gremlin.process.traversal.P;
@@ -117,9 +118,21 @@ public class ArcadeGremlinAuthorizer implements Authorizer {
    * Resolves the authenticated principal and publishes it to {@link GremlinAuthContext} so the execution
    * pool can bind it into the engine. Fails closed: an unknown/disabled user is rejected rather than left
    * unbound (an unbound principal would make the engine's permission gates no-op).
+   * <p>
+   * A connection authenticates once and lives on, so a user this server authenticated is checked against the principal it logged in
+   * as: a user that was deleted, or whose password is no longer the one the connection proved, is refused on the next request, as
+   * the other long-lived connections of the server do.
    */
   private ServerSecurityUser publishPrincipal(final AuthenticatedUser user) throws AuthorizationException {
-    final ServerSecurityUser securityUser = server.getSecurity().getUser(user.getName());
+    final ServerSecurityUser securityUser;
+    if (user instanceof ClientAuthenticatedUser connection) {
+      try {
+        securityUser = connection.revalidate(server.getSecurity());
+      } catch (final ServerSecurityException e) {
+        throw new AuthorizationException("The credentials of this connection are no longer valid", e);
+      }
+    } else
+      securityUser = server.getSecurity().getUser(user.getName());
     if (securityUser == null)
       throw new AuthorizationException("Unknown or disabled user '" + user.getName() + "'");
     GremlinAuthContext.set(securityUser);

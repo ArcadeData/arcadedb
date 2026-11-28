@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.ProtocolContext;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.timeseries.TimeSeriesWalkCoarsenedException;
 import com.arcadedb.exception.*;
 import com.arcadedb.index.fulltext.FullTextQueryParseException;
@@ -237,9 +238,20 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   // name, the same unbounded heap growth #5025 fixed for the path tag (issue #6805).
   private static final String     UNKNOWN_DB_TAG     = "unknown";
   // Constant db tag substituted once the timer cache is full, so a database name churn (create/drop in a
-  // loop) cannot grow the cache without bound either. The overflow tuple space is itself finite: method,
-  // path template and status are all small enumerations.
+  // loop) cannot grow the cache without bound either. The overflow tuple space is itself finite: the method is
+  // one of the STANDARD_METHOD_TAGS or OTHER_METHOD_TAG, the path is a route template or UNMATCHED_PATH_TAG, and
+  // the status is one the handlers answer with.
   private static final String     OVERFLOW_DB_TAG    = "other";
+  // Constant method tag used for any request method outside STANDARD_METHOD_TAGS, so the tag takes a bounded set of
+  // values like the path and db tags do.
+  private static final String     OTHER_METHOD_TAG   = "OTHER";
+  // The HTTP methods the "method" tag keeps as they are. The method token is case sensitive.
+  private static final Set<String> STANDARD_METHOD_TAGS = Set.of("GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS",
+      "TRACE", "CONNECT");
+  // Maximum number of distinct values the "method" tag of arcadedb.http.requests can take: the standard methods
+  // plus OTHER_METHOD_TAG. ArcadeDBServer.startMetrics() installs the matching MeterFilter from this constant, so
+  // the registry-side bound and the normalisation above are one number rather than two independently-chosen ones.
+  public static final  int        MAX_METHOD_TAG_VALUES = STANDARD_METHOD_TAGS.size() + 1;
   // Maximum number of distinct DATABASE NAMES allowed in the "db" tag of arcadedb.http.requests.
   // ArcadeDBServer.startMetrics() installs the matching MeterFilter from this constant, so the registry-side
   // bound and the cache-side bound below are one number rather than two independently-chosen ones. Far above
@@ -262,8 +274,9 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   // Cache of resolved arcadedb.http.requests timers keyed by the bounded tag tuple
   // (method|path|status|db). Avoids rebuilding the Timer.Builder/Tags/Meter.Id and doing a registry
   // hash lookup on every request. The key space is bounded because every tag is low-cardinality: the
-  // path is collapsed to a route template or the constant "unmatched", method and status are small
-  // enumerations, and db is either an existing database name or the constant "unknown".
+  // path is collapsed to a route template or the constant "unmatched", the method to a standard one or the
+  // constant "OTHER", the status is one the handlers answer with, and db is either an existing database
+  // name or the constant "unknown".
   private static final ConcurrentHashMap<String, Timer> HTTP_REQUEST_TIMERS = new ConcurrentHashMap<>();
   // Tracks the database whose DatabaseContext this request bound the authenticated principal onto in
   // checkAuthorizationOnDatabase, so handleRequest's finally can clear the binding on THIS pooled worker
@@ -592,7 +605,12 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // while it is inside the KDF it serves no other connection multiplexed onto it: health probes, WebSocket
     // change-event frames and established clients all wait behind one password check (issue #7785). Dispatched
     // BEFORE authenticating, in the same shape as the X-Request-Id dispatch above.
-    if (exchange.isInIoThread() && authenticationNeedsWorkerThread(exchange)) {
+    //
+    // A session token can cost more than that: one this node does not hold, or holds a copy of whose lease is due, is
+    // confirmed with the node that issued it, a synchronous HTTP call bounded only by the peer connect timeout (issue
+    // #9864). Asked of the resolver that would make the call rather than read off the header, so only the request
+    // that is about to dial pays the hand-off.
+    if (exchange.isInIoThread() && (authenticationNeedsWorkerThread(exchange) || sessionTokenNeedsWorkerThread(exchange))) {
       exchange.dispatch(this);
       return;
     }
@@ -636,7 +654,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
               ctx.put(OBSERVATION_REQUEST_PATH, exchange.getRequestPath());
               return ctx;
             }, httpServer.getServer().getObservationRegistry())
-        .lowCardinalityKeyValue("method", exchange.getRequestMethod().toString())
+        .lowCardinalityKeyValue("method", methodTag(exchange.getRequestMethod().toString()))
         .lowCardinalityKeyValue("path", pathTemplate(exchange))
         .lowCardinalityKeyValue("db", databaseTag(exchange));
     observation.start();
@@ -819,9 +837,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
                 // a lease the issuer renews (issue #7424).
                 final ClusterAuthSessionResolver clusterResolver = httpServer.getClusterAuthSessionResolver();
                 HttpAuthSession authSession = httpServer.getAuthSessionManager().getSessionByToken(token);
+                // Either call below asks the issuing node over the network. handleRequest moved the request to a
+                // worker thread before it got here whenever one of them was about to (issue #9864), so on the IO
+                // thread neither has to. What is left is the request whose answer changed in between, and mayDial
+                // keeps that one off the network too: a lease that fell due is served as it stands and renewed by
+                // the next request, a token that would now need its issuer is refused as it is when the lookups
+                // are saturated.
+                final boolean mayDial = !exchange.isInIoThread();
                 if (authSession == null)
-                  authSession = clusterResolver.resolve(token);
-                if (authSession == null || !clusterResolver.renew(authSession)) {
+                  authSession = clusterResolver.resolve(token, mayDial);
+                if (authSession == null || !clusterResolver.renew(authSession, mayDial)) {
                   exchange.setStatusCode(401);
                   sendErrorResponse(exchange, 401, "Invalid or expired authentication token", null, null);
                   return;
@@ -1303,6 +1328,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
               capabilityNotReady.toExceptionArgs(), ErrorLogKind.USER);
     }
 
+    // 400: the operation cannot run on this server at all - 'connect cluster', 'disconnect cluster' or 'shutdown server <name>'
+    // with HA not enabled (issue #12904). A permanent property of the deployment, so neither the 503 of a retry nor the 500 of a
+    // server fault, which is what the generic CommandExecutionException arm below, which it extends, answered. gRPC answers it
+    // FAILED_PRECONDITION. After the arm above, whose type extends this one. The label carries the fact for production mode,
+    // where 'detail' is concealed
+    final ServerControlPlane.OperationNotAvailableException notAvailableHere = firstOf(e, cause,
+        ServerControlPlane.OperationNotAvailableException.class);
+    if (notAvailableHere != null)
+      return new ErrorClassification(400, "Operation not available on this server", notAvailableHere, null, ErrorLogKind.USER);
+
     // 409 Conflict: a backup, restore or import of this database is already running, and the per-database slot
     // BackupCoordinator hands out refused this one. The request is well formed and authorized, and retrying once
     // the other operation finishes is the fix - so it is a conflict, not a 500. 'trigger backup' answered this in
@@ -1614,6 +1649,26 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       return new ErrorClassification(400, "Cannot execute command", badArgument, null, ErrorLogKind.USER);
     }
 
+    // 400: the statement ran out of the time its caller gave it (a TIMEOUT clause) or the operator gave the caller (the group
+    // readTimeout, arcadedb.command.timeout). Every other wire protocol answers it as its own timeout code
+    // (ErrorCategory.TIMEOUT); here it fell through to the generic 500, which monitoring counts as a server failure and a client
+    // cannot tell from one (issue #12923). The label and the exception field tell it from the other 400s.
+    //
+    // Not 408, the status that reads closest: a browser resends a request answered 408 on a reused HTTP/1.1 connection by
+    // itself, POST included, so from Studio the statement that just proved too expensive would run again, more than once. And
+    // not 504, which says the outcome is unknown (the arm above), while a timeout rolled its statement back.
+    //
+    // Decided by ErrorCategory and last among the caller's errors, as there: a chain that also carries a conflict or any other
+    // classified failure keeps that verdict (COMMIT RETRY giving up at the command deadline carries the conflict as its cause).
+    // Nor a block that committed part of its work before the deadline, which carries the TransactionException built for it
+    // under the timeout (TransactionContext.notReplayable, issue #13251): it keeps the 500 and its own message, so nothing
+    // reads it as a statement to send again with a larger limit. The chain is searched to any depth, since the engine wraps
+    // the timeout in a planner or commit failure, more than once on some paths.
+    final TimeoutException timeout = CauseChain.find(e, TimeoutException.class);
+    if (timeout != null && ErrorCategory.of(e) == ErrorCategory.TIMEOUT
+        && CauseChain.find(timeout.getCause(), TransactionException.class) == null)
+      return new ErrorClassification(400, "Timeout", timeout, null, ErrorLogKind.USER);
+
     // From here on nothing identified the failure as a client error, so the two generic wrappers answer for
     // whatever they carry. UNEXPECTED INTERNAL ERROR: log the FULL stack trace - passing the throwable is what
     // makes the logger emit one, and without it a BufferUnderflowException from a truncated record read was not
@@ -1881,16 +1936,31 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   }
 
   /**
+   * Returns the bounded {@code method} tag for a request: the method itself when it is one of the standard HTTP
+   * methods, {@link #OTHER_METHOD_TAG} for any other token. Idempotent. Package-private for direct unit testing.
+   */
+  static String methodTag(final String method) {
+    return STANDARD_METHOD_TAGS.contains(method) ? method : OTHER_METHOD_TAG;
+  }
+
+  // @VisibleForTesting
+  static int httpRequestTimerCacheSize() {
+    return HTTP_REQUEST_TIMERS.size();
+  }
+
+  /**
    * Resolves (and caches) the {@code arcadedb.http.requests} RED timer for the given bounded tag tuple.
    * Building the timer once per distinct {@code method|path|status|db} tuple and reusing it removes the
    * per-request {@code Timer.Builder}/{@code Tags}/{@code Meter.Id} allocation and registry hash lookup
-   * on the hot path. The cache stays bounded because every tag is low-cardinality (issue #5025), and a
+   * on the hot path. The cache stays bounded because every tag is low-cardinality (issue #5025): the method
+   * is normalised here by {@link #methodTag(String)}, so a caller can hand over the raw request method, and a
    * hard {@link #MAX_HTTP_REQUEST_TIMERS} ceiling backs that up: a registry {@code MeterFilter} can deny
    * the meter but cannot stop {@code computeIfAbsent} from retaining the key, so past the ceiling the
    * {@code db} half of the tuple collapses onto {@link #OVERFLOW_DB_TAG} (issue #6805).
    * Package-private for direct unit testing.
    */
-  static Timer httpRequestTimer(final String method, final String path, final String status, final String db) {
+  static Timer httpRequestTimer(final String requestMethod, final String path, final String status, final String db) {
+    final String method = methodTag(requestMethod);
     final String key = method + '|' + path + '|' + status + '|' + db;
     final Timer cached = HTTP_REQUEST_TIMERS.get(key);
     if (cached != null)
@@ -2383,13 +2453,42 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   }
 
   /**
+   * Rolls back whatever is still open on {@code current} (this thread's context for {@code database} when null) and removes the
+   * context from the thread.
+   */
+  protected static void cleanTL(final DatabaseInternal database, DatabaseContext.DatabaseContextTL current) {
+    if (current == null)
+      current = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
+
+    if (current != null) {
+      TransactionContext tx;
+      while ((tx = current.popIfNotLastTransaction()) != null) {
+        if (tx.isActive())
+          tx.rollback();
+        else
+          break;
+      }
+
+      DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
+    }
+  }
+
+  /**
    * Binds the authenticated principal onto this thread's {@link DatabaseContext} for {@code database}, so the engine's
-   * per-type ACL layer enforces, and marks it for {@link #handleRequest}'s finally to clear. A no-op for a null user.
+   * per-type ACL layer enforces, and marks it for {@link #handleRequest}'s finally to clear. A transaction found open on the thread
+   * is rolled back first. A no-op for a null user.
    */
   protected void bindPrincipal(final ServerSecurityUser user, final DatabaseInternal database) {
     if (user == null)
       return;
     DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
+    if (context != null && context.hasActiveTransaction()) {
+      // A transaction still open on a pooled worker thread belongs to no request in flight: this request must neither run in it nor
+      // commit it, so it is rolled back and the thread starts from a clean context
+      LogManager.instance().log(this, Level.WARNING, "Found a pending transaction from a previous operation. Rolling it back...");
+      cleanTL(database, context);
+      context = null;
+    }
     if (context == null)
       context = DatabaseContext.INSTANCE.init(database);
     context.setCurrentUser(user.getDatabaseUser(database));
@@ -2720,10 +2819,13 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * {@code POST /api/v1/login} exists precisely to turn a password nobody has presented yet into a token, so it
    * misses by definition.
    * <p>
-   * Everything else stays on the IO thread, where it belongs: Bearer authentication (API token or session token) is
-   * a hash-map lookup plus one SHA-256, and a request with no {@code Authorization} header at all - the readiness
-   * and liveness probes among them - does no authentication work whatsoever. Dispatching those too would trade a
-   * cheap inline check for a thread hand-off on the server's most frequent requests.
+   * Nothing else can be told from the header alone, and nearly everything else stays on the IO thread, where it
+   * belongs: an API token is a hash-map lookup plus one SHA-256, a session token this node holds is a hash-map
+   * lookup, and a request with no {@code Authorization} header at all - the readiness and liveness probes among
+   * them - does no authentication work whatsoever. Dispatching those too would trade a cheap inline check for a
+   * thread hand-off on the server's most frequent requests. The one Bearer credential that is not cheap - a session
+   * token another node of the cluster has to confirm - depends on what this node holds, not on the header, and is
+   * decided by {@link #sessionTokenNeedsWorkerThread(HttpServerExchange)}.
    *
    * @return {@code true} when the request carries a Basic {@code Authorization} header
    */
@@ -2732,6 +2834,33 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // Matched the same way the authentication below does - startsWith, not equalsIgnoreCase on a split scheme - so
     // the dispatch decision and the branch it is taken for cannot drift apart.
     return authorization != null && authorization.startsWith(AUTHORIZATION_BASIC);
+  }
+
+  /**
+   * Whether authenticating THIS request's session token would call another node of the cluster, which must not
+   * happen on an Undertow IO thread (issue #9864).
+   * <p>
+   * A login token lives on the node that issued it. A node that has never seen it asks the issuer the token names,
+   * and a node that holds a copy asks again whenever the copy's lease is due (issue #7424). Both are one synchronous
+   * HTTP call to a peer, bounded only by {@code arcadedb.ha.proxyConnectTimeout}: on a selector it stalls every
+   * connection multiplexed onto it for as long as the peer takes to answer, and a made-up {@code AU-<peer>-...}
+   * token is enough to cause it, so it is reachable without credentials.
+   * <p>
+   * The answer is {@link ClusterAuthSessionResolver#wouldDial(String)}, the guards of the very calls the
+   * authentication makes, rather than a guess from the token's shape: a session this node issued, a copy inside its
+   * lease, a token a peer refused a moment ago and every token on a server that is not clustered stay on the IO
+   * thread. A request a peer relayed with a forwarded user never authenticates its own token and may still be handed
+   * off here; that costs a hand-off and nothing else.
+   *
+   * @return {@code true} when the request carries a session token whose authentication is about to dial a peer
+   */
+  boolean sessionTokenNeedsWorkerThread(final HttpServerExchange exchange) {
+    final String authorization = exchange.getRequestHeaders().getFirst(Headers.AUTHORIZATION);
+    if (authorization == null || !authorization.startsWith(AUTHORIZATION_BEARER))
+      return false;
+    // Read exactly as the Bearer branch of handleRequest reads it, API tokens first.
+    final String token = authorization.substring(AUTHORIZATION_BEARER.length()).trim();
+    return !ApiTokenConfiguration.isApiToken(token) && httpServer.getClusterAuthSessionResolver().wouldDial(token);
   }
 
   /**

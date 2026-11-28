@@ -29,7 +29,9 @@ import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.CommandSemanticException;
+import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexCursor;
@@ -85,6 +87,8 @@ import com.arcadedb.query.sql.parser.Limit;
 import com.arcadedb.query.sql.parser.LikeOperator;
 import com.arcadedb.query.sql.parser.LtOperator;
 import com.arcadedb.query.sql.parser.MathExpression;
+import com.arcadedb.query.sql.parser.MethodCall;
+import com.arcadedb.query.sql.parser.Modifier;
 import com.arcadedb.query.sql.parser.NeOperator;
 import com.arcadedb.query.sql.parser.NeqOperator;
 import com.arcadedb.query.sql.parser.Node;
@@ -116,6 +120,7 @@ import com.arcadedb.engine.timeseries.TagFilter;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
+import com.arcadedb.function.sql.math.SQLFunctionEval;
 import com.arcadedb.function.sql.time.SQLFunctionTimeBucket;
 import com.arcadedb.function.sql.time.SQLFunctionTsLast;
 import com.arcadedb.function.sql.vector.RecordPredicateRidSet;
@@ -126,11 +131,13 @@ import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.schema.TypeHierarchy;
 import com.arcadedb.schema.TypeIndexBuilder;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.serializer.BinaryComparator;
+import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.Pair;
@@ -446,8 +453,12 @@ public class SelectExecutionPlanner {
 
     optimizeQuery(info, context);
 
-    if (emptyReason == null && handleHardwiredOptimizations(selectExecutionPlan, context))
+    if (emptyReason == null && handleHardwiredOptimizations(selectExecutionPlan, context)) {
+      // the statement passed the cache gate above, so a hardwired count(*), max() or min() is cached too: otherwise each of its
+      // executions pays a cache lookup that always misses on top of the planning (issue #13059)
+      cachePlan(selectExecutionPlan, context, useCache, planningEpoch);
       return selectExecutionPlan;
+    }
 
     handleGlobalLet(selectExecutionPlan, info, context);
 
@@ -496,13 +507,15 @@ public class SelectExecutionPlanner {
       chainTimeout(selectExecutionPlan, info, context);
     }
 
-    if (useCache && !context.isProfiling() && statement.executionPlanCanBeCached() && !planDependsOnInputParameters
-        && selectExecutionPlan.canBeCached())
+    cachePlan(selectExecutionPlan, context, useCache, planningEpoch);
+    return selectExecutionPlan;
+  }
+
+  private void cachePlan(final SelectExecutionPlan plan, final CommandContext context, final boolean useCache, final long planningEpoch) {
+    if (useCache && !context.isProfiling() && statement.executionPlanCanBeCached() && !planDependsOnInputParameters && plan.canBeCached())
       // The planningEpoch re-check happens atomically inside put(), under the same lock as invalidate(), so a DDL
       // racing this call can never be missed the way two separately-locked calls could (#6671).
-      db.getExecutionPlanCache().put(statement.getOriginalStatement(), selectExecutionPlan, planningEpoch);
-
-    return selectExecutionPlan;
+      context.getDatabase().getExecutionPlanCache().put(statement.getOriginalStatement(), plan, planningEpoch);
   }
 
   /**
@@ -903,6 +916,8 @@ public class SelectExecutionPlanner {
       // Check if the target is specified via a positional/named parameter (e.g., SELECT max(p) FROM ?)
       final InputParameter inputParam = info.target.getItem().getInputParam();
       if (inputParam != null) {
+        // the type comes from this execution's parameter: the plan must not answer an execution bound to another type
+        planDependsOnInputParameters = true;
         final Object paramValue = inputParam.getValue(context.getInputParameters());
         if (paramValue instanceof String string)
           targetClass = new Identifier(string);
@@ -2081,7 +2096,7 @@ public class SelectExecutionPlanner {
       handleIndexAsTarget(info.fetchExecutionPlan, info, target.getIndex(), null, context);
     } else if (target.getSchema() != null) {
       handleSchemaAsTarget(info.fetchExecutionPlan, target.getSchema(), context);
-    } else if (target.getRids() != null && !target.getRids().isEmpty()) {
+    } else if (target.getRids() != null) {
       final Set<String> filterClusters = info.buckets;
       final List<Rid> rids = new ArrayList<>();
       for (final Rid rid : target.getRids()) {
@@ -2120,9 +2135,9 @@ public class SelectExecutionPlanner {
         }
 
       } else
-        throw new UnsupportedOperationException();
+        throw new CommandSemanticException("Unsupported target '" + target + "'");
     } else {
-      throw new UnsupportedOperationException();
+      throw new CommandSemanticException("Unsupported target '" + target + "'");
     }
   }
 
@@ -2198,19 +2213,31 @@ public class SelectExecutionPlanner {
   /**
    * An element of a bound collection target as a record. A RID string, as a remote driver binds one, names its record here as a
    * single bound RID string does (issue #11767). Any other element, including a string that only looks like a RID and does not
-   * parse (such as "#1:2-3"), refuses the collection as a target.
+   * parse (such as "#1:2-3"), refuses the collection as a target: the caller bound a value of the wrong kind, a client error
+   * (issue #12795).
    */
   static Identifiable collectionTargetElement(final Object element, final Object collection, final CommandContext context) {
     if (element instanceof String string && RID.is(string)) {
       try {
         return context.getDatabase().newRID(string);
       } catch (final NumberFormatException e) {
-        throw new CommandExecutionException("Cannot use collection as target: " + collection, e);
+        throw new TypeMismatchException("Cannot use collection as target: " + InvalidArgumentException.quote(collection), e);
       }
     }
     if (element instanceof Identifiable identifiable)
       return identifiable;
-    throw new CommandExecutionException("Cannot use collection as target: " + collection);
+    throw new TypeMismatchException("Cannot use collection as target: " + InvalidArgumentException.quote(collection)
+        + ", its elements must be records or RIDs");
+  }
+
+  /**
+   * The refusal of a parameter bound as a target to a value no target can be: the caller's mistake, a client error (issue #12795,
+   * where it answered 500).
+   */
+  static TypeMismatchException invalidParameterTarget(final InputParameter inputParam, final Object value) {
+    return new TypeMismatchException(
+        "Invalid target: the parameter " + inputParam + " is " + InvalidArgumentException.quote(value) + " (" + value.getClass()
+            .getSimpleName() + "), a target parameter must be a type name, a RID, a record or a collection of RIDs or records");
   }
 
   private void handleInputParamAsTarget(final SelectExecutionPlan result, final Set<String> filterClusters,
@@ -2276,7 +2303,7 @@ public class SelectExecutionPlanner {
         result.chain(new EmptyStep(context));//nothing to return
       }
     } else {
-      throw new CommandExecutionException("Invalid target: " + paramValue);
+      throw invalidParameterTarget(inputParam, paramValue);
     }
   }
 
@@ -2460,7 +2487,8 @@ public class SelectExecutionPlanner {
       if (item instanceof Identifiable identifiable && identifiable.getIdentity() != null)
         rids.add(identifiable.getIdentity());
       else
-        throw new CommandExecutionException(
+        // The caller's mistake, like every other target that names no record (issue #12904): not a server fault
+        throw new CommandSemanticException(
             "Function '" + functionCall.getName().getStringValue() + "' used as target did not return a record or RID, but: " + item);
     }
 
@@ -2593,9 +2621,6 @@ public class SelectExecutionPlanner {
 
     try {
       skipSize = info.skip == null ? 0 : info.skip.getValue(context);
-      if (skipSize < 0)
-        throw new CommandExecutionException("Cannot execute a query with a negative SKIP");
-
       limitSize = info.limit == null ? -1 : info.limit.getValue(context);
     } catch (final Exception e) {
       // Limit/skip value depends on runtime context (e.g., LET variables)
@@ -2913,6 +2938,13 @@ public class SelectExecutionPlanner {
   }
 
   private static boolean canReadTypeHierarchy(final DatabaseInternal database, final DocumentType type) {
+    if (!canReadType(database, type))
+      return false;
+    // each type below once, whatever the number of paths that lead down to it
+    return !TypeHierarchy.anySubType(type, subType -> !canReadType(database, subType));
+  }
+
+  private static boolean canReadType(final DatabaseInternal database, final DocumentType type) {
     final List<Integer> bucketIds = type.getBucketIds(false);
     if (bucketIds.isEmpty()) {
       // A type with no bucket of its own is granted by name
@@ -2925,19 +2957,14 @@ public class SelectExecutionPlanner {
       for (final Integer bucketId : bucketIds)
         if (!SecurityHelper.canAccessFile(database, bucketId, SecurityDatabaseUser.ACCESS.READ_RECORD))
           return false;
-    for (final DocumentType subType : type.getSubTypes())
-      if (!canReadTypeHierarchy(database, subType))
-        return false;
     return true;
   }
 
   private static boolean keepsIncomingLists(final DocumentType type) {
     if (type instanceof EdgeType edgeType && !edgeType.isBidirectional())
       return false;
-    for (final DocumentType subType : type.getSubTypes())
-      if (!keepsIncomingLists(subType))
-        return false;
-    return true;
+    // each type below once, whatever the number of paths that lead down to it
+    return !TypeHierarchy.anySubType(type, subType -> subType instanceof EdgeType edgeType && !edgeType.isBidirectional());
   }
 
   /**
@@ -4323,7 +4350,8 @@ public class SelectExecutionPlanner {
 
     final String timestampColumn = tsType.getTimestampColumn();
     for (final ProjectionItem item : projection.getItems()) {
-      final FunctionCall funcCall = extractFunctionCall(item.expression);
+      // ts.last(v, ts).asString() still needs the newest row only: the method reshapes the aggregated value (#12799)
+      final FunctionCall funcCall = extractFunctionCallWithValueModifier(item.expression, context);
       if (funcCall == null || !SQLFunctionTsLast.NAME.equalsIgnoreCase(funcCall.getName().getStringValue()))
         return false;
       final List<Expression> params = funcCall.getParams();
@@ -4821,18 +4849,48 @@ public class SelectExecutionPlanner {
 
   /**
    * Extracts a FunctionCall from an Expression if it's a simple function call.
-   * Returns null if the expression is not a simple function call.
+   * Returns null if the expression is not a simple function call, including a call followed by a
+   * modifier ({@code .method()}, {@code [index]}, {@code .field}): its value is not the call's value (#12799).
    */
   private static FunctionCall extractFunctionCall(final Expression expr) {
+    final BaseExpression base = functionCallBase(expr);
+    return base == null || base.modifier != null ? null : base.identifier.levelZero.functionCall;
+  }
+
+  /**
+   * Same as {@link #extractFunctionCall(Expression)}, but also accepts a call followed by a modifier that only reshapes the
+   * call's value: a chain of {@code .field} suffixes and of method calls whose arguments are record-free and hold no aggregate
+   * ({@code .asString()}, {@code .format('HH')}). Such a modifier is applied to the aggregated value after the aggregation, so it
+   * cannot change which rows the aggregate needs (#12799). Anything else (an index or range selector, a filter, a nested
+   * projection, an argument that reads the record or aggregates) declines.
+   */
+  private static FunctionCall extractFunctionCallWithValueModifier(final Expression expr, final CommandContext context) {
+    final BaseExpression base = functionCallBase(expr);
+    if (base == null)
+      return null;
+    for (Modifier m = base.modifier; m != null; m = m.next) {
+      if (m.squareBrackets || m.nestedProjection != null)
+        return null;
+      if (m.methodCall != null) {
+        if (!m.methodCall.isEarlyCalculated(context))
+          return null;
+        for (final Expression param : m.methodCall.params)
+          if (param.isAggregate(context))
+            return null;
+      } else if (m.suffix == null)
+        return null;
+    }
+    return base.identifier.levelZero.functionCall;
+  }
+
+  private static BaseExpression functionCallBase(final Expression expr) {
     if (expr == null || expr.mathExpression == null)
       return null;
     if (!(expr.mathExpression instanceof BaseExpression base))
       return null;
-    if (base.identifier == null)
+    if (base.identifier == null || base.identifier.levelZero == null || base.identifier.levelZero.functionCall == null)
       return null;
-    if (base.identifier.levelZero != null && base.identifier.levelZero.functionCall != null)
-      return base.identifier.levelZero.functionCall;
-    return null;
+    return base;
   }
 
   /**
@@ -4866,13 +4924,26 @@ public class SelectExecutionPlanner {
     // Each branch then ends with the step that gives its rows their best $score (issue #11618)
     final boolean rescore = info.flattenedWhereClause.size() > 1 && !mergeByScore && rescoresTheBranches(typez, info, context);
 
+    // An OR with a branch no index answers is one scan of the type with the whole WHERE: the branch needs the scan anyway, and
+    // planning it as a union would read the type again for every such branch, plus an index search for each of the others,
+    // only to deduplicate what the one scan returns once. Only when the scan reproduces what every index of the other branches
+    // answers, which is what a key index (LSM_TREE, HASH) guarantees, see withoutKeyIndexes(): a FULL_TEXT index matches by the
+    // analyzer's tokens, which the scan's own evaluation of the condition does not, so such a branch stays planned on its own
+    final List<IndexSearchDescriptor> branchIndexes =
+        info.flattenedWhereClause.size() > 1 ? plainBranchIndexes(typez, info, context) : null;
+    if (branchIndexes != null && scanAnswersEveryBranch(branchIndexes))
+      return false;
+
+    int branchNo = 0;
     for (AndBlock block : info.flattenedWhereClause) {
+      final int thisBranch = branchNo++;
       List<BinaryCondition> indexedFunctionConditions = block.getIndexedFunctionConditions(typez, context);
 
       indexedFunctionConditions = filterIndexedFunctionsWithoutIndex(indexedFunctionConditions, info.target, context);
 
       if (indexedFunctionConditions == null || indexedFunctionConditions.isEmpty()) {
-        IndexSearchDescriptor bestIndex = findBestIndexFor(context, plannableIndexes(typez.getAllIndexes(true)), block, typez);
+        IndexSearchDescriptor bestIndex = branchIndexes != null ? branchIndexes.get(thisBranch)
+            : findBestIndexFor(context, plannableIndexes(typez.getAllIndexes(true)), block, typez);
         if (bestIndex != null) {
 
           final FetchFromIndexStep step = new FetchFromIndexStep(bestIndex.index, bestIndex.keyCondition,
@@ -4978,8 +5049,10 @@ public class SelectExecutionPlanner {
         final int functionLimit = limitable ?
             indexedFunctionRowLimit(blockCandidateFunction, block, recordConditions, info, order, context) :
             -1;
+        // A condition besides the function's own can reject rows the limit counted: the plan may then pull past the limit
         final FetchFromIndexedFunctionStep step = new FetchFromIndexedFunctionStep(blockCandidateFunction, info.target,
-            functionLimit, ridConditions, recordConditions, order, context);
+            functionLimit, ridConditions, recordConditions, order,
+            functionLimit > -1 && hasConditionBesides(block, blockCandidateFunction), context);
         // A caller that reads only a window of the rows (issue #12016) takes the rows of the first branch of its function only: the
         // branches of an OR are concatenated and deduplicated, so none of them alone knows how many of its rows the window takes
         if (limitable && functionLimit == -1 && info.flattenedWhereClause.size() == 1)
@@ -5045,6 +5118,39 @@ public class SelectExecutionPlanner {
     } else {
       return false;
     }
+  }
+
+  /**
+   * The best index search of every branch of the WHERE's OR, in branch order (null for a branch no index answers), or null when a
+   * branch calls an indexed function, which the per-branch planning handles itself.
+   */
+  private List<IndexSearchDescriptor> plainBranchIndexes(final DocumentType type, final QueryPlanningInfo info,
+      final CommandContext context) {
+    final List<TypeIndex> indexes = plannableIndexes(type.getAllIndexes(true));
+    final List<IndexSearchDescriptor> result = new ArrayList<>(info.flattenedWhereClause.size());
+    for (final AndBlock block : info.flattenedWhereClause) {
+      final List<BinaryCondition> indexedFunctionConditions = filterIndexedFunctionsWithoutIndex(
+          block.getIndexedFunctionConditions(type, context), info.target, context);
+      if (indexedFunctionConditions != null && !indexedFunctionConditions.isEmpty())
+        return null;
+      result.add(indexes.isEmpty() ? null : findBestIndexFor(context, indexes, block, type));
+    }
+    return result;
+  }
+
+  /**
+   * Whether one scan of the type filtered by the whole WHERE answers the OR whose branches {@link #plainBranchIndexes} planned: a
+   * branch no index answers needs the scan anyway, and every index search of the other branches is through a key index, whose
+   * answer the scan's evaluation of the condition reproduces exactly.
+   */
+  private static boolean scanAnswersEveryBranch(final List<IndexSearchDescriptor> branchIndexes) {
+    boolean unindexedBranch = false;
+    for (final IndexSearchDescriptor descriptor : branchIndexes)
+      if (descriptor == null)
+        unindexedBranch = true;
+      else if (!isKeyIndex(descriptor.index))
+        return false;
+    return unindexedBranch;
   }
 
   /**
@@ -5136,9 +5242,13 @@ public class SelectExecutionPlanner {
    * excludes something that can drop, add or reorder a row between the fetch and the LIMIT:
    * <ul>
    *   <li>a residual filter other than the function's own condition, which the plan evaluates again on each row and which
-   *       holds for every row the function returns - a filter could reject a row the limit counted. The exception is a
+   *       holds for every row the function returns - a filter could reject a row the limit counted. The exceptions are a
    *       property equality the function was handed to decide before the load ({@code recordConditions}, issue #11069): it
-   *       keeps a match to the limit only when an index decided it, and leaves every other match to the filter;</li>
+   *       keeps a match to the limit only when an index decided it, and leaves every other match to the filter; and any filter
+   *       when the function {@link IndexableSQLFunction#continuesPastLimit() answers past its limit} (issue #12535), where the
+   *       limit is only the start of its answer and the rows the filter rejects are replaced from past it, in the same order -
+   *       unless the filter, or a per-record LET under an ORDER BY the fetch order replaces, may set {@code $score} itself
+   *       ({@link #mayChangeScore}), which would give the rows another order than the function answers them in;</li>
    *   <li>UNWIND and expand, which turn one row into any number; DISTINCT, GROUP BY and aggregates, which fold rows;</li>
    *   <li>an ORDER BY other than {@code $score DESC}, the order the function produces its rows in, or than the
    *       {@code @rid} order it was asked to produce them in (issue #9909);</li>
@@ -5152,7 +5262,18 @@ public class SelectExecutionPlanner {
   private static int indexedFunctionRowLimit(final BinaryCondition function, final AndBlock residual,
       final List<BinaryCondition> recordConditions, final QueryPlanningInfo info, final IndexedFunctionPushdown.Order order,
       final CommandContext context) {
-    if (info.limit == null || !rowsOfFunctionAreTheFirstOnesTheCallerTakes(function, residual, recordConditions, info, order))
+    if (info.limit == null || !rowsKeepTheirOrderAfterTheFetch(info, order))
+      return -1;
+    // By identity: the residual is the planner's own block, or a copy of it made only to remove the function (and then
+    // empty), so the function's condition is the very instance the block holds. A function that answers past its limit takes
+    // the limit as where its answer starts: the filter can reject rows and the rows after them still come, in order.
+    for (final BooleanExpression condition : residual.getSubBlocks())
+      if (condition != function && !containsInstance(recordConditions, condition)
+          && (!function.indexedFunctionContinuesPastLimit(context) || mayChangeScore(condition, context)))
+        // a condition that sets $score itself would give the rows another order than the one the function answers them in
+        return -1;
+    // the fetch order replaces the ORDER BY $score DESC sort: nothing after the fetch may leave $score at another value
+    if (info.orderBy != null && order == IndexedFunctionPushdown.Order.FUNCTION && mayRescoreRows(info, context))
       return -1;
 
     try {
@@ -5168,6 +5289,73 @@ public class SelectExecutionPlanner {
       // SKIP/LIMIT depend on runtime state, or overflow: the function produces every row, as without a limit
       return -1;
     }
+  }
+
+  /** Whether {@code block} holds a condition other than {@code function}, by identity: a filter that follows the fetch. */
+  private static boolean hasConditionBesides(final AndBlock block, final BinaryCondition function) {
+    for (final BooleanExpression condition : block.getSubBlocks())
+      if (condition != function)
+        return true;
+    return false;
+  }
+
+  /** Whether evaluating {@code condition} on a row may set {@code $score}, see {@link #mayRunScoringCall}. */
+  private static boolean mayChangeScore(final BooleanExpression condition, final CommandContext context) {
+    return condition.setsScore(context) || mayRunScoringCall(condition, context, true);
+  }
+
+  /**
+   * Whether the per-record LET items or the projection, evaluated on every row after the fetch, may leave {@code $score} at
+   * another value than the one the function gave the row: a LET that assigns {@code $score} itself, whatever its expression, or an
+   * expression that may run a scoring call ({@link #mayRunScoringCall}). It matters when the fetch order replaces the sort: the
+   * rows would then not be in the order of the {@code $score} the statement reads. A subquery of a LET or of the projection runs in
+   * a context of its own, which {@code $score} never leaves, so it does not count as such (a scoring call inside it still does:
+   * the walk cannot skip it, and the answer only costs the limit).
+   */
+  private static boolean mayRescoreRows(final QueryPlanningInfo info, final CommandContext context) {
+    if (info.perRecordLetClause != null && info.perRecordLetClause.getItems() != null)
+      for (final LetItem item : info.perRecordLetClause.getItems())
+        if (withoutSigil(SCORE_VARIABLE).equals(withoutSigil(item.getVarName().getStringValue()))
+            || (item.getExpression() != null && mayRunScoringCall(item.getExpression(), context, false)))
+          return true;
+    // the whole item, not only its expression: the items of a nested projection (x:{...}) are evaluated on every row as well
+    if (info.projection != null && info.projection.getItems() != null)
+      for (final ProjectionItem projected : info.projection.getItems())
+        if (mayRunScoringCall(projected, context, false))
+          return true;
+    return false;
+  }
+
+  /**
+   * Whether evaluating the expression or condition {@code root} on a row may set {@code $score}: a call that sets it anywhere
+   * under it, not only at its top ({@code ifnull(SEARCH_INDEX(...), false) = true} runs the search too), or one the planner cannot
+   * tell does not: a function or method the engine does not ship, {@code eval()}, whose condition is parsed only at run time,
+   * {@code transform()}, which resolves the method it applies from its arguments at run time (so an application's method is
+   * reached through it), or a nested statement ({@code statementsMayScore}). Answering "may" costs the limit, never a row, so every
+   * doubt is one.
+   */
+  private static boolean mayRunScoringCall(final Object root, final CommandContext context, final boolean statementsMayScore) {
+    return !SqlAstInspector.allNodesMatch(root, node -> {
+      if (node instanceof Statement)
+        return !statementsMayScore;
+      if (node instanceof MethodCall call)
+        return CorrelatedSubQueryCache.isTrustedMethod(call);
+      if (!(node instanceof FunctionCall call))
+        return true;
+      if (call.getName() == null)
+        return false;
+      final String name = call.getName().getStringValue().toLowerCase(Locale.ENGLISH);
+      if (!DefaultSQLFunctionFactory.getInstance().isBuiltIn(name) || SQLFunctionEval.NAME.equals(name))
+        return false;
+      try {
+        final SQLFunction function = call.getSQLFunction(context);
+        return function != null && !function.setsScore();
+      } catch (final RuntimeException e) {
+        // a function that cannot be built from its call (a wrong argument count, say) fails when the statement runs: the planner
+        // keeps the old plan, whose evaluation raises it, instead of vouching for a call it cannot read
+        return false;
+      }
+    });
   }
 
   /**
@@ -5191,15 +5379,25 @@ public class SelectExecutionPlanner {
    */
   private static boolean rowsOfFunctionAreTheFirstOnesTheCallerTakes(final BinaryCondition function, final AndBlock residual,
       final List<BinaryCondition> recordConditions, final QueryPlanningInfo info, final IndexedFunctionPushdown.Order order) {
-    if (info.deferredLetWhereClause != null)
-      return false;
-    if (info.expand || info.unwind != null || info.distinct || info.groupBy != null || info.aggregateProjection != null)
+    if (!rowsKeepTheirOrderAfterTheFetch(info, order))
       return false;
     // By identity: the residual is the planner's own block, or a copy of it made only to remove the function (and then
     // empty), so the function's condition is the very instance the block holds
     for (final BooleanExpression condition : residual.getSubBlocks())
       if (condition != function && !containsInstance(recordConditions, condition))
         return false;
+    return true;
+  }
+
+  /**
+   * Whether the statement adds, folds or reorders no row between an indexed function fetch and its caller: no UNWIND, expand,
+   * DISTINCT, GROUP BY or aggregate, no WHERE left for after a LET, and an ORDER BY (if any) that is the order the fetch answers in.
+   */
+  private static boolean rowsKeepTheirOrderAfterTheFetch(final QueryPlanningInfo info, final IndexedFunctionPushdown.Order order) {
+    if (info.deferredLetWhereClause != null)
+      return false;
+    if (info.expand || info.unwind != null || info.distinct || info.groupBy != null || info.aggregateProjection != null)
+      return false;
     return info.orderBy == null || order != IndexedFunctionPushdown.Order.FUNCTION || isOrderByScoreDescending(info);
   }
 
@@ -5408,7 +5606,7 @@ public class SelectExecutionPlanner {
         final String varName = item.getVarName().getStringValue();
         // A lifted sub-query's alias (_$$$SUBQUERY$$$_0) carries no leading sigil, so variableNamesIn() never reads it
         // whole: look for it as a word of its own, so that _$$$SUBQUERY$$$_1 is not found in _$$$SUBQUERY$$$_10 (issue #12287)
-        if (SubQueryCollector.isGeneratedAlias(varName) && mentionsWord(rendered, varName))
+        if (SubQueryCollector.isGeneratedAlias(varName) && (mentionsWord(rendered, varName) || rendersLiftedSubquery(rendered, item)))
           return true;
       }
       for (final String name : variableNamesIn(rendered))
@@ -5418,6 +5616,19 @@ public class SelectExecutionPlanner {
     }
 
     return false;
+  }
+
+  /**
+   * Whether {@code rendered} holds the sub-query a generated LET alias was lifted from, written in place. A sub-query read
+   * by {@code =}, {@code <}, a method such as {@code .size()} or a projection stays in the condition as itself and only
+   * reads the alias when it runs (issue #13179), so the alias is never in the rendered text: a filter on
+   * {@code (SELECT ... $parent.$current ...).size() > 0} was planned inside the index fetch, ahead of the LET computing it,
+   * and read no value for every row (issue #12287). The text can only match too generously, which defers a filter behind
+   * the LET: a plan, never a row.
+   */
+  private static boolean rendersLiftedSubquery(final String rendered, final LetItem item) {
+    final Statement query = item.getQuery();
+    return query != null && rendered.contains("(" + query + ")");
   }
 
   /**
@@ -5741,10 +5952,10 @@ public class SelectExecutionPlanner {
    *   the two are the same function, and a comparison with a null operand is unknown and stays unknown under NOT;</li>
    *   <li>{@code NOT (NOT (id < 3))} is {@code id < 3}, in the same three-valued logic;</li>
    *   <li>{@code 5 = id} is {@code id = 5} and {@code :lo < id} is {@code id > :lo}, and {@code NOT (id >= 3)} is {@code id < 3}, but
-   *   only when the value has the property's type. A comparison converts its right operand to the type of its left one, so with a
-   *   value of another type the spellings compare differently: {@code '10' > id} compares text where {@code id < '10'} compares
-   *   numbers, {@code 9 = s} reads the text "09" as 9 where {@code s = 9} looks for the key "9", and a value the comparison
-   *   cannot convert makes a range and its complement both false.</li>
+   *   only when the value has the property's type. The scan evaluates the reversed form as its mirror, so {@code '10' > id} and
+   *   {@code id < '10'} select the same records (issue #12921), but an index lookup of a value of another kind may decline where the
+   *   scan answers (see {@code IndexedRangeQueryTest}), and a value the comparison cannot convert makes a range and its complement
+   *   both false, so such a value keeps the scan.</li>
    * </ul>
    */
   private static BooleanExpression indexKeyForm(final BooleanExpression exp, final IndexSearchInfo info, final DocumentType clazz) {
@@ -5790,16 +6001,12 @@ public class SelectExecutionPlanner {
     return keyForm;
   }
 
-  /** {@code a op b} reads {@code b mirror a}, or null for an operator this planner does not turn round. */
+  /**
+   * {@code a op b} reads {@code b mirror a}, the mirror the comparison itself evaluates the reversed form with (issue #12921), or null
+   * for an operator an index does not answer: only {@code =} and the ranges.
+   */
   private static BinaryCompareOperator mirrorOf(final BinaryCompareOperator operator) {
-    return switch (operator) {
-      case EqualsCompareOperator equals -> equals;
-      case LtOperator ignored -> new GtOperator();
-      case GtOperator ignored -> new LtOperator();
-      case LeOperator ignored -> new GeOperator();
-      case GeOperator ignored -> new LeOperator();
-      default -> null;
-    };
+    return operator instanceof EqualsCompareOperator || operator.isRangeOperator() ? operator.mirrored() : null;
   }
 
   /** The operator of {@code NOT (a op b)} written without the NOT, when it is one an index answers, else null. */
@@ -5995,16 +6202,17 @@ public class SelectExecutionPlanner {
     if (indexes.isEmpty())
       return null;
 
-    List<IndexSearchDescriptor> indexSearchDescriptors =
-        info.flattenedWhereClause.stream()
-            .map(x -> findBestIndexFor(context, indexes, x, typez))
-            .collect(Collectors.toList());
-
     // Fix for issue #2695: If any OR branch cannot be optimized with an index,
     // we must fall back to a full scan. Otherwise, those branches would be silently
     // ignored, causing incomplete query results (e.g., DELETE only deleting some records).
-    if (indexSearchDescriptors.contains(null))
-      return null; // some blocks could not be managed with an index, fall back to full scan
+    // The search stops at the first such branch: the branches after it are not planned for nothing (issue #12976)
+    List<IndexSearchDescriptor> indexSearchDescriptors = new ArrayList<>(info.flattenedWhereClause.size());
+    for (final AndBlock block : info.flattenedWhereClause) {
+      final IndexSearchDescriptor descriptor = findBestIndexFor(context, indexes, block, typez);
+      if (descriptor == null)
+        return null; // some blocks could not be managed with an index, fall back to full scan
+      indexSearchDescriptors.add(descriptor);
+    }
 
     // A keyset page (WHERE e = ? AND k > :after ORDER BY k LIMIT n) can cost less walking k's index in order (issue #11700)
     if (allowDeferredLetFilter && indexSearchDescriptors.size() == 1) {
@@ -6279,7 +6487,8 @@ public class SelectExecutionPlanner {
       final boolean indexOrderApplied =
           orderAsc != null && info.orderBy != null && fullySorted(info, (AndBlock) desc.keyCondition, desc.getIndex());
       result.add(new GetValueFromIndexEntryStep(context, filterClusterIds,
-          indexOrderApplied ? null : scanFallbackFor(desc, clazz, filterClusters, info, context)));
+          indexOrderApplied ? null : scanFallbackFor(desc, clazz, filterClusters, info, context),
+          readsEveryEntry(info, indexOrderApplied) ? planIndexIntersection(desc, clazz, info, context) : null));
       if (desc.requiresDistinctStep()) {
         result.add(new DistinctExecutionStep(context));
       }
@@ -6305,7 +6514,8 @@ public class SelectExecutionPlanner {
       }
     } else {
       // Defensive, and not reachable through a SELECT today: handleTypeAsTargetWithIndexedFunction() runs first at
-      // both call sites and claims every multi-block WHERE, so an OR reaches its own per-branch planning - which
+      // both call sites and claims every multi-block WHERE whose branches all have an index or call an indexed function (an OR with a
+      // branch no index answers reaches the scan below), so an OR reaches its own per-branch planning - which
       // chains the LET into each sub-plan correctly, because that sub-plan is not empty by then. Kept because this
       // branch chains residual filters of its own, and one reading a per-record LET would be evaluated with the
       // variable unset, which is a wrong answer rather than a lost optimisation.
@@ -6321,6 +6531,81 @@ public class SelectExecutionPlanner {
       }
     }
     return result;
+  }
+
+  /**
+   * Whether the statement reads every entry of its index search, whatever rows it returns: it has no LIMIT, or its rows are consumed
+   * whole before the LIMIT applies, by an aggregation or by a sort the order of the index does not spare. Only then is an
+   * {@link IndexIntersection} planned: reading other indexes whole for a search that a LIMIT stops after its first rows could cost
+   * more than the records it spares.
+   */
+  private static boolean readsEveryEntry(final QueryPlanningInfo info, final boolean indexOrderApplied) {
+    if (info.limit == null || info.aggregateProjection != null || info.groupBy != null)
+      return true;
+    return info.orderBy != null && !indexOrderApplied && !info.orderApplied;
+  }
+
+  /**
+   * The other indexes of the type that answer conditions the index search {@code desc} leaves to the filter, for the search to load
+   * only the records they all name (issue #13289): {@code WHERE updated_at = ? AND id > ?} with an index on each property loaded
+   * every record of one index to evaluate the other condition on it. Each index is picked as the search itself is, among the indexes
+   * not taken yet and on the conditions not answered yet, until no condition is left that an index answers. The conditions stay in
+   * the filter: the intersection only spares the load of records that cannot pass it, and decides at execution time whether each
+   * index is worth reading (see {@link IndexIntersection}).
+   *
+   * @return null when no other index answers a condition left, the search is a lookup of whole keys of a unique index (one record
+   * per key), or a full-text search
+   */
+  private IndexIntersection planIndexIntersection(final IndexSearchDescriptor desc, final DocumentType type, final QueryPlanningInfo info,
+      final CommandContext context) {
+    if (isUniqueKeyLookup(desc) || isFullText(desc.getIndex()))
+      return null;
+    // commonFactor() hands the residual on as an OR of the residuals of the branches it merged: with several, a record passes when
+    // any of them holds, which the indexes of one cannot decide
+    BooleanExpression residual = desc.getRemainingCondition();
+    if (residual instanceof OrBlock or && or.getSubBlocks().size() == 1)
+      residual = or.getSubBlocks().getFirst();
+    if (!(residual instanceof AndBlock remaining))
+      return null;
+
+    final List<TypeIndex> indexes = plannableIndexes(type.getAllIndexes(true));
+    final Set<String> taken = new HashSet<>();
+    taken.add(desc.getIndex().getName());
+    final List<FetchFromIndexStep> searches = new ArrayList<>(2);
+    AndBlock left = remaining;
+    while (!left.getSubBlocks().isEmpty()) {
+      final List<IndexSearchDescriptor> candidates = new ArrayList<>();
+      for (final TypeIndex index : indexes) {
+        if (taken.contains(index.getName()))
+          continue;
+        final IndexSearchDescriptor candidate = buildIndexSearchDescriptor(context, index, left, type);
+        if (candidate == null || candidate.keyCondition == null || candidate.getSubBlocks().isEmpty())
+          continue;
+        // a key read before the records are loaded cannot use what the per-record LET computes for each of them
+        final List<BooleanExpression> key = new ArrayList<>(candidate.getSubBlocks());
+        if (candidate.additionalRangeCondition != null)
+          key.add(candidate.additionalRangeCondition);
+        if (!refersToLet(key, info.perRecordLetClause))
+          candidates.add(candidate);
+      }
+      if (candidates.isEmpty())
+        break;
+
+      final IndexSearchDescriptor best;
+      try {
+        best = pickBestDescriptor(context, candidates);
+      } catch (final IndexException e) {
+        // dropped or rebuilt while it was ranked: the intersection keeps the indexes taken so far
+        LogManager.instance().log(this, Level.FINE, "Index intersection stopped while planning: %s", e.getMessage());
+        break;
+      }
+      taken.add(best.getIndex().getName());
+      searches.add(new FetchFromIndexStep(best.index, best.keyCondition, best.additionalRangeCondition, context));
+      if (!(best.getRemainingCondition() instanceof AndBlock next))
+        break;
+      left = next;
+    }
+    return searches.isEmpty() ? null : new IndexIntersection(searches);
   }
 
   /**
@@ -6684,12 +6969,13 @@ public class SelectExecutionPlanner {
   }
 
   /** Whether a scan filtered by the condition answers exactly what {@code index} does, see {@link #withoutKeyIndexes()}. */
-  private static boolean isKeyIndex(final TypeIndex index) {
+  private static boolean isKeyIndex(final Index index) {
     try {
       final Schema.INDEX_TYPE type = index.getType();
       return type != null && type.isExactKeyLookup();
     } catch (final IndexException e) {
-      // The index went away meanwhile: answering true removes it from the candidates, where it does not belong anyway
+      // The index went away meanwhile: answering true removes it from the candidates, where it does not belong anyway, and lets
+      // an OR with an unindexed branch be answered by the scan, which does not need it
       return true;
     }
   }
@@ -7090,9 +7376,12 @@ public class SelectExecutionPlanner {
 
       final boolean supportNull = index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.INDEX;
       final boolean ciCollation = isIndexCaseInsensitive(index, indexFields.indexOf(indexField));
-      final IndexSearchInfo info = new IndexSearchInfo(baseFieldName, allowsRangeQueries(index), isMap(clazz, baseFieldName),
-          isIndexByKey(index, baseFieldName), isIndexByValue(index, baseFieldName), isIndexByItem(index, baseFieldName), supportNull,
-          ciCollation, context);
+      final boolean byItem = isIndexByItem(index, baseFieldName);
+      final boolean byKey = isIndexByKey(index, baseFieldName);
+      final boolean byValue = isIndexByValue(index, baseFieldName);
+      final boolean wholeCollection = !byItem && !byKey && !byValue && isWholeCollectionKey(index, indexFields.indexOf(indexField));
+      final IndexSearchInfo info = new IndexSearchInfo(baseFieldName, allowsRangeQueries(index) && !wholeCollection,
+          isMap(clazz, baseFieldName), byKey, byValue, byItem, supportNull, ciCollation, context);
       if (!ciCollation && info.allowsRange() && baseFieldName.equals(indexField))
         addLikePrefixRange(blockCopy, info, clazz);
       blockIterator = blockCopy.getSubBlocks().iterator();
@@ -7436,6 +7725,18 @@ public class SelectExecutionPlanner {
 
   private boolean allowsRangeQueries(final Index index) {
     return index.supportsOrderedIterations();
+  }
+
+  /**
+   * Whether the key at {@code position} is a whole LIST or MAP value. The index orders such keys value by value, while a range
+   * predicate on the property (li &lt; 5) is evaluated against the items of the collection, so only the scan answers it (issue
+   * #12792).
+   */
+  private static boolean isWholeCollectionKey(final Index index, final int position) {
+    if (!(index instanceof IndexInternal internal) || position < 0)
+      return false;
+    final byte[] keyTypes = internal.getBinaryKeyTypes();
+    return position < keyTypes.length && (keyTypes[position] == BinaryTypes.TYPE_LIST || keyTypes[position] == BinaryTypes.TYPE_MAP);
   }
 
   private boolean isMap(final DocumentType clazz, final String indexField) {

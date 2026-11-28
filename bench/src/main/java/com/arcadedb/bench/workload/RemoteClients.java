@@ -24,6 +24,8 @@ import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.remote.RemoteHttpComponent;
 import com.arcadedb.remote.RemoteServer;
 
+import java.util.Map;
+
 /**
  * HTTP clients of the server under test, shared by the workloads.
  */
@@ -35,12 +37,29 @@ public final class RemoteClients {
 
   /** Creates the database when missing. */
   public static void ensureDatabase(final ServerUnderTest server, final String database) {
+    final RemoteServer remote = remoteServer(server);
+    if (!remote.exists(database))
+      remote.create(database);
+  }
+
+  /** Drops the database when it exists and creates it empty. */
+  public static void recreateDatabase(final ServerUnderTest server, final String database) {
+    final RemoteServer remote = remoteServer(server);
+    if (remote.exists(database))
+      remote.drop(database);
+    remote.create(database);
+  }
+
+  public static boolean databaseExists(final ServerUnderTest server, final String database) {
+    return remoteServer(server).exists(database);
+  }
+
+  private static RemoteServer remoteServer(final ServerUnderTest server) {
     final RemoteServer remote = new RemoteServer(server.wrapper().host(), server.wrapper().httpPort(), "root",
         ServerUnderTest.PASSWORD);
     remote.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.FIXED);
     remote.setTimeout(TIMEOUT_MS);
-    if (!remote.exists(database))
-      remote.create(database);
+    return remote;
   }
 
   public static RemoteDatabase open(final ServerUnderTest server, final String database) {
@@ -53,7 +72,12 @@ public final class RemoteClients {
 
   /** The {@code n} of a {@code SELECT count(*) AS n} query; an answer with no row is a server fault. */
   public static long count(final RemoteDatabase db, final String language, final String query) {
-    try (final ResultSet rs = db.query(language, query)) {
+    return count(db, language, query, Map.of());
+  }
+
+  /** As {@link #count(RemoteDatabase, String, String)}, with parameters. */
+  public static long count(final RemoteDatabase db, final String language, final String query, final Map<String, Object> params) {
+    try (final ResultSet rs = db.query(language, query, params)) {
       if (!rs.hasNext())
         throw new IllegalStateException("the server answered no row to: " + query);
       return ((Number) rs.next().getProperty("n")).longValue();

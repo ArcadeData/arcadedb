@@ -25,6 +25,7 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.RWLockContext;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import java.util.logging.Level;
@@ -67,6 +68,12 @@ public class HttpAuthSessionManager extends RWLockContext {
    * {@code AU-<uuid>} form, which no peer can resolve.
    */
   private final       String                       issuerName;
+  /**
+   * The lookups of a token this node does not hold that are waiting for the node that issued it, see {@link PeerLookup}.
+   * Empty almost always and never larger than the number of requests resolving a token at that instant, so a removal
+   * that has to mark them pays one {@code isEmpty()} check.
+   */
+  private final       Set<PeerLookup>              peerLookups = ConcurrentHashMap.newKeySet();
   /**
    * Stands in for a server that was not supplied - the test-only constructors below; reads through to each
    * setting's process-wide value. Shared rather than built per read: it holds nothing per instance.
@@ -175,23 +182,62 @@ public class HttpAuthSessionManager extends RWLockContext {
 
   /**
    * Get an authenticated session by token.
-   * Returns null if the session doesn't exist or if it has expired (either by idle or absolute timeout).
+   * Returns null if the session doesn't exist or if it has expired (either by idle or absolute timeout). The limits
+   * are checked here, on every lookup, and not left to the periodic {@link #checkSessionsValidity()}: a session found
+   * past one of them is refused without being used, and dropped, so a lookup never extends a session that has already
+   * expired.
    *
    * @param token the authentication token
    * @return the session if found and valid, null otherwise
    */
   public HttpAuthSession getSessionByToken(final String token) {
+    final HttpAuthSession session = executeInReadLock(() -> sessions.get(token));
+    if (session == null)
+      return null;
+
+    if (isExpired(session)) {
+      // The write lock is taken only here, once per expired session: the entry is gone for the next lookup
+      removeIfExpired(session);
+      return null;
+    }
+
+    session.touch();
+    return session;
+  }
+
+  /**
+   * As {@link #getSessionByToken(String)}, for a caller that only asks: the session is neither used nor dropped, so the
+   * question does not extend it. Package-private, for {@link ClusterAuthSessionResolver#wouldDial(String)}.
+   */
+  HttpAuthSession peekSessionByToken(final String token) {
     return executeInReadLock(() -> {
       final HttpAuthSession session = sessions.get(token);
-      if (session != null) {
-        // Check if session is expired by absolute timeout (from creation)
-        if (absoluteTimeoutInMs > 0 && session.elapsedFromCreation() > absoluteTimeoutInMs) {
-          return null;
-        }
-        session.touch();
-      }
+      return session != null && !isExpired(session) ? session : null;
+    });
+  }
 
-      return session;
+  /**
+   * Whether the session is past the idle limit (measured from its last use) or the absolute limit (measured from its
+   * creation, when that one is enabled).
+   */
+  private boolean isExpired(final HttpAuthSession session) {
+    return session.elapsedFromLastUpdate() > sessionTimeoutInMs
+        || (absoluteTimeoutInMs > 0 && session.elapsedFromCreation() > absoluteTimeoutInMs);
+  }
+
+  /**
+   * Drops {@code session} when it is still the one held for its token and is still past a limit, both checked under the
+   * write lock: the entry may have been removed, or replaced by a fresh one of the same token, since it was read.
+   */
+  private void removeIfExpired(final HttpAuthSession session) {
+    executeInWriteLock(() -> {
+      if (sessions.get(session.token) == session && isExpired(session)) {
+        sessions.remove(session.token);
+        unindex(session);
+        LogManager.instance().log(this, Level.FINE, "Removed expired authentication session %s for user %s", session.token,
+            session.user.getName());
+      }
+      return null;
     });
   }
 
@@ -229,7 +275,7 @@ public class HttpAuthSessionManager extends RWLockContext {
       final String userAgent, final String country, final String city) {
     final String token = issuerName != null ? TOKEN_PREFIX + issuerName + "-" + UUID.randomUUID()
         : TOKEN_PREFIX + UUID.randomUUID();
-    return insert(user, () -> new HttpAuthSession(user, token, sourceIp, userAgent, country, city, clock));
+    return insert(user, () -> new HttpAuthSession(user, token, sourceIp, userAgent, country, city, clock), null);
   }
 
   /**
@@ -243,7 +289,101 @@ public class HttpAuthSessionManager extends RWLockContext {
    */
   public HttpAuthSession addRemoteSession(final String token, final ServerSecurityUser user, final long createdAt,
       final String issuer) {
-    return insert(user, () -> new HttpAuthSession(user, token, issuer, createdAt, clock));
+    return insert(user, () -> new HttpAuthSession(user, token, issuer, createdAt, clock), null);
+  }
+
+  /**
+   * As {@link #addRemoteSession(String, ServerSecurityUser, long, String)}, for a copy installed on the strength of an
+   * answer the issuer gave while this node was waiting for it: the copy is refused, under the same lock the removals
+   * take, when a removal that concerns it ran in the meantime (see {@link PeerLookup}). The answer was given before that
+   * removal, so it cannot say that the session is still valid.
+   *
+   * @return the installed copy, or {@code null} when {@code lookup} was marked ({@link PeerLookup#isRevoked()}) or the
+   * global cap refused it
+   */
+  public HttpAuthSession addRemoteSession(final String token, final ServerSecurityUser user, final long createdAt,
+      final String issuer, final PeerLookup lookup) {
+    return insert(user, () -> new HttpAuthSession(user, token, issuer, createdAt, clock), lookup);
+  }
+
+  /**
+   * Starts a {@link PeerLookup} for {@code token}. Must be started BEFORE the issuer is asked, and closed once the answer
+   * has been used or dropped, which is what the try-with-resources form is for.
+   */
+  public PeerLookup beginPeerLookup(final String token) {
+    final PeerLookup lookup = new PeerLookup(token);
+    peerLookups.add(lookup);
+    return lookup;
+  }
+
+  /**
+   * A token this node does not hold, being resolved with the node that issued it. The answer arrives some time after the
+   * question, and a removal that runs in between - the principal's sessions dropped after a password change or a drop, or the
+   * token itself dropped by a logout - finds nothing to remove on this node, because the copy is not installed yet. Without
+   * this, the answer, which was given before the removal, would then install a copy the removal had meant to take away.
+   * <p>
+   * {@link HttpAuthSessionManager#removeSession(String)} marks the lookups of that token,
+   * {@link HttpAuthSessionManager#removeSessionsForUser(String)} marks every lookup (the principal an answer will name is not
+   * known yet), and {@code addRemoteSession(..., PeerLookup)} refuses a marked one. Marking and the check happen under the
+   * write lock, so one of them is always first. Starting and closing a lookup take no lock: a lookup is added before the
+   * question is sent, so a removal that starts after that sees it.
+   */
+  public final class PeerLookup implements AutoCloseable {
+    private final String token;
+    private volatile boolean revoked;
+
+    private PeerLookup(final String token) {
+      this.token = token;
+    }
+
+    /**
+     * Whether a removal that concerns the token ran since the lookup started. Once true it stays true.
+     */
+    public boolean isRevoked() {
+      return revoked;
+    }
+
+    @Override
+    public void close() {
+      peerLookups.remove(this);
+    }
+  }
+
+  /**
+   * Marks the lookups a removal concerns. Must be called under the write lock, by the removal itself, so that a copy being
+   * installed (also under the write lock) sees either the removal or no mark and nothing in between.
+   *
+   * @param token the token removed, or {@code null} when every session of a principal was removed
+   */
+  private void revokePeerLookups(final String token) {
+    if (peerLookups.isEmpty())
+      return;
+    for (final PeerLookup lookup : peerLookups)
+      if (token == null || token.equals(lookup.token))
+        lookup.revoked = true;
+  }
+
+  /**
+   * Confirms the lease of a copy with its issuer, only while that very copy is still the one this node holds. The
+   * issuer's answer arrives some time after the question: a copy a removal took out of the map in the meantime is not
+   * confirmed, and the request that asked is not served with it.
+   *
+   * @return {@code true} when the copy is still held and was confirmed
+   */
+  boolean confirmIfHeld(final HttpAuthSession session) {
+    return executeInReadLock(() -> {
+      if (sessions.get(session.token) != session)
+        return false;
+      session.confirm();
+      return true;
+    });
+  }
+
+  /**
+   * The lookups started and not yet closed. Package-private: used by the tests that pin the release of a lookup.
+   */
+  int getPeerLookupCount() {
+    return peerLookups.size();
   }
 
   /**
@@ -298,13 +438,21 @@ public class HttpAuthSessionManager extends RWLockContext {
     return issuerName;
   }
 
-  private HttpAuthSession insert(final ServerSecurityUser user, final Supplier<HttpAuthSession> factory) {
+  private HttpAuthSession insert(final ServerSecurityUser user, final Supplier<HttpAuthSession> factory,
+      final PeerLookup lookup) {
     if (maxSessions > 0 && getActiveSessionCount() >= maxSessions)
       // Reclaim first: a map full of idle-expired sessions must not refuse a legitimate login just because
       // the background sweep has not fired yet. Done outside the write lock below (it takes its own).
       checkSessionsValidity();
 
     return executeInWriteLock(() -> {
+      if (lookup != null && lookup.revoked) {
+        LogManager.instance().log(this, Level.FINE,
+            "Not installing the copy of authentication session %s for user %s: it was removed while its issuer was being asked",
+            lookup.token, user.getName());
+        return null;
+      }
+
       final String userName = user.getName();
       final LinkedHashSet<String> existingTokens = sessionsByUser.get(userName);
 
@@ -354,6 +502,8 @@ public class HttpAuthSessionManager extends RWLockContext {
    */
   public boolean removeSession(final String token) {
     return executeInWriteLock(() -> {
+      // Also when the token is not held: a copy of it may be on its way (see PeerLookup)
+      revokePeerLookups(token);
       final HttpAuthSession removed = sessions.remove(token);
       if (removed != null) {
         unindex(removed);
@@ -381,6 +531,8 @@ public class HttpAuthSessionManager extends RWLockContext {
       return 0;
 
     return executeInWriteLock(() -> {
+      // Also when the principal holds nothing here: a copy of one of its sessions may be on its way (see PeerLookup)
+      revokePeerLookups(null);
       final LinkedHashSet<String> userTokens = sessionsByUser.remove(userName);
       if (userTokens == null)
         return 0;

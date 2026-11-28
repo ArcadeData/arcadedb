@@ -20,7 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.index.columnar.ColumnarTestData;
 import com.arcadedb.index.columnar.FacetOracle;
 import com.arcadedb.query.facet.FacetMemoryBudget;
@@ -67,7 +67,7 @@ class FacetLimitReleaseTest extends TestHelper {
     assertThatThrownBy(() -> {
       while (rs.hasNext())
         rs.next();
-    }).isInstanceOf(CommandExecutionException.class);
+    }).isInstanceOf(CommandSQLParsingException.class);
 
     // not closed by the caller: the LIMIT released the fetch (its answer) and the match set all the same
     assertThat(fetch.fullResult).isNull();

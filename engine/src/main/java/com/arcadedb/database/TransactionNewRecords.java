@@ -35,7 +35,9 @@ import java.util.Arrays;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 final class TransactionNewRecords {
-  private static final int INITIAL_CAPACITY = 16;
+  private static final int INITIAL_CAPACITY      = 16;
+  /** Larger arrays are not kept for the next transaction of the context, which is reused for the life of the database (issue #13479). */
+  static final         int MAX_RETAINED_CAPACITY = 4096;
 
   // A Record, or a WeakReference to one
   private Object[] records = new Object[INITIAL_CAPACITY];
@@ -113,9 +115,19 @@ final class TransactionNewRecords {
   }
 
   void clear() {
-    Arrays.fill(records, 0, size, null);
-    Arrays.fill(rids, 0, size, null);
+    if (records.length > MAX_RETAINED_CAPACITY) {
+      records = new Object[INITIAL_CAPACITY];
+      rids = new RID[INITIAL_CAPACITY];
+    } else {
+      Arrays.fill(records, 0, size, null);
+      Arrays.fill(rids, 0, size, null);
+    }
     size = 0;
+  }
+
+  /** How many records the arrays can hold before they grow. */
+  int capacity() {
+    return records.length;
   }
 
   private void resetIdentity(final int index) {

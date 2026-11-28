@@ -297,7 +297,11 @@ public class BinarySerializer {
     final DatabaseContext.DatabaseContextTL context = database.getContext();
 
     final boolean serializeProperties;
-    if (header == null || (vertex instanceof MutableVertex mutableVertex && mutableVertex.isDirty())) {
+    // A vertex whose properties were never decoded has them as its buffer holds them (reading or changing one decodes them first),
+    // so what made it dirty is an edge-list head: the serialization copies the buffer and writes the two heads below, instead of
+    // decoding the properties of the record (a 1,024-float embedding among them) to encode them again, unchanged
+    if (header == null || (vertex instanceof MutableVertex mutableVertex && mutableVertex.isDirty()
+        && mutableVertex.arePropertiesLoaded())) {
       header = context.getTemporaryBuffer1();
       header.putByte(vertex.getRecordType()); // RECORD TYPE
       serializeProperties = true;
@@ -1002,7 +1006,7 @@ public class BinarySerializer {
       final byte[] keyTypes = new byte[mapSize];
       final byte[] valueTypes = new byte[mapSize];
       int validCount = 0;
-      boolean characterKey = false;
+      boolean nonStringTextKey = false;
       for (final Map.Entry<Object, Object> entry : map.entrySet()) {
         try {
           Object entryKey = entry.getKey();
@@ -1026,7 +1030,8 @@ public class BinarySerializer {
             entryValue = null;
           }
 
-          // NOT EVERY KEY LABELLED TYPE_STRING IS A String: A Character IS TOO, AND IT IS WRITTEN AS ITS TEXT (ISSUE #12021)
+          // NOT EVERY KEY LABELLED TYPE_STRING IS A String: A Character AND AN ENUM CONSTANT ARE TOO, AND THEY ARE WRITTEN AS THEIR
+          // TEXT (ISSUES #12021, #12624)
           if (entryKeyType == BinaryTypes.TYPE_STRING) {
             if (entryKey instanceof String stringKey) {
               final int id = dictionary.getIdByName(stringKey, false);
@@ -1036,7 +1041,7 @@ public class BinarySerializer {
                 entryKey = id;
               }
             } else
-              characterKey = true;
+              nonStringTextKey = true;
           }
 
           keys[validCount] = entryKey;
@@ -1051,8 +1056,8 @@ public class BinarySerializer {
               "Error on serializing map value for key '" + entry.getKey() + "' = '" + entry.getValue() + "'", e);
         }
       }
-      if (characterKey)
-        checkCharacterKeysDoNotCollide(map);
+      if (nonStringTextKey)
+        checkTextKeysDoNotCollide(map);
       content.putUnsignedNumber(validCount);
       for (int i = 0; i < validCount; ++i) {
         content.putByte(keyTypes[i]);
@@ -1179,17 +1184,17 @@ public class BinarySerializer {
   }
 
   /**
-   * A Character key is stored as its one-character text, the same key a String of that text is: a map holding both would be
-   * read back with one of the two values, so it is refused instead of losing one silently (issue #12021). Only a map that
-   * has a Character key pays this pass, and it never calls {@code containsKey()}, which a sorted map of one key class refuses
-   * for the other.
+   * A Character or an enum key is stored as its text, the same key a String of that text is: a map holding both would be read
+   * back with one of the two values, so it is refused instead of losing one silently (issues #12021, #12624). The same holds
+   * for two constants of different enums with the same name. Only a map that has a key of that kind pays this pass, and it
+   * never calls {@code containsKey()}, which a sorted map of one key class refuses for the other.
    */
-  private static void checkCharacterKeysDoNotCollide(final Map<Object, Object> map) {
+  private static void checkTextKeysDoNotCollide(final Map<Object, Object> map) {
     final Set<String> texts = new HashSet<>();
     for (final Object key : map.keySet())
-      if ((key instanceof String || key instanceof Character) && !texts.add(key.toString()))
-        throw new SerializationException("Cannot serialize a map with a Character key and a String key of the same text '" + key
-            + "': a Character is stored as its text");
+      if ((key instanceof String || key instanceof Character || key instanceof Enum<?>) && !texts.add(key.toString()))
+        throw new SerializationException("Cannot serialize a map with two keys of the same text '" + key
+            + "': a Character or an enum key is stored as its text, as a String key is");
   }
 
   /**

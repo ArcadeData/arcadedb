@@ -22,10 +22,12 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityHelper;
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ai.AiSchemaDigest;
 import org.junit.jupiter.api.AfterEach;
@@ -105,6 +107,45 @@ class SchemaInfoPerTypeAclTest {
     assertThat(child.toString()).doesNotContain("SecretBase");
 
     assertThat(AiSchemaDigest.build(database, "probe")).contains("PublicDoc").doesNotContain("SecretDoc", "SecretBase");
+  }
+
+  @Test
+  void aPropertyDeclaredOfAnUnreadableTypeIsRenderedWithoutIt() {
+    database.transaction(() -> {
+      final DocumentType holder = database.getSchema().createDocumentType("PublicHolder");
+      holder.createProperty("embedded", Type.EMBEDDED, "SecretDoc");
+      holder.createProperty("items", Type.LIST, "SecretDoc");
+      holder.createProperty("byKey", Type.MAP, "SecretDoc");
+      holder.createProperty("tags", Type.LIST, "STRING");
+    });
+
+    // control: unbound, the declared types are rendered
+    assertThat(SchemaInfo.toJSON(database, "probe").toString()).contains("SecretDoc");
+    assertThat(AiSchemaDigest.build(database, "probe")).contains("LIST<SecretDoc>");
+
+    bindUserDenying(Set.of("SecretDoc", "SecretBase"));
+
+    final String schemaDocument = SchemaInfo.toJSON(database, "probe").toString();
+    assertThat(schemaDocument).contains("PublicHolder", "items", "tags").doesNotContain("SecretDoc");
+    final JSONObject schemaType = SchemaInfo.typeToJSON(database, database.getSchema().getType("PublicHolder"));
+    assertThat(propertyOf(schemaType, "items").has("ofType")).isFalse();
+    assertThat(propertyOf(schemaType, "tags").getString("ofType")).isEqualTo("STRING");
+
+    assertThat(AiSchemaDigest.build(database, "probe")).contains("PublicHolder", "items LIST", "tags LIST<STRING>")
+        .doesNotContain("SecretDoc");
+
+    final JSONObject detail = AiSchemaDigest.typeDetail(database, "PublicHolder");
+    assertThat(detail.toString()).doesNotContain("SecretDoc");
+    assertThat(propertyOf(detail, "embedded").has("ofType")).isFalse();
+    assertThat(propertyOf(detail, "tags").getString("ofType")).isEqualTo("STRING");
+  }
+
+  private static JSONObject propertyOf(final JSONObject type, final String propertyName) {
+    final JSONArray properties = type.getJSONArray("properties");
+    for (int i = 0; i < properties.length(); i++)
+      if (propertyName.equals(properties.getJSONObject(i).getString("name")))
+        return properties.getJSONObject(i);
+    throw new AssertionError("no property " + propertyName + " in " + type);
   }
 
   private void unbind() {

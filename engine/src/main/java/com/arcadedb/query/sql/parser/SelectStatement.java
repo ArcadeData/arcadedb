@@ -188,7 +188,7 @@ public class SelectStatement extends Statement {
 
   @Override
   public boolean executionPlanCanBeCached() {
-    if (originalStatementAsString == null && originalStatement == null)
+    if (isExcludedFromPlanCache() || (originalStatementAsString == null && originalStatement == null))
       return false;
 
     if (this.target != null && !this.target.isCacheable())
@@ -301,6 +301,8 @@ public class SelectStatement extends Statement {
     result.facets = facets == null ? null : facets.copy();
     // A COPY IS THE SAME TREE: CARRY THE MEMO SO THE PLANNER'S PER-EXECUTION COPIES DO NOT RE-WALK IT (#8400)
     result.resultCacheable = resultCacheable;
+    // the copy holds the same literals (issue #12605)
+    result.excludedFromPlanCache = excludedFromPlanCache;
     return result;
   }
 
@@ -348,6 +350,9 @@ public class SelectStatement extends Statement {
 
   @Override
   public boolean executingPlanCanBeCached() {
+    if (isExcludedFromPlanCache())
+      return false;
+
     if (originalStatement == null)
       setOriginalStatement(this);
 
