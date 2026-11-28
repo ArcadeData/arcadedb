@@ -31,8 +31,10 @@ import com.arcadedb.query.sql.parser.JsonItem;
 import com.arcadedb.query.sql.parser.MethodCall;
 import com.arcadedb.query.sql.parser.NamedParameter;
 import com.arcadedb.query.sql.parser.OrderByItem;
+import com.arcadedb.query.sql.parser.PNumber;
 import com.arcadedb.query.sql.parser.Pattern;
 import com.arcadedb.query.sql.parser.PositionalParameter;
+import com.arcadedb.query.sql.parser.Rid;
 import com.arcadedb.query.sql.parser.SelectStatement;
 import com.arcadedb.query.sql.parser.SimpleNode;
 import com.arcadedb.query.sql.parser.Statement;
@@ -73,8 +75,7 @@ public final class SqlAstInspector {
           // TRANSIENT FIELDS ARE CACHES DERIVED FROM THE AST AT RUN TIME, NOT PART OF IT: WHAT THEY CACHE IS WALKED WHERE IT
           // COMES FROM. WALKING THEM WOULD MAKE THE ANSWER DEPEND ON WHETHER THE FRAGMENT RAN BEFORE (A NAMELESS SENTINEL
           // FunctionCall CACHED BY BaseExpression TURNED A CACHED PLAN SEQUENTIAL AFTER ITS FIRST EXECUTION, #8523)
-          if (Modifier.isStatic(f.getModifiers()) || Modifier.isTransient(f.getModifiers()) || f.getType().isPrimitive()
-              || f.getType() == String.class)
+          if (Modifier.isStatic(f.getModifiers()) || Modifier.isTransient(f.getModifiers()) || !mayHoldAstType(f.getType()))
             continue;
           f.setAccessible(true);
           fields.add(f);
@@ -124,6 +125,30 @@ public final class SqlAstInspector {
   }
 
   /**
+   * Whether a field declared as {@code type} can hold anything the walk follows: not a primitive, a {@code String}, a number, a
+   * boolean, a character or an enum constant, which are leaves whatever they hold. A numeric literal of the parse tree keeps its
+   * value in a {@code Number} field, so a RID list of five thousand entries cost ten thousand reads of a field that holds nothing.
+   */
+  private static boolean mayHoldAstType(final Class<?> type) {
+    return !(type.isPrimitive() || type == String.class || type == Boolean.class || type == Character.class
+        || Number.class.isAssignableFrom(type) || type.isEnum());
+  }
+
+  /** Whether the walk has anything to do with {@code child}: an AST object, or a container that may hold some. */
+  private static boolean isWalked(final Object child) {
+    return child != null && (isAstObject(child) || child instanceof Collection<?> || child instanceof Map<?, ?> || child instanceof Object[]);
+  }
+
+  /**
+   * A node that is a leaf whatever it is: a number, or a RID written as {@code #bucket:position}, whose only children are two
+   * numbers. Nothing in one can be a call, a statement or a parameter, so a walk does not descend into it. A RID given as an
+   * expression ({@code {"@rid": ...}}) is not a literal.
+   */
+  private static boolean isLiteral(final Object node) {
+    return node instanceof PNumber || node instanceof Rid rid && rid.expression == null;
+  }
+
+  /**
    * Whether every node reachable from {@code root} - through AST fields, collections, maps and arrays - satisfies
    * {@code test}. A {@code null} root trivially does. The nodes are tested in the order the tree holds them, depth first.
    * <p>
@@ -143,10 +168,15 @@ public final class SqlAstInspector {
       final Object node = pending.pop();
       children.clear();
       if (isAstObject(node)) {
-        if (visited.put(node, Boolean.TRUE) != null)
+        // A literal cannot hold anything the walk looks for and is a leaf of the tree, so it is tested but not remembered: the
+        // identity map costs more than the test, and a RID list of five thousand entries is fifteen thousand nodes
+        final boolean literal = isLiteral(node);
+        if (!literal && visited.put(node, Boolean.TRUE) != null)
           continue;
         if (node instanceof SimpleNode simpleNode && !test.test(simpleNode))
           return false;
+        if (literal)
+          continue;
         for (final Field f : AST_FIELDS.get(node.getClass())) {
           try {
             children.add(f.get(node));
@@ -167,7 +197,7 @@ public final class SqlAstInspector {
       // PUSHED IN REVERSE, SO THEY ARE POPPED IN THE ORDER THE NODE HOLDS THEM
       for (int i = children.size() - 1; i >= 0; i--) {
         final Object child = children.get(i);
-        if (child != null)
+        if (isWalked(child))
           pending.push(child);
       }
     }
@@ -223,7 +253,7 @@ public final class SqlAstInspector {
   }
 
   private static void push(final Object node, final Statement parent, final ArrayDeque<Object> nodes, final ArrayDeque<Statement> enclosing) {
-    if (node == null)
+    if (!isWalked(node) || isLiteral(node))
       return;
     nodes.push(node);
     enclosing.push(parent);
