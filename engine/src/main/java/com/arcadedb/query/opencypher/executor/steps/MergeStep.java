@@ -228,6 +228,10 @@ public class MergeStep extends AbstractExecutionStep {
                 if (context.isProfiling())
                   rowCount++;
 
+                // An earlier row's ON CREATE / ON MATCH label write may have replaced a node this row is bound to, which a
+                // pattern of the MERGE then starts from: merged against the live record, not the deleted one (issue #13655).
+                // Free while the statement replaced nothing
+                labelReplacements.redirect(inputResult);
                 final List<Result> mergedResults = executeMerge(inputResult, labelReplacements);
                 buffer.addAll(mergedResults);
                 if (heapLimit != null)
